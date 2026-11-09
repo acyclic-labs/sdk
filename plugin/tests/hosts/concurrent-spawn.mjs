@@ -1,6 +1,6 @@
 // Real native-host MCP call schedules, without a model or readiness timer.
 import assert from 'node:assert/strict';
-import {mkdirSync,readFileSync,writeFileSync,chmodSync,rmSync,openSync,writeSync,closeSync} from 'node:fs';
+import {mkdirSync,readFileSync,writeFileSync,appendFileSync,chmodSync,rmSync,openSync,writeSync,closeSync} from 'node:fs';
 import {join,resolve,relative,delimiter} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createServer,connect} from 'node:net';
@@ -16,9 +16,21 @@ const policies={
  'claude-code':['--settings','{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false}}',
   '--permission-mode','default','--model','claude-haiku-5-5'],
 };
+const diagnostic=(event,detail={})=>{
+ if(process.env.FIXTURE_DIAGNOSTIC)appendFileSync(process.env.FIXTURE_DIAGNOSTIC,
+  JSON.stringify({pid:process.pid,cwd:process.cwd(),event,...detail})+'\n');
+};
+function observeBridge(bridge){
+ bridge.child.stdout.on('data',bytes=>diagnostic('mcp-frame',{bytes:bytes.toString()}));
+ bridge.child.once('exit',(code,signal)=>diagnostic('mcp-exit',{code,signal,stderr:bridge.stderr}));
+ return bridge;
+}
 
 export async function native(){
  const env=process.env,host=env.FIXTURE_HOST,cwd=process.cwd();
+ diagnostic('native-start',{args:process.argv.slice(2)});
+ process.once('exit',code=>diagnostic('native-exit',{code}));
+ process.once('uncaughtExceptionMonitor',error=>diagnostic('native-error',{error:error.stack}));
  if(!process.argv.slice(2).includes({codex:'exec','claude-code':'-p'}[host])){
   writeFileSync('root.json',JSON.stringify({task:env.ACYCLIC_TASK,flags:JSON.parse(env.ACYCLIC_HOST_ARGS)}));return;
  }
@@ -28,8 +40,9 @@ export async function native(){
   JSON.stringify({hook_event_name:'SessionStart',session_id:cwd.split('/').at(-1),cwd})));
  assert.ok(started.hookSpecificOutput);
  let prompt='';for await(const chunk of process.stdin)prompt+=chunk;
+ diagnostic('native-prompt',{prompt});
  if(prompt==='parent'){
-  const bridge=start(env.FIXTURE_ACYCLIC,['__mcp',host],{cwd,env});
+  const bridge=observeBridge(start(env.FIXTURE_ACYCLIC,['__mcp',host],{cwd,env}));
   try{
    const trace=await fuzz(Buffer.from(env.FIXTURE_CALL_PROGRAM,'hex'),coordination(bridge,recovery));
    writeFileSync(env.FIXTURE_TRACE,JSON.stringify(trace));
@@ -40,6 +53,9 @@ export async function native(){
   assert.ok(['left','right','lost'].includes(side));
   const file=openSync(join(cwd,side+'.txt'),'w');
   const socket=connect({host:'127.0.0.1',port:Number(env.FIXTURE_RENDEZVOUS)});
+  socket.on('data',bytes=>diagnostic('peer-frame',{prompt,bytes:bytes.toString()}));
+  socket.on('error',error=>diagnostic('peer-error',{prompt,error:error.stack}));
+  socket.on('close',hadError=>diagnostic('peer-close',{prompt,hadError}));
   const closed=finished(socket,{cleanup:true});closed.catch(()=>{});
   try{
    writeSync(file,prompt);
@@ -63,11 +79,19 @@ export async function concurrentSpawn(binaryArg,ownerArg,host,data){
  const completion=JSON.parse(readFileSync(new URL('fixtures/native-completion.json',import.meta.url),'utf8')).records.find(row=>row.host===host);
  assert.ok(completion,`step=admit captured completion; recovery=${recovery}`);
  const events=join(root,'native-events.jsonl');writeFileSync(events,completion.stdout);
+ const diagnosticFile=join(root,'diagnostic.jsonl');writeFileSync(diagnosticFile,'');
+ const frames=[];
+ const note=(event,detail={})=>frames.push({event,...detail});
  const sockets=new Set(),turns=new Map(),lost=Promise.withResolvers(),failed=Promise.withResolvers();
  // Each native turn keeps its original file open until its peer reaches the
  // same turn. A parked wait can precede the second spawn on the original pipe.
  const server=createServer(socket=>{
   sockets.add(socket);socket.once('close',()=>sockets.delete(socket));
+  const peer=socket.remotePort;
+  socket.on('data',bytes=>note('socket-frame',{peer,bytes:bytes.toString()}));
+  socket.on('error',error=>note('socket-error',{peer,error:error.stack}));
+  socket.on('end',()=>note('socket-end',{peer}));
+  socket.on('close',hadError=>note('socket-close',{peer,hadError}));
   finished(socket,{cleanup:true}).catch(failed.resolve);
   (async()=>{
    const prompt=await socketLine(socket);
@@ -85,6 +109,7 @@ export async function concurrentSpawn(binaryArg,ownerArg,host,data){
  const env=fixtureEnvironment(root,{PATH:bins+delimiter+process.env.PATH,
   FIXTURE_HOST:host,FIXTURE_ACYCLIC:binary,FIXTURE_WORKSPACE:workspace,FIXTURE_EVENTS:events,
   FIXTURE_CALL_PROGRAM:Buffer.from(data).toString('hex'),FIXTURE_TRACE:join(root,'concurrent-calls.json'),
+  FIXTURE_DIAGNOSTIC:diagnosticFile,
   FIXTURE_RENDEZVOUS:String(server.address().port),FIXTURE_CONCURRENT_MODULE:import.meta.url});
  const executable=join(bins,{codex:'codex','claude-code':'claude'}[host]);
  writeFileSync(executable,'#!/usr/bin/env node\nconst {native}=await import(process.env.FIXTURE_CONCURRENT_MODULE);\nawait native();\n');chmodSync(executable,0o755);
@@ -97,6 +122,8 @@ export async function concurrentSpawn(binaryArg,ownerArg,host,data){
   bridge=start(binary,['__mcp',host],{cwd:workspace,env:{...env,
    ACYCLIC_HOST_ARGS:JSON.stringify(parent.flags),ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:parent.task}});
   const tool=coordination(bridge,recovery);
+  bridge.child.stdout.on('data',bytes=>note('outer-mcp-frame',{bytes:bytes.toString()}));
+  bridge.child.once('exit',(code,signal)=>note('outer-mcp-exit',{code,signal,stderr:bridge.stderr}));
   await observe(tool('spawn','parent','parent'));
   const finished=await observe(tool('wait','parent'));
   assert.equal(finished.reply.kind,'answered');assert.ok(Object.hasOwn(finished.reply.outcome??{},'Succeeded'),JSON.stringify(finished));
@@ -109,6 +136,7 @@ export async function concurrentSpawn(binaryArg,ownerArg,host,data){
   const terminal=waiting.then(result=>{throw new Error(`step=observe held native child: ${JSON.stringify(result.value??result.error?.message)}; recovery=${recovery}`);});
   const socket=await observe(Promise.race([lost.promise,terminal]));
   bridge.child.kill('SIGKILL');
+  note('kill-producer');
   const result=await waiting;
   assert.match(result.error?.message??'',/native coordination (?:input|output|process) closed/);
   const closed=await bridge.closed;
@@ -116,6 +144,7 @@ export async function concurrentSpawn(binaryArg,ownerArg,host,data){
   // Release the held child and observe its original settlement through a fresh
   // connection, so the control leaves no live child behind.
   socket.end('retired\n');
+  note('release-lost');
   const resumed=start(binary,['__mcp',host],{cwd:workspace,env:{...env,
    ACYCLIC_HOST_ARGS:JSON.stringify(parent.flags),ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:parent.task}});
   try{
@@ -125,6 +154,11 @@ export async function concurrentSpawn(binaryArg,ownerArg,host,data){
   }finally{await resumed.stop();}
   await stopOwner();stopOwner=undefined;
   return {suite:'concurrent-spawn-'+host,model_calls:0,concurrent_spawns_settled:true,trace,seconds:(performance.now()-started)/1000};
+ }catch(error){
+  console.error('CONCURRENT_DIAGNOSTIC',JSON.stringify({host,input:Buffer.from(data).toString('hex'),frames,
+   bridge:{exit:bridge?.child.exitCode,signal:bridge?.child.signalCode,stderr:bridge?.stderr},
+   native:readFileSync(diagnosticFile,'utf8')}));
+  throw error;
  }finally{
   for(const socket of sockets)socket.destroy();
   await new Promise((yes,no)=>server.close(error=>error?no(error):yes()));
