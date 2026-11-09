@@ -420,11 +420,20 @@ fn assert_attempt_sequence(
     let failed_index = barrier_start + 4;
     // Apple records the failed stage and its required full drain separately.
     let failed = attempts
-        .get(failed_index..failed_index + usize::try_from(full_attempts).map_err(io::Error::other)?)
+        .get(
+            failed_index
+                ..failed_index + usize::try_from(full_attempts).map_err(io::Error::other)?,
+        )
         .ok_or(io::ErrorKind::InvalidData)?;
     for attempt in failed {
         assert_eq!(attempt.outcome, Outcome::Err);
-        assert!(attempt.durability.ok_or(io::ErrorKind::InvalidData)?.os_error.is_some());
+        assert!(
+            attempt
+                .durability
+                .ok_or(io::ErrorKind::InvalidData)?
+                .os_error
+                .is_some()
+        );
         assert!(attempt.error_kind.is_none(), "failure detail was disabled");
     }
     assert_eq!(

@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/local/local_stream.rs b/rust/crates/stream/src/local/local_stream.rs
+--- a/rust/crates/stream/src/local/local_stream.rs
++++ b/rust/crates/stream/src/local/local_stream.rs
+@@ -642,6 +642,6 @@
+                     let owner = FlushOwner {
+                         inner,
+-                        active: true,
++                        active: false,
+                     };
+                     let acquire = move || Ok::<_, StreamError>((file, (owner, work)));
+                     let flush = move |file: &acyclic_native_runtime::FileLease,
