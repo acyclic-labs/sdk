@@ -2,6 +2,15 @@
 set -euo pipefail
 
 lane="${1:?qualification lane is required}"
+case "$lane" in
+  web|docs|generation)
+    web_docs_sha="$(git rev-parse HEAD)"
+    web_docs_start="$SECONDS"
+    trap 'web_docs_rc=$?; web_docs_status=FAIL; if (( web_docs_rc == 0 )); then web_docs_status=PASS; fi
+      printf "SDK_WEB_DOCS_RESULT {\"phase\":\"%s\",\"sha\":\"%s\",\"status\":\"%s\",\"seconds\":%s,\"exitCode\":%s}\\n" \
+        "$lane" "$web_docs_sha" "$web_docs_status" "$((SECONDS-web_docs_start))" "$web_docs_rc"' EXIT
+    ;;
+esac
 : "${SDK_TEMP_DIR:?}"
 : "${SDK_ARTIFACT_DIR:?}"
 : "${TOOLS_DIR:?}"
