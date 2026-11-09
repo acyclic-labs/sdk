@@ -173,7 +173,7 @@ mod tests {
             while let Some(line) = original.next_line().await.map_err(invalid)? {
                 expected.push(line);
             }
-            for chunk in [1, 7, 8192] {
+            for chunk in 1..=bytes.len().max(1) {
                 let mut lines = LineBuffer::new(64);
                 let mut actual = Vec::new();
                 for page in bytes.chunks(chunk) {

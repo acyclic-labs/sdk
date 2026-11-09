@@ -1,0 +1,22 @@
+diff --git a/rust/proofs/qualify.mjs b/rust/proofs/qualify.mjs
+index 7ad89950408..59c1731e1c0 100644
+--- a/rust/proofs/qualify.mjs
++++ b/rust/proofs/qualify.mjs
+@@ -204,7 +204,7 @@ if (claim === "--help" && extra.length === 0) {
+   process.exitCode = 2;
+ } else {
+   const [source, crate, test, diagnostic, features, options = {}] = claims[claim];
+-  const tests = [test, ...(options.additionalTests ?? [])];
++  const tests = [test];
+   const sourcePath = new URL(source, new URL("../../", import.meta.url));
+   const patch = claim === "work-mixed"
+     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
+@@ -294,7 +294,7 @@ if (claim === "--help" && extra.length === 0) {
+         if (applied.status !== 0) throw new Error(applied.output);
+         step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
+         const mutated = check(mutation.label);
+-        const diagnostics = [mutation.diagnostic, ...(mutation.additionalDiagnostics ?? options.additionalDiagnostics ?? [])];
++        const diagnostics = [mutation.diagnostic];
+         require(options.fuzz
+           ? mutated.status !== 0 && !mutated.signal && diagnostics.every(message => mutated.output.includes(message))
+             && mutated.output.includes("ERROR: libFuzzer:")
