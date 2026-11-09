@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/local/sync.rs b/rust/crates/stream/src/local/sync.rs
+--- a/rust/crates/stream/src/local/sync.rs
++++ b/rust/crates/stream/src/local/sync.rs
+@@ -28,6 +28,6 @@
+ impl Drop for FlushOwner {
+     fn drop(&mut self) {
+-        if self.active {
++        if false {
+             self.inner
+                 .fail(LocalStreamFailure::new("flush", "producer_lost"));
+         }

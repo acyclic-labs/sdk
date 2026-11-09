@@ -6,6 +6,50 @@ use std::{
     task::{Context, Poll},
 };
 
+#[tokio::test]
+async fn lost_flush_producer_terminates_original_waiters() -> Result<(), Box<dyn std::error::Error>>
+{
+    use futures::FutureExt as _;
+
+    let root = tempfile::tempdir()?;
+    let stream = LocalStream::open(root.path(), Default::default()).await?;
+    deferring_durability(stream.append(super::keyed_append("lost-flush", 0)?)).await?;
+    let file = {
+        let mut journal = stream
+            .inner
+            .journal
+            .lock()
+            .map_err(|_| "journal poisoned")?;
+        journal.syncing = true;
+        journal.file.lease()?
+    };
+    let mut waiting = std::pin::pin!(stream.await_publication(1));
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    let owner = FlushOwner {
+        inner: Arc::clone(&stream.inner),
+        active: true,
+    };
+    // A real persistence job unwinds while owning the original flush cut.
+    // Its completion is the event after which no producer can wake this waiter.
+    let job = acyclic_native_runtime::FileLease::submit(
+        "streams",
+        "flush",
+        PersistenceKey::new(Arc::as_ptr(&stream.inner.journal) as usize, 0),
+        move || Ok::<_, StreamError>((file, owner)),
+        |_, _| -> Result<(), StreamError> { panic!("injected flush producer loss") },
+    );
+    assert!(job.await.is_err());
+    assert!(matches!(
+        waiting.as_mut().now_or_never(),
+        Some(Err(StreamError::Unavailable))
+    ));
+    assert_eq!(
+        stream.failure().map(|failure| failure.cause),
+        Some("producer_lost")
+    );
+    Ok(())
+}
+
 // The OS refuses a real journal write through a held read-only descriptor.
 // Keep its lease so the descriptor cache cannot reopen it with write access.
 #[tokio::test]
