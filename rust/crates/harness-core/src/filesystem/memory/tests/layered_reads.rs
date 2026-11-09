@@ -141,11 +141,11 @@ impl ContentResidencyVerifier for ReplaceAfterProbe {
     ) -> Result<
         BoundedContentFuture<
             'a,
-            (
+            Option<(
                 FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where

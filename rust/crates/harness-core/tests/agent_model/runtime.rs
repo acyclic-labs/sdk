@@ -54,7 +54,7 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 
 #[tokio::test]
 async fn same_phase_settlement_after_creation_advances_without_appending_status() -> Result {
-    use acyclic_stream::{StreamProvider as _, StreamProviderExt as _};
+    use acyclic_stream::StreamProvider as _;
     use futures::TryStreamExt as _;
     let provider = Arc::new(MemoryStream::default());
     let within = ActorReference::new(b"account", b"agents", b"owner")?;
