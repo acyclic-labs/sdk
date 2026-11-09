@@ -79,7 +79,7 @@ export class Processes {
       throw new Error("step=process-progress-operation; recovery=pass the original opaque operation UUID as scopeOperation");
     }
     const report = selectedReport ?? (scopeReport ? new ProcessReport() : undefined);
-    const env = { ...(spawnOptions.env ?? process.env) };
+    const env = { ...(spawnOptions.env ?? process.env), PYTHONDONTWRITEBYTECODE: "1" };
     for (const key of ["ACYCLIC_REPORT_FD", "ACYCLIC_REPORT_PIPE", "ACYCLIC_REPORT_OWNER_PID",
       "ACYCLIC_REPORT_GENERATION", "ACYCLIC_REPORT_REQUEST_ID"]) delete env[key];
     if (report) Object.assign(env, endpoint?.environment ?? { ACYCLIC_REPORT_FD: "3" }, {

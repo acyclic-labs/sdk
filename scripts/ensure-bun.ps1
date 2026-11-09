@@ -23,46 +23,54 @@ if (-not $binaryIsValid) {
     $extracted = Join-Path $temporary "extracted"
     New-Item -ItemType Directory -Path $temporary | Out-Null
     try {
-        $maximumBytes = 134217728L
-        $client = [System.Net.Http.HttpClient]::new()
-        try {
-            $client.DefaultRequestHeaders.UserAgent.ParseAdd("acyclic-sdk-ci/1")
-            $response = $client.GetAsync(
-                "https://github.com/oven-sh/bun/releases/download/bun-v$version/$target.zip",
-                [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
-            ).GetAwaiter().GetResult()
-            $response.EnsureSuccessStatusCode() | Out-Null
-            if ($null -ne $response.Content.Headers.ContentLength -and `
-                $response.Content.Headers.ContentLength -gt $maximumBytes) {
-                throw "Bun archive exceeds 128 MiB"
+        if (-not [string]::IsNullOrWhiteSpace($env:PINNED_ASSET_FETCHER)) {
+            & $env:PINNED_ASSET_FETCHER $expected "https://github.com/oven-sh/bun/releases/download/bun-v$version/$target.zip" $archive
+            if ($LASTEXITCODE -ne 0) {
+                throw 'step=fetch pinned Bun: asset provider refused; recovery: . ./scripts/ensure-bun.ps1'
             }
-            $source = $response.Content.ReadAsStream()
-            $destination = [System.IO.File]::Open(
-                $archive,
-                [System.IO.FileMode]::CreateNew,
-                [System.IO.FileAccess]::Write,
-                [System.IO.FileShare]::None
-            )
+        }
+        else {
+            $maximumBytes = 134217728L
+            $client = [System.Net.Http.HttpClient]::new()
             try {
-                $buffer = [byte[]]::new(65536)
-                $received = 0L
-                while (($read = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                    $received += $read
-                    if ($received -gt $maximumBytes) {
-                        throw "Bun archive exceeds 128 MiB"
+                $client.DefaultRequestHeaders.UserAgent.ParseAdd("acyclic-sdk-ci/1")
+                $response = $client.GetAsync(
+                    "https://github.com/oven-sh/bun/releases/download/bun-v$version/$target.zip",
+                    [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+                ).GetAwaiter().GetResult()
+                $response.EnsureSuccessStatusCode() | Out-Null
+                if ($null -ne $response.Content.Headers.ContentLength -and `
+                    $response.Content.Headers.ContentLength -gt $maximumBytes) {
+                    throw "Bun archive exceeds 128 MiB"
+                }
+                $source = $response.Content.ReadAsStream()
+                $destination = [System.IO.File]::Open(
+                    $archive,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None
+                )
+                try {
+                    $buffer = [byte[]]::new(65536)
+                    $received = 0L
+                    while (($read = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $received += $read
+                        if ($received -gt $maximumBytes) {
+                            throw "Bun archive exceeds 128 MiB"
+                        }
+                        $destination.Write($buffer, 0, $read)
                     }
-                    $destination.Write($buffer, 0, $read)
+                }
+                finally {
+                    $destination.Dispose()
+                    $source.Dispose()
+                    $response.Dispose()
                 }
             }
             finally {
-                $destination.Dispose()
-                $source.Dispose()
-                $response.Dispose()
+                $client.Dispose()
             }
-        }
-        finally {
-            $client.Dispose()
-        }
+            }
         $observedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
         if ($observedHash -ne $expected) {
             throw "Bun archive digest mismatch: $observedHash"

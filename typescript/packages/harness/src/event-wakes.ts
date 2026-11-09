@@ -18,6 +18,7 @@ function corrupt(): never {
  * visit one path; subtree changes visit only that prefix's registered nodes.
  * Pending links survive owner loss without enumerating unrelated Actors. */
 export class WakeIndex {
+  /** `maximumActors` is the journal's path capacity; absent, registration is unbounded. */
   constructor(private readonly storage: EventStorage, private readonly maximumActors?: number) {
     if (maximumActors !== undefined
       && (!Number.isSafeInteger(maximumActors) || maximumActors <= 0 || maximumActors > 0xffff_ffff)) {
