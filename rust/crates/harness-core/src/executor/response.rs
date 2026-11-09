@@ -52,12 +52,7 @@ impl StockExecution<'_> {
         let (mut projection, prepared) = self
             .prepare_response_context(journal, input, step, prior_messages)
             .await?;
-        let capacity = self.model_capacity()?;
-        let ceiling = self.input_ceiling(capacity)?;
-        let count =
-            stock_count_tokens(self.stock.provider.as_ref(), &prepared, ceiling, self.io).await?;
-        with_history_io(self.io, |work| count.validate(&prepared, work))?;
-        let accounting = Some(ContextAccounting { capacity, count });
+        let accounting = Some(self.response_accounting(&prepared).await?);
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
@@ -270,13 +265,26 @@ impl StockExecution<'_> {
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step, prior_messages) = turn;
         let (mut projection, accounting) = captured;
-        let accounting = accounting.ok_or_else(|| {
-            stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "model request has no verified accounting",
-            )
-        })?;
+        let accounting = match accounting {
+            Some(accounting) => accounting,
+            // Projections prepared with compaction disabled may have no count.
+            // Started calls recover their immutable request in dispatch; a
+            // fresh call must pass the same admission as a new projection.
+            None if matches!(
+                self.compaction_policy()?,
+                crate::context::CompactionPolicy::Disabled
+            ) =>
+            {
+                self.response_accounting(&prepared).await?
+            }
+            None => {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "model request has no verified accounting",
+                ));
+            }
+        };
         if self.model_capacity()? != accounting.capacity {
             return Err(stock_boundary(
                 self.io,

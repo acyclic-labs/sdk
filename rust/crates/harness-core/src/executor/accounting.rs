@@ -91,6 +91,18 @@ pub(super) fn stock_json_bound<T: Serialize>(
 }
 
 impl StockExecution<'_> {
+    pub(super) async fn response_accounting(
+        &self,
+        prepared: &crate::model::PreparedModelRequest,
+    ) -> Result<ContextAccounting> {
+        let capacity = self.model_capacity()?;
+        let ceiling = self.input_ceiling(capacity)?;
+        let count =
+            stock_count_tokens(self.stock.provider.as_ref(), prepared, ceiling, self.io).await?;
+        with_history_io(self.io, |work| count.validate(prepared, work))?;
+        Ok(ContextAccounting { capacity, count })
+    }
+
     pub(super) fn model_capacity(&self) -> Result<crate::context::ModelContextCapacity> {
         let capacity =
             stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
