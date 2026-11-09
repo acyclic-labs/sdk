@@ -62,6 +62,12 @@ fn explicit_file_custody_reopens_owners_from_one_root_without_native_fallback() 
     assert_eq!(reopened.key_ref, owner.key_ref);
     assert_eq!(reopened.task, owner.task);
     let wrong = root.path().join("other-custody");
+    for other in [
+        SigningCustody::PrivateFile(&wrong),
+        SigningCustody::Configured,
+    ] {
+        assert!(Owner::open(directory, &project, None, other).is_err());
+    }
     assert!(bootstrap(SigningCustody::PrivateFile(&wrong)).is_err());
     assert!(bootstrap(SigningCustody::Configured).is_err());
     assert_eq!(fs::read(&path).map_err(storage)?, before);

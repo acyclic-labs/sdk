@@ -5,7 +5,9 @@ one credential entry, a random 32-byte signing root (service
 `acyclic.authority.signing-root.v2`, account `root`). An owner's signing seed
 is derived from that root and the owner's public reference with
 `blake3::derive_key`; the reference is a random owner nonce plus a commitment
-to the root. Creating owners never adds entries, and an abandoned owner leaves
+to the root, plus the effective store's identity in versioned public metadata.
+Changing stores is refused before accessing the selected store. Creating owners
+never adds entries, and an abandoned owner leaves
 nothing to retire. Production defaults to native custody: Windows Credential
 Manager, Apple Keychain, or Linux Secret Service when a session bus is
 configured, otherwise the kernel keyring. Failure never changes the selected

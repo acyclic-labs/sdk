@@ -33,7 +33,7 @@ pub use fixture::FixtureCustody;
 
 /// Host-selected credential custody. The explicit file selection never consults
 /// process settings or a native credential service and never falls back to one.
-/// This choice is not serialized into the public signing-key reference.
+/// References bind the effective store without retaining its path or secrets.
 #[derive(Clone, Copy)]
 pub enum SigningCustody<'a> {
     /// Use the application's configured native or explicit file policy.
@@ -44,7 +44,8 @@ pub enum SigningCustody<'a> {
 
 /// Non-secret owner reference: a random 16-byte owner nonce, then a 16-byte
 /// commitment to the root it was derived from. A replaced or recreated root
-/// is refused instead of silently deriving a different signing seed.
+/// is refused instead of silently deriving a different signing seed. Versioned
+/// metadata also binds the effective custody store before any store access.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SigningKeyReference {
@@ -123,8 +124,6 @@ impl Store {
     }
 }
 
-
-
 mod error;
 use error::failure;
 pub use error::{CustodyCause, CustodyFailure};
@@ -152,7 +151,9 @@ impl SigningKeyReference {
         let mut reference = [0; 32];
         crate::owner_record::fill_random(&mut reference[..16]).map_err(io::Error::other)?;
         reference[16..].copy_from_slice(&check(&root));
-        Ok(Self { v1: (reference, identity) })
+        Ok(Self {
+            v1: (reference, identity),
+        })
     }
 
     /// Check the bound policy without opening or creating a custody store.
@@ -176,8 +177,8 @@ impl SigningKeyReference {
     ) -> io::Result<T> {
         let store = custody.resolve()?;
         self.validate_store(&store)?;
-        let root = read(&store.entry()?.0)?
-            .ok_or_else(|| failure("read", CustodyCause::MissingEntry))?;
+        let root =
+            read(&store.entry()?.0)?.ok_or_else(|| failure("read", CustodyCause::MissingEntry))?;
         if !bool::from(check(&root)[..].ct_eq(&self.v1.0[16..])) {
             return Err(unavailable());
         }

@@ -388,6 +388,7 @@ impl Owner {
                 "local state belongs to a different workspace or volume".into(),
             ));
         }
+        owner.key_ref.validate_custody(custody).map_err(storage)?;
         match (owner.workspace_identity, workspace_identity) {
             (Some(retained), Some(observed)) => retained.verify(observed)?,
             (None, None) => {}
