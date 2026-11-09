@@ -1,11 +1,11 @@
 //! Retained corpus checks, without building fuzz executables.
 
-#[cfg(all(test, feature = "client"))]
-#[path = "../ui_blocks_oracle.rs"]
-mod ui_blocks;
 #[cfg(feature = "reader")]
 #[path = "../support/reader_snapshot.rs"]
 pub mod reader_snapshot;
+#[cfg(all(test, feature = "client"))]
+#[path = "../ui_blocks_oracle.rs"]
+mod ui_blocks;
 
 #[cfg(all(test, feature = "native-answer"))]
 #[path = "../tests/native_answer.rs"]

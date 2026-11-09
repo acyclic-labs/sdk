@@ -220,11 +220,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             MergeResolution::Text(text) => {
                 volume
                     .fs
-                    .stage_merge_regular_record(
-                        volume,
-                        template,
-                        Bytes::copy_from_slice(text.as_bytes()),
-                    )
+                    .stage_merge_regular_record(volume, template, text.clone())
                     .await?
             }
             MergeResolution::Binary(bytes) => {

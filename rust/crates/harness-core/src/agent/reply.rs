@@ -12,7 +12,9 @@
 //! A goal run joins its original request to its terminal conversation
 //! entry through the one reference committed with that entry; no output is copied.
 
-use super::{AgentRecord as _, AgentState, ConversationEntry, Error, IntentId, TurnInput};
+use super::{
+    AgentRecord as _, AgentState, ConversationEntry, Error, InboxRecord, IntentId, TurnInput,
+};
 use acyclic_stream::{ReadRequest, StreamPath};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -68,7 +70,8 @@ pub enum Reply {
 /// staged by an uncommitted step is never a reply.
 ///
 /// # Errors
-/// [`Error::Conflict`] when the entry at `inbox` settled another request;
+/// [`Error::Conflict`] when the entry at `inbox` settled another request,
+/// or a pending request has no matching committed input;
 /// stream failures and malformed entries as themselves.
 pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
@@ -110,24 +113,11 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
         // Every Message before this admitted cursor passed the same boundary;
         // controls are not messages and a FollowUp stops that boundary. Read
         // exactly the requested immutable source record, never the transcript.
-        let mut records = provider
-            .read(ReadRequest {
-                key: None,
-                path: state.path.inbox()?,
-                from: inbox,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await
-            .map_err(Error::Stream)?;
-        let record = records
-            .try_next()
-            .await
-            .map_err(Error::Stream)?
-            .filter(|record| record.sequence == inbox)
+        let record = inbox_record(provider, state.path.inbox()?, inbox)
+            .await?
             .ok_or(Error::Record("admitted steering input is missing"))?;
-        return match super::InboxRecord::decode(&record.value)? {
-            super::InboxRecord::Message(message) if &message.id == id => {
+        return match record {
+            InboxRecord::Message(message) if &message.id == id => {
                 goal_reply(
                     provider,
                     state,
@@ -145,11 +135,51 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
             )),
         };
     }
-    Ok(if state.input_pending(cursor, inbox) {
-        Reply::Pending
-    } else {
-        Reply::Dropped
-    })
+    if !state.input_pending(cursor, inbox) {
+        return Ok(Reply::Dropped);
+    }
+    match inbox_record(provider, state.path.inbox()?, inbox).await? {
+        Some(InboxRecord::Message(message) | InboxRecord::FollowUp(message))
+            if &message.id == id =>
+        {
+            Ok(Reply::Pending)
+        }
+        Some(InboxRecord::Context(request)) if &request.id == id => Ok(Reply::Pending),
+        _ => Err(Error::Conflict(
+            "pending reply has no matching committed input",
+        )),
+    }
+}
+
+/// One immutable source record, without waiting for a future inbox position.
+pub(super) async fn inbox_record<P: crate::store::JournalProvider + ?Sized>(
+    provider: &P,
+    path: StreamPath,
+    sequence: u64,
+) -> Result<Option<InboxRecord>, Error> {
+    let mut records = match provider
+        .read(ReadRequest {
+            key: None,
+            path,
+            from: sequence,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+    {
+        Ok(records) => records,
+        Err(acyclic_stream::StreamError::NotFound | acyclic_stream::StreamError::OutOfRange) => {
+            return Ok(None);
+        }
+        Err(error) => return Err(Error::Stream(error)),
+    };
+    records
+        .try_next()
+        .await
+        .map_err(Error::Stream)?
+        .filter(|record| record.sequence == sequence)
+        .map(|record| InboxRecord::decode(&record.value))
+        .transpose()
 }
 
 /// Committed conversation entry `sequence`.

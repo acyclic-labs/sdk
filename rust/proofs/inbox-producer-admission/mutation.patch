@@ -1,0 +1,28 @@
+--- a/rust/crates/harness-core/src/agent/reply.rs
++++ b/rust/crates/harness-core/src/agent/reply.rs
+@@ -135,20 +135,11 @@
+             )),
+         };
+     }
+-    if !state.input_pending(cursor, inbox) {
+-        return Ok(Reply::Dropped);
+-    }
+-    match inbox_record(provider, state.path.inbox()?, inbox).await? {
+-        Some(InboxRecord::Message(message) | InboxRecord::FollowUp(message))
+-            if &message.id == id =>
+-        {
+-            Ok(Reply::Pending)
+-        }
+-        Some(InboxRecord::Context(request)) if &request.id == id => Ok(Reply::Pending),
+-        _ => Err(Error::Conflict(
+-            "pending reply has no matching committed input",
+-        )),
+-    }
++    Ok(if state.input_pending(cursor, inbox) {
++        Reply::Pending
++    } else {
++        Reply::Dropped
++    })
+ }
+ 
+ /// One immutable source record, without waiting for a future inbox position.

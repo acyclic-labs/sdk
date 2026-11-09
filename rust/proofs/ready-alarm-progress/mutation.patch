@@ -1,0 +1,13 @@
+--- a/rust/crates/actors/src/local/ready.rs
++++ b/rust/crates/actors/src/local/ready.rs
+@@ -405,9 +405,7 @@
+         // An earlier deadline must wake the single dispatcher so it can rearm.
+         let waiter = index.waiter.take();
+         drop(index);
+-        if let Some(waiter) = waiter {
+-            waiter.wake();
+-        }
++        drop(waiter);
+         Ok(())
+     }
+ }

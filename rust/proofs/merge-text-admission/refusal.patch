@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/workspace/join_directory.rs
++++ b/rust/crates/filesystem/src/workspace/join_directory.rs
+@@ -138,7 +138,7 @@
+         if crate::text_merge::has_conflict_markers(&bytes) {
+             return Err(WorkspaceError::InvalidMergeResolution.into());
+         }
+-        return Ok(MergeResolution::Text(bytes));
++        return Err(WorkspaceError::InvalidMergeResolution.into());
+     }
+     parse_resolution(&bytes)?.resolve(conflict)
+ }

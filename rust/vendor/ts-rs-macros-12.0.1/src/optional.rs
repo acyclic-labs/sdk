@@ -1,7 +1,7 @@
 use proc_macro2::Span;
 use syn::{
-    Error, Expr, Ident, Path, Token, Type, ext::IdentExt, parse::ParseStream, parse_quote,
-    parse_quote_spanned,
+    ext::IdentExt, parse::ParseStream, parse_quote, parse_quote_spanned, Error, Expr, Ident, Path,
+    Token, Type,
 };
 
 use crate::attr::FieldAttr;

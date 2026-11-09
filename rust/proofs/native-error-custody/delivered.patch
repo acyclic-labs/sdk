@@ -1,0 +1,14 @@
+diff --git a/rust/crates/stream/src/native/work.rs b/rust/crates/stream/src/native/work.rs
+index dc1798247ed..6f3af30651d 100644
+--- a/rust/crates/stream/src/native/work.rs
++++ b/rust/crates/stream/src/native/work.rs
+@@ -117,7 +117,8 @@ impl Work {
+         self.error
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+-            .is_some()
++            .as_ref()
++            .is_some_and(|failure| matches!(failure, Failure::Recorded(_)))
+     }
+ 
+     pub(crate) fn reserve_write(&self, bytes: usize) -> Result<(), StreamError> {

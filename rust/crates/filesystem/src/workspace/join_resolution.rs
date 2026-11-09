@@ -19,7 +19,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     pub(super) async fn stage_regular_resolution(
         &self,
         key: &ConflictKey,
-        bytes: Bytes,
+        bytes: impl Into<acyclic_stream::OwnedBytes>,
     ) -> Result<crate::kernel::FileRecord, DrivenJoinError> {
         let file_id = conflict_file_id(key)
             .ok_or_else(|| DrivenJoinError::UnsupportedResolution(key.clone()))?;

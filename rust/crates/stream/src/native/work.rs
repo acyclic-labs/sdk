@@ -13,11 +13,16 @@ type WriteReservation = (
 
 pub(crate) struct Work {
     pub(crate) meter: Arc<dyn NativeReadMeter>,
-    error: Mutex<Option<std::io::Error>>,
+    error: Mutex<Option<Failure>>,
     write: Mutex<Option<WriteReservation>>,
     #[cfg(feature = "local")]
     durability: Mutex<Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>>,
     _allocation: ReadAllocation,
+}
+
+enum Failure {
+    Recorded(std::io::Error),
+    Delivered,
 }
 
 impl Work {
@@ -27,6 +32,10 @@ impl Work {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
+            .and_then(|failure| match failure {
+                Failure::Recorded(error) => Some(error),
+                Failure::Delivered => None,
+            })
             .map(|error| crate::LocalStreamFailure {
                 operation,
                 cause: "io",
@@ -96,9 +105,19 @@ impl Work {
             self.error
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_or_insert(error);
+                .get_or_insert(Failure::Recorded(error));
             StreamError::Unavailable
         })
+    }
+
+    // Remains true after finish moves the original error into its worker's
+    // output, before the task handle publishes that output to its observer.
+    #[cfg(feature = "local")]
+    pub(crate) fn has_failed(&self) -> bool {
+        self.error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     pub(crate) fn reserve_write(&self, bytes: usize) -> Result<(), StreamError> {
@@ -194,11 +213,12 @@ impl Work {
         &self,
         result: Result<(T, Option<ReadAllocation>), E>,
     ) -> crate::NativeStreamResult<T, E> {
-        if let Some(error) = self
+        if let Some(Failure::Recorded(error)) = self
             .error
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+            .as_mut()
+            .map(|failure| std::mem::replace(failure, Failure::Delivered))
         {
             return Err(error);
         }

@@ -1,0 +1,12 @@
+--- a/rust/crates/actors/src/local/runtime/completion.rs
++++ b/rust/crates/actors/src/local/runtime/completion.rs
+@@ -9,7 +9,8 @@
+     type Output = ();
+ 
+     fn poll(mut self: std::pin::Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+-        self.0.poll_closed(context)
++        let _closed = self.0.poll_closed(context);
++        Poll::Pending
+     }
+ }
+ 

@@ -12,11 +12,11 @@ mod optional;
 
 pub use attr::{EnumAttr, FieldAttr, Inflection, Repr, StructAttr, Tagged, VariantAttr};
 pub use deps::Dependencies;
-pub use optional::{Optional, apply, parse_optional};
+pub use optional::{apply, parse_optional, Optional};
 pub use utils::{format_generics, make_string_literal, raw_name_to_ts_field, to_ts_ident};
 
 use attr::{Attr, ContainerAttr};
-use serde_derive_internals::{Ctxt, Derive, ast};
+use serde_derive_internals::{ast, Ctxt, Derive};
 
 /// Exercises metadata in full declarations, comparing accepted transparent
 /// containers with the same checked AST used by Serde's serializer derivation.

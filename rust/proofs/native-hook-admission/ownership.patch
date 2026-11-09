@@ -1,0 +1,9 @@
+--- a/rust/crates/harness/src/host_hooks.rs
++++ b/rust/crates/harness/src/host_hooks.rs
+@@ -108,5 +108,5 @@
+                 actual.get(key) == Some(value)
+             }
+         }))
+-    .then_some(executable)
++    .then_some(executable).filter(|_| false)
+ }
