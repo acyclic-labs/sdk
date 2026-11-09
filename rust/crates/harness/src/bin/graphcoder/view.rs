@@ -126,24 +126,20 @@ const REWOUND: &str = "Rewound to selected checkpoint";
 
 /// How the session ended, as the process exit: the last turn succeeded,
 /// failed (status 1), or was cancelled (status 2).
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq)]
 enum Outcome {
     #[default]
     Settled,
-    Failed,
+    Failed(String),
     Cancelled,
 }
 
 impl View {
     /// The process exit, each nonzero status with its reason.
     fn exit(&self) -> Result<(), Failure> {
-        match self.outcome {
+        match &self.outcome {
             Outcome::Settled => Ok(()),
-            Outcome::Failed => Err(Box::new(Exit::failed(
-                self.ended
-                    .clone()
-                    .unwrap_or_else(|| "the last turn failed".into()),
-            ))),
+            Outcome::Failed(message) => Err(Box::new(Exit::failed(message.clone()))),
             Outcome::Cancelled => Err(Box::new(Exit::new(
                 std::num::NonZeroU8::MIN.saturating_add(1),
                 "the last turn was cancelled",
@@ -393,7 +389,7 @@ impl View {
             false,
             &format!("task {} failed: {message}", conversation.task()),
         );
-        self.outcome = Outcome::Failed;
+        self.outcome = Outcome::Failed(message.into());
         self.ring = true;
     }
 
