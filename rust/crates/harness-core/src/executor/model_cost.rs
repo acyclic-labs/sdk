@@ -105,6 +105,20 @@ pub struct ModelUsageProjection<'a> {
 impl ModelUsageProjection<'_> {
     /// Usage-file layout, distinct from the source journal and aggregate layouts.
     pub const VERSION: u32 = 2;
+
+    // Called after currency admission. A saved projection cannot turn pending
+    // usage or an absent price selection into a known charge.
+    fn contribution(&self, priced: bool) -> (ModelTokenUsage, Option<u64>) {
+        if !self.usage.completed {
+            return (ModelTokenUsage::default(), None);
+        }
+        let cost = if priced && self.estimated_cost.currency.is_some() {
+            self.estimated_cost.token_nano_units
+        } else {
+            None
+        };
+        (self.usage.tokens, cost)
+    }
 }
 
 fn currency_valid(currency: &str) -> bool {
@@ -607,43 +621,29 @@ impl ModelUsageTotals {
             .checked_sub(u64::from(previous.is_some_and(|old| old.usage.completed)))
             .and_then(|count| count.checked_add(u64::from(row.usage.completed)))
             .ok_or(ModelPriceError::Overflow)?;
-        let tokens = if row.usage.completed {
-            row.usage.tokens
-        } else {
-            ModelTokenUsage::default()
-        };
-        let old = previous.map(|row| {
-            if row.usage.completed {
-                row.usage.tokens
-            } else {
-                ModelTokenUsage::default()
-            }
-        });
+        let priced = self.currency.is_some();
+        let (tokens, cost) = row.contribution(priced);
+        let old = previous.map(|row| row.contribution(priced));
+        let old_tokens = old.map(|(tokens, _)| tokens);
         let input = self
             .input
-            .update(old.map(|tokens| tokens.input), tokens.input)?;
+            .update(old_tokens.map(|tokens| tokens.input), tokens.input)?;
         let cached = self
             .cached
-            .update(old.map(|tokens| tokens.cached), tokens.cached)?;
-        let cache_write = self
-            .cache_write
-            .update(old.map(|tokens| tokens.cache_write), tokens.cache_write)?;
+            .update(old_tokens.map(|tokens| tokens.cached), tokens.cached)?;
+        let cache_write = self.cache_write.update(
+            old_tokens.map(|tokens| tokens.cache_write),
+            tokens.cache_write,
+        )?;
         let output = self
             .output
-            .update(old.map(|tokens| tokens.output), tokens.output)?;
+            .update(old_tokens.map(|tokens| tokens.output), tokens.output)?;
         let reasoning = self
             .reasoning
-            .update(old.map(|tokens| tokens.reasoning), tokens.reasoning)?;
-        let cost = self.token_nano_units.update(
-            previous.map(|row| {
-                self.currency
-                    .as_ref()
-                    .and(row.estimated_cost.token_nano_units)
-            }),
-            self.currency
-                .as_ref()
-                .and(row.estimated_cost.token_nano_units),
-        )?;
+            .update(old_tokens.map(|tokens| tokens.reasoning), tokens.reasoning)?;
+        let cost = self
+            .token_nano_units
+            .update(old.map(|(_, cost)| cost), cost)?;
         self.calls = calls;
         self.completed = completed;
         self.input = input;
@@ -850,6 +850,24 @@ mod tests {
             admitted.completed = false;
             let pending = admitted.estimate(Some(&inclusive)).unwrap();
             prop_assert_eq!(admitted.cache_savings(&inclusive).unwrap(), None);
+            // Saved annotations cannot supply completion or price authority.
+            // Exercise the same persisted projection entrance used on replay.
+            let mut saved = serde_json::to_value(&pending).unwrap();
+            saved["estimated_cost"]["token_nano_units"] = serde_json::json!(expected);
+            let annotated: ModelUsageProjection<'static> = serde_json::from_value(saved).unwrap();
+            prop_assert_eq!(annotated.estimated_cost.token_nano_units, Some(expected));
+            let mut retained = ModelUsageTotals::new("USD".into()).unwrap();
+            retained.push(&annotated).unwrap();
+            prop_assert_eq!(retained.token_nano_units, UsageTotal { known: 0, unknown: 1 });
+            retained.validate().unwrap();
+            retained.replace(&annotated, &projected).unwrap();
+            prop_assert_eq!(retained.token_nano_units.value(), Some(expected));
+            let mut unselected = projected.clone();
+            unselected.estimated_cost.currency = None;
+            retained.replace(&projected, &unselected).unwrap();
+            prop_assert_eq!(retained.token_nano_units, UsageTotal { known: 0, unknown: 1 });
+            retained.replace(&unselected, &projected).unwrap();
+            prop_assert_eq!(retained.token_nano_units.value(), Some(expected));
             let mut unpriced = ModelUsageTotals::unpriced();
             unpriced.push(&pending).unwrap();
             unpriced.replace(&pending, &projected).unwrap();
@@ -996,6 +1014,45 @@ mod tests {
             let mut decoded_total = ModelUsageTotals::new("USD".into()).unwrap();
             decoded_total.push(&decoded).unwrap();
             prop_assert_eq!(decoded_total.token_nano_units.value(), Some(expected));
+        }
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn contribution_replacement_conserves_full_width_counts() {
+        let total = UsageTotal {
+            known: kani::any(),
+            unknown: kani::any(),
+        };
+        let previous: Option<Option<u64>> = kani::any();
+        let value: Option<u64> = kani::any();
+        // Wider signed arithmetic independently detects underflow before the
+        // new contribution is added, including a replacement that would hide it.
+        let removed_known = i128::from(total.known) - i128::from(previous.flatten().unwrap_or(0));
+        let removed_unknown =
+            i128::from(total.unknown) - i128::from(previous.is_some_and(|prior| prior.is_none()));
+        let known = removed_known + i128::from(value.unwrap_or(0));
+        let unknown = removed_unknown + i128::from(value.is_none());
+        let representable = removed_known >= 0
+            && removed_unknown >= 0
+            && known <= i128::from(u64::MAX)
+            && unknown <= i128::from(u64::MAX);
+        let result = total.update(previous, value);
+        assert_eq!(result.is_ok(), representable);
+        if let Ok(next) = result {
+            assert_eq!(i128::from(next.known), known);
+            assert_eq!(i128::from(next.unknown), unknown);
+            if let Some(prior) = previous {
+                // Removing exactly the admitted replacement restores both
+                // counters; counting either value twice violates this oracle.
+                assert_eq!(next.update(Some(value), prior), Ok(total));
+            }
+        } else {
+            assert_eq!(result, Err(ModelPriceError::Overflow));
         }
     }
 }
