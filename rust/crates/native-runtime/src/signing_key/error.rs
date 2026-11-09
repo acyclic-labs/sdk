@@ -21,6 +21,8 @@ pub enum CustodyCause {
     NativeStatus(i64),
     /// Non-secret backend detail when no numeric status is exposed.
     Backend(String),
+    /// The owner reference belongs to a different selected custody store.
+    StoreMismatch,
     /// The original reference is absent from the selected store.
     MissingEntry,
     /// The stored value does not match its reference or encoding.
@@ -50,6 +52,7 @@ impl fmt::Display for CustodyFailure {
             self.operation, self.cause
         )?;
         match self.cause {
+            CustodyCause::StoreMismatch => output.write_str("restore the original ACYCLIC_SIGNING_CUSTODY and ACYCLIC_SIGNING_CUSTODY_DIRECTORY selections; use a fresh state directory for a new signing store"),
             CustodyCause::InvalidPolicy => output.write_str("select ACYCLIC_SIGNING_CUSTODY=native or private-file; use an absolute ACYCLIC_SIGNING_CUSTODY_DIRECTORY only with private-file"),
             CustodyCause::MissingEntry | CustodyCause::InvalidStoredSeed => output.write_str("restore the original selected signing store and reopen the original state directory"),
             _ => output.write_str("restore access to the selected signing store and reopen the original state directory; for a new private-file identity explicitly set ACYCLIC_SIGNING_CUSTODY=private-file"),
@@ -62,7 +65,7 @@ impl Error for CustodyFailure {}
 pub(super) fn failure(operation: &'static str, cause: CustodyCause) -> io::Error {
     let kind = match cause {
         CustodyCause::MissingEntry => io::ErrorKind::NotFound,
-        CustodyCause::InvalidPolicy => io::ErrorKind::InvalidInput,
+        CustodyCause::InvalidPolicy | CustodyCause::StoreMismatch => io::ErrorKind::InvalidInput,
         CustodyCause::InvalidStoredSeed
         | CustodyCause::InvalidEntry
         | CustodyCause::AmbiguousEntry => io::ErrorKind::InvalidData,

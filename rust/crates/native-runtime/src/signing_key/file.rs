@@ -10,13 +10,13 @@ struct Credential {
     name: String,
 }
 
-pub(super) fn entry(name: &str) -> io::Result<keyring::Entry> {
+pub(super) fn directory() -> io::Result<PathBuf> {
     let config = std::env::var_os("ACYCLIC_SIGNING_CUSTODY_DIRECTORY").map(PathBuf::from)
         .or_else(dirs::config_dir).filter(|path| path.is_absolute()).ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound,
             "signing custody configuration directory unavailable; recovery: configure an absolute application configuration directory")
     })?;
-    entry_in(name, config.join("acyclic/signing-seeds"))
+    Ok(config.join("acyclic/signing-seeds"))
 }
 
 pub(super) fn entry_in(name: &str, directory: PathBuf) -> io::Result<keyring::Entry> {

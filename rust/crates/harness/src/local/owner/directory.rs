@@ -5,28 +5,32 @@ use std::{
 };
 
 pub(crate) fn separated_directory(path: &Path, checkout: Option<&Path>) -> Result<PathBuf> {
+    planned_separated_directory(path, checkout)?;
+    let directory = directory(path)?;
+    planned_separated_directory(&directory, checkout)?;
+    Ok(directory)
+}
+
+/// The same separation check without creating directories or capturing a root.
+pub(in crate::local) fn planned_separated_directory(
+    path: &Path,
+    checkout: Option<&Path>,
+) -> Result<()> {
     let Some(checkout) = checkout else {
-        return directory(path);
+        return Ok(());
     };
-    let checkout = fs::canonicalize(checkout).map_err(|error| Error::Storage(error.to_string()))?;
-    let separate = |directory: &Path| {
-        if checkout.starts_with(directory) || directory.starts_with(&checkout) {
-            return Err(Error::Invalid(format!(
-                "local state directory must be separate from the checkout: state {} and                  checkout {} nest; recovery: run from the project directory (never /) or                  set XDG_DATA_HOME outside it",
-                directory.display(),
-                checkout.display()
-            )));
-        }
-        Ok(())
-    };
-    // Reject before creating anything: a refused root must leave the checkout untouched.
     let planned = planned_directory(path).ok_or_else(|| {
         Error::Invalid("local state directory has an unresolved path suffix".into())
     })?;
-    separate(&planned)?;
-    let directory = directory(path)?;
-    separate(&directory)?;
-    Ok(directory)
+    let checkout = fs::canonicalize(checkout).map_err(|error| Error::Storage(error.to_string()))?;
+    if checkout.starts_with(&planned) || planned.starts_with(&checkout) {
+        return Err(Error::Invalid(format!(
+            "local state directory must be separate from the checkout: state {} and checkout {} nest; recovery: run from the project directory (never /) or set XDG_DATA_HOME outside it",
+            planned.display(),
+            checkout.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Canonical form of a not-yet-created directory: its nearest existing ancestor plus plain

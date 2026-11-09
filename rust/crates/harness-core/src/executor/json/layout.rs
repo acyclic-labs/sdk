@@ -81,7 +81,8 @@ pub enum JsonLayout {
         /// Object members by serde name, `"*"` for any key. A name may repeat
         /// when several enum variants share it.
         fields: &'static [(&'static str, &'static JsonLayout)],
-        /// Array elements by position; a single element applies to all.
+        /// Array elements by position; a single element applies to all. An
+        /// empty list uses the record's fields in their declared order.
         elements: &'static [&'static JsonLayout],
         /// Layouts whose members also appear in this object.
         flatten: &'static [&'static JsonLayout],
@@ -111,10 +112,10 @@ pub enum JsonLayout {
     },
 }
 impl JsonLayout {
-    /// A struct object; listed fields name their layouts.
+    /// A derived struct: an object of its fields or an array in field order.
     pub const fn record(fields: &'static [(&'static str, &'static JsonLayout)]) -> Self {
         Self::Node {
-            seq: None,
+            seq: Some(Alloc::INLINE),
             map: Some(Alloc::INLINE),
             tagged: false,
             fields,
@@ -257,8 +258,16 @@ impl Candidates {
                 into.add(node, 0, 0);
                 continue;
             }
-            if let JsonLayout::Node { elements, .. } = node {
+            if let JsonLayout::Node {
+                fields, elements, ..
+            } = node
+            {
                 let element = match elements {
+                    [] if !fields.is_empty() => fields
+                        .get(index)
+                        .map(|(_, layout)| *layout)
+                        // The derived decoder checks its length after the fields.
+                        .or_else(|| (index == fields.len()).then_some(&JsonLayout::Scalar)),
                     [only] => Some(*only),
                     elements => elements.get(index).copied(),
                 };

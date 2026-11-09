@@ -855,6 +855,16 @@ mod object_work {
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_depth_limit"),
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_depth_empty"),
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_depth_refused"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/signing_reference_map"),
+            include_bytes!(
+                "../../../../harness-fuzz/corpus/bounded_json/signing_reference_sequence"
+            ),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/notice_map"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/notice_sequence"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/provenance_map"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/provenance_sequence"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/wire_item_map"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/wire_item_sequence"),
         ] {
             oracle::check(bytes);
         }
