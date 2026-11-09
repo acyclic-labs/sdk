@@ -388,9 +388,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             return Ok(&self.plan);
         }
         self.failed = true;
-        let result = self
-            .write_page_inner(section, steps, permit, &cancellation)
-            .await;
+        let mut allocation = None;
+        let (future, _) = crate::heap_future::in_heap_admitted(
+            &mut *self,
+            |this, bytes| {
+                allocation = Some(
+                    crate::kernel::allocation::retained::RetainedAllocation::claim(
+                        bytes,
+                        u64::from(bytes != 0),
+                        &mut this.preview.accounting()?,
+                    )?,
+                );
+                Ok::<(), WorkspaceError>(())
+            },
+            |this| this.write_page_inner(section, steps, permit, &cancellation),
+        )?;
+        let result = future.with_allocation(allocation).await;
         if result.is_ok() {
             self.failed = false;
         }

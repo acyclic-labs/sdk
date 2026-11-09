@@ -127,7 +127,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     ) -> Result<(PathLookup, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
         accounting.check()?;
         let before = readonly_standalone_live(accounting);
-        let result = async {
+        let result = crate::heap_future::in_borrowed_frame!(accounting, |accounting| async {
             self.synchronize_live_with_accounting(accounting, cancellation)
                 .await?;
             let mut lookup = self
@@ -167,8 +167,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             }
             lookup.0.work = accounting.spent();
             Ok::<_, FsError>(lookup)
-        }
-        .await;
+        });
         readonly_cleanup_standalone(accounting, before, 0)?;
         result.map(|(mut lookup, allocation)| {
             lookup.work = accounting.spent();
@@ -185,7 +184,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     ) -> Result<(PathLookup, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
         accounting.check()?;
         let before = readonly_standalone_live(accounting);
-        let result = async {
+        let result = crate::heap_future::in_borrowed_frame!(accounting, |accounting| async {
             let lookup = if self.tracks_observations() {
                 let candidate = if self.has_pending_mutations() {
                     Some(
@@ -237,8 +236,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 .await?
             };
             Ok((lookup, accounting.claim_owned(0, 0)?))
-        }
-        .await;
+        });
         readonly_cleanup_standalone(accounting, before, 0)?;
         result.map(|(mut lookup, allocation)| {
             lookup.work = accounting.spent();

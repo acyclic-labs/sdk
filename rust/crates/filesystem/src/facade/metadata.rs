@@ -268,37 +268,40 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileMetadata, FsError> {
-        let mut accounting = accounting.allocation_scope()?;
-        match file.address() {
-            ContentAddress::Path(path) => self
-                .lookup_no_follow_with_metadata_with_accounting(path, &mut accounting, cancellation)
-                .await?
-                .map(|lookup| lookup.metadata)
-                .ok_or(FsError::NotFound),
-            ContentAddress::File(id) => {
-                let record = self
-                    .lookup_file_record_by_id_with_accounting(id, &mut accounting, cancellation)
+        let address = file.address();
+        let mut scope = accounting.allocation_scope()?;
+        crate::heap_future::in_borrowed_frame!(&mut *scope, |accounting| async move {
+            match address {
+                ContentAddress::Path(path) => self
+                    .lookup_no_follow_with_metadata_with_accounting(path, accounting, cancellation)
                     .await?
-                    .ok_or(FsError::NotFound)?;
-                let metadata = crate::kernel::read_file_metadata_with_accounting(
-                    self.volume.fs.objects(),
-                    record.metadata,
-                    DecodeLimits::for_volume(self.volume.config),
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
-                if self.tracks_observations() {
-                    self.observe_base_metadata_ids_with_accounting(
-                        std::slice::from_ref(&id),
-                        &mut accounting,
+                    .map(|lookup| lookup.metadata)
+                    .ok_or(FsError::NotFound),
+                ContentAddress::File(id) => {
+                    let record = self
+                        .lookup_file_record_by_id_with_accounting(id, accounting, cancellation)
+                        .await?
+                        .ok_or(FsError::NotFound)?;
+                    let metadata = crate::kernel::read_file_metadata_with_accounting(
+                        self.volume.fs.objects(),
+                        record.metadata,
+                        DecodeLimits::for_volume(self.volume.config),
+                        accounting,
                         cancellation,
                     )
                     .await?;
+                    if self.tracks_observations() {
+                        self.observe_base_metadata_ids_with_accounting(
+                            std::slice::from_ref(&id),
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                    }
+                    Ok(metadata)
                 }
-                Ok(metadata)
             }
-        }
+        })
     }
 }
 
