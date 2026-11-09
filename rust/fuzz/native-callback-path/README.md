@@ -13,14 +13,20 @@ RUSTFLAGS="-Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 \
 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters \
 -Cllvm-args=-sanitizer-coverage-pc-table \
 -Cllvm-args=-sanitizer-coverage-trace-compares" \
-cargo run --locked --target "$target" \
-  -p native-callback-path-fuzz --bin callback_path -- \
-  -seed=1 -runs=4096 rust/fuzz/native-callback-path/corpus/callback_path
+cargo build --locked --target "$target" \
+  -p native-callback-path-fuzz --bin callback_path
+node scripts/fuzz-smoke.mjs "${CARGO_TARGET_DIR:-target}/$target/debug/callback_path" \
+  rust/fuzz/native-callback-path/corpus/callback_path -- -seed=1 -runs=4096
 ```
 
 An explicit target keeps coverage instrumentation out of host build scripts,
 which do not link the libFuzzer runtime. LibFuzzer feedback is not a
 source-branch coverage report.
+
+The [shared smoke adapter](../../../scripts/fuzz-smoke.md) publishes an explicit
+campaign terminal and reuses only an exact recorded PASS. It keeps this target's
+4096-run budget, instrumentation and entire retained corpus. The external
+coordinator supplies the shared runner; a missing runner fails explicitly.
 
 The two `windows-enumerated-*` seeds were captured on Windows build 26200
 using `System.IO.Directory.EnumerateFiles` on actual temporary files. Their

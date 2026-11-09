@@ -1,0 +1,59 @@
+import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+import {cpSync, mkdtempSync, readFileSync, writeFileSync, appendFileSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join, resolve} from 'node:path';
+import {test} from 'node:test';
+import {fileURLToPath} from 'node:url';
+
+// The scoped validation supplies the real, instrumented production callback-path fuzzer.
+const binary = process.env.SDK_FUZZ_TEST_BINARY;
+const entry = fileURLToPath(new URL('./fuzz-smoke.mjs', import.meta.url));
+const retained = fileURLToPath(new URL('../rust/fuzz/native-callback-path/corpus/callback_path', import.meta.url));
+
+test('real campaign completion and exact closure reuse preserve every smoke obligation', () => {
+  assert.ok(binary, 'build the callback_path fuzzer and set SDK_FUZZ_TEST_BINARY');
+  const root = mkdtempSync(join(tmpdir(), 'fuzz-smoke-control-'));
+  try {
+    const executable = join(root, 'callback_path'), corpus = join(root, 'corpus');
+    cpSync(resolve(binary), executable); cpSync(retained, corpus, {recursive: true});
+    const original = readFileSync(join(corpus, 'windows-enumerated-nested'));
+    const env = {...process.env, ACTION_CACHE_ROOT: join(root, 'cache')};
+    const run = (program = executable, args = ['-seed=1', '-runs=4096'], variables = env) => {
+      const result = spawnSync(process.execPath, [entry, program, corpus, '--', ...args], {env: variables, encoding: 'utf8'});
+      const lines = (result.stdout + result.stderr).split('\n').filter(line => line.startsWith('FUZZ_CAMPAIGN_TERMINAL '));
+      assert.equal(lines.length, 1, result.stdout + result.stderr);
+      const terminal = JSON.parse(lines[0].replace(/^FUZZ_CAMPAIGN_TERMINAL (PASS|FAIL) /, ''));
+      console.log('FUZZ_SMOKE_CONTROL ' + JSON.stringify(terminal));
+      assert.equal(result.status, terminal.status === 'PASS' ? 0 : 1);
+      return terminal;
+    };
+    const initial = run();
+    assert.equal(initial.status, 'PASS'); assert.equal(initial.cached, false);
+    assert.ok(initial.key, 'the real fuzzer trace must be recordable');
+    assert.ok(initial.campaign.instrumented); assert.equal(initial.campaign.runs, 4096);
+    const hit = run();
+    assert.equal(hit.cached, true); assert.equal(hit.key, initial.key);
+    assert.deepEqual(hit.campaign, initial.campaign);
+    // An unrelated source edit and dispatch identity do not affect the executed obligation.
+    writeFileSync(join(root, 'unrelated.txt'), 'changed outside the closure');
+    assert.equal(run(executable, undefined, {...env, BB_JOB_ID: 'another-dispatch'}).key, initial.key);
+    // Both corpus membership and bytes invalidate, while generated corpus stays private.
+    writeFileSync(join(corpus, 'additional-seed'), Buffer.from([95, 0]));
+    const added = run(); assert.equal(added.cached, false); assert.notEqual(added.key, initial.key);
+    writeFileSync(join(corpus, 'additional-seed'), Buffer.from([96, 0]));
+    const changed = run(); assert.equal(changed.cached, false); assert.notEqual(changed.key, added.key);
+    assert.deepEqual(readFileSync(join(corpus, 'windows-enumerated-nested')), original);
+    assert.equal(run().key, changed.key);
+    // Changing the seed, workload, executable or runtime environment cannot reuse PASS.
+    assert.equal(run(executable, ['-seed=2', '-runs=4096']).cached, false);
+    assert.equal(run(executable, ['-seed=1', '-runs=4097']).cached, false);
+    assert.equal(run(executable, undefined, {...env, FUZZ_CONTROL_INPUT: 'different'}).cached, false);
+    appendFileSync(executable, Buffer.from([0]));
+    assert.equal(run().cached, false);
+    // Successful non-fuzz programs, crashes and corpus-only replays never become PASS.
+    assert.equal(run('/usr/bin/true').status, 'FAIL');
+    assert.equal(run('/usr/bin/false').status, 'FAIL');
+    assert.equal(run(executable, ['-seed=1', '-runs=0']).status, 'FAIL');
+  } finally { rmSync(root, {recursive: true, force: true}); }
+});
