@@ -5,8 +5,12 @@ async fn save_unaccounted_request(
     executor: &StockExecutor,
     journal: &Journal,
     input: &TurnInput,
+    single_request: bool,
 ) -> Result<crate::model::PreparedModelRequest> {
-    let execution = StockExecution::ordinary(executor);
+    let execution = StockExecution {
+        single_request,
+        ..StockExecution::ordinary(executor)
+    };
     let mut binding = json!({
         "executor": "acyclic.stock.v8",
         "input": input,
@@ -21,6 +25,11 @@ async fn save_unaccounted_request(
         "compaction": crate::context::CompactionPolicy::Disabled,
         "model_capacity": null,
     });
+    if single_request {
+        binding["model_capacity"] =
+            serde_json::to_value(executor.provider.context_capacity(&executor.model)?)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+    }
     let sampling = execution.sampling()?;
     if !sampling.is_default() {
         binding["sampling"] =
@@ -88,7 +97,7 @@ async fn saved_unaccounted_projection_requires_admission_before_fresh_dispatch()
             input: ModelContent::Text("x".repeat(length)),
             selected_context: None,
         };
-        save_unaccounted_request(&executor, &journal, &input).await?;
+        save_unaccounted_request(&executor, &journal, &input, false).await?;
         let result = executor.model_step(&journal, &input, 0, &[]).await;
         assert_eq!(result.is_ok(), admitted, "{result:?}");
         assert_eq!(counts.load(Ordering::SeqCst), 1);
@@ -136,7 +145,7 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
         input: ModelContent::Text("x".repeat(5_000)),
         selected_context: None,
     };
-    let prepared = save_unaccounted_request(&executor, &journal, &input).await?;
+    let prepared = save_unaccounted_request(&executor, &journal, &input, false).await?;
     let reference = transcript::stage_request(
         &journal,
         input.operation_id,
@@ -173,5 +182,39 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
     assert_eq!(counts.load(Ordering::SeqCst), 0);
     assert!(provider.requests().is_empty());
     assert_eq!(provider.reconciliations().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
+    let journal = Journal::default();
+    let (provider, counts) =
+        counted_model(4_096, None, [ScriptedTurn::Text("inferred".into())], []);
+    let executor = uncompacted_executor(
+        Model::new("test".into(), "saved-inference".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_max_output_tokens(1_024)?;
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        max_steps: Some(1),
+        input: ModelContent::Text("input".into()),
+        selected_context: None,
+    };
+    save_unaccounted_request(&executor, &journal, &input, true).await?;
+    for _ in 0..2 {
+        assert_eq!(
+            executor.infer(&journal, &input, None).await?.text(),
+            "inferred"
+        );
+    }
+    assert_eq!(counts.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
+    assert!(matches!(
+        executor.model_step(&journal, &input, 0, &[]).await,
+        Err(Error::Conflict(_))
+    ));
     Ok(())
 }
