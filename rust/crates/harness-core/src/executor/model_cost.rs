@@ -105,6 +105,19 @@ pub struct ModelUsageProjection<'a> {
 impl ModelUsageProjection<'_> {
     /// Usage-file layout, distinct from the source journal and aggregate layouts.
     pub const VERSION: u32 = 2;
+
+    // Saved annotations cannot supply completion or selected-price authority.
+    fn contribution(&self, priced: bool) -> (ModelTokenUsage, Option<u64>) {
+        if !self.usage.completed {
+            return (ModelTokenUsage::default(), None);
+        }
+        let cost = if priced && self.estimated_cost.currency.is_some() {
+            self.estimated_cost.token_nano_units
+        } else {
+            None
+        };
+        (self.usage.tokens, cost)
+    }
 }
 
 fn currency_valid(currency: &str) -> bool {
@@ -607,43 +620,27 @@ impl ModelUsageTotals {
             .checked_sub(u64::from(previous.is_some_and(|old| old.usage.completed)))
             .and_then(|count| count.checked_add(u64::from(row.usage.completed)))
             .ok_or(ModelPriceError::Overflow)?;
-        let tokens = if row.usage.completed {
-            row.usage.tokens
-        } else {
-            ModelTokenUsage::default()
-        };
-        let old = previous.map(|row| {
-            if row.usage.completed {
-                row.usage.tokens
-            } else {
-                ModelTokenUsage::default()
-            }
-        });
+        let (tokens, cost) = row.contribution(self.currency.is_some());
+        let old = previous.map(|row| row.contribution(self.currency.is_some()));
         let input = self
             .input
-            .update(old.map(|tokens| tokens.input), tokens.input)?;
+            .update(old.map(|(tokens, _)| tokens.input), tokens.input)?;
         let cached = self
             .cached
-            .update(old.map(|tokens| tokens.cached), tokens.cached)?;
-        let cache_write = self
-            .cache_write
-            .update(old.map(|tokens| tokens.cache_write), tokens.cache_write)?;
+            .update(old.map(|(tokens, _)| tokens.cached), tokens.cached)?;
+        let cache_write = self.cache_write.update(
+            old.map(|(tokens, _)| tokens.cache_write),
+            tokens.cache_write,
+        )?;
         let output = self
             .output
-            .update(old.map(|tokens| tokens.output), tokens.output)?;
+            .update(old.map(|(tokens, _)| tokens.output), tokens.output)?;
         let reasoning = self
             .reasoning
-            .update(old.map(|tokens| tokens.reasoning), tokens.reasoning)?;
-        let cost = self.token_nano_units.update(
-            previous.map(|row| {
-                self.currency
-                    .as_ref()
-                    .and(row.estimated_cost.token_nano_units)
-            }),
-            self.currency
-                .as_ref()
-                .and(row.estimated_cost.token_nano_units),
-        )?;
+            .update(old.map(|(tokens, _)| tokens.reasoning), tokens.reasoning)?;
+        let cost = self
+            .token_nano_units
+            .update(old.map(|(_, cost)| cost), cost)?;
         self.calls = calls;
         self.completed = completed;
         self.input = input;
@@ -703,6 +700,48 @@ mod tests {
                 nano_units_per_million: Some(17),
             },
             reasoning: TokenPrice::Included,
+        }
+    }
+
+    #[test]
+    fn saved_cost_annotations_require_completion_and_selected_currency() {
+        let usage = record(ModelTokenUsage {
+            input: Some(1_000_000),
+            output: Some(0),
+            cached: Some(0),
+            cache_write: Some(0),
+            reasoning: Some(0),
+        });
+        let price = price();
+        let complete = usage.estimate(Some(&price)).unwrap();
+        for completed in [false, true] {
+            let mut saved = serde_json::to_value(&complete).unwrap();
+            saved["usage"]["completed"] = completed.into();
+            saved["estimated_cost"]["token_nano_units"] = 7.into();
+            if completed {
+                saved["estimated_cost"]["currency"] = serde_json::Value::Null;
+            }
+            let annotated: ModelUsageProjection<'static> = serde_json::from_value(saved).unwrap();
+            let mut totals = ModelUsageTotals::new("USD".into()).unwrap();
+            totals.push(&annotated).unwrap();
+            let unknown = UsageTotal {
+                known: 0,
+                unknown: 1,
+            };
+            assert_eq!(
+                totals.token_nano_units, unknown,
+                "saved annotation invented a known cost"
+            );
+            totals.validate().unwrap();
+            totals.replace(&annotated, &complete).unwrap();
+            assert_eq!(
+                totals.token_nano_units.value(),
+                complete.estimated_cost.token_nano_units
+            );
+            totals.validate().unwrap();
+            totals.replace(&complete, &annotated).unwrap();
+            assert_eq!(totals.token_nano_units, unknown);
+            totals.validate().unwrap();
         }
     }
 
