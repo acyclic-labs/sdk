@@ -23,7 +23,7 @@ test-support = ["tokio/macros", "tokio/time", "tokio/test-util", "tokio/net", "t
 
 [dependencies]
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
-loom = { version = "=0.7.2", optional = true }
+loom = { version = "=0.7.3", optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 bytes.workspace = true
 dirs.workspace = true
@@ -87,7 +87,7 @@ tokio = { workspace = true, features = ["net", "io-util", "macros"] }
 serde_json.workspace = true
 acyclic-test-support = { path = "../test-support", features = ["source-catalog"] }
 tempfile = "3.27.0"
-loom = "=0.7.2"
+loom = "=0.7.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-observability = { version = "=0.2.0", path = "../observability" }

@@ -17,7 +17,7 @@ tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:nix", "dep:
 serde_json.workspace = true
 
 [dependencies]
-loom = { version = "0.7.2", optional = true }
+loom = { version = "0.7.3", optional = true }
 acyclic-markdown = { version = "=0.2.0", path = "../markdown", optional = true }
 serde = { workspace = true, optional = true }
 vte = { version = "0.15", optional = true }

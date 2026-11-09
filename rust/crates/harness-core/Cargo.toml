@@ -137,7 +137,7 @@ acyclic-machines = { version = "=0.2.0", path = "../machines", default-features 
 dirs = { workspace = true, optional = true }
 tempfile = { version = "3.27.0", optional = true }
 getrandom = { workspace = true, optional = true }
-loom = { version = "=0.7.2", optional = true }
+loom = { version = "=0.7.3", optional = true }
 same-file = { version = "1.0.6", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
@@ -162,7 +162,7 @@ rcgen = "0.14.10"
 serde-saphyr = { version = "=2.0.0", default-features = false, features = ["serialize"] }
 shuttle = "=0.9.8"
 tracing-subscriber.workspace = true
-loom = { version = "0.7.2", features = ["futures"] }
+loom = { version = "0.7.3", features = ["futures"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local", "test-support"] }
 tempfile = "3.27.0"
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }

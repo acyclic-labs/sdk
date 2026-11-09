@@ -1,13 +1,5 @@
 [advisories]
 yanked = "deny"
-# Loom's latest published release (0.7.2) uses pin-utils in its futures model.
-# Keep that proof coverage until Loom publishes its core::pin::pin! replacement:
-# https://github.com/tokio-rs/loom/blob/v0.7.2/Cargo.toml#L22-L34
-# This also covers synchrony's cfg(loom) dependency in the compio graph.
-# The bans rule below refuses every other direct parent.
-ignore = [
-  { id = "RUSTSEC-2026-0441", reason = "Loom 0.7.2 is the latest published release; its futures model requires pin-utils. Removing it drops concurrency proofs, and the core pin replacement is not released upstream." },
-]
 
 [licenses]
 confidence-threshold = 0.93
@@ -38,7 +30,7 @@ version = "=0.2.0"
 multiple-versions = "warn"
 wildcards = "deny"
 deny = [
-  { crate = "pin-utils", wrappers = ["loom"], reason = "Use core::pin::pin!; only Loom's unreleased upstream replacement prevents removal of its proof dependency." },
+  { crate = "pin-utils", reason = "RUSTSEC-2026-0441: unmaintained; use core::pin::pin!." },
 ]
 # Path-only dev-dependencies of publishable crates and path dependencies of
 # private crates never reach a published manifest.

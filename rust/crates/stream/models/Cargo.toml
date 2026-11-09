@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 acyclic-stream = { path = "..", default-features = false, features = ["session", "model-checking"] }
 futures = "0.3.31"
-loom = { version = "0.7.2", features = ["futures"] }
+loom = { version = "0.7.3", features = ["futures"] }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
 [[test]]

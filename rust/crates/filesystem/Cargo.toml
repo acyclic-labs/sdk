@@ -85,7 +85,7 @@ prost-reflect = { workspace = true, features = ["serde"] }
 proptest.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-loom = { version = "=0.7.2", features = ["checkpoint"] }
+loom = { version = "=0.7.3", features = ["checkpoint"] }
 vhost = { version = "0.18.0", features = ["vhost-user-frontend"] }
 
 [build-dependencies]
@@ -94,7 +94,7 @@ cc = "1.2.56"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.175"
-loom = { version = "0.7.2", optional = true }
+loom = { version = "0.7.3", optional = true }
 tempfile = { version = "3.27.0", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -126,7 +126,7 @@ web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag"], optional =
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
-loom = { version = "=0.7.2", optional = true }
+loom = { version = "=0.7.3", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 cap-primitives = "4.0.3"
 cap-fs-ext = "4.0.2"
@@ -183,7 +183,7 @@ napi-types = ["dep:napi", "dep:napi-derive"]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["local"] }
-loom = "0.7.2"
+loom = "0.7.3"
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
