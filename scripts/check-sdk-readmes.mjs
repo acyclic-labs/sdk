@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { generatedReadmes, services } from "./generate-sdk-readmes.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
+import { writeChanged } from "./generated-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -45,7 +46,7 @@ function checkSources() {
 function compileExamples(guide) {
   const directory = resolve(root, ".tools/sdk-readme-examples");
   mkdirSync(directory, { recursive: true });
-  for (const [name, code] of guide) writeFileSync(resolve(directory, `${name}.mts`), code);
+  for (const [name, code] of guide) writeChanged(resolve(directory, `${name}.mts`), code);
   const paths = {};
   // Resolve each public export to its source, including transitive imports.
   // Missing exports remain missing; no wildcard can admit a private module.
@@ -58,7 +59,7 @@ function compileExamples(guide) {
       paths[manifest.name + (subpath === "." ? "" : subpath.slice(1))] = [resolve(root, "typescript/packages", directory, source)];
     }
   }
-  writeFileSync(resolve(directory, "tsconfig.json"), JSON.stringify({
+  writeChanged(resolve(directory, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
       strict: true, noEmit: true, target: "ES2022", module: "NodeNext",
       types: ["node"], paths,
@@ -74,7 +75,27 @@ function compileExamples(guide) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const mode = process.argv.slice(2);
   if (mode.length > 1 || (mode.length === 1 && mode[0] !== "compile")) throw new Error("STEP_FAILED README mode: expected no arguments or compile; recovery: node scripts/check-sdk-readmes.mjs");
-  const guide = checkSources();
-  if (mode[0] === "compile") compileExamples(guide);
-  else console.log(`${services.length} README/llms.txt examples match their sources; compile with: node scripts/check-sdk-readmes.mjs compile`);
+  // The optional coordinator owns caching; this adapter only declares this
+  // check's disposable outputs. A missing coordinator executes the same check.
+  const runner = process.env.SDK_CHECK_ACTION_RUNNER ?? "/mnt/bb/cx/cached-check.mjs";
+  if (mode[0] === "compile" && process.env.SDK_CHECK_ACTION_ACTIVE !== "1" && existsSync(runner)) {
+    const result = spawnSync(process.execPath, [runner, `sdk/readmes/${mode[0] ?? "sources"}`,
+      resolve(root, ".tools/sdk-readme-examples"), "--", process.execPath, ...process.argv.slice(1)], {
+      cwd: root, stdio: "inherit", env: { ...process.env, SDK_CHECK_ACTION_ACTIVE: "1" },
+    });
+    if (result.error) throw result.error;
+    process.exitCode = result.status ?? 1;
+  } else {
+    const started = performance.now();
+    let status = "FAIL";
+    try {
+      const guide = checkSources();
+      if (mode[0] === "compile") compileExamples(guide);
+      else console.log(`${services.length} README/llms.txt examples match their sources; compile with: node scripts/check-sdk-readmes.mjs compile`);
+      status = "PASS";
+    } finally {
+      console.log("SDK_WEB_DOCS_RESULT " + JSON.stringify({ phase: `readmes/${mode[0] ?? "sources"}`,
+        status, seconds: (performance.now() - started) / 1000 }));
+    }
+  }
 }
