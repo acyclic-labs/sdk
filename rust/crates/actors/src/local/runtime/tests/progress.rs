@@ -2,7 +2,7 @@
 //!
 //! The production [`ReadySet`] (registration wakers, due index, coalescing
 //! queue and running-entry requeue), the production delivery arming
-//! [`Registration::deliver_alarm`] and the production refusal-retry rule
+//! [`Registration::arm_alarm`] and the production refusal-retry rule
 //! (`Inner::refused`) are driven through every interleaving of external events
 //! and delivery outcomes up to a bound. The kernel proof assumes the runtime
 //! delivers once per event; this checks that assumption:
@@ -291,9 +291,8 @@ fn explore(arm: Arm) -> Result<(), String> {
     }
 }
 
-fn production(registration: &Registration<usize>, alarm: &Alarm, _now: u64) -> Result<bool, Error> {
-    // A consumed alarm leaves the due index; the delivery itself is its wake.
-    registration.deliver_alarm(alarm).map(|()| false)
+fn production(registration: &Registration<usize>, alarm: &Alarm, now: u64) -> Result<bool, Error> {
+    registration.arm_alarm(alarm, now)
 }
 
 /// The arming before the fix: the delivered alarm stays a due wake.

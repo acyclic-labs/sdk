@@ -348,6 +348,21 @@ impl<K: Send + Sync + 'static> Registration<K> {
     }
 }
 impl<K> Registration<K> {
+    /// Observe a committed alarm for a delivery at `now_unix_ms`. Only a due
+    /// alarm loses its indexed wake; future alarms remain armed while inputs run.
+    /// Returns whether this delivery should consume the alarm.
+    pub fn arm_alarm(&self, alarm: &super::Alarm, now_unix_ms: u64) -> Result<bool, super::Error> {
+        let due = alarm
+            .pending()
+            .is_some_and(|deadline| deadline <= now_unix_ms);
+        if due {
+            self.deliver_alarm(alarm)?;
+        } else {
+            self.update_alarm(alarm)?;
+        }
+        Ok(due)
+    }
+
     /// Install a durably observed alarm into the shared due index. A later
     /// observation cannot move generation or consumption backwards. Reinstalling
     /// an unconsumed alarm permits retry after an unsuccessful physical attempt.
