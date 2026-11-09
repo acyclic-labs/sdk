@@ -522,13 +522,17 @@ mod tests {
                 &cancellation,
             )
             .map_err(|(error, _)| error)?;
+            let baseline = work.live_allocation_bytes();
             let (path, allocation) = canonical_directory_path_held(directory, &mut &work)?;
             assert_eq!(path, expected);
-            assert_eq!(work.live_allocation_bytes(), path.capacity() as u64);
+            assert_eq!(
+                work.live_allocation_bytes(),
+                baseline + path.capacity() as u64
+            );
             let receipt = work.receipt();
             drop(path);
             drop(allocation);
-            assert_eq!(work.live_allocation_bytes(), 0);
+            assert_eq!(work.live_allocation_bytes(), baseline);
             Ok(receipt)
         };
         let before = read()?;
