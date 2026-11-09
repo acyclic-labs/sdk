@@ -379,6 +379,14 @@ pub async fn agent_authority<'v>(
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.
 pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
+    /// Publishes each bound workspace before the original turn becomes terminal.
+    fn settle<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        _turn: OperationId,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     /// The executor's existing per-part render allowance, if finite. Selection
     /// chunks pending events under this same allowance before request admission.
     fn render_bytes(&self) -> Option<u64> {
@@ -1615,6 +1623,9 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn settle<'a>(&'a self, agent: &'a AgentState, turn: OperationId) -> BoxFuture<'a, Result<()>> {
+        self.executors.settle(agent, turn)
+    }
     fn open_control<'a>(
         &'a self,
         agent: &'a AgentState,

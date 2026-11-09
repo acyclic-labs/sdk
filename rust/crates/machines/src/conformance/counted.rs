@@ -57,6 +57,14 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().exec(machine, command).await
     }
+    async fn exec_request(
+        &self,
+        machine: MachineId,
+        command: ExecCommand,
+    ) -> Result<TextExecResult, ProviderError> {
+        self.record(RequestClass::Data);
+        self.inner().exec_request(machine, command).await
+    }
     async fn read_output(
         &self,
         machine: MachineId,

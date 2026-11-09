@@ -13,9 +13,21 @@ pub trait MachinesProvider: acyclic_stream::ProviderPlatform {
     /// Declares optional provider mechanisms without changing image capabilities.
     fn capability(&self, capability: ProviderCapability) -> Support {
         match capability {
-            ProviderCapability::WholeFile => Support::Unsupported,
+            ProviderCapability::WholeFile | ProviderCapability::RequestResponseExec => {
+                Support::Unsupported
+            }
             _ => Support::Supported,
         }
+    }
+    /// One textual exchange with combined UTF-8 output, not binary channels.
+    /// Missing terminal replies are indeterminate and never authorize redispatch.
+    async fn exec_request(
+        &self,
+        machine: MachineId,
+        command: ExecCommand,
+    ) -> Result<TextExecResult, ProviderError> {
+        let _ = (machine, command);
+        unsupported("request/response exec")
     }
     /// Downloads one whole guest file. Range-only providers refuse this mechanism.
     async fn download_file(
@@ -246,6 +258,10 @@ pub enum Support {
 /// Provider mechanisms, independently of image/runtime features.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderCapability {
+    /// Separate binary stdout/stderr, stdin and terminal capture receipts.
+    BinaryDuplexExec,
+    /// One textual request with combined output and a terminal exit status.
+    RequestResponseExec,
     RangeRead,
     RangeWrite,
     WholeFile,
@@ -256,6 +272,15 @@ pub enum ProviderCapability {
     Checkpoint,
     SuspendResume,
     Destroy,
+}
+
+/// Terminal receipt of a provider's textual request/response execution API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextExecResult {
+    /// Combined UTF-8 output; this mechanism does not preserve channel identity.
+    pub output: String,
+    /// Terminal exit status returned by the provider's execution API.
+    pub exit_code: i32,
 }
 
 fn unsupported<T>(mechanism: &str) -> Result<T, ProviderError> {

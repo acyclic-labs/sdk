@@ -26,6 +26,8 @@ struct State {
     proxy: String,
     lose_create: bool,
     fail_upload: bool,
+    lose_exec: bool,
+    exec_output: String,
     posts: usize,
 }
 
@@ -114,6 +116,17 @@ impl Server {
                         } else if url.path() == "/api/sandbox" {
                             body = serde_json::to_vec(
                                 &json!({"items": [state.sandbox.as_ref().unwrap()]}),
+                            )
+                            .unwrap();
+                        } else if url.path() == format!("/toolbox/{MACHINE}/process/execute") {
+                            assert_eq!(method, "POST");
+                            let command: Value = serde_json::from_slice(&request[head..]).unwrap();
+                            assert!(command["command"].as_str().unwrap().contains("bash"));
+                            if std::mem::take(&mut state.lose_exec) {
+                                continue;
+                            }
+                            body = serde_json::to_vec(
+                                &json!({"exitCode": 0, "result": state.exec_output}),
                             )
                             .unwrap();
                         } else if url.path() == format!("/toolbox/{MACHINE}/files/download") {
@@ -411,5 +424,93 @@ async fn lost_create_reply_is_recovered_without_redispatch_and_expired_files_nev
         Err(ProviderError::Cancelled)
     ));
     assert_eq!(server.state.lock().unwrap().requests.len(), count);
+    server.all_authorized();
+}
+
+#[tokio::test]
+async fn textual_exec_refuses_expired_or_stdin_requests_and_never_retries_a_lost_reply() {
+    let server = Server::start("https://app.daytona.io/toolbox", false).await;
+    let provider = server.provider();
+    provider.create(request()).await.unwrap();
+    let command = ExecCommand::new(vec!["bash".into(), "-c".into(), ":".into()], None).unwrap();
+    let before = server.state.lock().unwrap().requests.len();
+    assert!(matches!(
+        provider
+            .exec_request(machine(), command.clone().with_expiry(1))
+            .await,
+        Err(ProviderError::Cancelled)
+    ));
+    assert!(matches!(
+        provider
+            .exec_request(machine(), command.clone().with_stdin(vec![0]))
+            .await,
+        Err(ProviderError::Unsupported(_))
+    ));
+    assert_eq!(server.state.lock().unwrap().requests.len(), before);
+    server.state.lock().unwrap().lose_exec = true;
+    assert!(matches!(provider.exec_request(machine(), command).await,
+        Err(ProviderError::CommandIndeterminate(actual)) if actual == machine()));
+    assert_eq!(
+        server
+            .state
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .filter(|(path, _)| path.ends_with("/process/execute"))
+            .count(),
+        1
+    );
+    server.all_authorized();
+}
+
+#[tokio::test]
+async fn shared_shell_selects_textual_exec_and_captures_empty_text_and_output_limits() {
+    use acyclic_harness_core::{
+        machines::MachinesHost,
+        resources::{ProviderRef, SandboxRef},
+    };
+    let server = Server::start("https://app.daytona.io/toolbox", false).await;
+    let provider = server.provider();
+    provider.create(request()).await.unwrap();
+    let reference = ProviderRef::new(
+        "io.daytona".into(),
+        "machines".into(),
+        "1".into(),
+        &mut None,
+    )
+    .unwrap();
+    let sandbox = SandboxRef::new(reference.clone(), machine().as_bytes().into(), None).unwrap();
+    let host = MachinesHost::new(Arc::new(provider), reference).unwrap();
+    let command = ExecCommand::new(vec!["bash".into(), "-c".into(), ":".into()], None).unwrap();
+    let output = capture_exec(host.exec(&sandbox, command.clone()).await.unwrap(), 1024)
+        .await
+        .unwrap();
+    assert_eq!(output.exit_code, Some(0));
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    server.state.lock().unwrap().exec_output = "combined text".into();
+    let output = capture_exec(host.exec(&sandbox, command.clone()).await.unwrap(), 1024)
+        .await
+        .unwrap();
+    assert_eq!(output.exit_code, Some(0));
+    assert_eq!(output.stdout, b"combined text");
+    assert!(output.stderr.is_empty());
+    let output = capture_exec(
+        host.exec(&sandbox, command.with_output_limit(3))
+            .await
+            .unwrap(),
+        3,
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.stdout, b"com");
+    assert!(matches!(
+        output.stop,
+        Some(ExecStop {
+            kind: ExecStopKind::OutputLimit,
+            cleanup_completed: true,
+            ..
+        })
+    ));
     server.all_authorized();
 }

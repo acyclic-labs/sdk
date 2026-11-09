@@ -6,6 +6,14 @@ impl MachinesProvider for SimulatedMachines {
     fn assurance(&self) -> ProviderAssurance {
         ProviderAssurance::ProcessLocalSimulation
     }
+    fn capability(&self, capability: ProviderCapability) -> Support {
+        match capability {
+            ProviderCapability::WholeFile
+            | ProviderCapability::BinaryDuplexExec
+            | ProviderCapability::RequestResponseExec => Support::Unsupported,
+            _ => Support::Supported,
+        }
+    }
     async fn read_file(
         &self,
         _machine: MachineId,

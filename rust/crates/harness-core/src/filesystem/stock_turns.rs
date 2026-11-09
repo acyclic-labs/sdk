@@ -21,6 +21,10 @@ use std::sync::Arc;
 /// What one host adds to a stock turn once its model, tools, limits and
 /// compaction are composed: at least the turn's tool authority.
 pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
+    /// Publishes the workspace before this turn's terminal record.
+    fn settle(&self, _agent: &AgentState, _turn: OperationId) -> BoxProviderFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Completes `composed`, the executor and the limits it was composed
     /// under, for `agent`'s turn `turn` on `input`.
     fn prepare<'a>(
@@ -71,6 +75,20 @@ impl Tasks {
 }
 
 impl TurnContext for Tasks {
+    fn settle(&self, _: &AgentState, turn: OperationId) -> BoxProviderFuture<'_, Result<()>> {
+        Box::pin(async move {
+            if let Some(targets) = self.0.targets() {
+                for target in targets.roster().targets() {
+                    targets
+                        .recover(&target.name)?
+                        .executor
+                        .settle_workspace(turn)
+                        .await?;
+                }
+            }
+            Ok(())
+        })
+    }
     fn prepare<'a>(
         &'a self,
         (executor, _): (StockExecutor, Limits),
@@ -208,6 +226,13 @@ impl StockExecutors {
 }
 
 impl TurnExecutors for StockExecutors {
+    fn settle<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        self.context.settle(agent, turn)
+    }
     fn render_bytes(&self) -> Option<u64> {
         Some(self.limits.render_bytes)
     }

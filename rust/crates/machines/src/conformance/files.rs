@@ -10,8 +10,17 @@ pub async fn verify_files(
     deadline_unix_ms: u64,
 ) -> Result<(), String> {
     let access = |offset| FileAccess::new(path.into(), offset, deadline_unix_ms);
-    let range = provider.capability(ProviderCapability::RangeWrite);
-    if range == Support::Unsupported {
+    let read = provider.capability(ProviderCapability::RangeRead);
+    let write = provider.capability(ProviderCapability::RangeWrite);
+    let whole = provider.capability(ProviderCapability::WholeFile);
+    if read == Support::Unsupported {
+        super::require_unsupported(
+            provider
+                .read_file(machine, access(0).map_err(|e| e.to_string())?, 1)
+                .await,
+        )?;
+    }
+    if write == Support::Unsupported {
         super::require_unsupported(
             provider
                 .write_file(
@@ -22,15 +31,43 @@ pub async fn verify_files(
                 )
                 .await,
         )?;
-        if provider.capability(ProviderCapability::WholeFile) != Support::Supported {
-            return Err("file conformance requires range or whole-file transfer".into());
-        }
-    } else {
+    }
+    if whole == Support::Unsupported {
         super::require_unsupported(
             provider
                 .upload_file(machine, access(0).map_err(|e| e.to_string())?, vec![1])
                 .await,
         )?;
+        super::require_unsupported(
+            provider
+                .download_file(machine, access(0).map_err(|e| e.to_string())?)
+                .await,
+        )?;
+    } else {
+        let bytes = vec![0, 255, 128, 0];
+        provider
+            .upload_file(
+                machine,
+                access(0).map_err(|e| e.to_string())?,
+                bytes.clone(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        if provider
+            .download_file(machine, access(0).map_err(|e| e.to_string())?)
+            .await
+            .map_err(|e| e.to_string())?
+            != FileRead::Data(bytes)
+        {
+            return Err("whole-file transfer changed binary content".into());
+        }
+    }
+    // Offset/short-IO cases need a declared read and write mechanism. A
+    // whole-file provider reaches them through the one shared range facade.
+    if whole == Support::Unsupported
+        && (read == Support::Unsupported || write == Support::Unsupported)
+    {
+        return Ok(());
     }
     let mut expected = (0..65_553)
         .map(|value| (value % 256) as u8)

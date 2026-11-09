@@ -8,6 +8,9 @@ pub struct MachinesHost {
 }
 
 impl MachinesHost {
+    pub(crate) fn provider(&self) -> &dyn MachinesProvider {
+        &*self.provider
+    }
     /// Constructs the same task tool binding for local and hosted providers.
     /// The Machine and volume are the platform's original admitted selection.
     pub fn workspace(
@@ -119,6 +122,36 @@ impl MachinesHost {
         sandbox: &SandboxRef,
         command: acyclic_machines::ExecCommand,
     ) -> Result<acyclic_machines::ExecStream> {
+        if self
+            .provider
+            .capability(acyclic_machines::ProviderCapability::BinaryDuplexExec)
+            == acyclic_machines::Support::Unsupported
+        {
+            let maximum = command.maximum_output_bytes();
+            let output = self
+                .provider
+                .exec_request(self.machine_id(sandbox)?, command)
+                .await
+                .map_err(|error| map_error(error, None))?;
+            let mut bytes = output.output.into_bytes();
+            let exceeded = maximum.is_some_and(|maximum| bytes.len() as u64 > maximum);
+            if let Some(maximum) = maximum {
+                bytes.truncate(usize::try_from(maximum).unwrap_or(usize::MAX));
+            }
+            let terminal = if exceeded {
+                acyclic_machines::ExecOutput::Stopped(acyclic_machines::ExecStop {
+                    kind: acyclic_machines::ExecStopKind::OutputLimit,
+                    message: "request/response output exceeded capture allowance".into(),
+                    cleanup_completed: true,
+                })
+            } else {
+                acyclic_machines::ExecOutput::ExitCode(output.exit_code)
+            };
+            let data = (!bytes.is_empty()).then_some(Ok(acyclic_machines::ExecOutput::Data(bytes)));
+            return Ok(Box::pin(futures::stream::iter(
+                data.into_iter().chain(std::iter::once(Ok(terminal))),
+            )));
+        }
         self.provider
             .exec(self.machine_id(sandbox)?, command)
             .await
@@ -349,7 +382,7 @@ impl MachinesHost {
             .map_err(|_| Error::Invalid("machine image artifact key must be 32 bytes".into()))?;
         Image::custom(digest).map_err(|error| Error::Invalid(error.to_string()))
     }
-    pub(super) fn machine_id(&self, reference: &SandboxRef) -> Result<MachineId> {
+    pub(crate) fn machine_id(&self, reference: &SandboxRef) -> Result<MachineId> {
         parse_uuid(self.key(reference.as_resource())?, MachineId::from_bytes)
     }
     pub(super) fn checkpoint_id(&self, reference: &CheckpointRef) -> Result<CheckpointId> {
