@@ -1,5 +1,5 @@
 use super::super::adapter::NativeDemandCarrier;
-use super::{MAXIMUM_TRACKED_KEYS, ViewChange, ViewLedger, ViewOrigin, ViewStamp};
+use super::{MAXIMUM_TRACKED_KEYS, ViewChange, ViewEffect, ViewLedger, ViewOrigin, ViewStamp};
 use crate::FileId;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::model::VolumeLimits;
@@ -25,6 +25,36 @@ fn path(names: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Error>> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(NamespacePath::new(components, limits)?)
+}
+
+#[test]
+fn entry_metadata_preserves_its_listing_but_invalidates_its_parent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut work = work();
+    let ledger = ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut work))?;
+    let parent = path(&[])?;
+    let directory = path(&["dir"])?;
+    let child = path(&["dir", "child"])?;
+    let stamp = ledger.stamp();
+    ledger.record(
+        &ViewChange::Effect(&ViewEffect {
+            entries: vec![directory.clone()],
+            listings: vec![parent.clone()],
+            ..ViewEffect::default()
+        }),
+        &mut NativeDemandCarrier::Borrowed(&mut work),
+    )?;
+    assert!(!ledger.unchanged_since(&directory, None, stamp, &mut work)?);
+    assert!(!ledger.listing_unchanged_since(&parent, stamp, &mut work)?);
+    assert!(ledger.binding_unchanged_since(&directory, stamp, &mut work)?);
+    assert!(ledger.listing_unchanged_since(&directory, stamp, &mut work)?);
+    assert!(ledger.unchanged_since(&child, None, stamp, &mut work)?);
+    ledger.record(
+        &ViewChange::Bound(&child),
+        &mut NativeDemandCarrier::Borrowed(&mut work),
+    )?;
+    assert!(!ledger.listing_unchanged_since(&directory, stamp, &mut work)?);
+    Ok(())
 }
 
 #[test]

@@ -35,7 +35,7 @@ public static class GraphcoderConPty {
                     && diagnostics.Add(args[index]) && index + 1 < args.Length) {
                     ulong value;
                     string flag = args[index];
-                    if (!UInt64.TryParse(args[++index], out value) || value == 0) throw new ArgumentException(usage);
+                    if (!UInt64.TryParse(args[++index], out value)) throw new ArgumentException(usage);
                     options.Append(" " + flag + " " + value.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 } else throw new ArgumentException(usage);
             }

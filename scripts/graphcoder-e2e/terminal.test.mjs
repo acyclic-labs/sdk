@@ -64,18 +64,21 @@ const launch = ["--workspace", process.cwd(), "--settings-root", process.cwd(), 
 test("real ConPTY carries typed options, raw input, output and the exit code", conpty, async t => {
   const processes = new Processes();
   try {
-    const running = await processes.startTerminal(cmd, [...launch, "--resume", "--operation", "op 1"]);
+    const running = await processes.startTerminal(cmd, [...launch, "--resume", "--operation", "op 1",
+      "--diagnostic-records", "0", "--diagnostic-record-bytes", "0"]);
     await shown(running, ">");
     running.child.stdin.write("echo po^ng %CMDCMDLINE%\r\nexit 7\r\n");
     const result = await bounded(t, running.closed);
     assert.equal(result.code, 7, result.stderr);
-    assert.match(result.stdout.replace(/\x1b\[[0-9;?]*[A-Za-z]|\r|\n/g, ""), /pong .*--resume --operation "op 1"/);
+    assert.match(result.stdout.replace(/\x1b\[[0-9;?]*[A-Za-z]|\r|\n/g, ""),
+      /pong .*--resume --operation "op 1" --diagnostic-records 0 --diagnostic-record-bytes 0/);
   } finally { await processes.close(); }
 });
 
 test("ConPTY refuses launches outside admitted native custody", conpty, async t => {
   const processes = new Processes();
   const host = process.env.E2E_CONPTY_HOST;
+  let admissionFailure;
   try {
     const direct = await bounded(t, processes.start(host, conptyArgs(cmd, launch)).closed);
     assert.equal(direct.code, 125);
@@ -88,12 +91,22 @@ test("ConPTY refuses launches outside admitted native custody", conpty, async t 
     const binary = await bounded(t, binaryLaunch.closed);
     assert.equal(binary.code, 125);
     assert.match(binary.stderr, /step=conpty-terminal-create/);
-    process.env.E2E_CONPTY_HOST = `${host}.missing.exe`;
-    const admissionLaunch = await processes.startTerminal(cmd, launch);
-    const admission = await bounded(t, admissionLaunch.closed);
-    assert.equal(admission.code, 125);
-    assert.match(admission.stderr, /step=process-host-admission/);
-  } finally { process.env.E2E_CONPTY_HOST = host; await processes.close(); }
+    const admissionLaunch = await processes.startTerminal(cmd, launch, {
+      env: { ...process.env, E2E_CONPTY_HOST: `${host}.missing.exe` },
+    });
+    await assert.rejects(bounded(t, admissionLaunch.closed), error => {
+      admissionFailure = error;
+      assert.equal(error.code, "PROCESS_HOST_FAILED");
+      assert.equal(error.completion.host_exit_code, 125);
+      assert.equal(error.completion.root_status, null);
+      assert.equal(error.completion.failure.phase, "root-admission");
+      assert.equal(error.completion.failure.error.kind, "NotFound");
+      return true;
+    });
+  } finally {
+    if (admissionFailure) await assert.rejects(processes.close(), error => error === admissionFailure);
+    else await processes.close();
+  }
 });
 
 const witnessed = { stdio: ["pipe", "pipe", "pipe", "pipe"] };
