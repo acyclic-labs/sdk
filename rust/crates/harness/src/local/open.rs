@@ -351,6 +351,7 @@ impl Opening {
             directory,
             operation: workspace::attach_operation(owner.task),
             native_mounts: self.native_mounts,
+            native_mount_probe: &self.config.native_mount_probe,
             authority: Some((issuer, owner.agent)),
         };
         let workspace = match &self.config.project {

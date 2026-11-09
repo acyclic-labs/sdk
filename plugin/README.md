@@ -9,6 +9,14 @@ Root coordination and capture use the existing checkout and work without
 configuration and session directories. Managed children project forked volumes
 and require the platform's native mount provider when their views open.
 
+Embedders select the host capability namespace with
+`LocalHarnessConfig::native_mount_probe(NativeMountProbe::new(root))`.
+The one probe opens `root/dev/fuse` on Linux; it also inspects mount authority
+in that namespace. `plugin/examples/workspace-probe.rs` embeds the same owner
+with that explicit root. The no-FUSE qualification supplies an empty temporary
+root and drives both `__workspace` and the headless client against it, then
+repeats those clients in stock Debian Docker with no FUSE device.
+
 Start GraphCoder outside the host sandbox, from the workspace:
 
 ```sh
