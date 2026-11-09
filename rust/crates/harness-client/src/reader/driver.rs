@@ -449,7 +449,7 @@ fn failed(reader: &mut Reader, stream: &StreamPath, error: &StreamError, now: u6
         Failure::Denied => reader.denied(stream),
         Failure::Refused | Failure::Changed => reader.refuse_follow(stream, error.clone()),
         failure @ (Failure::Unavailable | Failure::Overloaded) => {
-            reader.follow_failed(failure, now);
+            reader.follow_failed(failure, now)
         }
     }
 }
@@ -1191,7 +1191,7 @@ mod tests {
         struct Counted {
             records: acyclic_stream::BoxProviderStream<'static, Result<Record, StreamError>>,
             polls: Arc<AtomicUsize>,
-            initialized: Arc<AtomicUsize>,
+            primed: Option<Arc<AtomicUsize>>,
             dropped: Arc<AtomicUsize>,
         }
         impl Stream for Counted {
@@ -1200,10 +1200,12 @@ mod tests {
                 mut self: Pin<&mut Self>,
                 cx: &mut Context<'_>,
             ) -> Poll<Option<Self::Item>> {
-                if self.polls.fetch_add(1, Ordering::SeqCst) == 0 {
-                    self.initialized.fetch_add(1, Ordering::SeqCst);
+                self.polls.fetch_add(1, Ordering::SeqCst);
+                let result = self.records.poll_next_unpin(cx);
+                if let Some(primed) = self.primed.take() {
+                    primed.fetch_add(1, Ordering::SeqCst);
                 }
-                self.records.poll_next_unpin(cx)
+                result
             }
         }
         impl Drop for Counted {
@@ -1222,7 +1224,7 @@ mod tests {
             .unwrap();
             driver.attach(&mut reader, 0);
             let dropped = Arc::new(AtomicUsize::new(0));
-            let initialized = Arc::new(AtomicUsize::new(0));
+            let primed = Arc::new(AtomicUsize::new(0));
             let mut counters = Vec::new();
             for index in 0..513 {
                 let path = StreamPath::new(format!("quiet/{index:04}")).unwrap();
@@ -1257,18 +1259,20 @@ mod tests {
                             Box::pin(Counted {
                                 records,
                                 polls,
-                                initialized: initialized.clone(),
+                                primed: Some(primed.clone()),
                                 dropped: dropped.clone(),
                             })
                         }),
                     )
                     .unwrap();
             }
-            // Each cooperative turn polls one source; its wake schedules the
-            // next turn until every provider has registered its observation.
+            // ReadySources yields after one provider poll and wakes this same
+            // task while another source is runnable. Let those actual wakes
+            // drive registration; dormant providers never wake this task.
             futures::future::poll_fn(|cx| {
                 driver.drain(&mut reader, 0, cx);
-                if initialized.load(Ordering::SeqCst) == 513 || dropped.load(Ordering::SeqCst) != 0
+                if primed.load(Ordering::SeqCst) == counters.len()
+                    || dropped.load(Ordering::SeqCst) != 0
                 {
                     Poll::Ready(())
                 } else {
@@ -1276,7 +1280,7 @@ mod tests {
                 }
             })
             .await;
-            assert_eq!(initialized.load(Ordering::SeqCst), 513);
+            assert_eq!(primed.load(Ordering::SeqCst), counters.len());
             assert_eq!(dropped.load(Ordering::SeqCst), 0);
             assert!(
                 counters

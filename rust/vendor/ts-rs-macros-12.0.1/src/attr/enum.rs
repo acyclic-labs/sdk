@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 
 use syn::{
-    Attribute, Expr, Fields, Ident, ItemEnum, Path, Result, Type, WherePredicate, parse_quote,
+    parse_quote, Attribute, Expr, Fields, Ident, ItemEnum, Path, Result, Type, WherePredicate,
 };
 
 use super::{
-    Attr, ContainerAttr, Serde, parse_assign_expr, parse_assign_from_str, parse_bound, parse_repr,
+    parse_assign_expr, parse_assign_from_str, parse_bound, parse_repr, Attr, ContainerAttr, Serde,
 };
 use crate::{
-    attr::{Inflection, parse_assign_inflection, parse_assign_str, parse_concrete},
-    optional::{Optional, parse_optional},
+    attr::{parse_assign_inflection, parse_assign_str, parse_concrete, Inflection},
+    optional::{parse_optional, Optional},
     utils::{extract_docs, parse_attrs},
 };
 

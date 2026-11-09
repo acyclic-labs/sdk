@@ -37,6 +37,17 @@ impl<T> Mutex<T> {
             .map_err(TryLockError::Poisoned)
     }
 
+    /// Borrows the value exclusively without acquiring the lock, retaining any
+    /// original owner's poison in the result.
+    pub fn get_mut(&mut self) -> LockResult<&mut T> {
+        let value = self.inner.get_mut();
+        if *self.poisoned.get_mut() {
+            Err(PoisonError::new(value))
+        } else {
+            Ok(value)
+        }
+    }
+
     /// Consumes the mutex, preserving the original value and poison state.
     pub fn into_inner(self) -> LockResult<T> {
         let value = self.inner.into_inner();

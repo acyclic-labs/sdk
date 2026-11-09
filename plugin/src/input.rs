@@ -32,10 +32,7 @@ pub fn parse_native_task(value: &std::ffi::OsStr) -> Result<AgentPath> {
 ///
 /// # Errors
 /// Preserves read and JSON errors, and refuses oversized hook frames.
-pub fn read_json<T: DeserializeOwned>(
-    input: impl io::Read,
-    maximum: Option<u64>,
-) -> Result<T> {
+pub fn read_json<T: DeserializeOwned>(input: impl io::Read, maximum: Option<u64>) -> Result<T> {
     let mut bytes = Vec::new();
     let mut input = input.take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)));
     input.read_to_end(&mut bytes)?;

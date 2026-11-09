@@ -2,9 +2,9 @@ use quote::quote;
 use syn::{Expr, Field, Result};
 
 use crate::{
-    DerivedTS,
     attr::{Attr, ContainerAttr, FieldAttr, StructAttr},
     deps::Dependencies,
+    DerivedTS,
 };
 
 pub(crate) fn newtype(attr: &StructAttr, ts_name: Expr, inner: &Field) -> Result<DerivedTS> {

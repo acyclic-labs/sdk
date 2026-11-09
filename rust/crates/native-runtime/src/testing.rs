@@ -44,11 +44,25 @@ tokio::task_local! { static BLOCKING_CONTEXT: Option<Context>; }
 ///
 /// The seed controls Tokio's randomized `select!` order, including dependencies.
 /// Replay also requires the same Tokio, dependency and compiler versions.
+///
+/// Returns [`std::io::ErrorKind::Unsupported`] unless this crate and Tokio are
+/// compiled with `RUSTFLAGS="--cfg tokio_unstable"`.
 pub fn seeded_runtime(seed: u64) -> std::io::Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
-        .rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()))
-        .enable_all()
-        .build()
+    #[cfg(tokio_unstable)]
+    {
+        tokio::runtime::Builder::new_current_thread()
+            .rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()))
+            .enable_all()
+            .build()
+    }
+    #[cfg(not(tokio_unstable))]
+    {
+        let _ = seed;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "step=seeded-runtime; recovery: compile with RUSTFLAGS=\"--cfg tokio_unstable\"",
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -60,6 +74,9 @@ thread_local! {
 pub struct Boundary {
     /// Stable phase, independent of executor poll counts.
     pub name: &'static str,
+    /// Opaque identity of the live original owner, shared by its submission and
+    /// completion. Valid only while that operation remains held; not a replay ID.
+    pub owner: usize,
     /// Owning operation, including its stream's tracing span.
     pub detail: Arc<str>,
     release: oneshot::Sender<()>,
@@ -331,6 +348,7 @@ impl Context {
             .events
             .send(Boundary {
                 name,
+                owner: Arc::as_ptr(&self.detail) as usize,
                 detail,
                 release,
             })

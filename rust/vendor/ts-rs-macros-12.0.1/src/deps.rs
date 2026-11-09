@@ -1,7 +1,7 @@
 use std::{collections::HashSet, rc::Rc};
 
 use proc_macro2::TokenStream;
-use quote::{ToTokens, quote};
+use quote::{quote, ToTokens};
 use syn::{Path, Type};
 
 pub struct Dependencies {

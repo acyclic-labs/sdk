@@ -141,3 +141,8 @@ async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn local_approval_wake_retries_the_original_uncertain_request() -> Result {
+    acyclic_agent_host_conformance::verify_approval_recovery(&native().await?).await
+}

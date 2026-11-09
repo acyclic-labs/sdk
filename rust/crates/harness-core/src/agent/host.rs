@@ -306,6 +306,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// guess from an earlier state, however many steps later it is asked.
     /// Waits, on the parent's actor state stream, for that step to commit.
     /// An intent not named by `sequence` is a conflict, refused before IO.
+    /// The original inbox record must be a committed spawn before waiting.
     pub async fn spawned(
         &self,
         parent: &AgentPath,
@@ -316,6 +317,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             return Err(Error::Conflict(
                 "spawn intent differs from its inbox sequence",
             ));
+        }
+        if !matches!(
+            super::reply::inbox_record(&*self.provider, parent.inbox()?, sequence).await?,
+            Some(InboxRecord::Spawn(_))
+        ) {
+            return Err(Error::Conflict("spawn wait has no committed spawn input"));
         }
         let actor = self.actor(parent)?;
         let store = self.runtime.store();

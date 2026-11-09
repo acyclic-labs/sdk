@@ -104,6 +104,17 @@ const claims = {
     "metadata decoder bypassed its original copy admission",
     ["--no-default-features", "--features", "memory"],
   ],
+  "native-error-custody": [
+    "rust/crates/stream/src/local/local_inner.rs", "acyclic-stream",
+    "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
+    "failure watch replaced the original native I/O error", ["--no-default-features", "--features", "local,test-support"],
+    { oracle: "rust/crates/stream/src/local/tests/failure.rs", mutations: [
+      { patch: "rust/proofs/native-error-custody/watch.patch", label: "watch", diagnostic: "failure watch replaced the original native I/O error" },
+      { source: "rust/crates/stream/src/native/work.rs", patch: "rust/proofs/native-error-custody/delivered.patch", label: "delivered", diagnostic: "failure watch replaced the original native I/O error" },
+      { source: "rust/crates/stream/src/local/native_mutations.rs", patch: "rust/proofs/native-error-custody/guarded.patch", label: "guarded", diagnostic: "failure watch replaced the original native I/O error" },
+      { source: "rust/crates/stream/src/local/prepared_commit.rs", patch: "rust/proofs/native-error-custody/prepared.patch", label: "prepared", diagnostic: "failure watch replaced the original native I/O error" },
+    ] },
+  ],
   "policy-time-interval": [
     "rust/crates/filesystem/src/access/trie.rs", "acyclic-fs",
     "access::review::policy_fence_and_native_custody_preserve_pinned_views",
@@ -572,6 +583,416 @@ const claims = {
     "local::runtime::tests::conformance_suite_passes_on_memory_runtime",
     "CompletionFailed(Conflict)", [],
   ],
+  "call-dependent-resource": [
+    "rust/crates/stream/src/session/resources.rs", "acyclic-stream",
+    "session::tests::calls::dependent_resources_keep_original_call_grants_and_live_trust",
+    "dependent scope escaped its original declared boundary", ["--features", "test-support"],
+    {
+      mutations: [
+        { patch: "rust/proofs/call-dependent-resource/scope.patch", label: "discarded-dependent-resource-boundary", diagnostic: "dependent scope escaped its original declared boundary" },
+        { patch: "rust/proofs/call-dependent-resource/credential.patch", label: "detached-original-current-credential", diagnostic: "dependent resource detached from the original credential renewal" },
+        { patch: "rust/proofs/call-dependent-resource/policy.patch", label: "discarded-dependent-owner-policy", diagnostic: "dependent disclosure ignored the owner's current policy" },
+        { patch: "rust/proofs/call-dependent-resource/index.patch", label: "discarded-dependent-index-normalization", diagnostic: "resource index differs from its original authorized scope" },
+      ],
+    },
+  ],
+  "config-composition-cut": [
+    "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
+    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
+    "composition discarded its original refused module cut", ["--features", "filesystem"],
+    {
+      mutations: [
+        { patch: "rust/proofs/config-composition-cut/refusal.patch", label: "discarded-original-refused-module-cut", diagnostic: "composition discarded its original refused module cut" },
+        { patch: "rust/proofs/config-composition-cut/generations.patch", label: "discarded-original-layer-generations", diagnostic: "composition identity discarded its original layer generations" },
+      ],
+    },
+  ],
+  "config-retained-cut": [
+    "rust/crates/harness-core/src/config/evaluate/prepared.rs", "acyclic-harness-core",
+    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
+    "original dependency observation was discarded", ["--features", "filesystem"],
+    {
+      mutations: [
+        { patch: "rust/proofs/config-retained-cut/absence.patch", label: "discarded-original-absent-import", diagnostic: "original dependency observation was discarded" },
+        { patch: "rust/proofs/config-retained-cut/identity.patch", label: "discarded-original-read-cut-identity", diagnostic: "settings input identity aliased a different dependency cut" },
+      ],
+    },
+  ],
+  "trust-fenced-close-progress": [
+    "rust/crates/stream/src/trust_feed.rs", "acyclic-stream",
+    "trust_anchor::closing_a_fenced_environment_ends_its_original_anchor_wait",
+    "closed follower left its original anchor wait parked", ["--features", "test-support"],
+    { target: ["--test", "main"], patchPath: "rust/proofs/trust-fenced-close-progress/mutation.patch", negativeLabel: "omitted-original-follower-close-observation" },
+  ],
+  "local-ready-snapshot-allocation": [
+    "rust/crates/stream/src/local/local_stream.rs", "acyclic-stream",
+    "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
+    "ready snapshots must allocate zero times", ["--no-default-features", "--features", "local,test-support"],
+    {
+      mutations: [
+        { patch: "rust/proofs/local-ready-snapshot-allocation/mutation.patch", label: "boxed-original-local-snapshot", diagnostic: "ready snapshots must allocate zero times" },
+        { patch: "rust/proofs/local-failure-progress/observation.patch", label: "missing-observation-retirement", diagnostic: "failed journal left a public observation parked",
+          command: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "local,test-support", "--lib", "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers", "--", "--exact", "--nocapture"] },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "local,test-support", "--lib", "--", "--exact", "--nocapture",
+        "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
+        "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers"],
+      completed: ["2 passed; 0 failed"],
+    },
+  ],
+  "trust-anchor-producer-progress": [
+    "rust/crates/stream/src/trust_feed.rs", "acyclic-stream",
+    "trust_anchor::placeholder_anchor_recovers_on_key_publication_without_restart",
+    "lost anchor producer left its original trust feed parked", ["--features", "test-support"],
+    {
+      target: ["--test", "main"],
+      mutations: [
+        { patch: "rust/proofs/trust-anchor-producer-progress/retirement.patch", label: "discarded-anchor-producer-loss", diagnostic: "lost anchor producer left its original trust feed parked" },
+        { patch: "rust/proofs/trust-anchor-producer-progress/cause.patch", label: "replaced-anchor-loss-cause", diagnostic: "lost anchor producer lost its original fence cause" },
+      ],
+    },
+  ],
+  "local-prepared-ingress-close": [
+    "rust/crates/stream/src/native/prepared.rs", "acyclic-stream",
+    "local::tests::native::abandoned_prepared_packet_releases_worker_capacity_without_edit",
+    "abandoned prepared producer did not reach its original completion boundary", ["--no-default-features", "--features", "local"],
+    {
+      mutations: [
+        { patch: "rust/proofs/local-prepared-ingress-close/mutation.patch", label: "omitted-original-ingress-close", diagnostic: "abandoned prepared producer did not reach its original completion boundary" },
+        { patch: "rust/proofs/local-prepared-ingress-close/registration.patch", label: "omitted-original-ingress-registration", diagnostic: "abandoned prepared producer did not reach its original completion boundary" },
+      ],
+    },
+  ],
+  "local-prepared-producer-loss": [
+    "rust/crates/stream/src/local/prepared_commit.rs", "acyclic-stream",
+    "local::tests::native::prepared_worker_retirement_ends_original_completion_without_publication",
+    "retired prepared producer left its original completion parked or replaced its cause", ["--no-default-features", "--features", "local"],
+    {
+      patchPath: "rust/proofs/local-prepared-producer-loss/mutation.patch",
+      negativeLabel: "discarded-original-prepared-producer-error",
+    },
+  ],
+  "local-snapshot-producer-loss": [
+    "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
+    "local::tests::wakeups::executor_retirement_ends_forked_follows_before_publication_unlocks",
+    "retired local snapshot left its public follow parked", ["--no-default-features", "--features", "local"],
+    {
+      mutations: [
+        { source: "rust/crates/stream/src/snapshot/job.rs", patch: "rust/proofs/snapshot-producer-loss/retirement.patch", label: "omitted-local-producer-retirement", diagnostic: "retired local snapshot did not wake its public follow" },
+        { patch: "rust/proofs/snapshot-producer-loss/retry.patch", label: "restarted-local-read-after-producer-loss", diagnostic: "retired local snapshot left its public follow parked" },
+      ],
+    },
+  ],
+  "snapshot-retired-executor": [
+    "rust/crates/stream/src/snapshot/job.rs", "acyclic-stream",
+    "memory::tests::runtime_shutdown::retired_executor_refuses_new_public_follows_before_writer_release",
+    "retired executor left a newly admitted public follow parked", ["--no-default-features"],
+    {
+      patchPath: "rust/proofs/snapshot-producer-loss/retirement.patch",
+      negativeLabel: "rejected-worker-discards-completion",
+    },
+  ],
+  "snapshot-executor-admission": [
+    "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
+    "memory::tests::runtime_shutdown::executor_loss_ends_public_follows_before_a_retained_writer_releases",
+    "snapshot without an executor did not refuse before scheduling", ["--no-default-features"],
+    {
+      mutations: [
+        { patch: "rust/proofs/snapshot-executor-admission/missing.patch", label: "omitted-executor-admission", diagnostic: "snapshot without an executor did not refuse before scheduling" },
+        { patch: "rust/proofs/snapshot-executor-admission/ready.patch", label: "executor-required-before-ready-probe", diagnostic: "ready snapshot required an executor" },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--lib", "--", "--exact", "--nocapture",
+        "memory::tests::runtime_shutdown::executor_loss_ends_public_follows_before_a_retained_writer_releases",
+        "memory::tests::parking::snapshot_callbacks_retire_outside_the_original_job_mutex"],
+      completed: ["2 passed; 0 failed"],
+    },
+  ],
+  "snapshot-producer-loss": [
+    "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
+    "memory::tests::runtime_shutdown::executor_loss_ends_public_follows_before_a_retained_writer_releases",
+    "lost snapshot producer left its public follow parked", ["--no-default-features"],
+    {
+      mutations: [
+        { source: "rust/crates/stream/src/snapshot/job.rs", patch: "rust/proofs/snapshot-producer-loss/retirement.patch", label: "omitted-producer-retirement", diagnostic: "lost snapshot producer did not wake its public follow" },
+        { patch: "rust/proofs/snapshot-producer-loss/retry.patch", label: "restarted-read-after-producer-loss", diagnostic: "lost snapshot producer left its public follow parked" },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--lib", "--", "--exact", "--nocapture",
+        "memory::tests::runtime_shutdown::executor_loss_ends_public_follows_before_a_retained_writer_releases",
+        "memory::tests::parking::snapshot_callbacks_retire_outside_the_original_job_mutex"],
+      completed: ["2 passed; 0 failed"],
+    },
+  ],
+  "follow-index-reentry": [
+    "rust/crates/stream/src/follow_index.rs", "acyclic-stream",
+    "memory::tests::parking::publication_wakers_can_cancel_other_follows",
+    "follow wake retained the index lock", ["--no-default-features"],
+    {
+      mutations: [
+        { patch: "rust/proofs/follow-index-reentry/locked.patch", label: "notification-under-index-lock", diagnostic: "follow wake retained the index lock" },
+        { patch: "rust/proofs/follow-index-reentry/omitted.patch", label: "missing-publication-wake", diagnostic: "publication left its follow parked" },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--lib", "--", "--exact", "--nocapture",
+        "memory::tests::parking::publication_wakers_can_cancel_other_follows",
+        "follow_index::tests::unrelated_publications_never_notify_filtered_interests",
+        "follow_index::tests::interval_index_stays_balanced_and_matches_a_reference_after_removal"],
+      completed: ["3 passed; 0 failed"],
+    },
+  ],
+  "snapshot-waker-retirement": [
+    "rust/crates/stream/src/snapshot/job.rs", "acyclic-stream",
+    "memory::tests::parking::snapshot_callbacks_retire_outside_the_original_job_mutex",
+    "wake must run outside the publication lock", ["--no-default-features"],
+    {
+      mutations: [
+        { patch: "rust/proofs/snapshot-waker-retirement/replacement.patch", label: "retired-under-replacement-lock", diagnostic: "wake must run outside the publication lock" },
+        { patch: "rust/proofs/snapshot-waker-retirement/cancellation.patch", label: "retired-under-cancellation-lock", diagnostic: "wake must run outside the publication lock" },
+        { patch: "rust/proofs/snapshot-waker-retirement/completion.patch", label: "published-under-completion-lock", diagnostic: "wake must run outside the publication lock" },
+      ],
+    },
+  ],
+  "independent-terminal-observers": [
+    "rust/crates/stream/src/operation_claim/termination.rs", "acyclic-stream",
+    "pending::tests::commit_custody_keeps_exact_results_and_terminates_on_producer_loss",
+    "retained pending observer blocked another observer's retirement", ["--no-default-features"],
+    {
+      mutations: [
+        { patch: "rust/proofs/independent-terminal-observers/mutation.patch", label: "pending-observer-relay", diagnostic: "retained pending observer blocked another observer's retirement" },
+        {
+          patch: "rust/proofs/independent-terminal-observers/mutation.patch", label: "operation-observer-relay",
+          diagnostic: "retained operation observer blocked another observer's retirement",
+          command: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--lib",
+            "operation_claim::termination::tests::independent_observers_survive_replacement_and_cancellation", "--", "--exact", "--nocapture"],
+        },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--lib", "--", "--exact", "--nocapture",
+        "pending::tests::commit_custody_keeps_exact_results_and_terminates_on_producer_loss",
+        "operation_claim::termination::tests::independent_observers_survive_replacement_and_cancellation",
+        "operation_claim::termination::tests::forgotten_producer_is_terminated_when_its_provider_owner_drops"],
+      completed: ["3 passed; 0 failed"],
+    },
+  ],
+
+  "revision-publication-progress": [
+    "rust/crates/stream/src/lib/revision.rs", "acyclic-stream",
+    "revision::tests::parks_until_applied_and_refuses_foreign_incarnations",
+    "unchanged applied revision woke a parked reader", ["--no-default-features"],
+  ],
+  "revision-retirement-progress": [
+    "rust/crates/stream/src/lib/revision.rs", "acyclic-stream",
+    "revision::tests::parks_until_applied_and_refuses_foreign_incarnations",
+    "retired revision authority did not wake its parked reader", ["--no-default-features"],
+    {
+      mutations: [
+        { patch: "rust/proofs/revision-retirement-progress/notification.patch", label: "missing-retirement-wake", diagnostic: "retired revision authority did not wake its parked reader" },
+        { patch: "rust/proofs/revision-retirement-progress/terminal.patch", label: "missing-terminal-state", diagnostic: "retired revision authority left its reader parked" },
+      ],
+    },
+  ],
+  "conditional-watch-parity": [
+    "rust/crates/stream/src/query_sync/watch.rs", "acyclic-stream-publication-models",
+    "watch_publication_cancellation_and_loss_match_tokio",
+    "unmodified watch publication woke a parked reader", ["--features", "model-checking"],
+    {
+      target: ["--test", "publication"], loom: true,
+      mutations: [
+        { patch: "rust/proofs/conditional-watch-parity/mutation.patch", label: "mutated", diagnostic: "unmodified watch publication woke a parked reader" },
+        { patch: "rust/proofs/conditional-watch-parity/owner.patch", label: "nonfinal-publisher-drop", diagnostic: "nonfinal watch publisher drop woke a parked reader" },
+        { patch: "rust/proofs/conditional-watch-parity/cancellation.patch", label: "cancelled-registration", diagnostic: "cancelled watch wait retained its observer" },
+        { patch: "rust/proofs/conditional-watch-parity/replacement.patch", label: "replaced-observer", diagnostic: "watch repoll retained its previous observer" },
+        { patch: "rust/proofs/conditional-watch-parity/moved.patch", label: "moved-registration", diagnostic: "watch repoll retained its previous observer" },
+      ],
+    },
+  ],
+  "journal-cancellation-progress": [
+    "rust/crates/stream/src/replicated.rs", "acyclic-cloudflare-conformance", "",
+    "cancelled journal append left its public follow parked", [],
+    {
+      runner: ["node", "rust/proofs/journal-follow-progress/run.mjs", "--cancellation"],
+      mutations: [
+        { patch: "rust/proofs/journal-follow-progress/cancellation.patch", label: "missing-attempt-retirement", diagnostic: "cancelled journal append left its public follow parked" },
+        { patch: "rust/proofs/journal-follow-progress/cancellation-revision.patch", label: "missing-cancelled-revision-retirement", diagnostic: "cancelled journal append left its public follow parked" },
+      ],
+      negativeExit: 1,
+      failed: true,
+      started: "journal public conditional cancellation START",
+      completed: ["journal public conditional cancellation PASS"],
+    },
+  ],
+  "journal-follow-progress": [
+    "rust/crates/stream/src/journal_provider.rs", "acyclic-cloudflare-conformance", "",
+    "journal failure left a public follow parked", [],
+    {
+      runner: ["node", "rust/proofs/journal-follow-progress/run.mjs"],
+      negativeExit: 1,
+      failed: true,
+      completed: ["journal public follow retirement PASS"],
+      mutations: [
+        { patch: "rust/proofs/journal-follow-progress/retirement.patch", label: "missing-follow-retirement", diagnostic: "journal failure left a public follow parked" },
+        { patch: "rust/proofs/journal-follow-progress/publication.patch", source: "rust/crates/stream/src/lib/revision.rs", label: "unrelated-publication-wake", diagnostic: "unrelated publication woke retirement observer" },
+        { patch: "rust/proofs/journal-follow-progress/notification.patch", source: "rust/crates/stream/src/lib/revision.rs", label: "missing-retirement-notification", diagnostic: "journal failure left a public follow parked" },
+      ],
+    },
+  ],
+  "local-revision-failure-progress": [
+    "rust/crates/stream/src/local/local_inner.rs", "acyclic-stream",
+    "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
+    "failed journal left a future revision parked", ["--features", "local,test-support"],
+    { patch: "retirement.patch" },
+  ],
+  "local-failure-progress": [
+    "rust/crates/stream/src/local/local_stream.rs", "acyclic-stream",
+    "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
+    "failed journal left a public observation parked", ["--features", "local,test-support"],
+    {
+      mutations: [
+        { patch: "rust/proofs/local-failure-progress/publication.patch", label: "missing-publication-retirement", diagnostic: "failed journal left a conditional mutation parked" },
+        { patch: "rust/proofs/local-failure-progress/observation.patch", label: "missing-observation-retirement", diagnostic: "failed journal left a public observation parked" },
+        { patch: "rust/proofs/local-failure-progress/revision.patch", source: "rust/crates/stream/src/local/local_inner.rs", label: "missing-revision-retirement", diagnostic: "failed journal left a future revision parked" },
+      ],
+    },
+  ],
+  "local-native-failure-progress": [
+    "rust/crates/stream/src/local/native_mutations.rs", "acyclic-stream",
+    "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
+    "failed journal left a native guarded commit parked", ["--features", "local,test-support"],
+    {
+      mutations: [
+        { patch: "rust/proofs/local-failure-progress/guarded.patch", label: "missing-guarded-retirement", diagnostic: "failed journal left a native guarded commit parked" },
+        { patch: "rust/proofs/local-failure-progress/preparation.patch", source: "rust/crates/stream/src/local/prepared_commit.rs", label: "missing-preparation-retirement", diagnostic: "failed journal left native preparation parked" },
+        { patch: "rust/proofs/local-failure-progress/prepared.patch", source: "rust/crates/stream/src/local/prepared_commit.rs", label: "missing-prepared-retirement", diagnostic: "failed journal left a prepared completion parked" },
+      ],
+    },
+  ],
+  "browser-revision-progress": [
+    "rust/crates/stream/src/browser/publication.rs", "acyclic-stream",
+    "browser::tests::database_loss_ends_parked_revision_observers",
+    "revision wait retained failed IndexedDB producer",
+    ["--no-default-features", "--features", "wasm", "--target", "wasm32-unknown-unknown"],
+  ],
+  "postgres-refresh-progress": [
+    "rust/crates/stream/src/postgres.rs", "acyclic-stream",
+    "postgres::capability::refresh_producer_retirement_ends_public_waits",
+    "retired refresh producer left a public revision wait parked", ["--features", "postgres"],
+    {
+      mutations: [
+        { patch: "rust/proofs/postgres-refresh-progress/retirement.patch", label: "missing-retirement", diagnostic: "retired refresh producer left a public revision wait parked" },
+        { patch: "rust/proofs/postgres-refresh-progress/unpolled.patch", label: "late-retirement-custody", diagnostic: "retired refresh producer served a later observer" },
+        { patch: "rust/proofs/postgres-refresh-progress/connection.patch", label: "missing-connection-retirement", diagnostic: "retired refresh producer left a public revision wait parked" },
+        { patch: "rust/proofs/postgres-refresh-progress/session.patch", label: "missing-session-retirement", diagnostic: "retired producer left a public session refresh parked" },
+        { patch: "rust/proofs/postgres-refresh-progress/publication.patch", label: "missing-publication-retirement", diagnostic: "retired producer left a conditional publication parked" },
+      ],
+    },
+  ],
+  "backed-retention": [
+    "rust/crates/stream/src/owned_bytes/mod.rs", "acyclic-stream",
+    "owned_bytes::tests::backed_retention_preserves_visible_bytes_identity_and_final_custody",
+    "spare backing escaped compaction", [],
+    {
+      mutations: [
+        { patch: "rust/proofs/backed-retention/compaction.patch", label: "missing-compaction", diagnostic: "spare backing escaped compaction" },
+        { patch: "rust/proofs/backed-retention/known-copy.patch", label: "copied-known-owner", diagnostic: "known backing was copied" },
+        { patch: "rust/proofs/backed-retention/custody.patch", label: "lost-backing-custody", diagnostic: "backing lost original owner" },
+        { patch: "rust/proofs/backed-retention/static-capacity.patch", label: "unknown-static-capacity", diagnostic: "known backing was copied" },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "-p", "acyclic-harness-client", "--lib", "--", "--exact", "--nocapture",
+        "owned_bytes::tests::backed_retention_preserves_visible_bytes_identity_and_final_custody",
+        "owned_bytes::tests::ordinary_storage_preserves_capacity_and_rejects_unsafe_recovery",
+        "reader::cache::tests::tiny_slices_detach_unknown_or_over_budget_transport_backing"],
+      completed: [
+        "test owned_bytes::tests::backed_retention_preserves_visible_bytes_identity_and_final_custody ... ok",
+        "test owned_bytes::tests::ordinary_storage_preserves_capacity_and_rejects_unsafe_recovery ... ok",
+        "test reader::cache::tests::tiny_slices_detach_unknown_or_over_budget_transport_backing ... ok",
+      ],
+    },
+  ],
+  "compiled-prefix-invariant": [
+    "rust/crates/collections/src/compiled_prefix.rs", "acyclic-collections",
+    "tests::compiled_prefix::compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys",
+    "changed original prefix label became absence", [],
+    {
+      positiveCommand: ["test", "--locked", "-p", "acyclic-collections", "-p", "acyclic-native-runtime", "--lib", "--", "--exact", "--nocapture",
+        "tests::compiled_prefix::compiled_prefix_matches_original_keys_and_refuses_original_read_credit",
+        "tests::compiled_prefix::compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys",
+        "execution::tests::compiled_prefix_grant_proofs_use_original_operation_and_allocation_credits"],
+      completed: ["2 passed; 0 failed", "1 passed; 0 failed"],
+    },
+  ],
+  "failed-input-fairness": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::retry::a_failed_record_does_not_starve_other_ready_subscriptions",
+    "failed input starved another ready subscription", [],
+    { positive: [
+      "local::runtime::tests::retry::a_failed_record_does_not_starve_other_ready_subscriptions",
+      "local::runtime::tests::retry::an_unchanged_guard_refusal_settles_instead_of_retrying_forever",
+    ] },
+  ],
+  "seeded-runtime-configuration": [
+    "rust/crates/native-runtime/src/testing.rs", "acyclic-native-runtime",
+    "seeded_runtime_requires_explicit_executor_configuration",
+    "unconfigured replay admitted an unseeded executor", ["--features", "test-support"],
+    {
+      target: ["--test", "seeded_runtime"],
+      // This claim exercises refusal when Tokio's unstable seed API is absent.
+      env: { RUSTFLAGS: "-Dunexpected_cfgs", CARGO_ENCODED_RUSTFLAGS: "-Dunexpected_cfgs" },
+    },
+  ],
+  "merge-directory-custody": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs",
+    "workspace::tests::merge_drivers::merge_directory_pages_preserve_pins_and_non_text_conflicts",
+    "a one-row page expanded the whole merge", [],
+    { mutations: [
+      { patch: "rust/proofs/merge-directory-custody/foreign-generation.patch", label: "foreign-generation-admitted", diagnostic: "directory.resolution(&foreign, binary_key)" },
+      { patch: "rust/proofs/merge-directory-custody/page-credit.patch", label: "page-credit-exceeded", diagnostic: "a one-row page expanded the whole merge" },
+    ] },
+  ],
+  "merge-text-admission": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs-fuzz", "",
+    "captured public merge resolution was refused", ["--features", "fuzz-targets"],
+    {
+      fuzz: { bin: "merge_directory_resolution", corpus: "rust/crates/filesystem/fuzz/corpus/merge_directory_resolution", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/merge-text-admission/refusal.patch", label: "text-proposal-refused", diagnostic: "captured public merge resolution was refused" },
+        { patch: "rust/proofs/merge-text-admission/markers.patch", label: "unresolved-markers-admitted", diagnostic: "captured public merge refusal changed" },
+        { source: "rust/crates/filesystem/src/merge_driver.rs", patch: "rust/proofs/merge-text-admission/wire.patch", label: "text-wire-type-substituted", diagnostic: "captured public text encoding changed" },
+      ],
+    },
+  ],
+  "merge-directory-admission": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs-fuzz", "",
+    "captured merge-directory writer output was refused", ["--features", "fuzz-targets"],
+    {
+      fuzz: { bin: "merge_directory_resolution", corpus: "rust/crates/filesystem/fuzz/corpus/merge_directory_resolution", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/merge-directory-admission/admission.patch", label: "writer-output-refused", diagnostic: "captured merge-directory writer output was refused" },
+        { patch: "rust/proofs/merge-directory-admission/version.patch", label: "future-version-admitted", diagnostic: "unsupported merge file version accepted by the shipped decoder" },
+        { patch: "rust/proofs/merge-directory-admission/resolution-refusal.patch", label: "caller-resolution-refused", diagnostic: "captured public merge resolution was refused" },
+        { patch: "rust/proofs/merge-directory-admission/resolution-side.patch", label: "caller-side-substituted", diagnostic: "captured public merge resolution changed" },
+      ],
+    },
+  ],
+  "native-hook-ownership": [
+    "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
+    "foreign hook metadata was admitted", [],
+    { fuzz: { bin: "native_hooks", corpus: "rust/fuzz/corpus/native_hooks", runs: 1024 } },
+  ],
+  "native-hook-admission": [
+    "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
+    "native hook writer output was refused", [],
+    {
+      fuzz: { bin: "native_hooks", corpus: "rust/fuzz/corpus/native_hooks", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/native-hook-admission/version-refusal.patch", label: "supported-version-refused", diagnostic: "captured supported Codex version was refused" },
+        { patch: "rust/proofs/native-hook-admission/version-admission.patch", label: "obsolete-version-admitted", diagnostic: "captured obsolete Codex version was admitted" },
+        { patch: "rust/proofs/native-hook-admission/ownership.patch", label: "writer-ownership-refused", diagnostic: "native hook writer output was refused" },
+      ],
+    },
+  ],
+  "approval-wake-uncertainty": [
+    "rust/crates/harness-core/src/filesystem/agent_turns.rs", "acyclic-agent-host-conformance",
+    "local::local_approval_wake_retries_the_original_uncertain_request",
+    "approval wake uncertainty lost its original request", ["--features", "local"],
+    { target: ["--test", "main"] },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
@@ -581,6 +1002,66 @@ const claims = {
     "rust/crates/actors/src/domain/invocation.rs", "acyclic-guest-fuzz", "",
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
+  ],
+  "dispatcher-clock-retirement": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::clock::running_dispatcher_reports_its_original_clock_retirement",
+    "dispatcher did not return its original retired clock failure", [],
+  ],
+  "system-clock-runtime-retirement": [
+    "rust/crates/actors/src/local/runtime/clock.rs", "acyclic-actors",
+    "local::runtime::tests::clock::system_clock_keeps_its_original_deadline_after_runtime_retirement",
+    "wall clock retained a retired Tokio timer driver", [],
+    { mutations: [
+      { patch: "rust/proofs/system-clock-runtime-retirement/mutation.patch", label: "retired-runtime-driver", diagnostic: "wall clock retained a retired Tokio timer driver" },
+      { patch: "rust/proofs/system-clock-runtime-retirement/deferred.patch", label: "deferred-clock-capture", diagnostic: "wall clock escaped its original producer before first poll" },
+      { source: "rust/crates/native-runtime/src/wall_alarm/wait.rs", patch: "rust/proofs/system-clock-runtime-retirement/failure.patch", label: "masked-native-failure", diagnostic: "wall clock did not report original producer retirement" },
+    ] },
+  ],
+  "ready-alarm-progress": [
+    "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
+    "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
+    "an earlier committed deadline must rearm the shared dispatcher", [],
+  ],
+  "ready-waker-custody": [
+    "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
+    "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
+    "dispatcher observer retirement retained the ready index lock", [],
+    { mutations: [
+      { patch: "rust/proofs/ready-waker-custody/poll.patch", label: "poll-ready-locked-retirement", diagnostic: "dispatcher observer retirement retained the ready index lock" },
+      { patch: "rust/proofs/ready-waker-custody/listen.patch", label: "listen-locked-retirement", diagnostic: "dispatcher observer retirement retained the ready index lock" },
+    ] },
+  ],
+  "settlement-retired-source": [
+    "rust/crates/harness/src/local/observer.rs", "acyclic-harness",
+    "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
+    "settlement retained a retired status source", nativeHarness,
+    { mutations: [
+      { patch: "rust/proofs/settlement-retired-source/status.patch", label: "retired-status", diagnostic: "settlement retained a retired status source" },
+      { patch: "rust/proofs/settlement-retired-source/conversation.patch", label: "retired-conversation", diagnostic: "settlement retained a retired conversation source" },
+    ] },
+  ],
+  "inbox-producer-admission": [
+    "rust/crates/harness-core/src/agent/reply.rs", "acyclic-harness-core",
+    "agent_model::runtime::reply_waits_require_original_committed_requests",
+    "reply wait admitted an absent or mismatched original input",
+    ["--features", "filesystem-local,native-execution,machines,test-support"],
+    { target: ["--test", "main"], positiveCommand: [
+      "nextest", "run", "--locked", "-p", "acyclic-harness-core",
+      "--features", "filesystem-local,native-execution,machines,test-support", "--test", "main",
+      "-E", "test(=agent_model::runtime::reply_waits_require_original_committed_requests) | test(=agent_model::reply::committed_reply_search_respects_identity_and_fork_base) | test(=agent_model::reply::admitted_steering_joins_its_settling_turn_and_original_identity)",
+      "--no-tests=fail", "--retries", "0",
+    ], completed: ["3 tests run: 3 passed"], mutations: [
+      { patch: "rust/proofs/inbox-producer-admission/mutation.patch", label: "uncommitted-reply", diagnostic: "reply wait admitted an absent or mismatched original input" },
+      { source: "rust/crates/harness-core/src/agent/host.rs", patch: "rust/proofs/inbox-producer-admission/spawn.patch", label: "uncommitted-spawn", diagnostic: "spawn wait admitted an absent or non-spawn original input" },
+    ] },
+  ],
+  "public-pause-retirement": [
+    "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-core",
+    "target_lifecycle::native::abandoned_pause_joins_original_native_retirement",
+    "abandoned public pause lost its original native transition",
+    ["--features", "filesystem-local,native-execution,machines,test-support"],
+    { target: ["--test", "main"] },
   ],
   "public-settlement-source": [
     "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
@@ -595,6 +1076,16 @@ const claims = {
     "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
     "public settlement retained its lost model producer", nativeHarness,
+  ],
+  "runtime-completion-cancellation": [
+    "rust/crates/actors/src/local/runtime/completion.rs", "acyclic-actors",
+    "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime",
+    "completion retained its cancelled original observer", [],
+    { mutations: [
+      { patch: "rust/proofs/runtime-completion-cancellation/premature.patch", label: "premature-retirement", diagnostic: "live completion retired before its original idle cut" },
+      { patch: "rust/proofs/runtime-completion-cancellation/retirement.patch", label: "cancelled-observer-retained", diagnostic: "completion retained its cancelled original observer" },
+      { source: "rust/crates/actors/src/local/runtime.rs", patch: "rust/proofs/runtime-completion-cancellation/dispatch.patch", label: "dispatcher-registration-omitted", diagnostic: "cancelled completion did not wake the original dispatcher" },
+    ] },
   ],
   "runtime-completion-obligations": [
     "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
@@ -1150,6 +1641,7 @@ if (claim === "--help" && extra.length === 0) {
   process.exitCode = 2;
 } else {
   const [source, crate, test, diagnostic, features, options = {}] = claims[claim];
+  const environment = { ...process.env, ...options.env };
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
   const patch = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
@@ -1164,7 +1656,7 @@ if (claim === "--help" && extra.length === 0) {
       process.exit(2);
     }
   }
-  const fuzzCommand = runs => ["run", "--locked", "-p", crate, "--bin", options.fuzz.bin,
+  const fuzzCommand = runs => ["run", "--locked", "-p", crate, ...features, "--bin", options.fuzz.bin,
     "--target", fuzzTarget,
     "--", options.fuzz.corpus, `-runs=${runs}`, "-seed=71", "-print_final_stats=1",
     `-artifact_prefix=target/${claim}/`];
@@ -1179,7 +1671,8 @@ if (claim === "--help" && extra.length === 0) {
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
     : command);
-  const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}${instrumented ? " --instrumented" : from === undefined ? "" : ` --from ${from}`}`;
+  const sources = [...new Set([source, ...(options.mutations ?? []).map(mutation => mutation.source ?? source)])];
+  const recovery = `git diff -- ${sources.join(" ")}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}${instrumented ? " --instrumented" : from === undefined ? "" : ` --from ${from}`}`;
   const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
   const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
   let oracle;
@@ -1196,10 +1689,11 @@ if (claim === "--help" && extra.length === 0) {
         cwd: instrumented && program === "cargo" ? fileURLToPath(new URL("rust/codec-fuzz/", new URL("../../", import.meta.url))) : root, encoding: "utf8",
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
-          ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
+          ...environment, PROPTEST_RNG_SEED: environment.PROPTEST_RNG_SEED ?? "1697",
           ...(options.fuzz ? {
-            RUSTFLAGS: process.env.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? process.env.RUSTFLAGS
-              : `${process.env.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`,
+            // RUSTFLAGS replaces Cargo configuration, including replay's Tokio support.
+            RUSTFLAGS: `${environment.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? environment.RUSTFLAGS
+              : `${environment.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`} --cfg tokio_unstable`,
           } : {}),
           ...(options.loom ? {
             RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
@@ -1213,14 +1707,26 @@ if (claim === "--help" && extra.length === 0) {
     if (result.error) throw result.error;
     return { ...result, output: log ? readFileSync(log, "utf8") : `${result.stdout ?? ""}${result.stderr ?? ""}` };
   }
-  function check(label, selected = command) {
+  function check(label, selected = command, checkedSource = source) {
     if (oracle) require(readFileSync(oraclePath).equals(oracle));
     mkdirSync(directory, { recursive: true });
     const invocation = options.runner ?? ["cargo", ...selected];
     const result = run(invocation[0], invocation.slice(1), new URL(`${label}.log`, directory));
+    console.log(`step=${label}; command=${JSON.stringify(invocation)}; exit=${result.status}; signal=${result.signal}`);
+    const lines = result.output.trimEnd().split(/\r?\n/);
+    const firstError = lines.findIndex(line => /^error(?:\[|:)/.test(line));
+    if (firstError >= 0 && firstError < lines.length - 35) {
+      console.log(lines.slice(firstError, firstError + 12).join("\n"));
+    }
+    console.log(lines.slice(-35).join("\n"));
+    if (options.fuzz) {
+      const coverage = result.output.match(/^#.*\bcov:.*$/gm)?.at(-1);
+      if (coverage) console.log(coverage);
+    }
     if (oracle) {
       const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
-      const phase = { phase: label, exit: result.status, source_sha256: sha256(readFileSync(sourcePath)), oracle_sha256: sha256(oracle) };
+      const checkedPath = new URL(checkedSource, new URL("../../", import.meta.url));
+      const phase = { phase: label, exit: result.status, source: checkedSource, source_sha256: sha256(readFileSync(checkedPath)), oracle_sha256: sha256(oracle) };
       phases.push(phase);
       console.log(JSON.stringify(phase));
       require(readFileSync(oraclePath).equals(oracle));
@@ -1228,8 +1734,6 @@ if (claim === "--help" && extra.length === 0) {
         ? "Starting 1 test across 1 binary" : "running 1 test";
       require(result.output.includes(started));
     }
-    console.log(`step=${label}; command=${JSON.stringify(invocation)}; exit=${result.status}; signal=${result.signal}`);
-    console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
     return result;
   }
   try {
@@ -1251,7 +1755,7 @@ if (claim === "--help" && extra.length === 0) {
         const applied = run("git", ["apply", mutation.patch]);
         if (applied.status !== 0) throw new Error(applied.output);
         step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
-        const mutated = check(mutation.label, mutation.command ?? command);
+        const mutated = check(mutation.label, mutation.command ?? command, mutation.source ?? source);
         require(instrumented
           ? mutated.status !== 0 && !mutated.signal && mutated.output.includes("assertion failed: acyclic_stream::codec_fuzz::check(bytes)") && mutated.output.includes("ERROR: libFuzzer:")
           : options.fuzz ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic) && mutated.output.includes("ERROR: libFuzzer:")

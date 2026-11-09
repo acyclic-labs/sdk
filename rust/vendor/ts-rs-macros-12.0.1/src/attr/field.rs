@@ -4,9 +4,9 @@ use syn::{
     TypeReference, TypeSlice, TypeTuple,
 };
 
-use super::{Attr, Serde, parse_assign_from_str, parse_assign_str, parse_optional_assign_str};
+use super::{parse_assign_from_str, parse_assign_str, parse_optional_assign_str, Attr, Serde};
 use crate::{
-    optional::{Optional, parse_optional},
+    optional::{parse_optional, Optional},
     utils::{extract_docs, parse_attrs},
 };
 

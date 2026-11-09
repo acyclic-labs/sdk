@@ -7,7 +7,12 @@
 //! that decision after the agent resumed replays instead of deciding again.
 //! Under a preset that explicitly accepts every action, the same call runs
 //! with nothing pending.
-use crate::conformance::{Backend, Result, observe::Observed, roots::volume, vectors};
+use crate::conformance::{
+    Backend, Result,
+    observe::{Fault, Observed},
+    roots::volume,
+    vectors,
+};
 use acyclic_actors::{addressing::ActorReference, local::SystemClock};
 use acyclic_harness_core::{
     Capabilities, OperationId,
@@ -32,7 +37,7 @@ use acyclic_harness_core::{
         ToolResult,
     },
 };
-use acyclic_stream::BoxProviderFuture;
+use acyclic_stream::{BoxProviderFuture, CommitMutation, CommitRequest, StreamProviderExt as _};
 use serde_json::{Value, json};
 use std::sync::{
     Arc,
@@ -157,17 +162,22 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
 
 /// A root with no policy file, under a host whose preset is `policy`, after
 /// its first turn on a message asking it to call the tool.
-async fn asked(
-    backend: &dyn Backend,
-    policy: ApprovalPolicy,
-) -> Result<(
-    Bound<Observed, Objects>,
-    AgentPath,
-    Arc<AtomicUsize>,
-    Box<dyn crate::conformance::Storage>,
-)> {
+struct Asked {
+    bound: Bound<Observed, Objects>,
+    root: AgentPath,
+    calls: Arc<AtomicUsize>,
+    _storage: Box<dyn crate::conformance::Storage>,
+    stream: Arc<Observed>,
+}
+
+async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> Result<Asked> {
     let storage = backend.fresh().await?;
-    let stream = Arc::new(Observed::new(storage.open().await?));
+    let provider = storage.open().await?;
+    let stream = Arc::new(if capture {
+        Observed::capturing(provider)
+    } else {
+        Observed::new(provider)
+    });
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: "workload".into(),
@@ -193,7 +203,7 @@ async fn asked(
         VerifiedCaller { audience, scope },
         Placement {
             filesystem: acyclic_fs::Fs::new(
-                acyclic_fs::StreamAuthorityStore::new(stream),
+                acyclic_fs::StreamAuthorityStore::new(Arc::clone(&stream)),
                 objects.into_store(storage.as_ref())?,
                 capabilities,
             ),
@@ -257,12 +267,24 @@ async fn asked(
         .drain(&root)
         .await
         .map_err(|error| format!("initial approval drain: {error}"))?;
-    Ok((bound, root, calls, storage))
+    Ok(Asked {
+        bound,
+        root,
+        calls,
+        _storage: storage,
+        stream,
+    })
 }
 
 /// The generic default asks the human, and the decision path completes.
 async fn human_decides(backend: &dyn Backend) -> Result {
-    let (bound, root, calls, _storage) = asked(backend, ApprovalPolicy::default()).await?;
+    let Asked {
+        bound,
+        root,
+        calls,
+        _storage,
+        ..
+    } = asked(backend, ApprovalPolicy::default(), false).await?;
 
     // The turn waits on the tool call, which has not run.
     let Some((pending, _, exact)) = bound.pending_approval(&root).await? else {
@@ -321,8 +343,13 @@ async fn human_decides(backend: &dyn Backend) -> Result {
 
 /// A preset that explicitly accepts every action runs the call unasked.
 async fn accepted(backend: &dyn Backend) -> Result {
-    let (bound, root, calls, _storage) =
-        asked(backend, ApprovalPolicy::accept_all("conformance")).await?;
+    let Asked {
+        bound,
+        root,
+        calls,
+        _storage,
+        ..
+    } = asked(backend, ApprovalPolicy::accept_all("conformance"), false).await?;
     if bound.pending_approval(&root).await?.is_some() {
         return Err("an accept-all preset left the tool call pending".into());
     }
@@ -335,4 +362,82 @@ async fn accepted(backend: &dyn Backend) -> Result {
         .into());
     }
     Ok(())
+}
+
+/// Exercise the public decision retry contract at the original inbox commit,
+/// with the same configured provider and captured production requests. This
+/// isolates uncertain acknowledgement from loss of an accepted producer.
+pub async fn verify_recovery(backend: &dyn Backend) -> Result {
+    for fault in [Fault::Before, Fault::After] {
+        let Asked {
+            bound,
+            root,
+            calls,
+            stream,
+            _storage,
+        } = asked(backend, ApprovalPolicy::default(), true).await?;
+        let (pending, _, exact) = bound
+            .pending_approval(&root)
+            .await?
+            .ok_or("recovery control has no original pending approval")?;
+        let inbox = root.inbox()?;
+        let before = stream.tail(inbox.clone()).await?;
+        drop(stream.take_commits());
+        stream.arm_matching(approval_wake, fault);
+        let failed = bound
+            .decide(&root, &pending, &exact, HUMAN, true, None)
+            .await;
+        let Err(Error::Unknown(request)) = failed else {
+            return Err("approval wake uncertainty lost its original request".into());
+        };
+        let original = stream
+            .take_commits()
+            .into_iter()
+            .filter(approval_wake)
+            .collect::<Vec<_>>();
+        if original.as_slice() != std::slice::from_ref(request.as_ref()) {
+            return Err("approval wake uncertainty retained another request".into());
+        }
+        let expected = before + u64::from(matches!(fault, Fault::After));
+        if stream.tail(inbox.clone()).await? != expected || calls.load(Ordering::SeqCst) != 0 {
+            return Err("approval wake fault did not cut its original commit".into());
+        }
+        // The public contract requires this explicit identical caller retry.
+        // The decision file already exists; only the original wake is repaired.
+        let delivered = bound
+            .decide(&root, &pending, &exact, HUMAN, true, None)
+            .await?;
+        if !matches!(delivered, Delivered::Committed { inbox } if inbox == before) {
+            return Err("approval wake retry changed its original inbox position".into());
+        }
+        let retried = stream
+            .take_commits()
+            .into_iter()
+            .filter(approval_wake)
+            .collect::<Vec<_>>();
+        if retried != original || stream.tail(inbox).await? != before + 1 {
+            return Err(
+                "approval wake retry changed its original request or duplicated input".into(),
+            );
+        }
+        bound.agents().drain(&root).await?;
+        if bound.agents().state(&root).await?.phase != Phase::Idle
+            || calls.load(Ordering::SeqCst) != 1
+        {
+            return Err("repaired approval wake did not settle its original tool once".into());
+        }
+    }
+    Ok(())
+}
+
+fn approval_wake(request: &CommitRequest) -> bool {
+    request.mutations.iter().any(|mutation| match mutation {
+        CommitMutation::Append { records, .. } => records.iter().any(|record| {
+            matches!(
+                InboxRecord::decode(record.value.as_ref()),
+                Ok(InboxRecord::Approval(_))
+            )
+        }),
+        _ => false,
+    })
 }
