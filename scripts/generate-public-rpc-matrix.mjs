@@ -1,5 +1,7 @@
 // Enumerate canonical services; HTTP mappings describe existing provider operations.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { writeChanged } from "./generated-bindings.mjs";
 import { createSourceInspector } from "./public-rpc-source.mjs";
 import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v1/stream_pb.js";
@@ -47,7 +49,7 @@ const output = JSON.stringify(rows, null, 2) + "\n";
 const path = new URL("../compatibility/public-rpc-matrix.json", import.meta.url);
 if (process.argv[2] === "check" || process.argv[2] === "complete") {
   if (readFileSync(path, "utf8") !== output) throw new Error("public RPC matrix is stale");
-} else if (process.argv[2] === "write") writeFileSync(path, output);
+} else if (process.argv[2] === "write") writeChanged(fileURLToPath(path), output);
 else throw new Error("expected write, check, or complete");
 if (process.argv[2] === "complete") {
   const gaps = rows.filter(row => !row.rustGrpc || !row.rustHttp || !row.typescriptGrpcNodeBun || !(row.rpc.startsWith("acyclic.actors.") ? row.typescriptGrpcWeb : row.typescriptHttp) || !row.typescriptPackageExported);

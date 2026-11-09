@@ -1,5 +1,7 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import ignore from "ignore";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,7 +15,6 @@ export function projectGenerated(path, content, check) {
     tracked ??= new Set(execFileSync("git", ["ls-files", "-z"], { cwd: sourceRoot, encoding: "utf8" }).split("\0"));
     if (tracked.has(relative(sourceRoot, path).replaceAll("\\", "/"))) return checkGenerated(path, content);
   }
-  mkdirSync(dirname(path), { recursive: true });
   writeChanged(path, content);
 }
 
@@ -23,20 +24,38 @@ export function checkGenerated(path, content) {
   }
 }
 
-// Directory-producing Rust exporters use the same output in write and check
-// modes. Comparing their fresh bytes never rewrites a contributor's checkout.
-export function checkGeneratedDirectory(generated, destination) {
-  for (const entry of readdirSync(generated, { recursive: true, withFileTypes: true })) {
-    if (entry.isDirectory()) continue;
-    const source = join(entry.parentPath, entry.name);
-    const relative = source.slice(generated.length + 1);
-    projectGenerated(join(destination, relative), readFileSync(source), true);
-  }
+// Exporters render privately in both modes; only changed bytes reach the checkout.
+export async function generateFiles(destination, render, prune = [], check = false) {
+  const temporary = mkdtempSync(join(tmpdir(), "sdk-generation-"));
+  try {
+    await render(temporary);
+    const current = new Set();
+    for (const entry of readdirSync(temporary, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const source = join(entry.parentPath, entry.name);
+      const name = relative(temporary, source);
+      current.add(name);
+      projectGenerated(join(destination, name), readFileSync(source), check);
+    }
+    for (const directory of prune.map(name => join(destination, name))) {
+      if (!existsSync(directory)) continue;
+      for (const entry of readdirSync(directory, { recursive: true, withFileTypes: true })) {
+        const path = join(entry.parentPath, entry.name);
+        if (entry.isFile() && !current.has(relative(destination, path))) {
+          if (check) throw new Error(`STEP_FAILED generated-artifact: obsolete ${path}; recovery: bun run generate`);
+          rmSync(path);
+        }
+      }
+    }
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
 }
 
 export const writeChanged = (path, content) => {
   const bytes = typeof content === "string" ? Buffer.from(content) : content;
-  if (!existsSync(path) || !readFileSync(path).equals(bytes)) writeFileSync(path, bytes);
+  if (!existsSync(path) || !readFileSync(path).equals(bytes)) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, bytes);
+  }
 };
 
 // Canonical generation inputs and their published copies live here.
@@ -113,13 +132,30 @@ export const packagedSourceCopies = [
   ["rust/crates/harness-core/proto/protocol/v1/protocol.proto", "rust/crates/filesystem-wire/proto/protocol/v1/protocol.proto"],
 ];
 
-const ignoredCopies = spawnSync("git", ["check-ignore", "--no-index", "--stdin", "-z"], {
-  cwd: sourceRoot, encoding: "utf8", windowsHide: true,
-  input: packagedSourceCopies.map(([, copy]) => copy).join("\0") + "\0",
-});
-if (ignoredCopies.error || (ignoredCopies.status !== 0 && ignoredCopies.status !== 1)) {
-  throw new Error(`STEP_FAILED packaged-source-copy-ignore-check: ${ignoredCopies.error?.message ?? ignoredCopies.stderr}`);
+// Evaluate source-owned policy even in exported trees. Parent repositories,
+// global excludes and the presence of a Git index cannot change this inventory.
+const ignoreRules = new Map();
+function ignoredSourceCopy(copy) {
+  const parts = copy.split("/");
+  const rules = [];
+  for (let depth = 0; depth < parts.length; depth++) {
+    const directory = parts.slice(0, depth).join("/");
+    if (!ignoreRules.has(directory)) {
+      const path = join(sourceRoot, directory, ".gitignore");
+      ignoreRules.set(directory, ignore({ ignorecase: false }).add(existsSync(path) ? readFileSync(path, "utf8") : ""));
+    }
+    rules.push(ignoreRules.get(directory));
+    // Stop at an excluded parent: a child's negation cannot re-include it.
+    for (let index = depth; index >= 0; index--) {
+      const path = parts.slice(index, depth + 1).join("/") + (depth < parts.length - 1 ? "/" : "");
+      const result = rules[index].test(path);
+      if (result.ignored) return true;
+      if (result.unignored) break;
+    }
+  }
+  return false;
 }
-if (ignoredCopies.status === 0) {
-  throw new Error(`STEP_FAILED packaged-source-copy-ignored: ${ignoredCopies.stdout.split("\0").filter(Boolean).join(", ")}; remove ignored copies from packagedSourceCopies`);
+const ignoredCopies = packagedSourceCopies.map(([, copy]) => copy).filter(ignoredSourceCopy);
+if (ignoredCopies.length > 0) {
+  throw new Error(`STEP_FAILED packaged-source-copy-ignored: ${ignoredCopies.join(", ")}; remove ignored copies from packagedSourceCopies`);
 }

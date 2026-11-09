@@ -138,9 +138,9 @@ test("a qualified aggregate from another report, source or artifact is rejected"
 
 // Exercise the actual CLI preflight with real Git and files, before any build.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdtempSync, mkdirSync, renameSync, writeFileSync, rmSync, existsSync, copyFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, renameSync, writeFileSync, rmSync, existsSync, copyFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 
 test("checksum publication keeps concurrent readers on a complete inventory", () => {
@@ -205,12 +205,13 @@ test("runner rejects stale source and substituted package inputs before qualific
       return result.stdout.trim();
     };
     mkdirSync(join(root, "scripts"));
+    symlinkSync(resolve("node_modules"), join(root, "node_modules"), "junction");
     for (const name of ["run-harness-conformance.mjs", "harness-conformance-cases.mjs", "harness-conformance-evidence.mjs", "generated-bindings.mjs", "harness-package-closure.mjs", "harness-provider-evidence.mjs"]) {
       copyFileSync(new URL(`./${name}`, import.meta.url), join(root, "scripts", name));
     }
     mkdirSync(join(root, "rust/crates/harness/conformance"), { recursive: true });
     copyFileSync(new URL(`../${compatibilityArtifacts.harness.conformanceDigest}`, import.meta.url), join(root, compatibilityArtifacts.harness.conformanceDigest));
-    writeFileSync(join(root, ".gitignore"), "/artifacts/\n/launcher/\n");
+    writeFileSync(join(root, ".gitignore"), "/artifacts/\n/launcher/\n/node_modules/\n");
     git(["init", "--quiet"]);
     git(["add", "."]);
     git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "fixture"]);

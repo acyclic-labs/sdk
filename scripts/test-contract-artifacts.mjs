@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -24,6 +24,7 @@ test("the generator compares executed bytes and records failure without changing
   };
   try {
     mkdirSync(join(root, "scripts"));
+    symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), join(root, "node_modules"), "junction");
     const generator = source("generate-contracts.mjs");
     put("scripts/generate-contracts.mjs", generator);
     put("scripts/contract-targets.mjs", source("contract-targets.mjs"));
