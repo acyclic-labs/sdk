@@ -234,7 +234,7 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
             }
             boundary = events.recv() => {
                 let boundary = boundary.ok_or("retirement submission producer dropped")?;
-                if boundary.name == "blocking:submitted" {
+                if boundary.name == "blocking:submitted" && cancelled.is_retiring() {
                     break boundary;
                 }
                 boundary.release();

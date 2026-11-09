@@ -4,6 +4,72 @@ use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::{Fs, MemoryLazyWorkspaceStore, PublicationPermit};
 
 #[tokio::test]
+async fn cancelled_retirement_keeps_contending_async_controls_off_the_executor()
+-> Result<(), Box<dyn std::error::Error>> {
+    use super::super::session::NativeSessionControl;
+
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let physical = tempfile::tempdir()?;
+    let lazy = native_lazy_source(physical.path(), "contending-retirement", &cancellation).await?;
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let options = fixture_options(lazy.workspace(), MountOptions::read_write()).await?;
+    let (source, volume_id, _root) = admitted_source(&lazy, &options, &work).await?;
+    let session = CustomerSession::new(
+        Some(NativeMountSession::new(
+            NativeMountRequest {
+                mount_id: MountId::new(),
+                volume_id,
+                destination: physical.path().join("not-mounted"),
+                writable: true,
+                shared: false,
+            },
+            None,
+            None,
+        )),
+        &work,
+    )?;
+    let mount = Mount {
+        source,
+        session: session.clone(),
+        destination: physical.path().to_owned(),
+        _destination_custody: work.path(physical.path(), None)?.1,
+        retiring: std::sync::atomic::AtomicBool::new(false),
+    };
+    let (entered, entering) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let (completed, completion) = tokio::sync::oneshot::channel();
+    let mut retirement = Box::pin(control_session(session.clone(), move |owner| {
+        entered.send(()).unwrap();
+        released.recv().unwrap();
+        drop(owner.take());
+        completed.send(()).unwrap();
+        Ok(())
+    }));
+    assert!(futures::poll!(&mut retirement).is_pending());
+    entering.await?;
+    drop(retirement);
+
+    // All three admissions must yield while retained retirement holds the lock.
+    // Only a sibling on this current-thread executor can release that owner.
+    let mut live = Box::pin(with_live_session_async(
+        &session,
+        &work,
+        NativeSessionControl::FlushCallbacks,
+    ));
+    let mut sync = Box::pin(mount.sync());
+    let mut cleanup = Box::pin(mount.abandon_command());
+    assert!(futures::poll!(&mut live).is_pending());
+    assert!(futures::poll!(&mut sync).is_pending());
+    assert!(futures::poll!(&mut cleanup).is_pending());
+    tokio::spawn(async move { release.send(()).unwrap() }).await?;
+    completion.await?;
+    futures::try_join!(live, sync, cleanup)?;
+    assert!(session.lock().unwrap().is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn completed_lazy_retirement_does_not_recheck_a_later_cancelled_waiter()
 -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;

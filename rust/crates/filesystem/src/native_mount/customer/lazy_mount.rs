@@ -314,7 +314,7 @@ where
     async fn revalidate_async(&self) -> Result<(), MountLifecycleError> {
         with_session_work_async(
             &self.session,
-            self.source.as_ref(),
+            &self.source,
             NativeSessionControl::Revalidate,
         )
         .await
@@ -364,9 +364,12 @@ where
     /// Publishes and detaches, retaining the owner on any failure.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
-        self.prepare_unmount_cleanup()?;
         let source = self.source.clone();
-        retire_session(self.session.clone(), move |owner| {
+        control_session(self.session.clone(), move |owner| {
+            #[cfg(windows)]
+            if let Some(session) = owner.as_mut() {
+                session.prepare_projection_cleanup()?;
+            }
             Self::retire_owned(owner, &source, &crate::CancellationToken::new())
         })
         .await?

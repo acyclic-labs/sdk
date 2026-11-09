@@ -35,7 +35,7 @@ where
         super::command_tests::record("sync");
         with_session_work_async(
             &self.session,
-            self.source.as_ref(),
+            &self.source,
             NativeSessionControl::FlushCallbacks,
         )
         .await?;
@@ -54,7 +54,7 @@ where
         // Even a failed advance may have moved part of the view.
         with_session_work_async(
             &self.session,
-            self.source.as_ref(),
+            &self.source,
             NativeSessionControl::Revalidate,
         )
         .await?;
@@ -80,7 +80,7 @@ where
         self.sync().await?;
         self.advance_to_head().await?;
         if retire {
-            self.prepare_command_cleanup()?;
+            self.prepare_command_cleanup().await?;
             self.detach_async().await?;
         }
         Ok(())
@@ -103,13 +103,17 @@ where
     /// Retires a command projection without publishing unverified authored effects.
     pub async fn abandon_command(&self) -> Result<(), MountLifecycleError> {
         if !self.is_retiring() {
-            self.prepare_command_cleanup()?;
+            self.prepare_command_cleanup().await?;
         }
         self.detach_async().await
     }
 
-    fn prepare_command_cleanup(&self) -> Result<(), MountLifecycleError> {
-        prepare_destination_cleanup(&self.session, self.source.as_ref())
+    async fn prepare_command_cleanup(&self) -> Result<(), MountLifecycleError> {
+        let source = self.source.clone();
+        control_session(self.session.clone(), move |owner| {
+            prepare_destination_cleanup(owner, source.as_ref())
+        })
+        .await
     }
 
     /// Synchronously publishes and detaches for foreign-runtime worker threads.
@@ -139,7 +143,7 @@ where
         self.retiring
             .store(true, std::sync::atomic::Ordering::Release);
         let source = self.source.clone();
-        retire_session(self.session.clone(), move |owner| {
+        control_session(self.session.clone(), move |owner| {
             Self::detach_owned(owner, source.as_ref())
         })
         .await
