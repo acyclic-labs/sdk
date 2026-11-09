@@ -457,6 +457,38 @@ impl View {
             .then(|| self.top.saturating_sub(page as u64).max(self.floor))
     }
 
+    /// Keep the saved search hit on the same row of text as older rows arrive.
+    fn prepend(&mut self, older: Older) {
+        if older.epoch != self.epoch {
+            return;
+        }
+        let added = self.transcript.prepend(older.blocks);
+        if let Some((_, row)) = &mut self.search {
+            *row += added;
+        }
+        self.top = older.from;
+        if older.cleared {
+            self.floor = older.from;
+        }
+    }
+
+    /// Find the preceding hit, wrapping to the newest after the oldest.
+    fn find(&mut self, query: &str, page: usize) {
+        let before = self
+            .search
+            .as_ref()
+            .filter(|(previous, _)| previous == query)
+            .map_or(self.transcript.len(), |(_, row)| *row);
+        if let Some(row) = self
+            .transcript
+            .find(query, before)
+            .or_else(|| self.transcript.find(query, self.transcript.len()))
+        {
+            self.back = self.transcript.len().saturating_sub(row + page);
+            self.search = Some((query.to_owned(), row));
+        }
+    }
+
     /// The commands and keys, from the same catalog completion uses.
     fn help(catalog: &CommandCatalog, input: &PromptInput) -> Vec<Line<'static>> {
         let mut lines = vec![Line::raw("Commands")];
@@ -816,14 +848,7 @@ pub async fn run(
             } => {
                 older_future.set(None);
                 match read {
-                    Ok(older) if older.epoch == view.epoch => {
-                        view.transcript.prepend(older.blocks);
-                        view.top = older.from;
-                        if older.cleared {
-                            view.floor = older.from;
-                        }
-                    }
-                    Ok(_) => {}
+                    Ok(older) => view.prepend(older),
                     Err(error) => {
                         // The rows shown stay; nothing older is read again.
                         view.floor = view.top;
@@ -1016,17 +1041,7 @@ pub async fn run(
                                     .min(view.transcript.len().saturating_sub(page));
                             }
                             InputEffect::Host(Action::App(AppAction::Find)) => {
-                                let query = input.editor.text();
-                                let before = view.search.as_ref()
-                                    .filter(|(previous, _)| previous == query)
-                                    .map_or(view.transcript.len(), |(_, row)| *row);
-                                if let Some(row) = view.transcript.find(query, before)
-                                    .or_else(|| view.transcript.find(query, view.transcript.len()))
-                                {
-                                    let page = usize::from(areas.transcript.height);
-                                    view.back = view.transcript.len().saturating_sub(row + page);
-                                    view.search = Some((query.to_owned(), row));
-                                }
+                                view.find(input.editor.text(), usize::from(areas.transcript.height));
                             }
                             _ => {}
                         }
@@ -1051,6 +1066,39 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_visits_each_older_match_across_prepended_pages() {
+        let mut view = View::default();
+        view.rows(16);
+        view.transcript.push(true, "match newest\nend");
+        view.find("match", 1);
+        for (from, text, expected) in [
+            (
+                2,
+                "match oldest\npadding wraps over several rows\nmatch middle\npadding",
+                "match middle",
+            ),
+            (0, "match earliest\npadding", "match oldest"),
+        ] {
+            view.prepend(Older {
+                epoch: view.epoch,
+                from,
+                cleared: false,
+                blocks: vec![(true, text.into())],
+            });
+            view.find("match", 1);
+            let row = view.search.as_ref().unwrap().1;
+            assert!(view.transcript.rows(16)[row].to_string().contains(expected));
+            assert_eq!(view.back, view.transcript.len() - row - 1);
+        }
+        for expected in ["match earliest", "match newest"] {
+            view.find("match", 1);
+            let row = view.search.as_ref().unwrap().1;
+            assert!(view.transcript.rows(16)[row].to_string().contains(expected));
+            assert_eq!(view.back, view.transcript.len() - row - 1);
+        }
+    }
 
     #[test]
     fn saved_views_this_terminal_cannot_render_leave_it_open() -> Result<(), Failure> {
