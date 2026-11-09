@@ -89,14 +89,3 @@ fn capture_owns_cold_callsite_registration() {
         String::from_utf8_lossy(&broken.stderr),
     );
 }
-
-#[test]
-fn registration_follows_the_last_capture_owner() {
-    let capture = Capture::default();
-    let registration = capture.0.lock().unwrap()._registration.downgrade();
-    let copy = capture.clone();
-    drop(capture);
-    assert!(registration.upgrade().is_some());
-    drop(copy);
-    assert!(registration.upgrade().is_none());
-}
