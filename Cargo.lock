@@ -235,7 +235,7 @@ dependencies = [
  "acyclic-stream",
  "blake3",
  "bytes",
- "ed25519-dalek 3.0.0",
+ "ed25519-dalek",
  "futures",
  "heck",
  "hex",

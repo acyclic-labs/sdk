@@ -2,10 +2,11 @@
 //!
 //! The production [`ReadySet`] (registration wakers, due index, coalescing
 //! queue and running-entry requeue), the production delivery arming
-//! [`Registration::observe_delivery`] and the production refusal-retry rule
-//! (`Inner::refused`) are driven through every interleaving of external events
-//! and delivery outcomes up to a bound. The kernel proof assumes the runtime
-//! delivers once per event; this checks that assumption:
+//! ([`Registration::deliver_alarm`] and [`Registration::update_alarm`]) and the
+//! production refusal-retry rule (`Inner::refused`) are driven through every
+//! interleaving of external events and delivery outcomes up to a bound. The
+//! kernel proof assumes the runtime delivers once per event; this checks that
+//! assumption:
 //!
 //! - every handler run is justified by an unsettled event (no self re-arm);
 //! - at quiescence, every unsettled event with work behind it was delivered
@@ -292,7 +293,13 @@ fn explore(arm: Arm) -> Result<(), String> {
 }
 
 fn production(registration: &Registration<usize>, alarm: &Alarm, now: u64) -> Result<bool, Error> {
-    registration.observe_delivery(alarm, now)
+    let due = alarm.pending().is_some_and(|deadline| deadline <= now);
+    if due {
+        registration.deliver_alarm(alarm)?;
+    } else {
+        registration.update_alarm(alarm)?;
+    }
+    Ok(due)
 }
 
 /// The arming before the fix: the delivered alarm stays a due wake.
