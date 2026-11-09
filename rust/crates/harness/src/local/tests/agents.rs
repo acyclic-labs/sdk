@@ -783,6 +783,13 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         futures::poll!(&mut waiting).is_pending(),
         "live producer must retain the wait"
     );
+    let runtime = &harness.agents.get().unwrap().runtime;
+    let admission = runtime.admit(std::future::pending::<Result<()>>());
+    tokio::pin!(admission);
+    assert!(
+        futures::poll!(&mut admission).is_pending(),
+        "live runtime must retain in-flight admission"
+    );
     let usage_result = {
         let advancing = usage.advance();
         tokio::pin!(advancing);
@@ -796,6 +803,11 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     assert!(
         matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
         "usage lost the runtime cause: {usage_result:?}"
+    );
+    let admitted = futures::poll!(&mut admission);
+    assert!(
+        matches!(&admitted, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
+        "in-flight admission lost the runtime cause: {admitted:?}"
     );
     assert_eq!(
         usage.totals(),
@@ -849,8 +861,8 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         "failed input appended another conversation entry"
     );
     assert!(
-        matches!(harness.connect().await, Err(Error::Storage(_))),
-        "late clients observe the already closed runtime"
+        matches!(harness.connect().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "late clients must retain the original runtime cause"
     );
     // Both admitted calls outlive the runtime. Only the warm-up completed;
     // losing the second producer must preserve its distinct unfinished call.
