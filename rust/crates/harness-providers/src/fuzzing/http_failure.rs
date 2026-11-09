@@ -41,12 +41,19 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
     } else if failure && (matches!(status, 400 | 413) || bytes.len() < crate::EXCERPT_BYTES) {
         assert_eq!(error.code(), ErrorCode::Unsupported);
     }
-    if let Error::ModelUnavailable { excerpt, .. } | Error::Invalid(excerpt) = &error {
+    if let Error::ModelUnavailable { excerpt, .. }
+    | Error::Invalid(excerpt)
+    | Error::ModelDiagnostic {
+        message: excerpt, ..
+    } = &error
+    {
         assert!(excerpt.len() <= crate::EXCERPT_BYTES);
         assert!(excerpt.chars().all(|character| !character.is_control()));
     }
     let diagnostic = match &error {
-        Error::Invalid(message) if matches!(status, 400 | 413) && !failure => {
+        Error::Invalid(message) | Error::ModelDiagnostic { message, .. }
+            if matches!(status, 400 | 413) && !failure =>
+        {
             Some((message, format!("model HTTP status {status}: ")))
         }
         Error::ModelUnavailable { excerpt, .. } => Some((excerpt, String::new())),
@@ -216,6 +223,14 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
             input[2 + offset..2 + offset + marker.len()].copy_from_slice(marker);
             assert_http_failure_invariants(&input);
         }
+    }
+
+    // Reclassify the captured authentication body as a non-context refusal.
+    // The original diagnostic must survive both HTTP statuses and chunking.
+    for status in [400u16, 413] {
+        let mut input = include_bytes!("../../fuzz/corpus/http_failure/llamacpp-auth").to_vec();
+        input[..2].copy_from_slice(&status.to_le_bytes());
+        assert_http_failure_invariants(&input);
     }
 
     // This is the same captured context refusal, with only its JSON spelling

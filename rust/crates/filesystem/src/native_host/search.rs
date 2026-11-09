@@ -89,7 +89,12 @@ impl HostRoot {
         path: &Path,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        let directory = open_root_directory_handle(path, DirectoryAccess::Search, work)?;
+        let directory = open_root_directory_handle(
+            path,
+            DirectoryAccess::Search,
+            DirectoryLinks::Refuse,
+            work,
+        )?;
         let identity = directory_identity(&directory, work)?;
         Ok(Self::from_parts(directory, identity))
     }

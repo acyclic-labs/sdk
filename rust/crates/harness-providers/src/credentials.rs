@@ -202,3 +202,16 @@ impl Credentials {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+#[test]
+fn explicit_credential_files_refuse_links() -> std::io::Result<()> {
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().join("credentials.json");
+    let link = temporary.path().join("credentials-link.json");
+    std::fs::write(&path, br#"{"api_keys":{}}"#)?;
+    assert!(Credentials::from_file(&path).is_ok());
+    std::os::unix::fs::symlink(&path, &link)?;
+    assert!(Credentials::from_file(&link).is_err());
+    Ok(())
+}

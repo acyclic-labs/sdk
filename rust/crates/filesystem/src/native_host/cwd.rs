@@ -505,6 +505,45 @@ mod tests {
     use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 
     #[test]
+    fn held_path_query_does_not_enumerate_authored_ancestors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("held");
+        std::fs::create_dir(&root)?;
+        let expected = root.canonicalize()?;
+        let read = || -> Result<_, Box<dyn std::error::Error>> {
+            let directory = Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
+            let cancellation = crate::CancellationToken::new();
+            let work = NativeMaterializationWork::new(
+                WorkBudget {
+                    backend_read_operations: 64,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .map_err(|(error, _)| error)?;
+            let baseline = work.live_allocation_bytes();
+            let (path, allocation) = canonical_directory_path_held(directory, &mut &work)?;
+            assert_eq!(path, expected);
+            assert_eq!(
+                work.live_allocation_bytes(),
+                baseline + path.capacity() as u64
+            );
+            let receipt = work.receipt();
+            drop(path);
+            drop(allocation);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            Ok(receipt)
+        };
+        let before = read()?;
+        for index in 0..257 {
+            std::fs::create_dir(temporary.path().join(format!("authored-{index}")))?;
+        }
+        assert_eq!(read()?, before);
+        Ok(())
+    }
+
+    #[test]
     fn held_path_query_preserves_raw_names_and_rejects_unlinked_identity()
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;

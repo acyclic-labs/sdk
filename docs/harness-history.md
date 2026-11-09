@@ -28,8 +28,10 @@ completion, even when the underlying agent turn has settled.
 
 Native startup file inputs (cursor, output schema, approval policy, provider
 catalog, explicit credentials and TLS identity) require regular files. Shared
-native admission refuses links and pipes before reading their contents; a pipe
-does not wait for a writer. Missing cursor files still start a new projection.
+native admission refuses leaf links and pipes before reading their contents; a
+pipe does not wait for a writer. Ambient parent directories may be aliases and
+require traversal rather than listing permission. Held filesystem roots still
+refuse a final directory link. Missing cursor files still start a new projection.
 
 `graphcoder sessions` and `graphcoder history` expose the same bounded page
 request: `--page-size` controls rows and `--page-bytes` controls encoded reply

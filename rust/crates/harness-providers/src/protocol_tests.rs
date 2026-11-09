@@ -161,7 +161,7 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
                         .collect();
                     assert!(flat.trim().starts_with(excerpt.as_str()));
                 }
-                // Negative controls: other statuses are never redelivered nor excerpted.
+                // Status-only failures never consume the response body.
                 401 | 403 => {
                     assert!(matches!(
                         error,

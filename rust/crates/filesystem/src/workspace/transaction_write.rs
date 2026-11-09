@@ -130,6 +130,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
+        if let Some(original) = accounting.native_work() {
+            self.checkout.validate_native_work(original)?;
+        }
         accounting.check()?;
         if self.checkout.has_pending_mutations()
             || self.checkout.volume_config().case_sensitivity

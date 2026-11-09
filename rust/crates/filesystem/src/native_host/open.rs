@@ -1,8 +1,9 @@
 use super::*;
 
 /// Reads one regular file through its held parent and the shared native leaf
-/// admission. Links and nonregular files are refused before any payload read;
+/// admission. Leaf links and nonregular files are refused before any payload read;
 /// a FIFO cannot wait for a writer during admission.
+/// The ambient parent may be a directory alias and needs only search access.
 pub fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
     use std::io::Read as _;
     let name = path.file_name().ok_or_else(|| {
@@ -17,7 +18,12 @@ pub fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
         &crate::CancellationToken::new(),
     );
     let mut open = || -> Result<File, DemandError> {
-        let parent = open_root_directory_handle(parent, DirectoryAccess::Search, &mut work)?;
+        let parent = open_root_directory_handle(
+            parent,
+            DirectoryAccess::Search,
+            DirectoryLinks::Follow,
+            &mut work,
+        )?;
         #[cfg(windows)]
         directory_identity(&parent, &mut work)?;
         open_leaf(
@@ -448,6 +454,83 @@ pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
     return unix_name(leaf, work, |leaf, work| operation(parent, leaf, work));
     #[cfg(windows)]
     operation(parent, leaf, work)
+}
+
+#[cfg(test)]
+mod regular_file_tests {
+    use super::*;
+
+    #[test]
+    fn regular_file_admission_preserves_bytes_and_rejects_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("input");
+        std::fs::write(&path, b"original input")?;
+        assert_eq!(read_regular_file(&path)?, b"original input");
+        assert!(read_regular_file(temporary.path()).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regular_file_admission_allows_parent_aliases_and_rejects_leaf_links()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let directory = temporary.path().join("config");
+        let alias = temporary.path().join("config-link");
+        std::fs::create_dir(&directory)?;
+        let path = directory.join("input");
+        let link = directory.join("link");
+        std::fs::write(&path, b"original input")?;
+        std::os::unix::fs::symlink(&directory, &alias)?;
+        std::os::unix::fs::symlink(&path, &link)?;
+        assert_eq!(read_regular_file(&alias.join("input"))?, b"original input");
+        assert!(read_regular_file(&alias.join("link")).is_err());
+        assert!(read_regular_file(&alias).is_err());
+        assert!(read_regular_file(&link).is_err());
+        assert_alias_is_not_a_held_root(&alias);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regular_file_admission_refuses_a_fifo_without_a_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("pipe");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+        // SAFETY: name is terminated and remains live throughout mkfifo.
+        if unsafe { libc::mkfifo(name.as_ptr(), 0o600) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        assert!(read_regular_file(&path).is_err());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn regular_file_admission_allows_parent_junctions_and_rejects_leaf_junctions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let directory = temporary.path().join("config");
+        let alias = temporary.path().join("config-link");
+        std::fs::create_dir(&directory)?;
+        std::fs::write(directory.join("input"), b"original input")?;
+        crate::windows_test_filesystems::junction(&alias, &directory)?;
+        assert_eq!(read_regular_file(&alias.join("input"))?, b"original input");
+        assert!(read_regular_file(&alias).is_err());
+        assert_alias_is_not_a_held_root(&alias);
+        std::fs::remove_dir(alias)?;
+        Ok(())
+    }
+
+    fn assert_alias_is_not_a_held_root(alias: &Path) {
+        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        assert!(HostRoot::open(alias, &mut work).is_err());
+        #[cfg(feature = "native-watch")]
+        assert!(HostRoot::open_search(alias, &mut work).is_err());
+    }
 }
 
 #[cfg(test)]
