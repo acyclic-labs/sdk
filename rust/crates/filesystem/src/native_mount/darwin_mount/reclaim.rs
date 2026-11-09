@@ -35,28 +35,47 @@ fn is_loopback_mount(mount: &libc::statfs, uid: u32) -> Result<bool, NativeMount
 }
 
 #[cfg(test)]
-std::thread_local! {
-    static DENIED_DIRECT_UNMOUNTS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
-}
+static DENIED_DIRECT_UNMOUNTS: Mutex<std::collections::BTreeMap<CString, Arc<AtomicU64>>> =
+    Mutex::new(std::collections::BTreeMap::new());
 
 #[cfg(test)]
-pub(super) fn with_direct_unmount_denied<T>(operation: impl FnOnce() -> T) -> T {
-    struct Restore(Option<usize>);
+pub(super) fn with_direct_unmount_denied<T>(
+    destination: &CStr,
+    operation: impl FnOnce() -> T,
+) -> T {
+    // A native completion runs on a shared worker. Fault custody belongs to
+    // the exact fixture mount, independent of which thread executes its IO.
+    struct Restore(CString);
     impl Drop for Restore {
         fn drop(&mut self) {
-            DENIED_DIRECT_UNMOUNTS.set(self.0);
+            DENIED_DIRECT_UNMOUNTS
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&self.0);
         }
     }
-    let _restore = Restore(DENIED_DIRECT_UNMOUNTS.replace(Some(0)));
+    let count = Arc::new(AtomicU64::new(0));
+    assert!(
+        DENIED_DIRECT_UNMOUNTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(destination.to_owned(), Arc::clone(&count))
+            .is_none()
+    );
+    let _restore = Restore(destination.to_owned());
     let result = operation();
-    assert!(DENIED_DIRECT_UNMOUNTS.get().is_some_and(|count| count > 0));
+    assert!(count.load(Ordering::Acquire) > 0);
     result
 }
 
 fn direct_unmount(destination: &CStr) -> std::io::Result<()> {
     #[cfg(test)]
-    if let Some(count) = DENIED_DIRECT_UNMOUNTS.get() {
-        DENIED_DIRECT_UNMOUNTS.set(Some(count + 1));
+    if let Some(count) = DENIED_DIRECT_UNMOUNTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(destination)
+    {
+        count.fetch_add(1, Ordering::AcqRel);
         eprintln!("RECLAIM_DIRECT_UNMOUNT_DENIED errno=EPERM");
         return Err(std::io::Error::from_raw_os_error(libc::EPERM));
     }

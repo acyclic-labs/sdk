@@ -474,11 +474,7 @@ pub fn check_native_root_name_prefix(name: &str) {
     #[cfg(unix)]
     let (examined, encoded) = (prefix.len() as u64 + 1, 0);
     #[cfg(windows)]
-    let (examined, encoded) = {
-        let length = name.encode_utf16().count() as u64;
-        let prefix = prefix.encode_utf16().count() as u64 + 1;
-        (length + prefix, prefix * 2)
-    };
+    let (examined, encoded) = (prefix.encode_utf16().count() as u64 + 1, 0);
     let work =
         NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .unwrap_or_else(|(error, _)| panic!("native root work: {error}"));
