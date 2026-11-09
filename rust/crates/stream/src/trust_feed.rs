@@ -169,8 +169,8 @@ pub struct TrustFeed<S> {
     /// Absent once every [`Accounts`] handle is dropped.
     added: Option<mpsc::UnboundedReceiver<String>>,
     anchor: Option<tokio::sync::watch::Receiver<AnchorKeys>>,
-    // One cold record may become authentic under the next anchor publication.
-    pending: Option<Record>,
+    // Replay cold history from its first refusal when the anchor changes.
+    pending: Option<u64>,
 }
 
 impl<S: Source> TrustFeed<S> {
@@ -249,16 +249,27 @@ impl<S: Source> TrustFeed<S> {
             pending,
         } = self;
         let environment = follower.environment().to_owned();
+        let mut environment_follow = open(
+            &*source,
+            follower,
+            &**clock,
+            &environment,
+            None,
+            next.get(&None).copied().unwrap_or(0),
+        );
         let mut follows = FuturesUnordered::new();
+        let mut read_order = futures::stream::PollNext::Left;
         for (key, from) in next.iter() {
-            follows.push(open(
-                &*source,
-                follower,
-                &**clock,
-                &environment,
-                key.clone(),
-                *from,
-            ));
+            if key.is_some() {
+                follows.push(open(
+                    &*source,
+                    follower,
+                    &**clock,
+                    &environment,
+                    key.clone(),
+                    *from,
+                ));
+            }
         }
         let mut tails = HashMap::new();
         let mut blocked: HashMap<String, Option<(Record, Records)>> = HashMap::new();
@@ -300,7 +311,15 @@ impl<S: Source> TrustFeed<S> {
             let account = core::pin::pin!(account);
             let event = {
                 let input = async {
-                    match future::select(follows.next(), account).await {
+                    // An empty account set can gain new follows. Rebuild the
+                    // selection without losing fairness between the two sets.
+                    let records = futures::stream::select_with_strategy(
+                        futures::stream::once(&mut environment_follow),
+                        &mut follows,
+                        |_: &mut ()| read_order.toggle(),
+                    );
+                    let mut records = core::pin::pin!(records);
+                    match future::select(records.next(), account).await {
                         Either::Left((item, _)) => Either::Left(item),
                         Either::Right((account, _)) => Either::Right(account),
                     }
@@ -309,24 +328,27 @@ impl<S: Source> TrustFeed<S> {
                 let publication = anchor_changed(anchor, follower);
                 let publication = core::pin::pin!(publication);
                 match future::select(publication, input).await {
-                    Either::Left((keys, _)) => {
-                        keys?;
-                        follower.anchor_changed();
-                        let now = follower.protected_now(clock.now_unix_millis() / 1000);
-                        if let Some(record) = pending.take() {
-                            if follower.apply_environment(&record.value, now).is_ok() {
-                                advance(follower, next, &mut tails, None, record.sequence);
-                            } else {
-                                *pending = Some(record);
-                            }
-                        }
-                        if !blocked.is_empty() {
-                            retry_blocked = Some(now);
-                        }
-                        continue;
-                    }
-                    Either::Right((event, _)) => event,
+                    Either::Left((keys, _)) => Either::Left(keys),
+                    Either::Right((event, _)) => Either::Right(event),
                 }
+            };
+            let event = match event {
+                Either::Left(keys) => {
+                    keys?;
+                    follower.anchor_changed();
+                    if let Some(from) = *pending {
+                        // Replace only the environment follow. Account follows
+                        // keep their original ownership and backpressure.
+                        environment_follow =
+                            open(&*source, follower, &**clock, &environment, None, from);
+                    }
+                    if !blocked.is_empty() {
+                        retry_blocked =
+                            Some(follower.protected_now(clock.now_unix_millis() / 1000));
+                    }
+                    continue;
+                }
+                Either::Right(event) => event,
             };
             match event {
                 Either::Left(Some(((key, Event::Opened { tail, position }), records))) => {
@@ -336,7 +358,11 @@ impl<S: Source> TrustFeed<S> {
                     } else {
                         tails.insert(key.clone(), tail);
                     }
-                    follows.push(read(key, records));
+                    if key.is_none() {
+                        environment_follow = read(key, records);
+                    } else {
+                        follows.push(read(key, records));
+                    }
                 }
                 Either::Left(Some(((None, Event::Record(record)), records))) => {
                     let now = follower.protected_now(clock.now_unix_millis() / 1000);
@@ -350,12 +376,12 @@ impl<S: Source> TrustFeed<S> {
                                 .environment_initialized()
                                 .map_err(|_| StreamError::Unavailable)? =>
                         {
-                            next.insert(None, record.sequence.saturating_add(1));
+                            let from = *pending.get_or_insert(record.sequence);
+                            next.insert(None, from);
                             tails
                                 .entry(None)
                                 .or_insert(record.sequence.saturating_add(1));
-                            *pending = Some(record);
-                            follows.push(read(None, records));
+                            environment_follow = read(None, records);
                             continue;
                         }
                         Err(_) => retry_environment(follower, &**clock, anchor, &record).await?,
@@ -369,7 +395,7 @@ impl<S: Source> TrustFeed<S> {
                         follower.resume();
                     }
                     advance(follower, next, &mut tails, None, record.sequence);
-                    follows.push(read(None, records));
+                    environment_follow = read(None, records);
                     if applied == Applied::Changed {
                         retry_blocked = Some(now);
                     }

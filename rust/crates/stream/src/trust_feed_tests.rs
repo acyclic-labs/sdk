@@ -243,6 +243,84 @@ async fn reconnect_completes_an_interrupted_authenticated_replay() {
 }
 
 #[tokio::test]
+async fn delayed_anchor_replays_every_rejected_environment_keyring() {
+    for reconnect in [false, true] {
+        let initial = Issuer::new("test", key(1));
+        let middle = Issuer::new("test", key(2));
+        let current = Issuer::new("test", key(3));
+        let placeholder = Issuer::new("test", key(9));
+        let source = Arc::new(ControlledSource::default());
+        let path = environment_path("test");
+        let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(initial.anchor()));
+        for record in [
+            initial
+                .environment_keyring(&mut frontier, &middle.anchor(), NOW)
+                .unwrap(),
+            middle
+                .environment_keyring(&mut frontier, &current.anchor(), NOW)
+                .unwrap(),
+        ] {
+            source.push(&path, record).await;
+        }
+        let (keys, watched) = tokio::sync::watch::channel(AnchorKeys::new(placeholder.anchor()));
+        let follower = Arc::new(Follower::new("test", watched));
+        let (mut feed, accounts) = TrustFeed::new(
+            Src(Arc::clone(&source)),
+            Arc::clone(&follower),
+            Arc::new(Clock),
+        );
+        let mut run = Box::pin(feed.run());
+        assert!(step(&mut run).is_none());
+        assert_eq!(
+            source.paths.lock().unwrap()[&path]
+                .read
+                .load(Ordering::SeqCst),
+            2
+        );
+        assert_eq!(
+            *follower.state().borrow(),
+            FollowerState::Fenced(FenceCause::Refused)
+        );
+        if reconnect {
+            drop(run);
+            run = Box::pin(feed.run());
+            assert!(step(&mut run).is_none());
+        }
+        // Withdrawing every key must preserve the entire replay position.
+        keys.send_replace(AnchorKeys::new(vec![]));
+        assert!(step(&mut run).is_none());
+        assert_eq!(
+            *follower.state().borrow(),
+            FollowerState::Fenced(FenceCause::Refused)
+        );
+        let (release, held) = oneshot::channel();
+        source.held.lock().unwrap().insert(path.clone(), (1, held));
+        keys.send_replace(AnchorKeys::new(initial.anchor()));
+        assert!(step(&mut run).is_none());
+        assert_eq!(
+            *follower.state().borrow(),
+            FollowerState::Fenced(FenceCause::Refused),
+            "the first authenticated keyring cannot serve before the observed tail"
+        );
+        release.send(()).unwrap();
+        assert!(step(&mut run).is_none());
+        assert_eq!(*follower.state().borrow(), FollowerState::Serving);
+        assert_eq!(
+            follower.environment_keys("test", NOW).unwrap().as_ref(),
+            current.anchor()
+        );
+        assert_eq!(follower.environment_refusal(), None);
+        let (_, genesis) = current.genesis("account", key(4), NOW).unwrap();
+        for record in genesis {
+            source.push(&account_path("test", "account"), record).await;
+        }
+        accounts.follow("account").unwrap();
+        assert!(step(&mut run).is_none());
+        assert!(served(&follower, "account"));
+    }
+}
+
+#[tokio::test]
 async fn losing_one_account_follow_fences_everything() {
     let retired = RevocationCheck::Key {
         id: "retired",
