@@ -124,6 +124,7 @@ dependencies = [
  "bytes",
  "ed25519-dalek 3.0.0",
  "futures",
+ "hmac 0.13.0",
  "http",
  "js-sys",
  "napi",

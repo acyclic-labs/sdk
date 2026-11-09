@@ -1,5 +1,6 @@
 import type { ActorNamespaceBinding, ActorStateBinding } from "@acyclic-labs/actors";
 import type { ObjectsV1BinaryPort } from "@acyclic-labs/objects";
+import type { SecretBinding } from "@acyclic-labs/auth";
 import { materializeBindings, type BindingAuthority, type WorkerServiceBinding } from "@acyclic-labs/workers";
 
 type Platform = { readonly platform: unique symbol };
@@ -9,7 +10,7 @@ type Streams = { readonly streams: unique symbol };
 
 export async function materialize(authority: BindingAuthority<Platform, Access, Workspace, Streams>) {
   const env = await materializeBindings([], authority);
-  const binding: ActorNamespaceBinding | WorkerServiceBinding | ActorStateBinding | ObjectsV1BinaryPort | Platform | Access | Workspace | Streams | undefined = env.selected;
+  const binding: ActorNamespaceBinding | WorkerServiceBinding | ActorStateBinding | ObjectsV1BinaryPort | SecretBinding | Platform | Access | Workspace | Streams | undefined = env.selected;
   return binding;
 }
 

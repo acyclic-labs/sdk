@@ -28,6 +28,7 @@ bytes.workspace = true
 http.workspace = true
 ed25519-dalek = { version = "=3.0.0", features = ["zeroize"] }
 futures.workspace = true
+hmac = "=0.13.0"
 prost.workspace = true
 serde.workspace = true
 sha2.workspace = true

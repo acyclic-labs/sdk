@@ -9,6 +9,7 @@ use crate::operation::{Context, ProtectedBytes, Stopped};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{future::Future, pin::Pin};
 use zeroize::Zeroizing;
+pub mod binding;
 pub mod conformance;
 
 /// Catalog action for create or replace.
