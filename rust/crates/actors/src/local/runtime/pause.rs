@@ -93,7 +93,7 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
     paused: bool,
     transition: impl std::future::Future<Output = T>,
 ) -> Result<T, ()> {
-    let (mut gate, cancellation) = {
+    let mut gate = {
         let mut control = slot
             .delivery_control
             .lock()
@@ -108,17 +108,15 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
         if paused {
             control.paused = true;
         }
-        let cancellation = paused.then(|| control.cancellation.clone()).flatten();
-        (gate, cancellation)
+        gate
     };
-    if let Some(cancellation) = cancellation {
-        cancellation.cancel();
-    }
-    // The original delivery retains this lock through physical cleanup and
-    // publication settlement. A later control cannot pass either transition.
+    // Closing admission leaves the current delivery's cancellation owner
+    // untouched. Its lock protects both completion and any retained publication;
+    // settle the latter before changing its cut or parking resources.
     let mut delivery = slot.inner.lock().await;
     let epoch = (delivery.epoch != 0).then_some(delivery.epoch);
     let result = async {
+        settle_pending(store, &mut delivery).await?;
         let snapshot = store.load(actor).await?;
         let state = snapshot
             .state()
