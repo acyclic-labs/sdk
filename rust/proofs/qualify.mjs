@@ -252,6 +252,12 @@ const claims = {
     "tests::accounting_matches_complete_allocation_lifetimes",
     "first allocation event differs from physical trace", [],
   ],
+  "terminal-drain-stop": [
+    "rust/crates/harness-tui/tests/terminal_frames.rs", "acyclic-harness-tui",
+    "terminal_drain_cancellation_does_not_require_slave_closure",
+    "a retained PTY slave must not keep a cancelled drainer waiting", ["--features", "tui"],
+    { target: ["--test", "terminal_frames"] },
+  ],
   "native-usage-counters": [
     "rust/crates/harness-core/src/executor/model_usage.rs", "acyclic-harness-core",
     "executor::model_usage::tests::usage_dialects_preserve_units_absence_and_malformed_controls",
