@@ -21,10 +21,11 @@ where
     Dispatch: Future<Output = Result<(AppendOutcome, Option<WorkCounters>), PublicationStepFailure<E>>>
         + acyclic_stream::ProviderTask,
     R: FnMut(
-        &crate::kernel::GenerationRoot,
-        &mut ProofGuard,
-        &mut KernelAccounting<'_>,
-    ) -> Result<(), E>,
+            &crate::kernel::GenerationRoot,
+            &mut ProofGuard,
+            &mut KernelAccounting<'_>,
+        ) -> Result<(), E>
+        + ProviderTask,
 {
     let preparation = preparation.validate(accounting).map_err(E::from)?;
     crate::heap_future::in_borrowed_frame!(accounting, |accounting| async move {

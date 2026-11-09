@@ -71,18 +71,14 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
         // engine and every caller hold a pointer instead of its change
         // collection and table reads, so neither their layout nor their
         // `Send` proof grows with it.
-        crate::heap_future::in_borrowed_frame!(
+        crate::heap_future::in_borrowed_frame!(accounting, |accounting| combiner::prepare(
+            self.0.owner,
+            self.0.request,
+            &mut self.0.intent,
+            self.0.limits,
             accounting,
-            |accounting| combiner::prepare(
-                self.0.owner,
-                self.0.request,
-                &mut self.0.intent,
-                self.0.limits,
-                accounting,
-                self.0.cancellation,
-            ),
-            erase_task
-        )
+            self.0.cancellation,
+        ))
     }
 
     async fn authenticate(

@@ -89,8 +89,8 @@ pub type Child<K> = acyclic_collections::page::Child<K, ObjectId>;
 
 pub(crate) use acyclic_collections::page::{Page, PageRef};
 
-pub(crate) trait Mutation<F: Format> {
-    type Error: std::error::Error;
+pub(crate) trait Mutation<F: Format>: acyclic_stream::ProviderPlatform {
+    type Error: std::error::Error + acyclic_stream::ProviderTask;
 
     fn key(&self) -> &F::Key;
     fn changes_cardinality(&self) -> bool;
