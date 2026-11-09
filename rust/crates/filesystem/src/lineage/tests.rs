@@ -55,9 +55,12 @@ async fn malformed_lineage_shape_never_enters_the_graph() {
     // validate their spelling. Exercise both names through registration and
     // recovery from the real adapter, including a canonical Unicode record.
     for (name, parent_name, valid) in [
-        ("caf\u{e9}", "parent", true),
-        ("cafe\u{301}", "parent", false),
-        ("child", "cafe\u{301}", false),
+        ("caf\u{e9}", None, true),
+        ("cafe\u{301}", None, false),
+        ("caf\u{e9}", Some("parent"), true),
+        ("cafe\u{301}", Some("parent"), false),
+        ("child", Some("caf\u{e9}"), true),
+        ("child", Some("cafe\u{301}"), false),
     ] {
         let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
         let cancellation = CancellationToken::new();
@@ -71,10 +74,10 @@ async fn malformed_lineage_shape_never_enters_the_graph() {
             ready: true,
             workspace_id: workspace(name),
             workspace_name: name.to_owned(),
-            parent_workspace_id: Some(workspace(parent_name)),
-            parent_workspace_name: Some(parent_name.to_owned()),
+            parent_workspace_id: parent_name.map(workspace),
+            parent_workspace_name: parent_name.map(str::to_owned),
             fork_generation: generation(1),
-            initial_generation: generation(2),
+            initial_generation: generation(if parent_name.is_some() { 2 } else { 1 }),
         };
         if valid {
             graph
