@@ -59,6 +59,9 @@ pub struct NativeActorsErrorMetadata {
     /// Original producer attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<NativeActorsCause>,
+    /// Original status and product metadata, shared with the other primitives.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<acyclic_auth::refusal::native::NativeRefusal>,
     #[napi(js_name = "contractCode")]
     #[serde(rename = "contractCode", skip_serializing_if = "Option::is_none")]
     /// Contract category.
@@ -201,6 +204,10 @@ fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
         grpc_code: metadata.grpc_code,
         grpc_name: metadata.grpc_name,
         credential_rejected: metadata.credential_rejected,
+        refusal: metadata
+            .refusal
+            .as_ref()
+            .map(acyclic_auth::refusal::native::NativeRefusal::from_parts),
         service_code: metadata.service_code,
         service_message: metadata.service_message,
         cause: metadata.cause.map(|cause| NativeActorsCause {
@@ -244,7 +251,30 @@ mod tests {
             detail.reason.as_ptr(),
             detail.request_id.as_ptr(),
         ];
+        let mut parts = acyclic_auth::refusal::Parts {
+            code: 7,
+            message: String::from("original grpc diagnostic"),
+            details: vec![255, 0].into(),
+            metadata: Default::default(),
+        };
+        parts
+            .metadata
+            .append("acyclic-unserved-reason", "future_refusal".parse().unwrap());
+        parts
+            .metadata
+            .append("acyclic-unserved-reason", "".parse().unwrap());
+        let refusal = acyclic_auth::refusal::Refusal::capture_owned(
+            parts,
+            acyclic_auth::refusal::Canonical {
+                code: 7,
+                message: "original grpc diagnostic",
+                details: &[255, 0],
+                owned: &[],
+            },
+            None,
+        );
         let metadata = client_error(client::Error::Service {
+            refusal,
             grpc_code: 7,
             message: String::from("original grpc diagnostic"),
             raw_details: vec![255, 0],
@@ -268,6 +298,15 @@ mod tests {
         );
         let json = serde_json::to_value(&metadata).expect("metadata must serialize");
         assert_eq!(json.get("rawDetails"), Some(&serde_json::json!([255, 0])));
+        assert_eq!(json["refusal"]["status"], 7);
+        assert_eq!(json["refusal"]["details"], serde_json::json!([255, 0]));
+        assert_eq!(
+            json["refusal"]["metadata"],
+            serde_json::json!([
+                ["acyclic-unserved-reason", b"future_refusal"],
+                ["acyclic-unserved-reason", []],
+            ])
+        );
         assert_eq!(
             json.get("cause"),
             Some(&serde_json::json!({

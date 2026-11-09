@@ -66,6 +66,7 @@ name = "acyclic-actors-napi"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "napi",
  "napi-build",
  "napi-derive",

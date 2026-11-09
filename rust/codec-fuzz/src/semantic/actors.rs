@@ -28,6 +28,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 message,
                 raw_details,
                 detail: actual,
+                ..
             } => {
                 assert_eq!(*grpc_code, code as i32);
                 assert_eq!(message, "original status");
