@@ -125,7 +125,7 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
             vec![resource, subscribe(1, "healthy", 0, false)],
         )))?;
         sender.unbounded_send(Ok(window(1)))?;
-        let mut output = serve_on_with_products(
+        let mut output = serve_on_with_products::<_, StreamError>(
             provider.clone(),
             testing::authority(),
             Products {
