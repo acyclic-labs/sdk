@@ -1,9 +1,7 @@
 //! Selected immutable attachment through the real account-scoped Objects engine.
 #![cfg(not(target_arch = "wasm32"))]
 use acyclic_actors::{domain, wire};
-use acyclic_manifest::{
-    AssetRole, DeploymentManifest, EntryAsset, EntryClosure, ManifestError, PreparedEntry,
-};
+use acyclic_manifest::{AssetRole, DeploymentManifest, EntryAsset, ManifestError, PreparedEntry};
 use acyclic_objects::{Blobs, Digest, MemoryMedium, Put, RootId, Store, Verified, wire::ErrorCode};
 use acyclic_stream::{OwnedBytes, testing::Counted};
 use acyclic_workers::deployment::{Client, CredentialProvider};
@@ -74,11 +72,6 @@ fn verified(put: Put) -> TestResult<Verified> {
 }
 
 fn preparation_controls() -> TestResult {
-    let oversized = vec![b' '; EntryClosure::MAX_ENCODED_BYTES + 1];
-    assert!(
-        matches!(EntryClosure::decode(&oversized, "production", "agent"), Err(error)
-        if error == ManifestError::invalid("entryClosure", "encoding-size"))
-    );
     let artifact: OwnedBytes = CODE.to_vec().into();
     let module: OwnedBytes = MODULE.to_vec().into();
     let addresses = [artifact.as_ptr(), module.as_ptr()];
@@ -471,18 +464,6 @@ async fn selected_entry_retains_exact_closure_and_loads_lazily() -> TestResult {
     assert_eq!(provider.requests().control(), 0);
     assert_eq!(first.retention.references, 1);
     accepted_configuration(store, &provider).await?;
-    let mut oversized = first.object.clone();
-    oversized.length = u64::try_from(EntryClosure::MAX_ENCODED_BYTES)? + 1;
-    let before = provider.requests();
-    assert!(
-        matches!(store.load(&oversized, "production", "agent").await, Err(Error::Manifest(error))
-        if error == ManifestError::invalid("entryClosure", "encoding-size"))
-    );
-    assert_eq!(
-        provider.requests().since(before).data(),
-        0,
-        "size admission precedes I/O"
-    );
     let retry = store.publish(&first_root, prepare(MODULE)?).await?;
     let second = store.publish(&second_root, prepare(MODULE)?).await?;
     assert_eq!(

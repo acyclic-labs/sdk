@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Bounded deployment manifest admission shared by Cloud and SDK tooling"
+description = "Deployment manifest admission shared by Cloud and SDK tooling"
 
 [dependencies]
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }

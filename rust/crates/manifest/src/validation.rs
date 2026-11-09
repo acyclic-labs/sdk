@@ -30,42 +30,6 @@ fn require(condition: bool, path: &str, rule: &str) -> Result<(), ManifestError>
         Err(ManifestError::invalid(path, rule))
     }
 }
-pub(crate) fn bound_json(value: &serde_json::Value) -> Result<usize, ManifestError> {
-    fn visit(
-        value: &serde_json::Value,
-        work: &mut usize,
-        nodes: &mut usize,
-    ) -> Result<(), ManifestError> {
-        *nodes += 1;
-        *work += 1;
-        require(*nodes <= MAX_NODES, "$", "node-limit")?;
-        match value {
-            serde_json::Value::Array(items) => {
-                require(items.len() <= MAX_ITEMS, "$", "collection-limit")?;
-                for item in items {
-                    visit(item, work, nodes)?;
-                }
-            }
-            serde_json::Value::Object(fields) => {
-                require(fields.len() <= MAX_ITEMS, "$", "field-limit")?;
-                for (key, value) in fields {
-                    require(key.len() <= MAX_STRING_BYTES, "$", "string-limit")?;
-                    *work += key.len();
-                    visit(value, work, nodes)?;
-                }
-            }
-            serde_json::Value::String(text) => {
-                require(text.len() <= MAX_STRING_BYTES, "$", "string-limit")?;
-                *work += text.len();
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    let mut work = 0;
-    visit(value, &mut work, &mut 0)?;
-    Ok(work)
-}
 fn identifier(value: &str) -> bool {
     acyclic_actors::domain::valid_environment_name(value)
 }
@@ -107,7 +71,6 @@ fn index<'a, T>(
     name: impl Fn(&T) -> &str,
     location: &str,
 ) -> Result<HashMap<&'a str, &'a T>, ManifestError> {
-    require(items.len() <= MAX_ITEMS, location, "collection-limit")?;
     let mut result = HashMap::new();
     for item in items {
         require(
@@ -118,51 +81,15 @@ fn index<'a, T>(
     }
     Ok(result)
 }
-fn asset_bucket(pattern: &ResourcePattern) -> Result<String, ManifestError> {
+// Grant admission has already checked the canonical component spelling.
+fn asset_bucket(pattern: &ResourcePattern) -> Result<&str, ManifestError> {
     let bucket = pattern
         .name
         .strip_prefix("objects:/")
         .and_then(|name| name.split('/').next())
         .filter(|name| !name.is_empty())
         .ok_or_else(|| ManifestError::invalid("assets", "objects-bucket"))?;
-    let bucket = acyclic_auth::decode_component(bucket)
-        .map_err(|_| ManifestError::invalid("assets", "objects-bucket"))?;
-    Ok(format!(
-        "objects:/{}",
-        acyclic_auth::encode_component(&bucket)
-    ))
-}
-fn stream_path(resource: &str) -> Result<String, ManifestError> {
-    require(
-        acyclic_auth::valid_resource(resource),
-        "resource",
-        "auth-resource",
-    )?;
-    let encoded = resource
-        .strip_prefix("streams:/")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ManifestError::invalid("resource", "streams-resource"))?;
-    let parts = encoded
-        .split('/')
-        .map(|part| {
-            acyclic_auth::decode_component(part)
-                .map_err(|_| ManifestError::invalid("resource", "auth-resource"))
-                .and_then(|bytes| {
-                    String::from_utf8(bytes)
-                        .map_err(|_| ManifestError::invalid("resource", "stream-path"))
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    // Encoded slashes belong to a component, not the hierarchical path syntax.
-    require(
-        !parts.iter().any(|part| part.contains('/')),
-        "resource",
-        "stream-component",
-    )?;
-    let path = parts.join("/");
-    acyclic_stream::StreamPath::new(&path)
-        .map_err(|_| ManifestError::invalid("resource", "stream-path"))?;
-    Ok(path)
+    Ok(&pattern.name[.."objects:/".len() + bucket.len()])
 }
 
 /// Admit a complete Rust value using the same rules as JSON and WASM ingress.
@@ -170,30 +97,32 @@ pub fn validate(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
     validate_work(manifest).map(|_| ())
 }
 
-/// Runs the actual validator and counts visited JSON bytes/nodes and indexed edges.
-/// Every lookup is hash-based; count depends linearly on document size and selections.
+/// Runs the actual validator and counts indexed declarations and selection edges.
+/// String validation also examines the supplied bytes; the count excludes that work.
+/// Admission does not serialize or materialize a second copy of the document.
 pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestError> {
     require(
         manifest.schema_version == 1,
         "$.schemaVersion",
         "unsupported-version",
     )?;
+    validate_environments(&manifest.environments)
+}
+
+fn validate_environments(environments: &[Environment]) -> Result<usize, ManifestError> {
     require(
-        !manifest.environments.is_empty() && manifest.environments.len() <= MAX_ENVIRONMENTS,
+        !environments.is_empty(),
         "$.environments",
-        "environment-limit",
+        "environments-empty",
     )?;
-    // Check native collection/string bounds before descriptor adapters can clone values.
-    native_bounds(manifest)?;
-    encoded_budget(manifest)?;
-    let mut work = bound_json(&serde_json::to_value(manifest).map_err(ManifestError::json)?)?;
-    let mut environments = HashSet::new();
+    let mut work = 0;
+    let mut environment_names = HashSet::new();
     let mut routes = HashSet::new();
     let mut patterns = HashSet::new();
-    for (ei, environment) in manifest.environments.iter().enumerate() {
+    for (ei, environment) in environments.iter().enumerate() {
         let p = format!("$.environments[{ei}]");
         require(
-            label(&environment.name) && environments.insert(&environment.name),
+            label(&environment.name) && environment_names.insert(&environment.name),
             &p,
             "environment-name",
         )?;
@@ -269,7 +198,7 @@ fn validate_environment<'a>(
             .ok_or_else(|| ManifestError::invalid(p, "asset-grant"))?;
         require(
             grant.grant.resource.prefix
-                && scope(&grant.grant.resource, &asset_bucket(&grant.grant.resource)?)
+                && scope(&grant.grant.resource, asset_bucket(&grant.grant.resource)?)
                 && actions
                     .get(grant.name.as_str())
                     .is_some_and(|actions| actions.contains("objects/get")),
@@ -363,16 +292,10 @@ fn grant_actions<'a>(
             p,
             "unsupported-binding-product",
         )?;
-        // Conversion invokes S1's resource/action validation, including product equality.
-        <ResourceGrant as wire::ContractType>::from_proto(
-            acyclic_auth::contract::ResourceGrantProto::from(grant.grant.0.clone()),
-        )
-        .map_err(|_| ManifestError::invalid(p, "auth-grant"))?;
-        require(
-            acyclic_auth::valid_resource(&grant.grant.resource.name),
-            p,
-            "auth-resource",
-        )?;
+        grant
+            .grant
+            .validate()
+            .map_err(|_| ManifestError::invalid(p, "auth-grant"))?;
         actions.insert(
             grant.name.as_str(),
             grant
@@ -587,7 +510,17 @@ fn validate_inboxes(
                 _ => None,
             });
     for (entry, inbox_binding, inbox, cp) in cron_targets.chain(timer_targets) {
-        let path = stream_path(&inbox.name)?;
+        let path =
+            acyclic_stream::wire_codec::session::stream_path(&inbox.name).map_err(|error| {
+                ManifestError::invalid(
+                    &cp,
+                    match error {
+                        acyclic_stream::StreamError::Unsupported => "streams-resource",
+                        acyclic_stream::StreamError::InvalidArgument => "auth-resource",
+                        _ => "stream-path",
+                    },
+                )
+            })?;
         require(!inbox.prefix, &cp, "exact-inbox")?;
         require(
             subscribed
@@ -628,15 +561,9 @@ pub fn lower_actor(
     entry: &Entry,
     idempotency_key: &str,
 ) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
-    validate(&DeploymentManifest {
-        schema_version: 1,
-        environments: vec![environment.clone()],
-    })?;
+    validate_environments(std::slice::from_ref(environment))?;
     require(
-        environment
-            .entries
-            .iter()
-            .any(|candidate| candidate == entry),
+        environment.entries.contains(entry),
         "entry",
         "undeclared-entry",
     )?;
@@ -704,163 +631,6 @@ fn lower_actor_unchecked(
     .map_err(|_| ManifestError::invalid("entry.runtime", "actors-admission"))
 }
 
-#[derive(Default)]
-struct NativeBudget {
-    bytes: usize,
-    items: usize,
-}
-impl NativeBudget {
-    fn text(&mut self, text: &str) -> Result<(), ManifestError> {
-        require(text.len() <= MAX_STRING_BYTES, "$", "string-limit")?;
-        // Exact quoted string cost, before any descriptor adapter clones strings.
-        self.bytes += 2 + text
-            .bytes()
-            .map(|b| match b {
-                b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
-                0..=31 => 6,
-                _ => 1,
-            })
-            .sum::<usize>();
-        require(self.bytes <= MAX_JSON_BYTES, "$", "json-size")
-    }
-    fn list<T>(&mut self, items: &[T]) -> Result<(), ManifestError> {
-        require(items.len() <= MAX_ITEMS, "$", "collection-limit")?;
-        self.items += items.len();
-        require(self.items <= MAX_NODES, "$", "node-limit")
-    }
-}
-
-// Stream exact JSON into a capped counter, never into a document-sized buffer.
-fn encoded_budget(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
-    struct Counter {
-        bytes: usize,
-        exceeded: bool,
-    }
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            if bytes.len() > MAX_JSON_BYTES - self.bytes {
-                self.exceeded = true;
-                return Err(std::io::Error::other("json-size"));
-            }
-            self.bytes += bytes.len();
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut counter = Counter {
-        bytes: 0,
-        exceeded: false,
-    };
-    let result = serde_json::to_writer(&mut counter, manifest);
-    if counter.exceeded {
-        return Err(ManifestError::invalid("$", "json-size"));
-    }
-    result.map_err(ManifestError::json)
-}
-
-fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
-    let mut budget = NativeBudget::default();
-    for env in &manifest.environments {
-        budget.text(&env.name)?;
-        budget.list(&env.entries)?;
-        budget.list(&env.bindings)?;
-        budget.list(&env.grants)?;
-        budget.list(&env.secrets)?;
-        budget.list(&env.crons)?;
-        budget.list(&env.assets)?;
-        budget.list(&env.routes)?;
-        budget.list(&env.worker_routes)?;
-        for binding in &env.bindings {
-            budget.text(binding.name())?;
-            budget.text(binding.capability())?;
-            budget.text(binding.resource())?;
-        }
-        for grant in &env.grants {
-            budget.text(&grant.name)?;
-            budget.text(&grant.grant.resource.name)?;
-            budget.list(&grant.grant.actions)?;
-            for action in &grant.grant.actions {
-                budget.text(action)?;
-            }
-        }
-        for secret in &env.secrets {
-            budget.text(secret.name())?;
-            budget.text(secret.reference().scope())?;
-            budget.text(secret.reference().name())?;
-        }
-        for entry in &env.entries {
-            if let EntryRuntime::ActorNamespace {
-                timer_inbox: Some(inbox),
-                ..
-            } = &entry.runtime
-            {
-                budget.text(&inbox.binding)?;
-                budget.text(&inbox.stream.name)?;
-            }
-            budget.text(&entry.name)?;
-            budget.text(&entry.module)?;
-            budget.text(&entry.artifact_sha256)?;
-            budget.list(&entry.assets)?;
-            for asset in &entry.assets {
-                budget.text(&asset.path)?;
-                budget.text(&asset.sha256)?;
-                budget.text(&asset.media_type)?;
-            }
-            budget.list(&entry.bindings)?;
-            budget.list(&entry.secrets)?;
-            for name in entry.bindings.iter().chain(&entry.secrets) {
-                budget.text(name)?;
-            }
-            if let Some(fetch) = &entry.fetch {
-                budget.text(&fetch.name)?;
-                budget.list(&fetch.egress)?;
-                for rule in &fetch.egress {
-                    budget.text(&rule.host)?;
-                }
-            }
-            if let EntryRuntime::ActorNamespace {
-                jurisdiction,
-                subscriptions,
-                ..
-            } = &entry.runtime
-            {
-                budget.text(jurisdiction)?;
-                budget.list(subscriptions)?;
-                for sub in subscriptions {
-                    budget.text(sub.subscription_id())?;
-                    budget.text(sub.stream_path())?;
-                }
-            }
-        }
-        for cron in &env.crons {
-            budget.text(&cron.name)?;
-            budget.text(&cron.schedule)?;
-            budget.text(&cron.entry)?;
-            budget.text(&cron.inbox_binding)?;
-            budget.text(&cron.inbox.name)?;
-        }
-        for asset in &env.assets {
-            budget.text(&asset.entry)?;
-            budget.text(&asset.binding)?;
-            budget.text(&asset.bundle_sha256)?;
-        }
-        for route in &env.routes {
-            budget.text(&route.host)?;
-            budget.text(&route.path_prefix)?;
-            budget.text(&route.entry)?;
-        }
-        for route in &env.worker_routes {
-            budget.text(&route.pattern)?;
-            if let Some(entry) = &route.entry {
-                budget.text(entry)?;
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Admit a deployable artifact against its validated manifest: the entry bytes match
 /// `artifactSha256`, and the supplied files are exactly the entry's declared assets,
 /// each with its declared size and digest. Paths and payloads are borrowed from
@@ -897,14 +667,19 @@ pub fn verify_artifact<'a>(
     require(supplied.len() == declared.len(), "assets", "missing-asset")
 }
 
+pub(crate) fn decode_sha256(
+    encoded: &str,
+    path: &str,
+    rule: &str,
+) -> Result<[u8; 32], ManifestError> {
+    let mut expected = [0; 32];
+    hex::decode_to_slice(encoded, &mut expected).map_err(|_| ManifestError::invalid(path, rule))?;
+    Ok(expected)
+}
+
 fn verify_sha256(bytes: &[u8], encoded: &str, path: &str, rule: &str) -> Result<(), ManifestError> {
     use sha2::Digest as _;
-    let mut expected = [0; 32];
-    require(
-        hex::decode_to_slice(encoded, &mut expected).is_ok(),
-        path,
-        rule,
-    )?;
+    let expected = decode_sha256(encoded, path, rule)?;
     let actual: [u8; 32] = sha2::Sha256::digest(bytes).into();
     require(actual == expected, path, rule)
 }
@@ -934,10 +709,7 @@ pub fn lower_worker(
     entry: &Entry,
     idempotency_key: &str,
 ) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
-    validate(&DeploymentManifest {
-        schema_version: 1,
-        environments: vec![environment.clone()],
-    })?;
+    validate_environments(std::slice::from_ref(environment))?;
     require(
         environment.entries.contains(entry),
         "entry",
@@ -1009,19 +781,7 @@ fn deployment_parts(
     bindings: &HashMap<&str, &Contract<Binding>>,
     entry: &Entry,
 ) -> Result<(acyclic_actors::domain::CodeSha256, Vec<Binding>), ManifestError> {
-    let bytes = entry
-        .artifact_sha256
-        .as_bytes()
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|pair| {
-            let text = std::str::from_utf8(pair)
-                .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))?;
-            u8::from_str_radix(text, 16)
-                .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let bytes = decode_sha256(&entry.artifact_sha256, "artifactSha256", "digest")?;
     let selected = entry
         .bindings
         .iter()
