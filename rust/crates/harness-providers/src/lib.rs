@@ -82,7 +82,7 @@ pub use model_spec::{ModelFeatures, ModelSpec};
 pub use reasoning::{ProjectedReasoning, project_native, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
-pub use spec::{Authentication, ProviderSpec, RetrySpec, TimeoutSpec};
+pub use spec::{Authentication, PromptCache, ProviderSpec, RetrySpec, TimeoutSpec};
 
 use acyclic_harness_core::{Error, Result};
 use serde_json::Value;

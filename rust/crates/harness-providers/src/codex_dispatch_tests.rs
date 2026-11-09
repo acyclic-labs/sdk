@@ -167,7 +167,16 @@ async fn cli_unauthorized_recovery_refreshes_then_streams_the_same_prepared_requ
     assert_eq!(requests[1].url, "https://auth.openai.com/oauth/token");
     assert_eq!(requests[2].headers["authorization"], "Bearer new-access");
     assert_eq!(requests[0].body, requests[2].body);
-    let body = crate::json(&requests[2].body)?;
+    let mut body = crate::json(&requests[2].body)?;
+    // The stable header (model, tools, instructions) names the cache route.
+    let key = body
+        .as_object_mut()
+        .and_then(|body| body.remove("prompt_cache_key"));
+    assert!(
+        key.as_ref()
+            .and_then(|key| key.as_str())
+            .is_some_and(|key| key.starts_with("prefix-v1:"))
+    );
     assert_eq!(
         body,
         json!({
@@ -282,6 +291,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness_
             max_event_bytes: 4096,
             retry: crate::RetrySpec::DEFAULT,
             timeouts: crate::TimeoutSpec::DEFAULT,
+            prompt_cache: crate::PromptCache::Native,
             token_counter: default_catalog()["openai"].token_counter.clone(),
         },
     )?;

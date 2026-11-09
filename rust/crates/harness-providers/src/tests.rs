@@ -375,6 +375,7 @@ pub(super) fn provider_with(
             max_event_bytes: 4096,
             retry: crate::RetrySpec::DEFAULT,
             timeouts: crate::TimeoutSpec::DEFAULT,
+            prompt_cache: crate::PromptCache::Native,
         }),
         tool_profile: None,
         thinking_levels: adapter == Adapter::Gemini,
@@ -599,7 +600,14 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
         match adapter {
             Adapter::Anthropic => {
                 assert!(sent[0].url.ends_with("/messages"));
-                assert_eq!(body["system"], "system");
+                assert_eq!(
+                    body["system"],
+                    json!([{"type":"text","text":"system","cache_control":{"type":"ephemeral","ttl":"5m"}}])
+                );
+                assert_eq!(
+                    body["cache_control"],
+                    json!({"type":"ephemeral","ttl":"5m"})
+                );
                 assert_eq!(body["max_tokens"], 64);
                 assert_eq!(sent[0].headers["x-api-key"], "scripted-key");
                 assert!(!sent[0].headers.contains_key("authorization"));
@@ -684,6 +692,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         max_event_bytes: 4096,
         retry: crate::RetrySpec::DEFAULT,
         timeouts: crate::TimeoutSpec::DEFAULT,
+        prompt_cache: crate::PromptCache::Native,
     };
     for base in [
         "http://example.test",

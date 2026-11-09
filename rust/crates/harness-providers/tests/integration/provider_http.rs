@@ -229,6 +229,7 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
             timeouts: acyclic_harness_providers::TimeoutSpec {
                 total_ms: Some(100),
             },
+            prompt_cache: acyclic_harness_providers::PromptCache::Native,
         },
     )?;
     registry.resolve("recorded/model")

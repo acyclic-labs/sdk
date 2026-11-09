@@ -5,6 +5,12 @@
 //! Then the window kernel: an overflow backstop keeps the header bytes, and
 //! the turn's next step extends the evicted request.
 //!
+//! Each request also passes through the provider's prompt cache (emulated by
+//! the shared mock model): every request after the first reads a prefix an
+//! earlier one wrote, and each extension reads further than the request it
+//! extends. Removing the cache emission (or, for Gemini's implicit cache,
+//! changing the prefix) makes every request miss.
+//!
 //! The run is the shared hosting composition (one [`Bound`] over in-memory
 //! streams and objects, the stock preset's executors) with each provider
 //! family's own projection and HTTP encoding. Only the transport is scripted.
@@ -27,12 +33,12 @@ use acyclic_harness::{
 };
 use acyclic_harness_providers::{
     Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
-    ModelSpec, ProviderSpec, Registry, TokenCountField, TokenCounterSpec,
+    ModelSpec, PromptCache, ProviderSpec, Registry, TokenCountField, TokenCounterSpec,
 };
 use acyclic_stream::{BoxProviderFuture, MemoryStream};
 use bytes::Bytes;
-use harness_mock_model::{Step, Tool};
-use serde_json::json;
+use harness_mock_model::{Cached, Step, Tool};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
@@ -54,13 +60,16 @@ fn holds(body: &[u8], needle: &[u8]) -> bool {
 struct Sent {
     agent: &'static str,
     body: Bytes,
+    cached: Cached,
 }
 
 /// Scripted replies in request order, then a plain answer for any later turn.
-/// Admission and completion usage both count one token per request byte.
+/// Admission and completion usage both count one token per request byte, and
+/// completion usage reports the emulated provider cache.
 struct Scripted {
     path: &'static str,
     state: Mutex<(&'static str, VecDeque<Step>, Vec<Sent>)>,
+    cache: Mutex<harness_mock_model::PromptCache>,
 }
 
 impl Scripted {
@@ -73,14 +82,22 @@ impl Scripted {
         if request.url.ends_with("/count") {
             return Ok(Bytes::from(format!(r#"{{"input_tokens":{tokens}}}"#)));
         }
+        let value: Value = serde_json::from_slice(&request.body)
+            .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+        let cached = self
+            .cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .observe(self.path, &value, 1);
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let agent = state.0;
         state.2.push(Sent {
             agent,
             body: request.body,
+            cached,
         });
         let step = state.1.pop_front().unwrap_or_else(|| text("ok"));
-        let frames = harness_mock_model::events_with_usage(self.path, &step, tokens)
+        let frames = harness_mock_model::events_with_cache(self.path, &step, tokens, cached)
             .ok_or_else(|| acyclic_harness::Error::Invalid("unscripted reply".into()))?;
         Ok(Bytes::from(frames.concat()))
     }
@@ -231,6 +248,7 @@ fn executors(
 
 fn resolve(
     adapter: Adapter,
+    prompt_cache: PromptCache,
     transport: Arc<Scripted>,
 ) -> TestResult<acyclic_harness_providers::ResolvedModel> {
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
@@ -266,6 +284,7 @@ fn resolve(
             max_event_bytes: 1 << 16,
             retry: acyclic_harness_providers::RetrySpec::DEFAULT,
             timeouts: acyclic_harness_providers::TimeoutSpec { total_ms: None },
+            prompt_cache,
         },
     )?;
     Ok(registry.resolve("recorded/model")?)
@@ -321,8 +340,68 @@ fn extends(family: &str, what: &str, earlier: &[u8], later: &[u8]) -> TestResult
     .into())
 }
 
-async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]) -> TestResult {
+/// Every request after the first reads a prefix an earlier request wrote, and
+/// a request that byte-extends its agent's previous one reads strictly further.
+fn hits<'a>(family: &str, sent: impl IntoIterator<Item = &'a Sent>) -> TestResult {
+    let mut last: BTreeMap<&str, &Sent> = BTreeMap::new();
+    for (index, request) in sent.into_iter().enumerate() {
+        let read = request.cached.read;
+        if index > 0 && read == 0 {
+            let agent = request.agent;
+            return Err(format!("{family}: request {index} ({agent}) missed the cache").into());
+        }
+        if let Some(previous) = last.insert(request.agent, request) {
+            if departure(&previous.body, &request.body).is_none() && read <= previous.cached.read {
+                return Err(format!(
+                    "{family}: request {index} ({}) extends its predecessor but read {read} <= {}",
+                    request.agent, previous.cached.read
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Removes every cache marker and key: the request without the cache emission.
+fn uncached(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("cache_control");
+            map.remove("prompt_cache_key");
+            map.values_mut().for_each(uncached);
+        }
+        Value::Array(items) => items.iter_mut().for_each(uncached),
+        _ => {}
+    }
+}
+
+/// Cached tokens the same requests read from a fresh cache after `change`.
+fn replayed<'a>(
+    path: &str,
+    sent: impl IntoIterator<Item = &'a Sent>,
+    change: impl Fn(usize, &mut Value),
+) -> TestResult<u64> {
+    let mut cache = harness_mock_model::PromptCache::default();
+    let mut read = 0;
+    for (index, request) in sent.into_iter().enumerate() {
+        let mut body: Value = serde_json::from_slice(&request.body)?;
+        change(index, &mut body);
+        read += cache.observe(path, &body, 1).read;
+    }
+    Ok(read)
+}
+
+async fn run(
+    adapter: Adapter,
+    prompt_cache: PromptCache,
+    path: &'static str,
+    family: &str,
+    messages: &[u8],
+    header: usize,
+) -> TestResult {
     let transport = Arc::new(Scripted {
+        cache: Mutex::default(),
         path,
         state: Mutex::new((
             "parent",
@@ -351,7 +430,7 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
             Vec::new(),
         )),
     });
-    let model = Arc::new(resolve(adapter, transport.clone())?);
+    let model = Arc::new(resolve(adapter, prompt_cache, transport.clone())?);
     let changing = Arc::new(Changing {
         before: executors(model.clone(), &[])?,
         after: executors(model, &["acyclic.added"])?,
@@ -553,6 +632,26 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
         agents.drain(&root).await?;
     }
     let tight = std::mem::take(&mut transport.state.lock().unwrap_or_else(|p| p.into_inner()).2);
+    // The provider cache serves every request after the first: extensions,
+    // forks, the page cut and the backstop eviction alike.
+    hits(family, sent.iter().chain(&tight))?;
+    let all = || sent.iter().chain(&tight);
+    assert!(
+        replayed(path, all(), |_, _| ())? > 0,
+        "{family}: replay never hit"
+    );
+    let control = if adapter == Adapter::Gemini {
+        // Implicit caching relies on a stable prefix alone.
+        replayed(path, all(), |index, body| {
+            body["systemInstruction"]["parts"][0]["text"] = json!(index.to_string());
+        })?
+    } else {
+        replayed(path, all(), |_, body| uncached(body))?
+    };
+    assert_eq!(
+        control, 0,
+        "{family}: requests without the cache form still hit"
+    );
     let bodies = |agent| -> Vec<&Bytes> {
         sent.iter()
             .filter(|sent| sent.agent == agent)
@@ -563,6 +662,14 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
     assert!(parent.len() >= 5, "{family}: parent sent {}", parent.len());
     assert!(child.len() >= 4, "{family}: child sent {}", child.len());
     assert_eq!(grandchild.len(), 1, "{family}: grandchild requests");
+    // R44: the stock preset's first request (model, tool declarations, system
+    // prompt, cache form and one short message) has a pinned size. Its prefix
+    // is paid by every request of every agent, so a change updates the pin here.
+    let pinned = parent[0].len();
+    assert_eq!(
+        pinned, header,
+        "{family}: the stock first request is {pinned} bytes, pinned at {header}"
+    );
     // The window advances only at its page cut: exactly one request starts
     // a new prefix, and every other one extends the request before it.
     let mut cut = None;
@@ -644,30 +751,51 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
 async fn anthropic_prefixes_extend_byte_for_byte() -> TestResult {
     run(
         Adapter::Anthropic,
+        PromptCache::Native,
         "messages",
         "anthropic",
         b"\"messages\":[",
+        4445,
     )
     .await
 }
 
 #[tokio::test]
 async fn responses_prefixes_extend_byte_for_byte() -> TestResult {
-    run(Adapter::Responses, "responses", "responses", b"\"input\":[").await
+    run(
+        Adapter::Responses,
+        PromptCache::Native,
+        "responses",
+        "responses",
+        b"\"input\":[",
+        4703,
+    )
+    .await
 }
 
 #[tokio::test]
 async fn gemini_prefixes_extend_byte_for_byte() -> TestResult {
     run(
         Adapter::Gemini,
+        PromptCache::Native,
         "models/model:streamGenerateContent",
         "gemini",
         b"\"contents\":[",
+        4369,
     )
     .await
 }
 
 #[tokio::test]
 async fn chat_prefixes_extend_byte_for_byte() -> TestResult {
-    run(Adapter::Chat, "chat/completions", "chat", b"\"messages\":[").await
+    // OpenRouter's routed form; generic Chat servers cache implicitly or not at all.
+    run(
+        Adapter::Chat,
+        PromptCache::Routed,
+        "chat/completions",
+        "chat",
+        b"\"messages\":[",
+        4594,
+    )
+    .await
 }

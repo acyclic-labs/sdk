@@ -20,6 +20,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         max_event_bytes: 4096,
         retry: crate::RetrySpec::DEFAULT,
         timeouts: crate::TimeoutSpec::DEFAULT,
+        prompt_cache: crate::PromptCache::Native,
         models: BTreeMap::from([(
             "m".into(),
             ModelSpec {

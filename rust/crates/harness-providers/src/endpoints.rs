@@ -17,15 +17,18 @@ fn chat(base_url: String, authentication: Authentication) -> Result<ProviderSpec
         max_event_bytes: 1024 * 1024,
         retry: RetrySpec::DEFAULT,
         timeouts: TimeoutSpec::DEFAULT,
+        prompt_cache: crate::PromptCache::Native,
     })
 }
 
 /// OpenRouter's Chat API; the key is supplied separately through `Credentials`.
 pub fn openrouter() -> Result<ProviderSpec> {
-    chat(
+    let mut spec = chat(
         "https://openrouter.ai/api/v1".into(),
         Authentication::ApiKey,
-    )
+    )?;
+    spec.prompt_cache = crate::PromptCache::Routed;
+    Ok(spec)
 }
 
 /// Amazon Bedrock Runtime's first-party Chat API with a Bedrock bearer API key.
