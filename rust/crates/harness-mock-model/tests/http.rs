@@ -14,6 +14,89 @@ impl Drop for Server {
 }
 
 #[tokio::test]
+async fn rejected_generations_do_not_warm_the_prompt_cache() {
+    let directory = tempfile::tempdir().unwrap();
+    let script = directory.path().join("script.json");
+    let record = directory.path().join("requests.jsonl");
+    let rejections = [
+        (
+            "rate",
+            429,
+            json!({"status":429,"json":{"error":"rate limited"}}),
+        ),
+        ("server", 500, json!({"status":500})),
+        ("binding", 500, json!({"text":["{{request:/missing}}"]})),
+        (
+            "encoding",
+            404,
+            json!({"custom_tools":[{"id":"patch","name":"apply_patch","input":"patch"}]}),
+        ),
+        ("unmatched", 409, Value::Null),
+    ];
+    let mut cases = serde_json::Map::new();
+    for (name, _, rejection) in &rejections {
+        let mut steps = Vec::new();
+        if !rejection.is_null() {
+            steps.push(rejection.clone());
+        }
+        steps.extend(std::iter::repeat_n(
+            json!({"when":{"contains":"\"accept\":true"}}),
+            2,
+        ));
+        cases.insert(
+            (*name).into(),
+            json!({"prompt_cache":true,"bytes_per_token":1,"steps":steps}),
+        );
+    }
+    std::fs::write(&script, json!({"cases":cases}).to_string()).unwrap();
+    let mut server = Server(
+        Command::new(acyclic_test_support::cargo_binary!("harness-mock-model"))
+            .args([
+                "--script",
+                script.to_str().unwrap(),
+                "--record",
+                record.to_str().unwrap(),
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut lines = BufReader::new(server.0.stdout.take().unwrap()).lines();
+    let ready: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    let client = reqwest::Client::new();
+    for (name, status, _) in rejections {
+        let url = format!("http://127.0.0.1:{}/{name}/v1/messages", ready["port"]);
+        let mut body = json!({"accept":false,"cache_control":{"type":"ephemeral"},"messages":[{"role":"user","content":"stable prompt"}]});
+        let rejected = client.post(&url).json(&body).send().await.unwrap();
+        assert_eq!(rejected.status(), status, "{name}");
+        rejected.bytes().await.unwrap();
+        body["accept"] = json!(true);
+        for hit in [false, true] {
+            let reply = client.post(&url).json(&body).send().await.unwrap();
+            assert_eq!(reply.status(), 200);
+            let wire = reply.text().await.unwrap();
+            let start: Value = wire
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .find(|event| event["type"] == "message_start")
+                .unwrap();
+            let usage = &start["message"]["usage"];
+            assert_eq!(
+                usage["cache_read_input_tokens"].as_u64().unwrap() > 0,
+                hit,
+                "{name}"
+            );
+            assert_eq!(
+                usage["cache_creation_input_tokens"].as_u64().unwrap() > 0,
+                !hit,
+                "{name}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn native_capability_authenticates_before_body_or_script_consumption() {
     let directory = tempfile::tempdir().unwrap();
     let script = directory.path().join("script.json");

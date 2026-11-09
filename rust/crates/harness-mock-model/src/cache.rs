@@ -3,7 +3,7 @@
 //! the request asks in that provider's form:
 //! - `messages` (Anthropic): a `cache_control` on the system block caches the
 //!   tools and system; the top-level automatic one caches the conversation,
-//!   looking back at most 20 messages for an earlier entry.
+//!   looking back at most 20 content blocks for an earlier entry.
 //! - `responses` and `chat/completions`: every message boundary, scoped by
 //!   `prompt_cache_key`; without a key nothing is reused. A routed Chat request
 //!   that also carries `cache_control` reports its writes.
@@ -54,6 +54,30 @@ fn strip(value: &mut Value) {
     }
 }
 
+/// Keep message metadata in the prefix while exposing each content-block boundary.
+fn content_blocks(messages: Vec<Value>) -> Vec<Value> {
+    let mut blocks = Vec::new();
+    for mut message in messages {
+        strip(&mut message);
+        let content = message
+            .as_object_mut()
+            .and_then(|map| map.remove("content"));
+        let content = match content {
+            Some(Value::Array(blocks)) => blocks,
+            Some(content) => vec![serde_json::json!({"type":"text","text":content})],
+            None => Vec::new(),
+        };
+        for (index, block) in content.into_iter().enumerate() {
+            blocks.push(if index == 0 {
+                serde_json::json!({"message":message,"block":block})
+            } else {
+                serde_json::json!({"block":block})
+            });
+        }
+    }
+    blocks
+}
+
 /// Boundaries after each prefix of `items`, following `head`, in order.
 fn boundaries(scope: &str, head: &Value, items: &[Value], width: u64) -> Vec<Boundary> {
     let mut hasher = DefaultHasher::new();
@@ -80,6 +104,17 @@ fn boundaries(scope: &str, head: &Value, items: &[Value], width: u64) -> Vec<Bou
 impl PromptCache {
     /// Observes one generation request and records what it writes.
     pub fn observe(&mut self, path: &str, body: &Value, width: u64) -> Cached {
+        self.observe_if(path, body, width, Some).unwrap_or_default()
+    }
+
+    /// A rejected reply cannot commit any of its prospective cache writes.
+    pub(crate) fn observe_if<T>(
+        &mut self,
+        path: &str,
+        body: &Value,
+        width: u64,
+        accept: impl FnOnce(Cached) -> Option<T>,
+    ) -> Option<T> {
         let width = width.max(1);
         let field = |name: &str| body.get(name).cloned().unwrap_or(Value::Null);
         let items = |name: &str| {
@@ -101,17 +136,16 @@ impl PromptCache {
                         "model": field("model"), "tools": field("tools"), "system": field("system"),
                     });
                     strip(&mut head);
-                    let mut messages = items("messages");
-                    messages.iter_mut().for_each(strip);
-                    let all = boundaries("messages", &head, &messages, width);
-                    let end = messages.len();
+                    let blocks = content_blocks(items("messages"));
+                    let all = boundaries("messages", &head, &blocks, width);
+                    let end = blocks.len();
                     let mut points = Vec::new();
                     if marked_system {
                         points.push(0);
                     }
                     let mut readable = points.clone();
                     if automatic {
-                        readable.extend(end.saturating_sub(LOOKBACK)..=end);
+                        readable.extend(end.saturating_sub(LOOKBACK - 1)..=end);
                         points.push(end);
                     }
                     (all, readable, points, true)
@@ -122,7 +156,7 @@ impl PromptCache {
                         .as_str()
                         .filter(|key| key.len() <= MAX_KEY)
                     else {
-                        return Cached::default();
+                        return accept(Cached::default());
                     };
                     let (name, head) = if path == "responses" {
                         (
@@ -150,7 +184,7 @@ impl PromptCache {
                     let end = contents.len();
                     (all, (0..=end).collect(), (0..=end).collect(), false)
                 }
-                _ => return Cached::default(),
+                _ => return accept(Cached::default()),
             };
         let read = readable
             .iter()
@@ -159,13 +193,15 @@ impl PromptCache {
             .max()
             .unwrap_or(0);
         let mut furthest = read;
-        for index in writes {
-            self.written.insert(all[index].id);
+        for &index in &writes {
             furthest = furthest.max(all[index].tokens);
         }
-        Cached {
+        let result = accept(Cached {
             read,
             write: if reported { furthest - read } else { 0 },
-        }
+        })?;
+        self.written
+            .extend(writes.into_iter().map(|index| all[index].id));
+        Some(result)
     }
 }

@@ -1,7 +1,7 @@
 //! Real loopback HTTP server. Stdout is a flushed, line-oriented event stream.
 use axum::body::{Body, Bytes};
 use futures::{StreamExt as _, stream};
-use harness_mock_model::{Cached, Engine, bind_result, events_with_cache, load_script};
+use harness_mock_model::{Engine, bind_result, load_script};
 use http_body_util::BodyExt as _;
 use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
@@ -67,11 +67,6 @@ fn answer(
         "count" | "responses/input_tokens" | "messages/count_tokens"
     );
     let tokens = host.engine.input_tokens(namespace, &body);
-    let cached = if count {
-        Cached::default()
-    } else {
-        host.engine.cached(namespace, endpoint, &body)
-    };
     let (step, reply) = if let Some((index, step)) = host.engine.take(namespace, endpoint, &body) {
         let status = step.status.unwrap_or(200);
         let bound = bind_result(step, &body);
@@ -84,17 +79,16 @@ fn answer(
                 Body::from(json.to_string())
             };
             response(status, "json", body)
-        } else if let Some(events) = bound
-            .as_ref()
-            .ok()
-            .and_then(|bound| events_with_cache(endpoint, bound, tokens.unwrap_or(0), cached))
-        {
+        } else if let Some(events) = bound.as_ref().ok().and_then(|bound| {
+            host.engine
+                .reply_events(namespace, endpoint, &body, bound, tokens.unwrap_or(0))
+        }) {
             let chunks = stream::iter(
                 events
                     .into_iter()
                     .map(|text| Ok::<_, Infallible>(Bytes::from(text))),
             );
-            let hold = step.hold;
+            let hold = bound.as_ref().is_ok_and(|step| step.hold);
             let tail = stream::once(async move {
                 if hold {
                     std::future::pending::<()>().await;

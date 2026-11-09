@@ -303,16 +303,30 @@ impl Engine {
         }
     }
 
-    /// Prompt-cache tokens of one generation request, for namespaces that
-    /// emulate caching; others report none.
-    pub fn cached(&mut self, namespace: &str, path: &str, body: &Value) -> Cached {
+    /// Encode a generation reply, committing cache writes only when encoding
+    /// succeeds and the scripted HTTP status accepts the request.
+    pub fn reply_events(
+        &mut self,
+        namespace: &str,
+        path: &str,
+        body: &Value,
+        step: &Step,
+        input_tokens: u64,
+    ) -> Option<Vec<String>> {
+        let encode = |cached| events_with_cache(path, step, input_tokens, cached);
         match self.script.cases.get(namespace) {
-            Some(case) if case.prompt_cache => self
-                .caches
-                .entry(namespace.to_owned())
-                .or_default()
-                .observe(path, body, case.bytes_per_token.map_or(1, NonZeroU64::get)),
-            _ => Cached::default(),
+            Some(case) if case.prompt_cache && (200..300).contains(&step.status.unwrap_or(200)) => {
+                self.caches
+                    .entry(namespace.to_owned())
+                    .or_default()
+                    .observe_if(
+                        path,
+                        body,
+                        case.bytes_per_token.map_or(1, NonZeroU64::get),
+                        encode,
+                    )
+            }
+            _ => encode(Cached::default()),
         }
     }
 
