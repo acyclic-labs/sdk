@@ -286,7 +286,9 @@ impl MachinesProvider for DaytonaProvider {
     }
     fn capability(&self, capability: ProviderCapability) -> Support {
         match capability {
-            ProviderCapability::WholeFile => Support::Supported,
+            ProviderCapability::WholeFile | ProviderCapability::RequestResponseExec => {
+                Support::Supported
+            }
             _ => Support::Unsupported,
         }
     }
@@ -355,6 +357,93 @@ impl MachinesProvider for DaytonaProvider {
         _command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
         Err(ProviderError::Unsupported("Daytona v0 text sessions do not supply binary duplex exec and terminal cleanup receipts; recovery: select an admitted duplex provider".into()))
+    }
+    async fn exec_request(
+        &self,
+        machine: MachineId,
+        command: ExecCommand,
+    ) -> Result<TextExecResult, ProviderError> {
+        if !command.stdin().is_empty() {
+            return Err(ProviderError::Unsupported(
+                "Daytona request/response exec has no stdin; recovery: upload input as a file"
+                    .into(),
+            ));
+        }
+        let now = self
+            .transport
+            .unix_ms()
+            .map_err(|_| invalid("exec deadline clock unavailable"))?;
+        let remaining = command
+            .expiry_unix_ms()
+            .map(|expiry| expiry.saturating_sub(now));
+        let timeout = match (remaining, command.timeout_ms()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if timeout == Some(0) {
+            return Err(ProviderError::Cancelled);
+        }
+        let deadline = timeout.map(|ms| now.saturating_add(ms));
+        let exchange = async {
+            // Lookup consumes the same budget as dispatch. A delayed lookup
+            // must never start a command after its original authority expires.
+            let sandbox = self.sandbox(machine).await?;
+            let proxy = sandbox
+                .toolbox_proxy_url
+                .ok_or_else(|| invalid("sandbox has no toolboxProxyUrl"))?;
+            let url = format!("{}/{machine}/process/execute", proxy.trim_end_matches('/'));
+            self.bound(&url)?;
+            let remaining = match deadline {
+                Some(deadline) => {
+                    let now = self
+                        .transport
+                        .unix_ms()
+                        .map_err(|_| invalid("exec deadline clock unavailable"))?;
+                    if now >= deadline {
+                        return Err(ProviderError::Cancelled);
+                    }
+                    Some(deadline - now)
+                }
+                None => None,
+            };
+            let quote = |word: &String| format!("'{}'", word.replace('\'', "'\\''"));
+            let body = json!({"command": command.argv().iter().map(quote).collect::<Vec<_>>().join(" "), "cwd": command.cwd(), "timeout": remaining.map(|ms| ms.div_ceil(1000))});
+            let bytes = self
+                .exchange(
+                    http::Method::POST,
+                    url,
+                    Bytes::from(body.to_string()),
+                    "application/json",
+                )
+                .await
+                .map_err(|_| ProviderError::CommandIndeterminate(machine))?;
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Receipt {
+                exit_code: i32,
+                result: String,
+            }
+            let receipt: Receipt = serde_json::from_slice(&bytes)
+                .map_err(|_| ProviderError::CommandIndeterminate(machine))?;
+            Ok(TextExecResult {
+                output: receipt.result,
+                exit_code: receipt.exit_code,
+            })
+        };
+        match timeout {
+            None => exchange.await,
+            Some(ms) => match futures::future::select(
+                Box::pin(exchange),
+                self.transport.delay(std::time::Duration::from_millis(ms)),
+            )
+            .await
+            {
+                futures::future::Either::Left((result, _)) => result,
+                futures::future::Either::Right(_) => {
+                    Err(ProviderError::CommandIndeterminate(machine))
+                }
+            },
+        }
     }
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         self.snapshot(&image)?;

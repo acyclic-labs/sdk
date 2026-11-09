@@ -192,19 +192,39 @@ async fn exec_admitted(
     provider: &dyn MachinesProvider,
     machine: &MachineObservation,
 ) -> Result<(), String> {
-    match provider
+    if provider.capability(ProviderCapability::RequestResponseExec) == Support::Supported {
+        let receipt = provider
+            .exec_request(machine.id, probe(machine.contract.platform)?)
+            .await
+            .map_err(|error| error.to_string())?;
+        if receipt.exit_code != 0 {
+            return Err("request/response probe failed".into());
+        }
+    } else {
+        require_unsupported(
+            provider
+                .exec_request(machine.id, probe(machine.contract.platform)?)
+                .await,
+        )?;
+    }
+    if provider.capability(ProviderCapability::BinaryDuplexExec) == Support::Unsupported {
+        return require_unsupported(
+            provider
+                .exec(machine.id, probe(machine.contract.platform)?)
+                .await,
+        );
+    }
+    let output = provider
         .exec(machine.id, probe(machine.contract.platform)?)
         .await
-    {
-        Ok(mut output) => {
-            while let Some(frame) = output.next().await {
-                frame.map_err(|error| error.to_string())?;
-            }
-            Ok(())
-        }
-        Err(error) if matches!(error.classification(), ProviderError::Unsupported(_)) => Ok(()),
-        Err(error) => Err(error.to_string()),
+        .map_err(|error| error.to_string())?;
+    let output = crate::capture_exec(output, u64::MAX)
+        .await
+        .map_err(|error| error.to_string())?;
+    if output.exit_code != Some(0) || output.stop.is_some() {
+        return Err("binary duplex probe lacks a successful terminal receipt".into());
     }
+    Ok(())
 }
 
 /// Exec wakes a Machine suspended under AfterIdle within the same call, and

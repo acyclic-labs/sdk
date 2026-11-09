@@ -15,6 +15,11 @@ replies retain uncertainty; explicit recover uses the original key label. There
 is no readiness polling or automatic redispatch. Lifecycle events, operations,
 checkpoint/fork, usage, destroy receipts and binary duplex exec are Unsupported.
 
-Hosted copy-in/commit-out is incomplete. Opening a shell workspace without an
-admitted physical selected-volume binding continues to refuse. This adapter
-is not yet sufficient for Cloud Swarm shell/file workspace admission.
+Shell execution selects the textual request/response API and labels its output
+as combined text. Binary stdin and binary duplex exec refuse explicitly. Lost
+terminal replies remain indeterminate and are never redispatched.
+
+The shared workspace layer copies the original admitted logical volume at bind
+time whenever attachment is Unsupported. It publishes file changes through the
+existing workspace transaction facade before a turn settles, using that turn's
+original identity. Native attaching providers keep their physical binding.

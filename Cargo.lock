@@ -699,6 +699,7 @@ dependencies = [
  "shuttle",
  "sse-stream",
  "syn 3.0.9",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

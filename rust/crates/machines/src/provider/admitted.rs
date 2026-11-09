@@ -33,6 +33,7 @@ pub(crate) trait NativeMachine: Send + Sync + 'static {
 }
 
 pub(crate) struct AdmittedMachine<B> {
+    attaches_volume: bool,
     backend: B,
     observation: Mutex<(MachineObservation, Option<IdempotencyKey>)>,
     journal: Journal,
@@ -104,6 +105,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         // AfterIdle producer is one parked task per Machine, woken only by its
         // own activity or idle deadline.
         let machine = Arc::new_cyclic(|this| Self {
+            attaches_volume: observation.contract.selected_volume_ref.is_some(),
             backend,
             observation: Mutex::new((observation, None)),
             journal,
@@ -337,6 +339,16 @@ impl<B: NativeMachine> AdmittedMachine<B> {
 
 #[async_trait]
 impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
+    fn capability(&self, capability: ProviderCapability) -> Support {
+        match capability {
+            ProviderCapability::WholeFile
+            | ProviderCapability::RequestResponseExec
+            | ProviderCapability::Checkpoint
+            | ProviderCapability::Usage => Support::Unsupported,
+            ProviderCapability::AttachVolume if !self.attaches_volume => Support::Unsupported,
+            _ => Support::Supported,
+        }
+    }
     fn assurance(&self) -> ProviderAssurance {
         ProviderAssurance::CustomerHosted
     }

@@ -57,10 +57,11 @@ mcp-stdio = ["acyclic-mcp/stdio", "tokio/process", "tokio/io-util", "dep:toml"]
 search-http = []
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls"]
 objects = ["dep:acyclic-objects"]
-machines = ["dep:acyclic-machines"]
+machines = ["filesystem", "dep:acyclic-machines", "dep:tar"]
 grpc = ["acyclic-stream/grpc"]
 
 [dependencies]
+tar = { version = "=0.4.46", default-features = false, optional = true }
 acyclic-mcp = { version = "=0.2.0", path = "../mcp" }
 oxrdf = { version = "=0.3.5", default-features = false, optional = true }
 oxttl = { version = "=0.2.5", default-features = false, optional = true }

@@ -23,6 +23,9 @@ pub struct MachinesWorkspace {
     write: String,
     executable: String,
     shell: &'static acyclic_host_platform::shell::ShellSpec,
+    os: acyclic_machines::OperatingSystem,
+    pub(crate) copied: Option<Arc<dyn crate::workspace::copied::CopiedWorkspace>>,
+    pub(crate) copy_required: bool,
 }
 
 impl MachinesWorkspace {
@@ -36,15 +39,16 @@ impl MachinesWorkspace {
         signed: Scope,
         verifier: AuthorityVerifier,
     ) -> Result<Self> {
-        if host
+        let copy_required = host
             .provider
             .capability(acyclic_machines::ProviderCapability::AttachVolume)
-            == acyclic_machines::Support::Unsupported
-        {
-            return Err(Error::Unsupported("provider requires a copied workspace; recovery: retain the selected volume and admit its materialize/commit binding before opening shell tools".into()));
-        }
+            == acyclic_machines::Support::Unsupported;
         if host.machine_id(&sandbox)? != admitted.id
-            || admitted.contract.selected_volume_ref.as_ref() != Some(&volume.into())
+            || if copy_required {
+                admitted.contract.selected_volume_ref.is_some()
+            } else {
+                admitted.contract.selected_volume_ref.as_ref() != Some(&volume.into())
+            }
             || !matches!(
                 admitted.state,
                 acyclic_machines::MachineState::Running | acyclic_machines::MachineState::Suspended
@@ -74,6 +78,9 @@ impl MachinesWorkspace {
             write,
             executable: "bash".into(),
             shell: &acyclic_host_platform::shell::BASH,
+            os: admitted.contract.platform.os,
+            copied: None,
+            copy_required,
         })
     }
 
@@ -85,6 +92,43 @@ impl MachinesWorkspace {
     /// The exact source-admitted selection retained by this workspace binding.
     pub fn selected_volume(&self) -> &VolumeRef {
         &self.volume
+    }
+
+    /// Materializes the selected logical volume for any non-attaching provider.
+    /// The caller opens this workspace through the original filesystem facade.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn bind_copy<
+        A: acyclic_fs::AsyncAuthorityStore,
+        O: acyclic_fs::AsyncObjectStore,
+    >(
+        mut self,
+        workspace: acyclic_fs::Workspace<A, O>,
+    ) -> Result<Self> {
+        if self.copy_required {
+            let access = crate::filesystem::WorkspaceAccess::new(
+                &self.verifier,
+                &self.signed,
+                self.signed.capabilities(),
+                Some(&self.volume),
+            )?;
+            let deadline = self
+                .verifier
+                .expiry(&self.signed)?
+                .checked_mul(1000)
+                .ok_or_else(|| Error::Invalid("workspace expiry overflow".into()))?;
+            self.copied = Some(
+                crate::workspace::copied::bind(
+                    self.host.clone(),
+                    self.sandbox.clone(),
+                    workspace,
+                    access,
+                    deadline,
+                    self.os,
+                )
+                .await?,
+            );
+        }
+        Ok(self)
     }
 
     /// Selects the actual Machine's shell from its trusted hosting preset.
@@ -151,6 +195,7 @@ impl MachinesWorkspace {
                 "exit_code": output.exit_code,
                 "stdout": String::from_utf8_lossy(&output.stdout),
                 "stderr": String::from_utf8_lossy(&output.stderr), "stop": stop,
+                "output_combined": self.host.provider.capability(acyclic_machines::ProviderCapability::BinaryDuplexExec) == acyclic_machines::Support::Unsupported,
             }),
         })
     }
@@ -175,6 +220,9 @@ impl MachinesWorkspace {
         maximum_output: Option<u64>,
         task_deadline: Option<u64>,
     ) -> Result<acyclic_machines::ExecStream> {
+        if self.copy_required && self.copied.is_none() {
+            return Err(Error::Unsupported("copied workspace is not bound; recovery: bind the admitted filesystem workspace before shell dispatch".into()));
+        }
         input.validate()?;
         let expiry = self.verifier.expiry(&self.signed)?.checked_mul(1000)
             .ok_or_else(|| Error::Invalid("machine authority expiry overflow; recovery: issue an exactly representable expiry".into()))?;
@@ -191,7 +239,11 @@ impl MachinesWorkspace {
         if let Some(maximum) = maximum_output {
             command = command.with_output_limit(maximum);
         }
-        if let Some(cwd) = input.cwd.filter(|value| !value.is_empty()) {
+        let cwd = match &self.copied {
+            Some(copy) => Some(copy.cwd(input.cwd.as_deref())?),
+            None => input.cwd.filter(|value| !value.is_empty()),
+        };
+        if let Some(cwd) = cwd {
             command = command
                 .with_cwd(cwd)
                 .map_err(|error| map_error(error, None))?;
@@ -201,6 +253,14 @@ impl MachinesWorkspace {
 }
 
 impl ToolExecutor for MachinesWorkspace {
+    fn settle_workspace(&self, turn: crate::OperationId) -> BoxProviderFuture<'_, Result<()>> {
+        Box::pin(async move {
+            match &self.copied {
+                Some(copy) => copy.settle(turn).await,
+                None => Ok(()),
+            }
+        })
+    }
     fn read_path<'a>(
         &'a self,
         path: &'a str,
