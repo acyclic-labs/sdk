@@ -7,7 +7,7 @@ fn operation_indeterminate_preserves_the_exact_provider_operation() -> Result<()
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(matches!(
         map_error(ProviderError::OperationIndeterminate(operation), None),
-        Error::Indeterminate(actual) if actual == OperationId::from_bytes(operation.as_bytes())
+        Error::MachinesIndeterminate { operation_id: actual, .. } if actual == OperationId::from_bytes(operation.as_bytes())
     ));
     Ok(())
 }
@@ -93,11 +93,30 @@ fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate(
         assert!(matches!(&retained, Error::Machines(actual) if *actual == cause));
         assert_eq!(retained.code(), code);
         match map_error(cause.clone(), Some(receipt)) {
-            Error::Indeterminate(actual) => assert!(uncertain && actual == receipt),
+            Error::MachinesIndeterminate {
+                operation_id: actual,
+                cause: retained,
+            } => {
+                assert!(uncertain && actual == receipt);
+                assert_eq!(retained, cause);
+            }
             Error::Machines(actual) => assert!(!uncertain && actual == cause),
             other => return Err(other),
         }
     }
+    let cause = ProviderError::CommandIndeterminate(machine).with_cause(std::io::Error::other(
+        "original guest command transport failure",
+    ));
+    let retained = map_error(cause, Some(receipt));
+    let wire = crate::wire_codec::encode_error(&retained);
+    assert_eq!(wire.code, ErrorCode::Indeterminate as i32);
+    assert_eq!(wire.operation_id, receipt.to_string());
+    assert!(
+        wire.message
+            .contains("original guest command transport failure")
+    );
+    assert!(std::error::Error::source(&retained).is_some());
+    assert!(retained.leaves_effect_uncertain());
     Ok(())
 }
 
@@ -306,6 +325,72 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
     }
     let grants = crate::Capabilities::new([read, write, shell]);
     let scope = issuer.bootstrap_scope("full", &grants, None, &mut None)?;
+    #[cfg(feature = "native-execution")]
+    {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let mut native = admitted.clone();
+        native.contract.platform =
+            acyclic_machines::Platform::host(acyclic_machines::DeviceKind::Desktop)
+                .ok_or_else(|| Error::Unsupported("no native platform".into()))?;
+        let provider = acyclic_machines::local::provider(
+            native.clone(),
+            acyclic_machines::local::LocalOptions {
+                cwd: directory.path().to_path_buf(),
+                environment: Default::default(),
+                process_custody: None,
+            },
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            acyclic_stream::StreamPath::new("native-shell")
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        )
+        .await
+        .map_err(Error::Machines)?;
+        let workspace = MachinesHost::new(provider, host.provider_ref.clone())?.workspace(
+            native,
+            &volume,
+            scope.clone(),
+            issuer.verifier(&mut None)?,
+        )?;
+        let operation = OperationId::from_bytes([8; 16]);
+        let failure = workspace
+            .run_shell(
+                operation,
+                crate::tools::ShellInput {
+                    command: crate::tools::shell::ShellCommand::Argv(vec![
+                        directory
+                            .path()
+                            .join("absent-executable")
+                            .to_string_lossy()
+                            .into_owned(),
+                    ]),
+                    cwd: None,
+                    timeout_ms: None,
+                    target: None,
+                },
+                1024,
+                None,
+            )
+            .await
+            .unwrap_err();
+        let Error::MachinesIndeterminate {
+            operation_id,
+            cause,
+        } = &failure
+        else {
+            panic!("shell capture erased its original provider cause: {failure}");
+        };
+        assert_eq!(*operation_id, operation);
+        assert_eq!(
+            cause.classification(),
+            &ProviderError::CommandIndeterminate(admitted.id)
+        );
+        let original = std::error::Error::source(cause)
+            .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+            .expect("shell capture erased its original OS error");
+        assert_eq!(original.kind(), std::io::ErrorKind::NotFound);
+        assert!(original.raw_os_error().is_some());
+        assert!(failure.to_string().contains(&original.to_string()));
+    }
     let workspace = MachinesWorkspace::new(
         host,
         sandbox,

@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "conformance")]
+use crate::agent::AgentId;
 use acyclic_machines::*;
 use acyclic_stream::MemoryStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -6,8 +8,8 @@ use tokio::sync::watch;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-// Every operation reaches the real simulator. Only its original inspection
-// response is held, so overlapping first uses are deterministic.
+// Every operation reaches the real simulator. Inspection can be held for
+// deterministic first uses; forwarded failures retain their original cause.
 struct HeldInspection {
     inner: SimulatedMachines,
     ready: watch::Receiver<bool>,
@@ -40,7 +42,10 @@ macro_rules! forward {
                 Ok(observed)
             }
         $(async fn $name(&self, $($argument: $kind),*) -> std::result::Result<$result, ProviderError> {
+            // Retain the same simulator-produced refusal across the provider
+            // boundary; do not substitute a scripted result or wire response.
             self.inner.$name($($argument),*).await
+                .map_err(|error| error.clone().with_cause(error))
         })*
         }
     };
@@ -72,6 +77,80 @@ forward! {
         inspect_operation(operation: MachinesOperationId) -> OperationObservation;
         cancel(operation: MachinesOperationId) -> OperationObservation;
         watch_operation(operation: MachinesOperationId) -> OperationStream;
+}
+
+#[tokio::test]
+#[cfg(feature = "conformance")]
+async fn retained_refusals_leave_original_sources_for_their_last_fork() -> TestResult {
+    let (_release, ready) = watch::channel(true);
+    let provider = Arc::new(HeldInspection {
+        inner: SimulatedMachines::default(),
+        ready,
+        entered: tokio::sync::Notify::new(),
+        creates: AtomicUsize::new(0),
+        inspections: AtomicUsize::new(0),
+    });
+    let provider_ref =
+        ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
+    let host = MachinesHost::new(provider.clone(), provider_ref.clone())?;
+    let machines = AgentMachines::new(
+        Arc::new(MemoryStream::default()),
+        vec![ProvisionedTarget {
+            name: "machine".into(),
+            host: host.clone(),
+            artifact: Some(ArtifactRef::new(provider_ref, [1; 32].into(), None)?),
+            network_policy_digest: [2; 32],
+        }],
+    )?;
+    let parent = AgentPath::root(&AgentId::from_bytes([21; 16]));
+    let original = machines.machine(&parent, "machine").await?;
+    let children = [
+        parent.child(&AgentId::from_bytes([22; 16]))?,
+        parent.child(&AgentId::from_bytes([23; 16]))?,
+        parent.child(&AgentId::from_bytes([24; 16]))?,
+    ];
+    for child in &children {
+        machines.machine(child, "machine").await?;
+    }
+
+    let released = machines.destroy(&parent).await;
+    assert_eq!(host.inspect(&original).await?.state, MachineState::Running);
+    for child in children {
+        machines.destroy(&child).await?;
+    }
+    machines.destroy(&parent).await?;
+    assert_eq!(
+        host.inspect(&original).await?.state,
+        MachineState::Destroyed
+    );
+    let mut conformance = Vec::new();
+    for inner in [
+        SimulatedMachines::default(),
+        SimulatedMachines::with_capabilities(std::collections::BTreeSet::from([
+            Capability::SuspendResume,
+        ])),
+    ] {
+        let (_release, ready) = watch::channel(true);
+        conformance.push(
+            acyclic_machines::conformance::verify(&acyclic_machines::conformance::Fixture::new(
+                HeldInspection {
+                    inner,
+                    ready,
+                    entered: tokio::sync::Notify::new(),
+                    creates: AtomicUsize::new(0),
+                    inspections: AtomicUsize::new(0),
+                },
+                Image::custom([17; 32])?,
+                [19; 32],
+            ))
+            .await,
+        );
+    }
+    assert!(
+        released.is_ok() && conformance.iter().all(std::result::Result::is_ok),
+        "retained refusals changed release {released:?} or conformance {conformance:?}"
+    );
+    Ok(())
 }
 
 struct NeverRun;

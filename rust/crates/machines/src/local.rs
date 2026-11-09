@@ -55,10 +55,9 @@ impl<H: CaptureHandler, C> Output<H, C> {
 
     async fn finish(mut self) -> Result<C, ProviderError> {
         if let Some(capture) = self.capture.take() {
-            let outcome = capture
-                .finish()
-                .await
-                .map_err(|_| ProviderError::CommandIndeterminate(self.machine))?;
+            let outcome = capture.finish().await.map_err(|error| {
+                ProviderError::CommandIndeterminate(self.machine).with_cause(error)
+            })?;
             return Ok((self.completed)(outcome.handler));
         }
         self.custody
@@ -94,10 +93,11 @@ impl<H: CaptureHandler, C> Stream for Output<H, C> {
         state.capture = None;
         let outcome = match outcome {
             Ok(outcome) => outcome,
-            Err(_) => {
+            Err(error) => {
                 return Poll::Ready(Some(Err(ProviderError::CommandIndeterminate(
                     state.machine,
-                ))));
+                )
+                .with_cause(error))));
             }
         };
         state.custody = Some((state.completed)(outcome.handler));

@@ -78,7 +78,10 @@ async fn event_follow_retains_cursor_and_original_terminal_over_authenticated_rp
         drop(provider);
         if !terminate {
             assert!(matches!(
-                events.next().await,
+                events
+                    .next()
+                    .await
+                    .map(|result| result.map_err(|error| error.classification().clone())),
                 Some(Err(ProviderError::Unavailable))
             ));
         }

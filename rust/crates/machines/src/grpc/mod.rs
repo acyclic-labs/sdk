@@ -45,7 +45,7 @@ impl<E: RpcEndpoint> Provider<E> {
                 .await
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
-                    read_error(&error)
+                    read_error(error)
                 })?
                 .into_inner();
             decode_qualification(response, expected.as_ref())

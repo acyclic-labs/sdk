@@ -89,12 +89,20 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
     // An expired admission must refuse before creating that real process.
     let mut invalid = command();
     invalid.argv.push("nul\0".into());
-    for command in [command().with_expiry(1), invalid] {
+    for (command, kind) in [
+        (command().with_expiry(1), io::ErrorKind::Interrupted),
+        (invalid, io::ErrorKind::InvalidInput),
+    ] {
         let mut refused = local.exec(command, handler(), None).await;
+        let failure = refused.next().await.unwrap().unwrap_err();
         assert!(matches!(
-            refused.next().await,
-            Some(Err(ProviderError::Rejected(_)))
+            failure.classification(),
+            ProviderError::Rejected(_)
         ));
+        let original = std::error::Error::source(&failure)
+            .and_then(|cause| cause.downcast_ref::<io::Error>())
+            .expect("native refusal erased its original admission error");
+        assert_eq!(original.kind(), kind);
         assert!(Arc::ptr_eq(&refused.finish().await?.buffers, &buffers));
         assert!(!marker.exists());
     }
@@ -130,6 +138,29 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
     assert!(Arc::ptr_eq(&original.buffers, &buffers));
     assert_eq!(std::fs::read(&marker)?, cwd.to_string_lossy().as_bytes());
     std::fs::remove_file(marker)?;
+    // Exercise the shipped spawn boundary against the OS, rather than a
+    // callback that constructs an error before native process admission.
+    let absent = cwd.join(format!("acyclic-absent-{}", Uuid::new_v4()));
+    let mut failed_spawn = local
+        .exec(
+            ExecCommand::new(vec![absent.to_str().unwrap().into()], None)?,
+            handler(),
+            None,
+        )
+        .await;
+    let failure = failed_spawn.next().await.unwrap().unwrap_err();
+    assert_eq!(
+        failure.classification(),
+        &ProviderError::CommandIndeterminate(machine)
+    );
+    let original = std::error::Error::source(&failure)
+        .and_then(|cause| cause.downcast_ref::<io::Error>())
+        .expect("native spawn failure erased the original OS error");
+    assert_eq!(original.kind(), io::ErrorKind::NotFound);
+    assert!(original.raw_os_error().is_some());
+    assert!(failure.to_string().contains(&original.to_string()));
+    assert!(failed_spawn.next().await.is_none());
+    assert!(Arc::ptr_eq(&failed_spawn.finish().await?.buffers, &buffers));
     let mut lost = local
         .exec(
             command(),
@@ -141,9 +172,15 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
             None,
         )
         .await;
-    assert!(
-        matches!(lost.next().await, Some(Err(ProviderError::CommandIndeterminate(id))) if id == machine)
+    let failure = lost.next().await.unwrap().unwrap_err();
+    assert_eq!(
+        failure.classification(),
+        &ProviderError::CommandIndeterminate(machine)
     );
+    let original = std::error::Error::source(&failure)
+        .and_then(|cause| cause.downcast_ref::<io::Error>())
+        .expect("native owner loss erased its original launch error");
+    assert_eq!(original.kind(), io::ErrorKind::BrokenPipe);
     assert!(
         matches!(lost.finish().await, Err(ProviderError::CommandIndeterminate(id)) if id == machine)
     );
@@ -222,7 +259,15 @@ async fn public_output_moves_native_buffers_and_preserves_terminal_cleanup() -> 
                 Ok(frame) => frame,
                 Err(error) => {
                     assert!(lose_owner);
-                    assert_eq!(error, ProviderError::CommandIndeterminate(machine));
+                    assert_eq!(
+                        error.classification(),
+                        &ProviderError::CommandIndeterminate(machine)
+                    );
+                    let original = std::error::Error::source(&error)
+                        .and_then(|cause| cause.downcast_ref::<io::Error>())
+                        .expect("native capture completion erased its original task error");
+                    assert_eq!(original.kind(), io::ErrorKind::Other);
+                    assert!(original.get_ref().is_some());
                     assert!(!terminal);
                     terminal = true;
                     continue;

@@ -66,24 +66,70 @@ fn managed_usage_rejects_missing_lineage_authority() {
 }
 
 #[test]
-fn mutation_errors_preserve_unsupported_capabilities() {
+fn rpc_failures_preserve_original_causes_and_outcomes() {
     let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")
         .unwrap_or_else(|_| unreachable!());
     assert_eq!(
-        mutation_error(key, &tonic::Status::unimplemented("capability unavailable"),),
-        ProviderError::Unsupported("capability unavailable".into())
+        mutation_error(key, tonic::Status::unimplemented("capability unavailable"))
+            .classification(),
+        &ProviderError::Unsupported("capability unavailable".into())
     );
     assert_eq!(
-        watch_error(key, &tonic::Status::unimplemented("watch unavailable")),
-        ProviderError::Indeterminate(key)
+        watch_error(key, tonic::Status::unimplemented("watch unavailable")).classification(),
+        &ProviderError::Indeterminate(key)
     );
     assert_eq!(
         watch_error(
             key,
-            &tonic::Status::resource_exhausted("watch capacity unavailable"),
-        ),
-        ProviderError::Indeterminate(key)
+            tonic::Status::resource_exhausted("watch capacity unavailable"),
+        )
+        .classification(),
+        &ProviderError::Indeterminate(key)
     );
+    let machine = MachineId::from_digest([1; 32]);
+    for code in [
+        Code::Unavailable,
+        Code::DeadlineExceeded,
+        Code::Cancelled,
+        Code::Unknown,
+        Code::Internal,
+        Code::NotFound,
+        Code::PermissionDenied,
+        Code::Unimplemented,
+    ] {
+        let status = Status::with_details(
+            code,
+            "original Machines refusal",
+            b"original-status-details".as_slice().into(),
+        );
+        let failures = [
+            ("read", read_error(status.clone())),
+            ("mutation", mutation_error(key, status.clone())),
+            ("watch", watch_error(key, status.clone())),
+            ("recovery", recovery_error(key, status.clone())),
+            (
+                "command admission",
+                guest_error(ProviderError::CommandIndeterminate(machine), status.clone()),
+            ),
+        ];
+        let lost: Vec<_> = failures
+            .iter()
+            .filter_map(|(name, error)| {
+                let source = std::error::Error::source(error)
+                    .and_then(|source| source.downcast_ref::<Status>());
+                (!source.is_some_and(|source| {
+                    source.code() == code
+                        && source.message() == status.message()
+                        && source.details() == status.details()
+                }))
+                .then_some(*name)
+            })
+            .collect();
+        assert!(
+            lost.is_empty(),
+            "{code:?} lost original sources at {lost:?}"
+        );
+    }
 }
 
 pub(super) fn wire_contract(capabilities: &[wire::Capability]) -> wire::MachineContract {
