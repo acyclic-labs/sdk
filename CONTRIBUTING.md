@@ -91,6 +91,9 @@ retain targeted optimization for executable readiness. `--release` stays a
 fast incremental build for development; the shipped `acyclic` executable comes
 from `node scripts/build-product.mjs`, which uses the `dist` profile (fat LTO,
 one codegen unit, stripped) and writes `target/[<triple>/]dist/acyclic`.
+Product, qualifier and Cargo-install builds share the release artifact adapter;
+see [release build reuse](docs/ci-releases.md#release-build-reuse) for its host
+input-closure and persistent-target contract.
 
 The optional gate and Windows adapters consume separately installed infrastructure.
 Set `SDK_GATE_CLIPPY` to the external coordinator's `gate-clippy.py`,

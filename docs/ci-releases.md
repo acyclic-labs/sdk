@@ -83,6 +83,45 @@ the command above. This runs qualification, native mounts, agent hosts, and
 generator checks through the release graph without publishing. Those reusable
 workflows have no independent manual triggers.
 
+## Release build reuse
+
+`build-product.mjs` and the release workflow's qualifier and Cargo-install
+commands use `scripts/release-build.mjs`. Each invocation emits a terminal
+`RELEASE_BUILD_RESULT` JSON line containing its action, PASS/FAIL and wall
+seconds, including failures and cache hits. Architecture/runtime ABI checks,
+installed executable checks, native mounts and assembly still run after the
+builds. A restored executable is build evidence; it is not a native-mount pass.
+
+A host can opt into the shared artifact cache by setting
+`SDK_RELEASE_BUILD_CONTEXT` to an admitted `artifact-build-context.v1` file.
+The adapter loads `/mnt/bb/cx/artifact-build.mjs`, or the absolute module named
+by `SDK_ARTIFACT_BUILD_MODULE`. Missing or invalid admitted infrastructure fails
+explicitly. Without a context, the original compiler command runs.
+
+The context declares an immutable builder digest, the entire compiler process
+environment's allowed names, and every mutable/generated input outside the
+clean Git tree. The shared runner executes with only that environment and keys
+the action on the tree, builder, actual environment values, command/arguments,
+output path, adapter bytes and additional input contents. Its builder digest
+must cover the OS, toolchain, linker, sysroot, dependency sources and external
+Cargo configuration. The host must decline caching when it cannot establish
+that closure. Only successful builds publish artifacts through the existing
+shared action cache; failed builds never publish a PASS.
+
+The host retains one leased checkout and compatible target directory for each
+platform/profile/flag closure. Source updates preserve unchanged file mtimes;
+Cargo then rebuilds only affected units on a cache miss. Product builds honor
+`CARGO_TARGET_DIR`; qualifier and install builds retain their separate target
+directories. The installation destination is stable within that lease, so its
+temporary name does not change the action key on every request.
+
+The artifact declaration conservatively uses the complete source tree. It can
+reuse a retry or another request for identical inputs; unrelated source edits
+still enter Cargo's incremental dependency check. A narrower artifact closure
+requires evidence of every build-script and generated input before adoption.
+Builder admission and persistent target provisioning belong to shared host
+infrastructure and require their own installed configuration.
+
 ## Dependency preservation
 
 The PR335 JavaScript updates apply to the current workspace, without replacing
