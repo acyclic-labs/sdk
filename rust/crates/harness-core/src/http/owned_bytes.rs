@@ -1,5 +1,5 @@
+use crate::Result;
 use acyclic_fs::{NativeAllocation, WorkCounters};
-use acyclic_harness_core::Result;
 use bytes::Bytes;
 
 struct Owned<T> {
@@ -15,7 +15,7 @@ impl<T: AsRef<[u8]>> AsRef<[u8]> for Owned<T> {
 
 /// Attaches paid payload custody without copying its bytes. The Bytes owner
 /// control allocation is admitted before Bytes constructs that allocation.
-pub(crate) fn owned<T: AsRef<[u8]> + Send + 'static>(
+pub fn owned<T: AsRef<[u8]> + Send + 'static>(
     bytes: T,
     custody: NativeAllocation,
 ) -> Result<Bytes> {
@@ -118,9 +118,8 @@ mod tests {
         for release_first in [false, true] {
             let mut budget = acyclic_fs::performance::work_budget(100_000, 8_000_000);
             budget.peak_allocation_bytes = baseline + CAPACITY;
-            let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).map_err(
-                |(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work },
-            )?;
+            let work = NativeMaterializationWork::new(budget, &CancellationToken::new())
+                .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
             let custody = work.claim(CAPACITY, 0, WorkCounters::UNCHARGED)?;
             let retired_at = Arc::new(AtomicU64::new(u64::MAX));
             let payload = Observed {
@@ -139,7 +138,7 @@ mod tests {
                 let error = owned(payload, custody).expect_err("control needs overlapping credit");
                 assert!(matches!(
                     error,
-                    acyclic_harness_core::Error::NativeWork {
+                    crate::Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(
                             acyclic_fs::WorkError::BudgetExceeded {
                                 counter: "peak_allocation_bytes",

@@ -94,6 +94,8 @@ impl WasmMachinesWorkspace {
                 "admitted Machine has no selected volume; recovery: retain the original selected-volume admission".into(),
             )))?;
         let volume = VolumeRef::try_from(volume).map_err(super::js_error)?;
+        let provider: Arc<dyn MachinesProvider> = match (provider_ref.namespace(), provider_ref.family()) {
+            ("acyclic", "machines") => {
         let open = field::<js_sys::Function>(&source, "open")?;
         let authority = owner.issuer.clone();
         let context = authority.operation_context().ok_or_else(|| super::js_error(crate::Error::Unauthorized(
@@ -102,7 +104,20 @@ impl WasmMachinesWorkspace {
         let endpoint = grpc::javascript::Endpoint::new(open, move |timeout, expiry| {
             deadline::open(&authority, &context, timeout, expiry)
         });
-        let provider: Arc<dyn MachinesProvider> = Arc::new(grpc::Provider::over(endpoint));
+        Arc::new(grpc::Provider::over(endpoint))
+
+            }
+            ("io.daytona", "machines") => {
+                use acyclic_harness_core::http::{BrowserCredentialResolver, BrowserTransport};
+                use acyclic_machines_daytona::{DaytonaConfig, DaytonaProvider};
+                let reference = js_sys::Reflect::get(&source, &"secretReference".into())?;
+                let reference: acyclic_auth::secrets::SecretRef = serde_wasm_bindgen::from_value(reference).map_err(|_| super::js_error(crate::Error::Invalid("Daytona requires a canonical SecretRef object; recovery: retain the protected sandbox binding".into())))?;
+                let resolver = BrowserCredentialResolver(field(&source, "credentialResolver")?);
+                let config = DaytonaConfig::new(reference, observation.contract.platform);
+                Arc::new(DaytonaProvider::new(config, Arc::new(resolver), Arc::new(BrowserTransport::global().map_err(super::js_error)?)).map_err(|error| super::js_error(crate::Error::Machines(error)))?)
+            }
+            _ => return Err(super::js_error(crate::Error::Unsupported("Machines provider reference is not admitted; recovery: retain the original provider selection".into()))),
+        };
         let workspace = MachinesHost::new(provider, provider_ref)
             .and_then(|host| host.workspace(observation, &volume, scope.clone(), verifier))
             .map_err(super::js_error)?;
@@ -211,6 +226,10 @@ export interface WasmMachinesWorkspaceSource {
     readonly observation: Uint8Array;
     /** createMachinesRpcTransport(originalAuthenticatedConnectTransport).
      * Provider credentials remain behind this protected transport. */
-    readonly open: ReturnType<typeof import("@acyclic-labs/machines/transport").createMachinesRpcTransport>;
+    /** Required for io.daytona/machines; a plain string is refused. */
+    readonly secretReference?: { readonly scope: string; readonly name: string; readonly version: string };
+    /** The same host-owned resolver used for model credentials. */
+    readonly credentialResolver?: (origin: string, reference: { scope: string; name: string; version: string }, scheme: 'bearer') => { credentialScope: Uint8Array; fetch: typeof fetch };
+    readonly open?: ReturnType<typeof import("@acyclic-labs/machines/transport").createMachinesRpcTransport>;
 }
 "#;

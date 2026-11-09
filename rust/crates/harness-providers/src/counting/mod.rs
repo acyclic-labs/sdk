@@ -191,7 +191,12 @@ pub(crate) async fn count(
         Some(custody) => crate::http::owned_bytes::owned(bytes, custody)?,
         None => bytes.into(),
     };
-    let exchange = HttpRequest { url, headers, body };
+    let exchange = HttpRequest {
+        url,
+        headers,
+        body,
+        method: http::Method::POST,
+    };
     send_count(provider, exchange, count, count_custody, work).await
 }
 
@@ -291,6 +296,7 @@ async fn exchange_count(
         .transpose()?;
     loop {
         let attempt = HttpRequest {
+            method: http::Method::POST,
             url: exchange.url.clone(),
             headers: exchange.headers.clone(),
             body: exchange.body.clone(),

@@ -150,7 +150,7 @@ impl Registry {
             self.resolver.as_deref(),
             self.transport.clone(),
         )?;
-        let (key, credential_scope, transport) = (binding.key, binding.scope, binding.transport);
+        let (key, credential_scope, transport) = binding.into_parts();
         let authenticated = key.is_some() || credential_scope.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         let authenticated = authenticated || codex_login.is_some();

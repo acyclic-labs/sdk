@@ -11,7 +11,7 @@ export function httpFixture(mode) {
   const state = { calls: 0, aborted: false, ready: new Promise(resolve => { ready = resolve; }) };
   state.fetch = (url, init) => {
     state.calls++;
-    state.request = { url, body: Array.from(init.body), headers: Object.fromEntries(init.headers),
+    state.request = { url, body: Array.from(init.body ?? []), headers: Object.fromEntries(init.headers),
       credentials: init.credentials, redirect: init.redirect };
     init.signal.addEventListener('abort', () => {
       state.aborted = true;
@@ -145,6 +145,7 @@ fn transport(fixture: &JsValue) -> std::result::Result<BrowserTransport, JsValue
 
 fn request() -> HttpRequest {
     HttpRequest {
+        method: http::Method::POST,
         url: "https://example.test/v1/responses".into(),
         headers: BTreeMap::from([
             ("authorization".into(), "Bearer fixture".into()),

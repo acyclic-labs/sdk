@@ -256,6 +256,9 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
         local.read_file(machine, access(0, deadline), 4).await?,
         FileRead::Data(vec![0, 255, 7, 0])
     );
+    #[cfg(feature = "conformance")]
+    crate::conformance::verify_files(local.as_ref(), machine, path.to_str().unwrap(), deadline)
+        .await?;
     std::fs::remove_file(path)?;
     #[cfg(unix)]
     {

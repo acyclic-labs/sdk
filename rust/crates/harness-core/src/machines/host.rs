@@ -132,10 +132,14 @@ impl MachinesHost {
         access: acyclic_machines::FileAccess,
         limit: u32,
     ) -> Result<acyclic_machines::FileRead> {
-        self.provider
-            .read_file(self.machine_id(sandbox)?, access, limit)
-            .await
-            .map_err(|error| map_error(error, None))
+        acyclic_machines::read_file_at(
+            self.provider.as_ref(),
+            self.machine_id(sandbox)?,
+            access,
+            limit,
+        )
+        .await
+        .map_err(|error| map_error(error, None))
     }
 
     /// Writes one native guest-file chunk without shell evaluation or retries.
@@ -146,10 +150,15 @@ impl MachinesHost {
         bytes: Vec<u8>,
         truncate: bool,
     ) -> Result<acyclic_machines::FileWrite> {
-        self.provider
-            .write_file(self.machine_id(sandbox)?, access, bytes, truncate)
-            .await
-            .map_err(|error| map_error(error, None))
+        acyclic_machines::write_file_at(
+            self.provider.as_ref(),
+            self.machine_id(sandbox)?,
+            access,
+            bytes,
+            truncate,
+        )
+        .await
+        .map_err(|error| map_error(error, None))
     }
 
     /// Suspends the original machine under the caller's stable mutation key.
