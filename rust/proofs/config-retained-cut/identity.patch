@@ -1,11 +1,11 @@
 --- a/rust/crates/harness-core/src/config/evaluate/prepared.rs
 +++ b/rust/crates/harness-core/src/config/evaluate/prepared.rs
-@@ -70,7 +70,7 @@
-         digest.update(read.path.as_bytes());
-         digest.update(&[u8::from(read.digest.is_some())]);
-         if let Some(bytes) = read.digest {
--            digest.update(&bytes);
-+            let _ = bytes;
+@@ -105,7 +105,7 @@
+         self.digest.update(path.as_bytes());
+         self.digest.update(&[u8::from(digest.is_some())]);
+         if let Some(digest) = digest {
+-            self.digest.update(&digest);
++            let _ = digest;
          }
-     }
-     Ok(Prepared {
+         if let Some(reads) = &mut self.reads {
+             #[cfg(any(test, feature = "test-support"))]

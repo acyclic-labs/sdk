@@ -4,8 +4,8 @@
              evidence.modules.push(ModuleCut {
                  layer: index,
                  identity: decision.identity(),
--                reads: prepared.into_reads(),
-+                reads: { drop(prepared); Vec::new() },
+-                reads: loaded.into_reads(),
++                reads: { drop(loaded); Vec::new() },
              });
          }
          match decision.into_result() {

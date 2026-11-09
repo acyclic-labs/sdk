@@ -116,13 +116,16 @@ pub(super) async fn compose_inner(
     })
 }
 
-pub(super) async fn compose_plain(
+/// Fold without retaining input evidence. Operational tree failures remain
+/// outer errors; the inner result is the evaluated content's decision.
+/// This uses the same fold and reads as [`compose`], without evidence buffers.
+pub async fn compose_result(
     path: &str,
     layers: &[Layer<'_>],
     tree: &dyn Tree,
     base: Value,
-) -> Result<(Value, Vec<Link>)> {
-    fold(path, layers, tree, base, None).await?
+) -> Result<Result<(Value, Vec<Link>)>> {
+    fold(path, layers, tree, base, None).await
 }
 
 struct Evidence {
@@ -180,14 +183,14 @@ async fn fold(
     // `held` remains the single implementation of precedence and off cuts.
     for (index, layer) in crate::layers::held_indexed(layers) {
         let Some(source) = layer.bytes else { continue };
-        let prepared = prepared::prepare_inner(path, source, tree).await?;
-        let decision = prepared.evaluate(&value, Surface::Compose)?;
+        let loaded = prepared::load(path, source, tree, evidence.is_some()).await?;
+        let decision = loaded.evaluate_cached(path, &value, Surface::Compose, cache())?;
         if let Some(evidence) = evidence.as_deref_mut() {
             evidence.identity.update(&decision.identity());
             evidence.modules.push(ModuleCut {
                 layer: index,
                 identity: decision.identity(),
-                reads: prepared.into_reads(),
+                reads: loaded.into_reads(),
             });
         }
         match decision.into_result() {

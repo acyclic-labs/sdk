@@ -2,7 +2,7 @@
 #[cfg(loom)]
 use super::sync::{AtomicU64, Ordering};
 use super::*;
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 use crate::runtime::sources::OPENING;
 #[cfg(any(test, loom))]
 use crate::runtime::sources::Wake;
