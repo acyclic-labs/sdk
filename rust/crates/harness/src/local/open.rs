@@ -548,8 +548,6 @@ impl Opening {
             goal_continuations: self.config.goal_continuations,
             #[cfg(any(test, feature = "native-execution"))]
             workspace,
-            #[cfg(test)]
-            environment_reads: std::sync::atomic::AtomicUsize::new(0),
             clock: self.config.clock,
             #[cfg(any(test, feature = "native-execution"))]
             environment_platform: self.config.environment_platform,

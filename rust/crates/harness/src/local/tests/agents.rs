@@ -2071,7 +2071,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     assert!(context.contains("final message is your report"));
     assert!(context.contains(&format!("Use send with agent {root}")));
     assert!(checked.load(std::sync::atomic::Ordering::SeqCst));
-    assert!(context.contains("git_status"));
+    assert!(context.contains("<environment_context>"));
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Brief { brief: file } = entry.input else {
         return Err(Error::Invalid(

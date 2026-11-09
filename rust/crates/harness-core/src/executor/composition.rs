@@ -93,12 +93,15 @@ impl StockExecutor {
         Ok(self)
     }
 
-    /// Binds request assembly and tool selection to one authenticated immutable manifest.
-    pub async fn with_context_manifest(
+    /// Binds request assembly and tool selection to one frozen context epoch:
+    /// every request of this executor renders exactly its manifest as the
+    /// prefix, whatever its sources hold now.
+    pub async fn with_context_epoch(
         mut self,
-        reference: FileRef,
+        epoch: &crate::context::ContextEpoch,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
     ) -> Result<Self> {
+        let reference = epoch.manifest().clone();
         if self.context.contains_stage("context-manifest") {
             return Err(Error::Conflict(
                 "executor already has a context manifest".into(),
