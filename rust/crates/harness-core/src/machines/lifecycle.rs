@@ -182,6 +182,22 @@ pub struct AgentMachines<P: ?Sized> {
     >,
 }
 
+fn target_index_error(error: acyclic_collections::CompiledPrefixError<Error>) -> Error {
+    match error {
+        acyclic_collections::CompiledPrefixError::Work(error) => error,
+        acyclic_collections::CompiledPrefixError::Order(_) => {
+            Error::Invalid("provisioned target names must be unique canonical path segments".into())
+        }
+        acyclic_collections::CompiledPrefixError::Capacity => {
+            Error::Invalid("provisioned target index exceeds addressable capacity".into())
+        }
+        acyclic_collections::CompiledPrefixError::Allocation(error) => Error::Allocation(error),
+        acyclic_collections::CompiledPrefixError::Invariant => {
+            Error::Invalid("provisioned target index is inconsistent".into())
+        }
+    }
+}
+
 impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// The lifecycle of `targets`, whose bindings live in `stream`.
     ///
@@ -205,16 +221,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
                 as fn(&ProvisionedTarget) -> &[u8],
             &mut crate::NativeIndexWork(None),
         )
-        .map_err(|error| match error {
-            acyclic_collections::CompiledPrefixError::Work(error) => error,
-            acyclic_collections::CompiledPrefixError::Order(_) => Error::Invalid(
-                "provisioned target names must be unique canonical path segments".into(),
-            ),
-            acyclic_collections::CompiledPrefixError::Capacity => {
-                Error::Invalid("provisioned target index exceeds addressable capacity".into())
-            }
-            acyclic_collections::CompiledPrefixError::Allocation(error) => Error::Allocation(error),
-        })?;
+        .map_err(target_index_error)?;
         Ok(Self { stream, targets })
     }
 
@@ -233,14 +240,15 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             .ok_or_else(|| Error::Invalid(format!("'{name}' is not a provisioned target")))
     }
 
-    fn lookup<W: acyclic_collections::IndexReadWork>(
+    fn lookup<W: acyclic_collections::IndexReadWork<Error = Error>>(
         &self,
         name: &str,
         work: &mut W,
-    ) -> std::result::Result<Option<usize>, W::Error> {
+    ) -> Result<Option<usize>> {
         self.targets
             .matches(name.as_bytes(), |_| false, work)
             .map(|matches| matches.exact.map(|matched| matched.position))
+            .map_err(target_index_error)
     }
 
     fn target_at(&self, position: usize) -> Result<&ProvisionedTarget> {
