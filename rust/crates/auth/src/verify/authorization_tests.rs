@@ -225,6 +225,22 @@ fn current_authorization_reuses_admission_and_preserves_every_request_dependency
         let actual = capability.authorize(&trust, &request, policy, scope);
         assert_eq!(actual, former(&request, policy, scope, &trust), "{case}");
         assert_eq!(actual.is_ok(), case == "valid", "{case}");
+        use crate::DenialCause;
+        let expected_cause = match case {
+            "valid" => None,
+            "audience" => Some(DenialCause::WrongAudience),
+            "holder" => Some(DenialCause::WrongAccount),
+            "usage" => Some(DenialCause::QuotaDenied),
+            "policy" => Some(DenialCause::OwnerPolicy),
+            "canonical-resource" | "canonical-audience" => Some(DenialCause::Malformed),
+            "not-before" | "expiry" | "certificate-time" => Some(DenialCause::Expired),
+            _ => Some(DenialCause::NotCovered),
+        };
+        assert_eq!(
+            actual.err().and_then(VerifyError::denial_cause),
+            expected_cause,
+            "{case}"
+        );
     }
     for count in [1, 100, 1000] {
         let ((), work) = observe(
@@ -271,10 +287,15 @@ fn current_authorization_reuses_admission_and_preserves_every_request_dependency
             "unavailable" => trust.available = false,
             _ => unreachable!(),
         }
-        assert!(
-            capability
-                .authorize(&trust, &request(), PolicyDecision::Allow, Scope::Exact)
-                .is_err(),
+        let error = capability
+            .authorize(&trust, &request(), PolicyDecision::Allow, Scope::Exact)
+            .unwrap_err();
+        assert_eq!(
+            error.denial_cause(),
+            match change {
+                "block" | "key" | "epoch" => Some(crate::DenialCause::Revoked),
+                _ => None,
+            },
             "{change}"
         );
         // Omitting the current-owner check accepts the same otherwise valid
