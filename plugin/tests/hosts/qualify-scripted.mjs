@@ -12,6 +12,7 @@ const here=fileURLToPath(new URL('.',import.meta.url));
 export const scriptedSelections=Object.freeze([
   ...['lifecycle','recursive','resume','bounded-framing'].map(name=>'managed:'+name),
   ...['codex','claude-code','pi'].map(name=>'scale:'+name),
+  ...['codex','claude-code'].map(name=>'concurrent:'+name),
 ]);
 
 // The caller admits the artifact closure once. Descriptors contain only native
@@ -25,6 +26,10 @@ export function scriptedScenario(artifacts,codex,selection){
   args:[join(here,'mcp-framing.mjs'),binary],
   accepts:run=>JSON.parse(run.stdout).cases.length===21};
  const graphcoder=artifacts.artifacts.graphcoder.path;
+ if(kind==='concurrent')return {name,selection,
+  args:[join(here,'concurrent-spawn.mjs'),binary,graphcoder,name],
+  observations:run=>run.stdout.trim().split('\n').map(line=>JSON.parse(line)),
+  accepts:run=>run.stdout.trim().split('\n').every(line=>{try{return JSON.parse(line).concurrent_spawns_settled===true;}catch{return false;}})};
  if(kind==='scale')return {name,selection,
   args:[join(here,'shared-mount-scale.mjs'),binary,graphcoder,name],
   accepts:run=>run.stdout.trim().split('\n').some(line=>{try{return JSON.parse(line).sessions_alive_at_both_samples===true;}catch{return false;}})};
@@ -47,6 +52,7 @@ export async function runScriptedScenario({scenario,processes,directory,env,
  const tail=text=>text.trim().slice(-1500)||'(empty)';
  const receipt={schema:'acyclic.plugin.scripted-scenario/v1',selection:scenario.selection,
    name:scenario.name,seconds,exit:run.code,expired:expired(),accepted:refusals.length===0,
+   observations:refusals.length===0?scenario.observations?.(run):undefined,
    ...(refusals.length?{error:`${refusals.join('; ')}; stderr: ${tail(run.stderr)}\nstdout: ${tail(run.stdout)}`}:{})};
  return receipt;
 }
@@ -54,12 +60,12 @@ export async function runScriptedScenario({scenario,processes,directory,env,
 async function main(){
  const [cargo,output,hostOrMode,selected,...extra]=process.argv.slice(2);
  const mode=selected??hostOrMode,codex=selected?hostOrMode:undefined;
- const recovery='node plugin/tests/hosts/qualify-scripted.mjs CARGO_JSON FRESH_OUTPUT [CODEX] managed|scale|SELECTED_SCENARIO';
+ const recovery='node plugin/tests/hosts/qualify-scripted.mjs CARGO_JSON FRESH_OUTPUT [CODEX] managed|scale|concurrent|SELECTED_SCENARIO';
  assert.ok(cargo&&output&&!extra.length&&
-   (['managed','scale'].includes(mode)||scriptedSelections.includes(mode)),
+   (['managed','scale','concurrent'].includes(mode)||scriptedSelections.includes(mode)),
    'step=admit scripted host qualification; recovery: '+recovery);
  const selections=scriptedSelections.includes(mode)?[mode]:scriptedSelections.filter(name=>name.startsWith(mode+':'));
- assert.ok(codex||selections.every(name=>name==='managed:bounded-framing'||name.startsWith('scale:')),
+ assert.ok(codex||selections.every(name=>name==='managed:bounded-framing'||!name.startsWith('managed:')),
   'step=admit managed sandbox executable; recovery: '+recovery);
  const directory=resolve(output);await mkdir(directory);
  const records=await readFile(cargo,'utf8');
