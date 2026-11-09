@@ -192,10 +192,11 @@ impl LocalHarness {
         };
         hooks.append(self.plugin_hooks.clone());
         let bytes = hooks.encode(self.limits.file_bytes)?;
+        let path = format!("inputs/{turn}.hooks.json");
         let staged = publisher
             .stage_once(
                 operation,
-                &format!("inputs/{turn}.hooks.json"),
+                &path,
                 &bytes,
                 crate::hooks::Hooks::MEDIA_TYPE,
                 "hooks.json",
