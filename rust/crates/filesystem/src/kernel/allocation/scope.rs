@@ -30,7 +30,8 @@ impl AllocationScope<'_, '_> {
             let (allocations, ..) = self
                 .accounting
                 .standalone_parts()
-                .unwrap_or_else(|| unreachable!("ordinary output keeps its original ledger"));
+                .ok_or(crate::WorkError::Overflow)?;
+            allocations.ensure_active()?;
             if floor > allocations.scratch_bytes() {
                 return Err(super::AllocationError::ReleaseInvariant
                     .into_work_or(crate::FsError::PendingMutationAllocationFailed));
@@ -62,17 +63,10 @@ impl std::ops::DerefMut for AllocationScope<'_, '_> {
 
 impl Drop for AllocationScope<'_, '_> {
     fn drop(&mut self) {
-        if let Some(floor) = self.floor {
-            let (allocations, ..) = self
-                .accounting
-                .standalone_parts()
-                .unwrap_or_else(|| unreachable!("ordinary scratch keeps its original ledger"));
-            if matches!(allocations.state, super::LedgerState::Suspended(_)) {
-                return;
-            }
-            allocations
-                .release_scratch_to(floor)
-                .unwrap_or_else(|_| unreachable!("an operation retires only its own scratch"));
+        if let Some(floor) = self.floor
+            && let Some((allocations, ..)) = self.accounting.standalone_parts()
+        {
+            allocations.retire_scratch_to(floor);
         }
     }
 }
