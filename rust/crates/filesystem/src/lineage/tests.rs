@@ -109,7 +109,8 @@ async fn persisted_lineage_names_require_exact_canonical_bytes() {
                 crate::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
-            .await;
+            .await
+            .map_err(|failure| failure.error);
         if valid {
             assert_eq!(recovered.unwrap().value, record);
         } else {
