@@ -661,7 +661,6 @@ async fn source_hard_link_open_unlink_write_preserves_surviving_alias()
     Ok(())
 }
 
-
 #[cfg(all(
     feature = "native-watch",
     feature = "local",
@@ -893,7 +892,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         LazyOverlay, LazyOverlayId, LazyShadow, LazyShadowId, LazyWorkspaceState,
         PendingLazyRemoveKind,
     };
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[derive(Clone)]
     struct PausedSettlement {
@@ -1171,7 +1170,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         let directory = (|| {
             let mut pages = Vec::<MountDirectoryPage>::new();
             for _ in 0..4 {
-                let cursor = pages.last().and_then(|page| page.next_cursor.as_deref());
+                let cursor = pages.last().and_then(|page| page.next_cursor.as_ref());
                 let page = view.read_directory_with_meter(&MountPath::root(), cursor, 1, &work)?;
                 assert!(page.entries.len() <= 1);
                 let complete = page.next_cursor.is_none();
