@@ -79,38 +79,30 @@ fn violations<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<St
     violations
 }
 
-fn sources() -> &'static [(&'static str, &'static str)] {
-    static FILES: std::sync::OnceLock<Vec<(&str, &str)>> = std::sync::OnceLock::new();
+fn sources() -> &'static [(String, String)] {
+    static FILES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
     FILES.get_or_init(|| {
-        acyclic_test_support::repository_rust_sources()
-            .iter()
-            .copied()
+        acyclic_source_catalog::repository_rust_sources(&acyclic_test_support::source_path(""))
+            .expect("repository Rust source catalog")
+            .into_iter()
             // This policy spells its forbidden inputs; every other Rust source
             // in every original root remains subject to the exact allowance.
-            .filter(|(path, _)| {
-                *path != "rust/crates/native-runtime/src/file_lock_sources_tests.rs"
-            })
+            .filter(|(path, _)| path != "rust/crates/native-runtime/src/file_lock_sources_tests.rs")
             .collect()
     })
 }
 
-#[test]
-fn compiled_source_policy_borrows_every_input_without_target_file_opens() {
-    let files = sources();
-    assert!(files.len() > 3000, "source catalog lost its roots");
-    for (path, text) in files {
-        let original = acyclic_test_support::repository_rust_source(std::path::Path::new(path))
-            .expect("compiled source exists");
-        assert!(std::ptr::eq(text.as_ptr(), original.as_ptr()));
-        assert_eq!(*text, original);
-    }
+fn borrowed_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
+    sources()
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
 }
 
 #[test]
 fn every_file_lock_goes_through_the_explicitly_releasing_guard() {
     let files = sources();
     assert!(files.len() > 3000, "source scan lost its roots");
-    let found = violations(files.iter().copied());
+    let found = violations(borrowed_sources());
     assert!(found.is_empty(), "raw file locks: {found:#?}");
 }
 
@@ -119,10 +111,10 @@ fn planted_raw_file_locks_fail_the_scan() {
     let files = sources();
     let scan = |target: &str, plant: &str| {
         assert!(
-            files.iter().any(|(path, _)| *path == target),
+            files.iter().any(|(path, _)| path == target),
             "planted source target is absent: {target}"
         );
-        violations(files.iter().copied().map(|(path, text)| {
+        violations(borrowed_sources().map(|(path, text)| {
             if path == target {
                 (path, plant)
             } else {

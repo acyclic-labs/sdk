@@ -85,7 +85,8 @@ windows-sys = { version = "0.61.2", features = [
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "io-util", "macros"] }
 serde_json.workspace = true
-acyclic-test-support = { path = "../test-support", features = ["source-catalog"] }
+acyclic-test-support = { path = "../test-support" }
+acyclic-source-catalog = { path = "../source-catalog" }
 tempfile = "3.27.0"
 loom = "=0.7.2"
 
@@ -99,7 +100,7 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
-acyclic-test-support = { path = "../test-support", features = ["source-catalog"] }
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing-subscriber.workspace = true
 

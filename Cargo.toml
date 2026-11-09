@@ -68,6 +68,7 @@ members = [
   "rust/crates/sdk-docs/fuzz",
   "rust/crates/sdk-generation",
   "rust/crates/sdk-generation/fuzz",
+  "rust/crates/source-catalog",
   "rust/crates/stream",
   "rust/crates/stream-napi",
   "rust/crates/stream/contract-fuzz",

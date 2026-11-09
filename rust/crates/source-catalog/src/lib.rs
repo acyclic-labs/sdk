@@ -1,12 +1,12 @@
-//! The build host owns repository enumeration; target tests borrow its inputs.
+//! Runtime repository inputs for source policy tests, without Cargo dependencies
+//! on the files being inspected. Cross-built tests supply their source snapshot.
 use std::{
     collections::BTreeSet,
-    fs,
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
 };
 
-pub const ROOTS: [&str; 7] = [
+const ROOTS: [&str; 7] = [
     "rust/crates",
     "rust/fuzz",
     "rust/verification",
@@ -44,9 +44,6 @@ fn collect(
             "source directory escapes or cycles",
         ));
     }
-    // Tracking the directory also invalidates Cargo's catalog when a new source
-    // is added. Each include_str! below tracks changes to existing source bytes.
-    println!("cargo:rerun-if-changed={}", directory.display());
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
@@ -73,7 +70,16 @@ fn collect(
     Ok(())
 }
 
-pub fn generate(root: &Path, output: &Path) -> io::Result<()> {
+/// Reads every Rust source under the seven repository source roots, ordered by
+/// repository-relative slash-separated path. Includes tests and build scripts.
+/// Build/dependency caches are excluded outside Rust crate src trees; inside
+/// src, every directory remains visible to its crate's source policies.
+///
+/// # Errors
+/// Returns an error if any root or source cannot be read, a path is not UTF-8,
+/// or a symlink escapes the repository or forms a directory cycle. Never returns
+/// a partial inventory.
+pub fn repository_rust_sources(root: &Path) -> io::Result<Vec<(String, String)>> {
     let root = root.canonicalize()?;
     let mut files = Vec::new();
     let mut active = BTreeSet::new();
@@ -91,37 +97,21 @@ pub fn generate(root: &Path, output: &Path) -> io::Result<()> {
                     io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 Rust source path")
                 })?
                 .replace('\\', "/");
-            Ok((name, path))
+            Ok((name, fs::read_to_string(path)?))
         })
         .collect::<io::Result<Vec<_>>>()?;
     sources.sort_by(|left, right| left.0.cmp(&right.0));
-    let mut generated = fs::File::create(output.join("repository-rust-sources.rs"))?;
-    writeln!(generated, "&[")?;
-    for (name, path) in sources {
-        writeln!(generated, "({name:?}, include_str!({path:?})),")?;
-    }
-    writeln!(generated, "]")
+    Ok(sources)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    struct Fixture(PathBuf);
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).expect("remove catalog fixture");
-        }
-    }
-
     #[test]
     fn inventory_preserves_all_roots_additions_and_exclusions() -> io::Result<()> {
-        let directory = std::env::temp_dir().join(format!("source-catalog-{}", std::process::id()));
-        fs::create_dir(&directory)?;
-        let fixture = Fixture(directory);
-        let root = fixture.0.canonicalize()?;
-        let output = root.join("output");
-        fs::create_dir(&output)?;
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path().canonicalize()?;
         let mut expected = Vec::new();
         for name in ROOTS {
             let directory = root.join(name);
@@ -129,7 +119,7 @@ mod tests {
             for file in ["normal.rs", "target.rs", "child/nested.rs"] {
                 let path = directory.join(file);
                 fs::write(&path, "// fixture source")?;
-                expected.push((format!("{name}/{file}"), path));
+                expected.push((format!("{name}/{file}"), "// fixture source".to_owned()));
             }
             fs::write(directory.join("data.txt"), "non-Rust fixture")?;
             for excluded in ["target", "node_modules", "vendor", ".git"] {
@@ -144,31 +134,35 @@ mod tests {
                 let path = root.join(&relative);
                 fs::create_dir_all(path.parent().expect("source parent"))?;
                 fs::write(&path, "// Rust module, not a dependency cache")?;
-                expected.push((relative, path));
+                expected.push((
+                    relative,
+                    "// Rust module, not a dependency cache".to_owned(),
+                ));
             }
         }
-        let check = |expected: &mut Vec<(String, PathBuf)>| -> io::Result<()> {
-            generate(&root, &output)?;
+        let check = |expected: &mut Vec<(String, String)>| -> io::Result<()> {
             expected.sort_by(|left, right| left.0.cmp(&right.0));
-            let mut contents = String::from("&[\n");
-            for (name, path) in expected {
-                contents.push_str(&format!("({name:?}, include_str!({path:?})),\n"));
-            }
-            contents.push_str("]\n");
-            assert_eq!(
-                fs::read_to_string(output.join("repository-rust-sources.rs"))?,
-                contents
-            );
+            assert_eq!(repository_rust_sources(&root)?, *expected);
             Ok(())
         };
         check(&mut expected)?;
         let added = root.join("plugin/child/added.rs");
         fs::write(&added, "// newly added source")?;
-        expected.push(("plugin/child/added.rs".into(), added));
+        expected.push((
+            "plugin/child/added.rs".into(),
+            "// newly added source".into(),
+        ));
+        check(&mut expected)?;
+        fs::write(root.join("plugin/normal.rs"), "// edited source")?;
+        expected
+            .iter_mut()
+            .find(|(path, _)| path == "plugin/normal.rs")
+            .unwrap()
+            .1 = "// edited source".into();
         check(&mut expected)?;
         // A lost source root must fail admission, never yield a partial catalog.
         fs::remove_dir_all(root.join("compatibility"))?;
-        assert!(generate(&root, &output).is_err());
+        assert!(repository_rust_sources(&root).is_err());
         Ok(())
     }
 }

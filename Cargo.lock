@@ -502,6 +502,7 @@ dependencies = [
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-source-catalog",
  "acyclic-stream",
  "acyclic-test-support",
  "arrayvec",
@@ -1087,6 +1088,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-observability",
+ "acyclic-source-catalog",
  "acyclic-test-support",
  "blake3",
  "bytes",
@@ -1277,6 +1279,13 @@ dependencies = [
  "serde_json",
  "syn 3.0.9",
  "tokio",
+]
+
+[[package]]
+name = "acyclic-source-catalog"
+version = "0.2.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
