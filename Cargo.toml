@@ -7,6 +7,7 @@ members = [
   "fuzz",
   "plugin",
   "plugin/identity",
+  "rust/codec-fuzz",
   "rust/crates/actors",
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",
@@ -55,6 +56,7 @@ members = [
   "rust/crates/manifest/fuzz",
   "rust/crates/model-render",
   "rust/crates/markdown",
+  "rust/crates/markdown/fuzz",
   "rust/crates/markdown-work",
   "rust/crates/napi-progress-test",
   "rust/crates/native-runtime",
@@ -80,15 +82,23 @@ members = [
   "rust/fuzz",
   "rust/fuzz/native-callback-path",
   "rust/fuzz/task-volume",
+  "rust/proofs/id-codecs",
   "rust/proofs/model-epochs",
   "rust/proofs/spawn-slots",
+  "rust/vendor/ts-rs-macros-12.0.1",
+  "rust/vendor/ts-rs-macros-12.0.1/fuzz",
   "rust/verification/sdk-fixtures",
   "typescript/packages/stream/fuzz",
   "typescript/packages/stream/models",
 ]
-# Keep ordinary root commands on the original SDK package set. Fuzz, proof,
-# generator and compiler-negative packages run only when explicitly selected.
+# Root checks cover the SDK and formerly isolated codec, proof and fuzz consumers.
+# Other tools and compiler-negative packages run only when explicitly selected.
 default-members = [
+  "rust/codec-fuzz",
+  "rust/crates/markdown/fuzz",
+  "rust/proofs/id-codecs",
+  "rust/vendor/ts-rs-macros-12.0.1",
+  "rust/vendor/ts-rs-macros-12.0.1/fuzz",
   "examples/sdk-services",
   "rust/crates/actors",
   "rust/crates/actors-napi",
@@ -145,7 +155,7 @@ default-members = [
   "plugin",
   "plugin/identity",
 ]
-exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2", "rust/vendor/napi-3.15.0", "rust/vendor/rquickjs-core-0.14.0", "rust/vendor/rquickjs-sys-0.14.0", "rust/vendor/syntect-5.3.0", "rust/vendor/ts-rs-macros-12.0.1"]
+exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2", "rust/vendor/napi-3.15.0", "rust/vendor/rquickjs-core-0.14.0", "rust/vendor/rquickjs-sys-0.14.0", "rust/vendor/syntect-5.3.0"]
 resolver = "2"
 
 [workspace.package]

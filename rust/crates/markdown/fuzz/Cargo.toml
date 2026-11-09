@@ -28,10 +28,6 @@ test = false
 doc = false
 bench = false
 
-[workspace]
-members = ["."]
-resolver = "2"
-
 [[bin]]
 name = "syntax_data"
 path = "fuzz_targets/syntax_data.rs"

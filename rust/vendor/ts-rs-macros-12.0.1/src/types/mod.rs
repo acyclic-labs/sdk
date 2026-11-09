@@ -1,13 +1,15 @@
-use syn::{Expr, Fields, ItemStruct, Result, ext::IdentExt};
+use syn::{ext::IdentExt, Expr, Fields, ItemStruct, Result};
 
 use crate::{
-    DerivedTS,
     attr::{Attr, StructAttr},
+    DerivedTS,
 };
 
 mod r#enum;
 mod named;
 mod newtype;
+#[cfg(test)]
+mod tests;
 mod tuple;
 mod type_as;
 mod type_override;
