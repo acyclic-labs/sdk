@@ -4,7 +4,12 @@ use crate::{conversation::VolumeRef, core::AuthorityRoot, resources::ProviderRef
 #[tokio::test]
 async fn wait_selection_survives_reopening_and_reference_replacement() -> Result<()> {
     use crate::agent::{AgentId, TurnChildren};
-    let agent = AgentPath::root(&AgentId::from_bytes([201; 16]));
+    let mut agent = AgentPath::root(&AgentId::from_bytes([201; 16]));
+    for _ in 1..crate::agent::MAX_DEPTH {
+        agent = agent
+            .child(&AgentId::from_bytes([201; 16]))
+            .map_err(agent_error)?;
+    }
     let provider = ProviderRef::new("waits".into(), "filesystem".into(), "2".into(), &mut None)?;
     let volume = private_volume(provider.clone(), &agent.id())?;
     let host =
@@ -57,7 +62,19 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
         .child(&AgentId::from_bytes([204; 16]))
         .map_err(agent_error)?;
     let operation = OperationId::from_bytes([205; 16]);
-    let selected = reopen().select(operation, &[first.as_str().into()]).await?;
+    // Repeating full paths for 32 deepest children exceeds 64 KiB even once.
+    let mut references = vec![first.as_str().to_owned()];
+    for byte in 0..31 {
+        references.push(
+            agent
+                .child(&AgentId::from_bytes([byte; 16]))
+                .map_err(agent_error)?
+                .as_str()
+                .to_owned(),
+        );
+    }
+    let selected = reopen().select(operation, &references).await?;
+    assert_eq!(selected.len(), references.len());
     assert_eq!(selected[0].1, first);
     assert_eq!(
         reopen()

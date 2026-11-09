@@ -1970,20 +1970,43 @@ where
     ) -> BoxFuture<'a, Result<Vec<(String, AgentPath)>>> {
         Box::pin(async move {
             use super::agent_internal::InternalFileCreation;
+            let open = |bytes: &[u8]| -> Result<Vec<(String, AgentPath)>> {
+                let selected: Vec<(Option<String>, [u8; 16])> = crate::agent::records::open(bytes)
+                    .map_err(|_| Error::Storage("invalid wait selection".into()))?;
+                selected
+                    .into_iter()
+                    .map(|(reference, id)| {
+                        let child = self
+                            .agent
+                            .child(&crate::agent::AgentId::from_bytes(id))
+                            .map_err(agent_error)?;
+                        Ok((reference.unwrap_or_else(|| child.as_str().into()), child))
+                    })
+                    .collect()
+            };
             let path = format!("waits/v1/{operation}.msgpack");
             let vacant = match self.files.prepare_create(&path, self.maximum_bytes).await? {
                 InternalFileCreation::Existing(bytes) => {
-                    return crate::agent::records::open(&bytes)
-                        .map_err(|_| Error::Storage("invalid wait selection".into()));
+                    return open(&bytes);
                 }
                 InternalFileCreation::Vacant(file) => file,
             };
             let selected = crate::agent::select_children(self, references).await?;
-            let bytes = crate::agent::records::seal(&selected)?;
+            // All selections are direct children. Derive their ancestry and any
+            // path reference from the owner instead of repeating it per child.
+            let compact: Vec<_> = selected
+                .iter()
+                .map(|(reference, child)| {
+                    (
+                        (reference != child.as_str()).then_some(reference),
+                        child.id_bytes(),
+                    )
+                })
+                .collect();
+            let bytes = crate::agent::records::seal(&compact)?;
             match vacant.create(&bytes).await? {
                 None => Ok(selected),
-                Some(bytes) => crate::agent::records::open(&bytes)
-                    .map_err(|_| Error::Storage("invalid wait selection".into())),
+                Some(bytes) => open(&bytes),
             }
         })
     }
