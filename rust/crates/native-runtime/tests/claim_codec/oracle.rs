@@ -14,14 +14,16 @@ fn wire(bytes: &[u8]) {
 }
 
 fn value(bytes: &[u8]) -> Record {
-    let bytes = &bytes[..bytes.len().min(RECORD_LIMIT)];
+    let bytes = bytes.split_at(bytes.len().min(RECORD_LIMIT)).0;
     let split = bytes.len() / 3;
+    let (start, rest) = bytes.split_at(split);
+    let (lock, lock_identity) = rest.split_at(split);
     Record {
         process: Process {
             pid: u32::from_le_bytes(std::array::from_fn(|i| bytes.get(i).copied().unwrap_or(0))),
-            start: bytes[..split].to_vec(),
-            lock: bytes[split..2 * split].to_vec(),
-            lock_identity: bytes[2 * split..].to_vec(),
+            start: start.to_vec(),
+            lock: lock.to_vec(),
+            lock_identity: lock_identity.to_vec(),
         },
         token: u64::from_le_bytes(std::array::from_fn(|i| bytes.get(i).copied().unwrap_or(0))),
     }
@@ -32,7 +34,7 @@ fn value(bytes: &[u8]) -> Record {
 pub fn check(bytes: &[u8]) {
     wire(bytes);
     let overhead = value(&[]).encode().len();
-    let value = value(&bytes[..bytes.len().min(RECORD_LIMIT - overhead)]);
+    let value = value(bytes.split_at(bytes.len().min(RECORD_LIMIT - overhead)).0);
     let mut encoded = value.encode();
     let mut offset = MAGIC.len();
     let lengths = [
@@ -54,21 +56,20 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(Contents::decode(&past), Contents::Oversized);
     }
     let body = encoded.len() - 8;
-    let original = encoded[body];
-    encoded[body] ^= 1;
+    xor_byte(&mut encoded, body, 1);
     assert_eq!(
         Contents::decode(&encoded),
         Contents::Torn,
         "claim checksum bypassed"
     );
-    encoded[body] = original;
+    xor_byte(&mut encoded, body, 1);
 
     let choice = usize::from(u16::from_le_bytes(std::array::from_fn(|i| {
         bytes.get(i).copied().unwrap_or(0)
     })));
     let cut = choice % encoded.len();
     assert_eq!(
-        Contents::decode(&encoded[..cut]),
+        Contents::decode(encoded.split_at(cut).0),
         if cut == 0 {
             Contents::Empty
         } else {
@@ -76,28 +77,10 @@ pub fn check(bytes: &[u8]) {
         }
     );
 
-    // Reach malformed grammar through the real writer and checksum, rather
-    // than waiting for random input to collide with a valid checksum.
-    match choice % 10 {
-        0 => encoded[choice % MAGIC.len()] ^= 0xff,
-        1..=5 => {
-            let offset = fields[choice % 10 - 1];
-            encoded[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-        }
-        6 => {
-            encoded.insert(body, 0);
-        }
-        7 | 8 => {
-            let offset = fields[if choice % 10 == 7 { 0 } else { 4 }];
-            encoded[offset..offset + 4].copy_from_slice(&0_u32.to_le_bytes());
-        }
-        _ => {
-            encoded.drain(choice / 10 % body..body);
-        }
-    }
+    mutate_grammar(&mut encoded, fields, choice, body);
     let body = encoded.len() - 8;
-    let sum = record::checksum(&encoded[..body]);
-    encoded[body..].copy_from_slice(&sum);
+    let (payload, checksum) = encoded.split_at_mut(body);
+    checksum.copy_from_slice(&record::checksum(payload));
     if encoded.len() > RECORD_LIMIT {
         assert_eq!(Contents::decode(&encoded), Contents::Oversized);
     } else {
@@ -109,12 +92,58 @@ pub fn check(bytes: &[u8]) {
     }
 }
 
+fn xor_byte(bytes: &mut [u8], offset: usize, mask: u8) {
+    for byte in bytes.split_at_mut(offset).1.split_at_mut(1).0 {
+        *byte ^= mask;
+    }
+}
+
+fn mutate_grammar(encoded: &mut Vec<u8>, fields: [usize; 5], choice: usize, body: usize) {
+    // Reach malformed grammar through the real writer and checksum, rather
+    // than waiting for random input to collide with a valid checksum.
+    match choice % 10 {
+        0 => xor_byte(encoded, choice % MAGIC.len(), 0xff),
+        1..=5 => {
+            let [pid, start, lock, identity, token] = fields;
+            let offset = match choice % 10 {
+                1 => pid,
+                2 => start,
+                3 => lock,
+                4 => identity,
+                _ => token,
+            };
+            encoded
+                .split_at_mut(offset)
+                .1
+                .split_at_mut(4)
+                .0
+                .copy_from_slice(&u32::MAX.to_le_bytes());
+        }
+        6 => {
+            encoded.insert(body, 0);
+        }
+        7 | 8 => {
+            let [pid, _, _, _, token] = fields;
+            let offset = if choice % 10 == 7 { pid } else { token };
+            encoded
+                .split_at_mut(offset)
+                .1
+                .split_at_mut(4)
+                .0
+                .copy_from_slice(&0_u32.to_le_bytes());
+        }
+        _ => {
+            encoded.drain(choice / 10 % body..body);
+        }
+    }
+}
+
 /// Exhaust every cut of an original writer seed outside the fuzz hot path.
 #[cfg(not(fuzzing))]
 pub fn check_prefixes(bytes: &[u8]) {
     for cut in 0..bytes.len() {
         assert_eq!(
-            Contents::decode(&bytes[..cut]),
+            Contents::decode(bytes.split_at(cut).0),
             if cut == 0 {
                 Contents::Empty
             } else {

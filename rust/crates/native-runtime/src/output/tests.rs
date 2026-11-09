@@ -135,63 +135,6 @@ fn full_output_preserves_credit_flags_and_independent_progress() -> io::Result<(
             assert_eq!(credit.available_permits(), 1);
         }
 
-        // A regular file retains its original shared cursor and original
-        // payload. Only the owned task may submit its synchronous write.
-        let mut file = tempfile::tempfile()?;
-        let original_flags = flags(&file)?;
-        let mut output = InheritedOutput::from_file(file.try_clone()?)?;
-        assert_eq!(
-            output.write(b"borrowed").await.unwrap_err().kind(),
-            io::ErrorKind::Unsupported
-        );
-        assert_eq!(flags(&file)?, original_flags);
-        assert_eq!(file.metadata()?.len(), 0);
-        let bytes = b"original redirected bytes".to_vec();
-        let pointer = bytes.as_ptr();
-        let (output, bytes) = output.write_owned(bytes).await?;
-        assert_eq!(bytes.as_ptr(), pointer);
-        assert_eq!(file.stream_position()?, bytes.len() as u64);
-        let (output, _) = output.write_owned(b"\n").await?;
-        drop(output);
-        file.rewind()?;
-        let mut actual = Vec::new();
-        file.read_to_end(&mut actual)?;
-        assert_eq!(actual, b"original redirected bytes\n");
-        assert_eq!(flags(&file)?, original_flags);
-
-        // Blocking terminals keep the original endpoint rather than reopening
-        // a PTY master (which would create another endpoint).
-        let mut master = -1;
-        let mut slave = -1;
-        #[expect(unsafe_code, reason = "opens the original real terminal pair")]
-        // SAFETY: openpty initializes two independent owned descriptors on
-        // success; null optional pointers request the native terminal defaults.
-        let opened = unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
-            )
-        };
-        if opened < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        #[expect(unsafe_code, reason = "owns both original terminal endpoints")]
-        // SAFETY: each successful descriptor is transferred exactly once.
-        let (terminal, mut peer) = unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };
-        let original_flags = flags(&terminal)?;
-        let output = InheritedOutput::from_file(terminal.try_clone()?)?;
-        let bytes = b"same original terminal endpoint\n".to_vec();
-        let pointer = bytes.as_ptr();
-        let (output, bytes) = output.write_owned(bytes).await?;
-        assert_eq!(bytes.as_ptr(), pointer);
-        let mut actual = vec![0; bytes.len()];
-        peer.read_exact(&mut actual)?;
-        assert_eq!(actual, bytes);
-        assert_eq!(flags(&terminal)?, original_flags);
-        drop(output);
         synchronous_output_retains_owned_credit_through_observer_loss().await?;
         Ok(())
     })
@@ -201,8 +144,14 @@ fn drain(reader: &mut impl io::Read, mut bytes: usize) -> io::Result<()> {
     let mut buffer = [0; 8192];
     while bytes != 0 {
         let count = bytes.min(buffer.len());
-        reader.read_exact(&mut buffer[..count])?;
-        assert!(buffer[..count].iter().all(|byte| *byte == b'x'));
+        reader.read_exact(buffer.get_mut(..count).ok_or(io::ErrorKind::InvalidData)?)?;
+        assert!(
+            buffer
+                .get(..count)
+                .ok_or(io::ErrorKind::InvalidData)?
+                .iter()
+                .all(|byte| *byte == b'x')
+        );
         bytes -= count;
     }
     Ok(())
@@ -255,21 +204,8 @@ async fn synchronous_output_retains_owned_credit_through_observer_loss() -> io::
         let credit = Arc::new(Semaphore::new(1));
         let (entered, started) = tokio::sync::oneshot::channel();
         let (retired, retirement) = tokio::sync::oneshot::channel();
-        let bytes = b"original owned synchronous bytes".to_vec();
-        let pointer = bytes.as_ptr() as usize;
-        let buffer = OwnedCredit {
-            bytes,
-            pointer,
-            credit: Some(
-                Arc::clone(&credit)
-                    .acquire_owned()
-                    .await
-                    .map_err(io::Error::other)?,
-            ),
-            caller: std::thread::current().id(),
-            entered: Mutex::new(Some(entered)),
-            retired: Some(retired),
-        };
+        let buffer = credited_output_buffer(&credit, entered, retired).await?;
+        let pointer = buffer.pointer;
         let mut delivery = Some(Box::pin(output.write_owned(buffer)));
         {
             // Even a surrounding inline-admitted host callback cannot
@@ -372,7 +308,7 @@ fn fill_socket(file: &File) -> io::Result<usize> {
             )
         };
         if written > 0 {
-            filled += written as usize;
+            filled += usize::try_from(written).map_err(io::Error::other)?;
             continue;
         }
         if written == 0 {
@@ -387,4 +323,90 @@ fn fill_socket(file: &File) -> io::Result<usize> {
             return Err(error);
         }
     }
+}
+
+#[test]
+fn synchronous_files_and_terminals_preserve_original_endpoint() -> io::Result<()> {
+    crate::coordination_runtime()?.block_on(async {
+        // A regular file retains its original shared cursor and original
+        // payload. Only the owned task may submit its synchronous write.
+        let mut file = tempfile::tempfile()?;
+        let original_flags = flags(&file)?;
+        let mut output = InheritedOutput::from_file(file.try_clone()?)?;
+        assert_eq!(
+            output.write(b"borrowed").await.unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(flags(&file)?, original_flags);
+        assert_eq!(file.metadata()?.len(), 0);
+        let bytes = b"original redirected bytes".to_vec();
+        let pointer = bytes.as_ptr();
+        let (output, bytes) = output.write_owned(bytes).await?;
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(file.stream_position()?, bytes.len() as u64);
+        let (output, _) = output.write_owned(b"\n").await?;
+        drop(output);
+        file.rewind()?;
+        let mut actual = Vec::new();
+        file.read_to_end(&mut actual)?;
+        assert_eq!(actual, b"original redirected bytes\n");
+        assert_eq!(flags(&file)?, original_flags);
+
+        // Blocking terminals keep the original endpoint rather than reopening
+        // a PTY master (which would create another endpoint).
+        let mut master = -1;
+        let mut slave = -1;
+        #[expect(unsafe_code, reason = "opens the original real terminal pair")]
+        // SAFETY: openpty initializes two independent owned descriptors on
+        // success; null optional pointers request the native terminal defaults.
+        let opened = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        if opened < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        #[expect(unsafe_code, reason = "owns both original terminal endpoints")]
+        // SAFETY: each successful descriptor is transferred exactly once.
+        let (terminal, mut peer) = unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };
+        let original_flags = flags(&terminal)?;
+        let output = InheritedOutput::from_file(terminal.try_clone()?)?;
+        let bytes = b"same original terminal endpoint\n".to_vec();
+        let pointer = bytes.as_ptr();
+        let (output, bytes) = output.write_owned(bytes).await?;
+        assert_eq!(bytes.as_ptr(), pointer);
+        let mut actual = vec![0; bytes.len()];
+        peer.read_exact(&mut actual)?;
+        assert_eq!(actual, bytes);
+        assert_eq!(flags(&terminal)?, original_flags);
+        drop(output);
+        Ok(())
+    })
+}
+
+async fn credited_output_buffer(
+    credit: &Arc<Semaphore>,
+    entered: tokio::sync::oneshot::Sender<()>,
+    retired: tokio::sync::oneshot::Sender<()>,
+) -> io::Result<OwnedCredit> {
+    let bytes = b"original owned synchronous bytes".to_vec();
+    let pointer = bytes.as_ptr() as usize;
+    Ok(OwnedCredit {
+        bytes,
+        pointer,
+        credit: Some(
+            Arc::clone(credit)
+                .acquire_owned()
+                .await
+                .map_err(io::Error::other)?,
+        ),
+        caller: std::thread::current().id(),
+        entered: Mutex::new(Some(entered)),
+        retired: Some(retired),
+    })
 }

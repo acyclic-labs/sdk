@@ -252,7 +252,7 @@ fn original_driver_publication_preserves_terminal_wake_and_allocation_custody() 
                 assert_eq!(allocated.count_current, 2);
                 assert_eq!(
                     budget.memory.load(Ordering::Acquire),
-                    allocated.bytes_current as u64
+                    u64::try_from(allocated.bytes_current).map_err(io::Error::other)?
                 );
                 assert_eq!(budget.used_operations.load(Ordering::Acquire), 0);
                 let allocations = budget.used_allocations.load(Ordering::Acquire);
@@ -289,7 +289,7 @@ fn original_driver_publication_preserves_terminal_wake_and_allocation_custody() 
                     match terminal {
                         0 => assert_eq!(result?, 37),
                         1 => {
-                            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied)
+                            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
                         }
                         _ => assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe),
                     }

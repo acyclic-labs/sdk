@@ -203,9 +203,11 @@ impl Wait for platform::Waiter {
     }
 }
 
+type DueAlarms = ExtractedEntries<AlarmCallback, (), 16, fn(u64)>;
+
 struct Driver<'a> {
     index: &'a Mutex<Index>,
-    due: Option<ExtractedEntries<AlarmCallback, (), 16, fn(u64)>>,
+    due: Option<DueAlarms>,
 }
 
 impl Drop for Driver<'_> {
@@ -833,31 +835,29 @@ mod tests {
                 locked_sender(&sender).send(outcome).unwrap();
             });
             for deadline in [1, u64::MAX] {
-                locked(&index).insert(deadline, Arc::clone(&fire)).unwrap();
+                locked(&index).insert(deadline, Arc::clone(&fire))?;
             }
             let (sender, observer) = mpsc::channel();
             let sender = Mutex::new(sender);
-            locked(&index)
-                .insert(
-                    2,
-                    Arc::new(move |outcome| {
-                        // Losing this subscriber cannot withdraw another
-                        // owner's later original failure notification.
-                        let _ = locked_sender(&sender).send(outcome);
-                    }),
-                )
-                .unwrap();
+            locked(&index).insert(
+                2,
+                Arc::new(move |outcome| {
+                    // Losing this subscriber cannot withdraw another
+                    // owner's later original failure notification.
+                    let _ = locked_sender(&sender).send(outcome);
+                }),
+            )?;
             let observer = if detach {
                 drop(observer);
                 None
             } else {
                 Some(observer)
             };
-            let waiter = platform::Waiter::refused_timer().unwrap();
+            let waiter = platform::Waiter::refused_timer()?;
             let original = waiter.wait(None).unwrap_err();
             drive(&index, &waiter, || now);
-            let first = received.try_recv().unwrap();
-            let second = received.try_recv().unwrap().unwrap_err();
+            let first = received.try_recv().map_err(io::Error::other)?;
+            let second = received.try_recv().map_err(io::Error::other)?.unwrap_err();
             assert_eq!(second.kind(), original.kind());
             assert_eq!(second.raw_os_error(), original.raw_os_error());
             if now == 0 {
@@ -865,21 +865,20 @@ mod tests {
             } else {
                 // A deadline already delivered by the same driver stays
                 // successful; pending owners receive the native failure.
-                first.unwrap();
+                first.map_err(io::Error::other)?;
             }
             if let Some(observer) = observer {
                 assert!(Arc::ptr_eq(
                     &second,
-                    &observer.try_recv().unwrap().unwrap_err()
+                    &observer.try_recv().map_err(io::Error::other)?.unwrap_err()
                 ));
             }
             let late = locked(&index).insert(1, fire).unwrap_err();
             assert!(Arc::ptr_eq(
                 &second,
                 late.get_ref()
-                    .unwrap()
-                    .downcast_ref::<Arc<io::Error>>()
-                    .unwrap()
+                    .and_then(|cause| cause.downcast_ref::<Arc<io::Error>>())
+                    .ok_or(io::ErrorKind::InvalidData)?
             ));
             let retained = fail(
                 &index,
@@ -899,14 +898,12 @@ mod tests {
         locked(&index).insert(1, Arc::new(|_| panic!("later alarm consumer unwound")))?;
         let (sender, received) = mpsc::channel();
         let sender = Mutex::new(sender);
-        locked(&index)
-            .insert(
-                1,
-                Arc::new(move |outcome| {
-                    locked_sender(&sender).send(outcome).unwrap();
-                }),
-            )
-            .unwrap();
+        locked(&index).insert(
+            1,
+            Arc::new(move |outcome| {
+                locked_sender(&sender).send(outcome).unwrap();
+            }),
+        )?;
         assert_eq!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 drive(&index, &Lost, || 0);
@@ -916,7 +913,11 @@ mod tests {
             Some(&"original producer unwound")
         );
         assert_eq!(
-            received.try_recv().unwrap().unwrap_err().kind(),
+            received
+                .try_recv()
+                .map_err(io::Error::other)?
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::BrokenPipe
         );
         Ok(())

@@ -300,30 +300,7 @@ async fn admitted_work_keeps_observation_after_observer_drop() {
             &progress_rx,
         );
         drop(observer);
-        let retired = async {
-            loop {
-                let changed = seen.1.notified();
-                tokio::pin!(changed);
-                changed.as_mut().enable();
-                if seen.closed("test.caller") != 0 {
-                    break;
-                }
-                changed.await;
-            }
-        };
-        tokio::pin!(retired);
-        assert!(
-            retired
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop()))
-                .is_pending(),
-            "held work retired its original caller span"
-        );
-        tracing::dispatcher::with_default(&foreign, || release_tx.send(()).unwrap());
-        done_rx.recv().unwrap();
-        // The worker closes the caller span after reporting done; no wall
-        // clock bounds that, so wait for the close itself.
-        retired.await;
+        retire_observed_work(&seen, &foreign, &release_tx, &done_rx).await;
         assert!(seen.has_ancestor("test.worker_nested", "test.caller"));
         assert!(
             !seen
@@ -505,4 +482,36 @@ fn observation_controls_are_coupled_to_named_invariants() {
     for foreign in [false, true] {
         oracle.check(&Case::Registry(foreign));
     }
+}
+
+async fn retire_observed_work(
+    seen: &Capture,
+    foreign: &tracing::Dispatch,
+    release_tx: &std::sync::mpsc::Sender<()>,
+    done_rx: &std::sync::mpsc::Receiver<()>,
+) {
+    let retired = async {
+        loop {
+            let changed = seen.1.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if seen.closed("test.caller") != 0 {
+                break;
+            }
+            changed.await;
+        }
+    };
+    tokio::pin!(retired);
+    assert!(
+        retired
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending(),
+        "held work retired its original caller span"
+    );
+    tracing::dispatcher::with_default(foreign, || release_tx.send(()).unwrap());
+    done_rx.recv().unwrap();
+    // The worker closes the caller span after reporting done; no wall
+    // clock bounds that, so wait for the close itself.
+    retired.await;
 }

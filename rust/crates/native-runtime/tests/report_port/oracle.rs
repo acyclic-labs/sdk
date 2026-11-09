@@ -48,8 +48,18 @@ async fn observe(input: &[u8], chunk: usize, ready: bool) -> io::Result<Observat
             let mut line = String::new();
             BufReader::new(&mut owner).read_line(&mut line).await?;
             let announcement: serde_json::Value = serde_json::from_str(&line)?;
-            assert_eq!(announcement["ready"], true);
-            assert_eq!(announcement["generation"], GENERATION);
+            assert_eq!(
+                announcement
+                    .get("ready")
+                    .ok_or(io::ErrorKind::InvalidData)?,
+                true
+            );
+            assert_eq!(
+                announcement
+                    .get("generation")
+                    .ok_or(io::ErrorKind::InvalidData)?,
+                GENERATION
+            );
         }
         for bytes in input.chunks(chunk) {
             owner.write_all(bytes).await?;
@@ -151,7 +161,10 @@ pub fn check(input: &[u8]) -> io::Result<()> {
                     .position(|byte| byte.is_ascii_lowercase())
                     .ok_or_else(|| io::Error::other("captured writer identity has no letter"))?;
                 let mut noncanonical = input.to_vec();
-                noncanonical[start + letter].make_ascii_uppercase();
+                noncanonical
+                    .get_mut(start + letter)
+                    .ok_or(io::ErrorKind::InvalidData)?
+                    .make_ascii_uppercase();
                 assert!(
                     observe(&noncanonical, 1, false).await?.is_err(),
                     "report decoder admitted a noncanonical identity"

@@ -146,10 +146,13 @@ mod tests {
 
     #[test]
     fn expiry_is_an_event_and_elapsed_authority_refuses_dispatch() -> io::Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_millis() as u64;
+        let now = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(io::Error::other)?
+                .as_millis(),
+        )
+        .map_err(io::Error::other)?;
         let control = ProcessControl::open(now + 50)?;
         let wake = control.wake();
         #[cfg(unix)]

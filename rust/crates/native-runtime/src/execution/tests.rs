@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(target_os = "linux")]
+use crate::{ProcessCommand as Command, ProcessStdio as Stdio, ProcessTree};
 
 #[cfg(target_os = "linux")]
 mod ipc;
@@ -25,26 +27,7 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
     // roots. A missing workspace detects filesystem work before the refusal;
     // the real workspace detects consumption of the supplied read roots.
     let missing = root.path().join("missing");
-    for workspace in [&workspace, &missing] {
-        let visited = std::cell::Cell::new(0);
-        let error = ExecutionGrant::new(
-            workspace,
-            ExecutionAccess::ReadOnly,
-            std::iter::once(external.clone()).inspect(|_| visited.set(visited.get() + 1)),
-            ExecutionNetwork::TcpPorts(BTreeSet::from([0, 443])),
-        )
-        .unwrap_err();
-        assert_eq!(visited.get(), 0);
-        assert_eq!(
-            error
-                .get_ref()
-                .unwrap()
-                .downcast_ref::<ExecutionRefusal>()
-                .unwrap()
-                .reason(),
-            "TCP port zero is not a destination grant"
-        );
-    }
+    invalid_network_binds_no_roots(&workspace, &missing, &external);
     let ports = BTreeSet::from([443, 8443]);
     let parent = ExecutionGrant::new(
         &workspace,
@@ -66,49 +49,11 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
         .unwrap();
     parent.check_attenuation(&readonly).unwrap();
     assert!(readonly.check_attenuation(&parent).is_err());
-    // A rejected authority increase must not bind even one requested root.
-    // A missing workspace detects path resolution before the same refusal;
-    // a real workspace detects consumption of the supplied read roots.
-    for (access, network) in [
-        (ExecutionAccess::WorkspaceWrite, ExecutionNetwork::Off),
-        (ExecutionAccess::ReadOnly, ExecutionNetwork::On),
-        (
-            ExecutionAccess::ReadOnly,
-            ExecutionNetwork::TcpPorts(BTreeSet::from([443])),
-        ),
-    ] {
-        for workspace in [&workspace, &missing] {
-            let visited = std::cell::Cell::new(0);
-            let read = std::iter::once(nested.clone()).inspect(|_| visited.set(visited.get() + 1));
-            let error = readonly
-                .attenuate(workspace, access, read, network.clone())
-                .unwrap_err();
-            assert_eq!(visited.get(), 0);
-            assert_eq!(
-                error
-                    .get_ref()
-                    .unwrap()
-                    .downcast_ref::<ExecutionRefusal>()
-                    .unwrap()
-                    .reason(),
-                "execution grant exceeds its authority ceiling"
-            );
-        }
-    }
-    let visited = std::cell::Cell::new(0);
-    readonly
-        .attenuate(
-            &workspace,
-            ExecutionAccess::ReadOnly,
-            std::iter::once(nested.clone()).inspect(|_| visited.set(visited.get() + 1)),
-            ExecutionNetwork::Off,
-        )
-        .unwrap();
-    assert_eq!(visited.get(), 1);
+    rejected_increases_bind_no_roots(&readonly, &workspace, &missing, &nested);
     let child = match parent.attenuate(
         &nested,
         ExecutionAccess::ReadOnly,
-        [external.clone()],
+        [external],
         ExecutionNetwork::TcpPorts(BTreeSet::from([443])),
     ) {
         Ok(child) => child,
@@ -168,8 +113,6 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
 #[cfg(target_os = "linux")]
 #[test]
 fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
-    use crate::ProcessTree;
-    use crate::{ProcessCommand as Command, ProcessStdio as Stdio};
     let root = tempfile::tempdir().unwrap();
     retained_policy_preparation(root.path());
     let workspace = root.path().join("workspace");
@@ -226,62 +169,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
                 .stdout(Stdio::piped()).stderr(Stdio::piped());
             command
         };
-        // A valid filesystem grant cannot expose ambient host secrets. Refuse
-        // before native preparation; the same real command below is admitted
-        // only after its environment has been made explicit.
-        let error = match ProcessTree::spawn_granted(make_command(), &grant, custody) {
-            Ok(_) => panic!("confined command inherited the host environment"),
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("requires an explicit environment")
-        );
-        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
-        assert!(!workspace.join("new").exists());
-        let cancelled = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-        cancelled
-            .cancelled
-            .store(true, std::sync::atomic::Ordering::Release);
-        let mut retained = None;
-        let mut cancelled_command = make_command();
-        cancelled_command.env_clear();
-        let error = ProcessTree::spawn_granted_controlled(
-            cancelled_command,
-            &grant,
-            custody,
-            Some(&cancelled),
-            &mut retained,
-        )
-        .expect_err("a cancelled invocation prepared a native boundary");
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert!(retained.is_none());
-        assert!(!workspace.join("new").exists());
-        // The actual launch must use this same ledger for preparation. Its
-        // first root open is refused before a process can acquire custody.
-        for (limit, failure) in [(0, None), (1, Some(1))] {
-            let mut exhausted = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
-            exhausted.fail_recorded_operation = failure;
-            let mut exhausted_command = make_command();
-            exhausted_command.env_clear();
-            let error = ProcessTree::spawn_granted_controlled(
-                exhausted_command,
-                &grant,
-                custody,
-                Some(&exhausted),
-                &mut retained,
-            )
-            .expect_err("an unfunded invocation prepared an execution boundary");
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
-            assert_eq!(
-                error.to_string().matches("tool execution failed: ").count(),
-                1
-            );
-            assert!(retained.is_none());
-            assert!(!workspace.join("new").exists());
-        }
+        refused_launches_bind_no_roots(make_command, &grant, custody, &workspace, &sentinel);
         let mut command = make_command();
         command.env_clear();
         let original = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
@@ -307,67 +195,9 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
             Err(error) => panic!("confined launch failed: {error}"),
         }
         admitted += 1;
-        // A real admitted tree still needs cleanup. Refusing that operation
-        // must not turn it into a pre-launch capability refusal or retire it.
-        let denied_cleanup = crate::tests::ReadBudgetMeter::new(0, 0);
-        let tree = retained.as_mut().expect("admitted tree");
-        let cleanup = tree.terminate(Some(&denied_cleanup)).unwrap_err();
-        assert!(
-            !cleanup
-                .get_ref()
-                .is_some_and(|cause| cause.is::<ExecutionRefusal>())
+        admitted_tree_preserves_custody(
+            retained, &grant, custody, &original, &workspace, &sentinel, access,
         );
-        assert!(!tree.is_reaped());
-        // An existing recovery slot is authority, not replaceable output.
-        // The rejected command would create another observable file if the
-        // consuming entry accidentally launched or overwrote that slot.
-        let mut rejected = Command::new("/bin/sh");
-        rejected
-            .args(["-c", "printf replaced > unexpected"])
-            .env_clear()
-            .current_dir(&workspace)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let error = ProcessTree::spawn_granted_controlled(
-            rejected,
-            &grant,
-            custody,
-            Some(&original),
-            &mut retained,
-        )
-        .expect_err("an occupied recovery slot was replaced");
-        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
-        let mut tree = retained.expect("admitted tree retains its original recovery slot");
-        let output = tree
-            .wait_with_output(
-                std::time::Duration::from_secs(5),
-                65536,
-                None,
-                || Ok(()),
-                |_| Ok(Default::default()),
-                None,
-                None,
-                None,
-            )
-            .expect("confined process output");
-        assert!(!workspace.join("unexpected").exists());
-        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(
-            output.stdout, readable,
-            "workspace reads must succeed without disclosing outside bytes"
-        );
-        match access {
-            ExecutionAccess::WorkspaceWrite => {
-                assert_eq!(
-                    std::fs::read_to_string(workspace.join("new")).unwrap(),
-                    "created"
-                );
-                std::fs::remove_file(workspace.join("new")).unwrap();
-            }
-            ExecutionAccess::ReadOnly => assert!(!workspace.join("new").exists()),
-        }
     }
     eprintln!("execution boundary cases: admitted={admitted}, unsupported={unsupported}");
     // Enforcement must affect only the child, never the launching host thread.
@@ -565,80 +395,15 @@ fn compiled_prefix_grant_proofs_use_original_operation_and_allocation_credits() 
             }
             Err(error) => panic!("bound-object control failed: {error}"),
         }
-        if path == &workspace {
-            let mut denied = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-            denied.item_limit = Some(0);
-            let error = ceiling
-                .check_attenuation_controlled(&requested, Some(&denied))
-                .unwrap_err();
-            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
-            // The workspace proof completes; denied index examinations cannot
-            // reach a selected read root's open or native subtree resolution.
-            assert_eq!(denied.read_attempts.load(Ordering::Acquire), 2);
-            assert_eq!(denied.memory.load(Ordering::Acquire), 0);
-        }
-        let admission = (0..=operations).map(|limit| (limit, None));
-        let recording = (1..=operations).map(|failure| (u64::MAX, Some(failure)));
-        for (limit, failure) in admission.chain(recording) {
-            let mut meter = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
-            meter.fail_recorded_operation = failure;
-            let result = ceiling.check_attenuation_controlled(&requested, Some(&meter));
-            if limit == operations && failure.is_none() {
-                result.unwrap();
-                assert_eq!(meter.used_allocations.load(Ordering::Acquire), allocations,);
-            } else {
-                let error = result.unwrap_err();
-                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-                assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
-            }
-            assert_eq!(
-                meter.used_operations.load(Ordering::Acquire),
-                failure.unwrap_or(limit),
-            );
-            assert_eq!(
-                meter.read_attempts.load(Ordering::Acquire),
-                failure.unwrap_or(limit),
-            );
-            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        }
-        for already_cancelled in [true, false] {
-            let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-            meter.cancelled.store(already_cancelled, Ordering::Release);
-            meter.cancel_after_operation = !already_cancelled;
-            let error = ceiling
-                .check_attenuation_controlled(&requested, Some(&meter))
-                .unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-            assert_eq!(
-                meter.read_attempts.load(Ordering::Acquire),
-                u64::from(!already_cancelled),
-            );
-            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        }
-        let denied = crate::tests::ReadBudgetMeter::new(0, 0);
-        let error = requested
-            .check_attenuation_controlled(&ceiling, Some(&denied))
-            .unwrap_err();
-        assert!(error.to_string().contains("exceeds its authority ceiling"));
-        assert_eq!(denied.read_attempts.load(Ordering::Acquire), 0);
-        if allocations != 0 {
-            let denied = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-            denied.deny_allocations.store(true, Ordering::Release);
-            let error = ceiling
-                .check_attenuation_controlled(&requested, Some(&denied))
-                .unwrap_err();
-            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
-            let before_allocation = if path == &nested { 2 } else { 4 };
-            assert_eq!(
-                denied.used_operations.load(Ordering::Acquire),
-                before_allocation,
-            );
-            assert_eq!(
-                denied.read_attempts.load(Ordering::Acquire),
-                before_allocation,
-            );
-            assert_eq!(denied.memory.load(Ordering::Acquire), 0);
-        }
+        prefix_operation_credits(
+            &ceiling,
+            &requested,
+            path,
+            &workspace,
+            operations,
+            allocations,
+        );
+        prefix_refusal_credits(&ceiling, &requested, path, &nested, allocations);
     }
     // An exact stale root must refuse even though its broader ancestor still
     // authorizes newly created descendants. Indexing cannot skip that fence.
@@ -834,9 +599,8 @@ fn replaced_grant_root_refuses_before_guest_execution() {
             )
             .unwrap_err();
         assert!(error.to_string().contains("root was replaced"), "{error}");
-        let error = match grant.prepare() {
-            Ok(_) => panic!("replaced root acquired the previous grant"),
-            Err(error) => error,
+        let Err(error) = grant.prepare() else {
+            panic!("replaced root acquired the previous grant");
         };
         if error.kind() == io::ErrorKind::Unsupported && replaced == &external {
             // Without Landlock, preparation stops before adding read roots.
@@ -1077,5 +841,311 @@ fn network_probe() {
             io::ErrorKind::PermissionDenied,
             "an unrelated transport failure does not prove network denial"
         );
+    }
+}
+
+fn rejected_increases_bind_no_roots(
+    readonly: &ExecutionGrant,
+    workspace: &Path,
+    missing: &Path,
+    nested: &Path,
+) {
+    // A rejected authority increase must not bind even one requested root.
+    // A missing workspace detects path resolution before the same refusal;
+    // a real workspace detects consumption of the supplied read roots.
+    for (access, network) in [
+        (ExecutionAccess::WorkspaceWrite, ExecutionNetwork::Off),
+        (ExecutionAccess::ReadOnly, ExecutionNetwork::On),
+        (
+            ExecutionAccess::ReadOnly,
+            ExecutionNetwork::TcpPorts(BTreeSet::from([443])),
+        ),
+    ] {
+        for workspace in [workspace, missing] {
+            let visited = std::cell::Cell::new(0);
+            let read =
+                std::iter::once(nested.to_path_buf()).inspect(|_| visited.set(visited.get() + 1));
+            let error = readonly
+                .attenuate(workspace, access, read, network.clone())
+                .unwrap_err();
+            assert_eq!(visited.get(), 0);
+            assert_eq!(
+                error
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<ExecutionRefusal>()
+                    .unwrap()
+                    .reason(),
+                "execution grant exceeds its authority ceiling"
+            );
+        }
+    }
+    let visited = std::cell::Cell::new(0);
+    readonly
+        .attenuate(
+            workspace,
+            ExecutionAccess::ReadOnly,
+            std::iter::once(nested.to_path_buf()).inspect(|_| visited.set(visited.get() + 1)),
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+    assert_eq!(visited.get(), 1);
+}
+
+#[cfg(target_os = "linux")]
+fn refused_launches_bind_no_roots(
+    make_command: impl Fn() -> crate::ProcessCommand,
+    grant: &ExecutionGrant,
+    custody: Option<&crate::ProcessCustody>,
+    workspace: &Path,
+    sentinel: &Path,
+) {
+    // A valid filesystem grant cannot expose ambient host secrets. Refuse
+    // before native preparation; the same real command below is admitted
+    // only after its environment has been made explicit.
+    let Err(error) = ProcessTree::spawn_granted(make_command(), grant, custody) else {
+        panic!("confined command inherited the host environment");
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("requires an explicit environment")
+    );
+    assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "original");
+    assert!(!workspace.join("new").exists());
+    let cancelled = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    cancelled
+        .cancelled
+        .store(true, std::sync::atomic::Ordering::Release);
+    let mut retained = None;
+    let mut cancelled_command = make_command();
+    cancelled_command.env_clear();
+    let error = ProcessTree::spawn_granted_controlled(
+        cancelled_command,
+        grant,
+        custody,
+        Some(&cancelled),
+        &mut retained,
+    )
+    .expect_err("a cancelled invocation prepared a native boundary");
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert!(retained.is_none());
+    assert!(!workspace.join("new").exists());
+    // The actual launch must use this same ledger for preparation. Its
+    // first root open is refused before a process can acquire custody.
+    for (limit, failure) in [(0, None), (1, Some(1))] {
+        let mut exhausted = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
+        exhausted.fail_recorded_operation = failure;
+        let mut exhausted_command = make_command();
+        exhausted_command.env_clear();
+        let error = ProcessTree::spawn_granted_controlled(
+            exhausted_command,
+            grant,
+            custody,
+            Some(&exhausted),
+            &mut retained,
+        )
+        .expect_err("an unfunded invocation prepared an execution boundary");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        assert_eq!(
+            error.to_string().matches("tool execution failed: ").count(),
+            1
+        );
+        assert!(retained.is_none());
+        assert!(!workspace.join("new").exists());
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn admitted_tree_preserves_custody(
+    mut retained: Option<crate::ProcessTree>,
+    grant: &ExecutionGrant,
+    custody: Option<&crate::ProcessCustody>,
+    original: &crate::tests::ReadBudgetMeter,
+    workspace: &Path,
+    sentinel: &Path,
+    access: ExecutionAccess,
+) {
+    // A real admitted tree still needs cleanup. Refusing that operation
+    // must not turn it into a pre-launch capability refusal or retire it.
+    let denied_cleanup = crate::tests::ReadBudgetMeter::new(0, 0);
+    let tree = retained.as_mut().expect("admitted tree");
+    let cleanup = tree.terminate(Some(&denied_cleanup)).unwrap_err();
+    assert!(
+        !cleanup
+            .get_ref()
+            .is_some_and(|cause| cause.is::<ExecutionRefusal>())
+    );
+    assert!(!tree.is_reaped());
+    // An existing recovery slot is authority, not replaceable output.
+    // The rejected command would create another observable file if the
+    // consuming entry accidentally launched or overwrote that slot.
+    let mut rejected = Command::new("/bin/sh");
+    rejected
+        .args(["-c", "printf replaced > unexpected"])
+        .env_clear()
+        .current_dir(workspace)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let error = ProcessTree::spawn_granted_controlled(
+        rejected,
+        grant,
+        custody,
+        Some(original),
+        &mut retained,
+    )
+    .expect_err("an occupied recovery slot was replaced");
+    assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+    let mut tree = retained.expect("admitted tree retains its original recovery slot");
+    let output = tree
+        .wait_with_output(
+            std::time::Duration::from_secs(5),
+            65536,
+            None,
+            || Ok(()),
+            |_| Ok(Default::default()),
+            None,
+            None,
+            None,
+        )
+        .expect("confined process output");
+    assert!(!workspace.join("unexpected").exists());
+    assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "original");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout, b"workspace bytes\n",
+        "workspace reads must succeed without disclosing outside bytes"
+    );
+    match access {
+        ExecutionAccess::WorkspaceWrite => {
+            assert_eq!(
+                std::fs::read_to_string(workspace.join("new")).unwrap(),
+                "created"
+            );
+            std::fs::remove_file(workspace.join("new")).unwrap();
+        }
+        ExecutionAccess::ReadOnly => assert!(!workspace.join("new").exists()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn prefix_operation_credits(
+    ceiling: &ExecutionGrant,
+    requested: &ExecutionGrant,
+    path: &Path,
+    workspace: &Path,
+    operations: u64,
+    allocations: u64,
+) {
+    use std::sync::atomic::Ordering;
+    if path == workspace {
+        let mut denied = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        denied.item_limit = Some(0);
+        let error = ceiling
+            .check_attenuation_controlled(requested, Some(&denied))
+            .unwrap_err();
+        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        // The workspace proof completes; denied index examinations cannot
+        // reach a selected read root's open or native subtree resolution.
+        assert_eq!(denied.read_attempts.load(Ordering::Acquire), 2);
+        assert_eq!(denied.memory.load(Ordering::Acquire), 0);
+    }
+    let admission = (0..=operations).map(|limit| (limit, None));
+    let recording = (1..=operations).map(|failure| (u64::MAX, Some(failure)));
+    for (limit, failure) in admission.chain(recording) {
+        let mut meter = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
+        meter.fail_recorded_operation = failure;
+        let result = ceiling.check_attenuation_controlled(requested, Some(&meter));
+        if limit == operations && failure.is_none() {
+            result.unwrap();
+            assert_eq!(meter.used_allocations.load(Ordering::Acquire), allocations,);
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        }
+        assert_eq!(
+            meter.used_operations.load(Ordering::Acquire),
+            failure.unwrap_or(limit),
+        );
+        assert_eq!(
+            meter.read_attempts.load(Ordering::Acquire),
+            failure.unwrap_or(limit),
+        );
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    }
+}
+
+fn invalid_network_binds_no_roots(workspace: &Path, missing: &Path, external: &Path) {
+    for workspace in [workspace, missing] {
+        let visited = std::cell::Cell::new(0);
+        let error = ExecutionGrant::new(
+            workspace,
+            ExecutionAccess::ReadOnly,
+            std::iter::once(external.to_path_buf()).inspect(|_| visited.set(visited.get() + 1)),
+            ExecutionNetwork::TcpPorts(BTreeSet::from([0, 443])),
+        )
+        .unwrap_err();
+        assert_eq!(visited.get(), 0);
+        assert_eq!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<ExecutionRefusal>()
+                .unwrap()
+                .reason(),
+            "TCP port zero is not a destination grant"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn prefix_refusal_credits(
+    ceiling: &ExecutionGrant,
+    requested: &ExecutionGrant,
+    path: &Path,
+    nested: &Path,
+    allocations: u64,
+) {
+    use std::sync::atomic::Ordering;
+    for already_cancelled in [true, false] {
+        let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        meter.cancelled.store(already_cancelled, Ordering::Release);
+        meter.cancel_after_operation = !already_cancelled;
+        let error = ceiling
+            .check_attenuation_controlled(requested, Some(&meter))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(
+            meter.read_attempts.load(Ordering::Acquire),
+            u64::from(!already_cancelled),
+        );
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    }
+    let denied = crate::tests::ReadBudgetMeter::new(0, 0);
+    let error = requested
+        .check_attenuation_controlled(ceiling, Some(&denied))
+        .unwrap_err();
+    assert!(error.to_string().contains("exceeds its authority ceiling"));
+    assert_eq!(denied.read_attempts.load(Ordering::Acquire), 0);
+    if allocations != 0 {
+        let denied = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        denied.deny_allocations.store(true, Ordering::Release);
+        let error = ceiling
+            .check_attenuation_controlled(requested, Some(&denied))
+            .unwrap_err();
+        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        let before_allocation = if path == nested { 2 } else { 4 };
+        assert_eq!(
+            denied.used_operations.load(Ordering::Acquire),
+            before_allocation,
+        );
+        assert_eq!(
+            denied.read_attempts.load(Ordering::Acquire),
+            before_allocation,
+        );
+        assert_eq!(denied.memory.load(Ordering::Acquire), 0);
     }
 }

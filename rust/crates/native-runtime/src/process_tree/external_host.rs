@@ -718,15 +718,32 @@ mod tests {
         assert!(failure.progress.retired.is_none());
         let original = std::fs::read(root.path().join("completion.json")).unwrap();
         let receipt: serde_json::Value = serde_json::from_slice(&original).unwrap();
-        assert_eq!(receipt["invocation"], PHASE_BINDING);
-        assert_eq!(receipt["failure"]["phase"], "control-admission");
+        assert_eq!(receipt.get("invocation").unwrap(), PHASE_BINDING);
         assert_eq!(
-            receipt["failure"]["error"]["raw_os_error"].as_i64(),
+            receipt.get("failure").unwrap().get("phase").unwrap(),
+            "control-admission"
+        );
+        assert_eq!(
+            receipt
+                .get("failure")
+                .unwrap()
+                .get("error")
+                .unwrap()
+                .get("raw_os_error")
+                .unwrap()
+                .as_i64(),
             failure.error.raw_os_error().map(i64::from)
         );
-        assert_eq!(receipt["process_tree_retired"], false);
-        assert!(receipt["root_status"].is_null());
-        assert!(receipt["phases"]["root_admitted_seconds"].is_null());
+        assert_eq!(receipt.get("process_tree_retired").unwrap(), false);
+        assert!(receipt.get("root_status").unwrap().is_null());
+        assert!(
+            receipt
+                .get("phases")
+                .unwrap()
+                .get("root_admitted_seconds")
+                .unwrap()
+                .is_null()
+        );
     }
 
     #[test]
@@ -750,83 +767,96 @@ mod tests {
 
     #[test]
     fn original_host_phases_preserve_root_status_and_control_custody() {
-        use std::io::BufRead as _;
         if let Some(root) = std::env::var_os(PHASE_ROOT) {
-            let root = Path::new(&root);
-            #[cfg(unix)]
-            if std::env::var(PHASE_MODE).unwrap() == "failed" {
-                use std::os::fd::AsRawFd as _;
-                let directory = std::fs::File::open(root).unwrap();
-                // SAFETY: this fixture process owns stdin. Its original control
-                // read receives the actual directory-read error. Unlike EBADF,
-                // std's stdin wrapper does not turn this error into EOF.
-                assert_eq!(unsafe { libc::dup2(directory.as_raw_fd(), 0) }, 0);
+            phase_host_fixture(Path::new(&root));
+        }
+        assert_root_admission_failures();
+        for version in ["2", "3"] {
+            for mode in ["exit", "input", "eof"]
+                .into_iter()
+                .chain(cfg!(unix).then_some("failed"))
+            {
+                phase_case(version, mode);
             }
-            let mut arguments = vec![
-                "--custody".into(),
-                root.join("custody").into_os_string(),
-                "--completion".into(),
-                root.join("completion.json").into_os_string(),
-            ];
-            if std::env::var(PHASE_RECEIPT).as_deref() == Ok("3") {
-                arguments.extend(["--invocation".into(), PHASE_BINDING.into()]);
-            }
-            arguments.extend([
-                std::env::current_exe().unwrap().into_os_string(),
-                "--exact".into(),
-                ROOT_TEST.into(),
-                "--nocapture".into(),
-            ]);
-            let result = run_external_process_host_with_progress(arguments);
-            if let Err(failure) = result {
-                let progress = failure.progress;
-                std::fs::write(
-                    root.join("observations.json"),
-                    serde_json::to_vec(&serde_json::json!({
-                        "failed": true,
-                        "phase": format!("{:?}", failure.phase),
-                        "raw_os_error": failure.error.raw_os_error(),
-                        "root_code": progress.root_status.and_then(|status| status.code()),
-                        "root_status_observed": progress.root_status.is_some(),
-                        "cancelled": progress.cancelled,
-                        "admitted": progress.root_admitted.map(|elapsed| elapsed.as_secs_f64()),
-                        "exit_observed": progress.root_exit_observed.map(|elapsed| elapsed.as_secs_f64()),
-                        "retired": progress.retired.map(|elapsed| elapsed.as_secs_f64()),
-                        "control_failed": progress.control.is_some_and(|control| matches!(
-                            control.outcome, ProcessHostControl::Failed { raw_os_error: Some(_), .. }
-                        )),
-                    })).unwrap(),
-                ).unwrap();
-                std::process::exit(125);
-            }
-            let result = result.unwrap();
-            let progress = result.progress;
-            let control = progress.control.map(|control| {
-                serde_json::json!({
-                    "elapsed": control.elapsed.as_secs_f64(),
-                    "outcome": match control.outcome {
-                        ProcessHostControl::Input => "input",
-                        ProcessHostControl::Eof => "eof",
-                        ProcessHostControl::Failed { .. } => "failed",
-                    },
-                })
-            });
+        }
+    }
+    fn phase_host_fixture(root: &Path) -> ! {
+        #[cfg(unix)]
+        if std::env::var(PHASE_MODE).unwrap() == "failed" {
+            use std::os::fd::AsRawFd as _;
+            let directory = std::fs::File::open(root).unwrap();
+            // SAFETY: this fixture process owns stdin. Its original control
+            // read receives the actual directory-read error. Unlike EBADF,
+            // std's stdin wrapper does not turn this error into EOF.
+            assert_eq!(unsafe { libc::dup2(directory.as_raw_fd(), 0) }, 0);
+        }
+        let mut arguments = vec![
+            "--custody".into(),
+            root.join("custody").into_os_string(),
+            "--completion".into(),
+            root.join("completion.json").into_os_string(),
+        ];
+        if std::env::var(PHASE_RECEIPT).as_deref() == Ok("3") {
+            arguments.extend(["--invocation".into(), PHASE_BINDING.into()]);
+        }
+        arguments.extend([
+            std::env::current_exe().unwrap().into_os_string(),
+            "--exact".into(),
+            ROOT_TEST.into(),
+            "--nocapture".into(),
+        ]);
+        let result = run_external_process_host_with_progress(arguments);
+        if let Err(failure) = result {
+            let progress = failure.progress;
             std::fs::write(
                 root.join("observations.json"),
                 serde_json::to_vec(&serde_json::json!({
-                    "exit_code": result.exit_code,
-                    "root_code": result.root_status.code(),
-                    "cancelled": result.cancelled,
-                    "admitted": progress.root_admitted.as_secs_f64(),
-                    "exit_observed": progress.root_exit_observed.as_secs_f64(),
-                    "retired": progress.retired.as_secs_f64(),
-                    "control": control,
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            std::process::exit(result.exit_code);
+                    "failed": true,
+                    "phase": format!("{:?}", failure.phase),
+                    "raw_os_error": failure.error.raw_os_error(),
+                    "root_code": progress.root_status.and_then(|status| status.code()),
+                    "root_status_observed": progress.root_status.is_some(),
+                    "cancelled": progress.cancelled,
+                    "admitted": progress.root_admitted.map(|elapsed| elapsed.as_secs_f64()),
+                    "exit_observed": progress.root_exit_observed.map(|elapsed| elapsed.as_secs_f64()),
+                    "retired": progress.retired.map(|elapsed| elapsed.as_secs_f64()),
+                    "control_failed": progress.control.is_some_and(|control| matches!(
+                        control.outcome, ProcessHostControl::Failed { raw_os_error: Some(_), .. }
+                    )),
+                })).unwrap(),
+            ).unwrap();
+            std::process::exit(125);
         }
+        let result = result.unwrap();
+        let progress = result.progress;
+        let control = progress.control.map(|control| {
+            serde_json::json!({
+                "elapsed": control.elapsed.as_secs_f64(),
+                "outcome": match control.outcome {
+                    ProcessHostControl::Input => "input",
+                    ProcessHostControl::Eof => "eof",
+                    ProcessHostControl::Failed { .. } => "failed",
+                },
+            })
+        });
+        std::fs::write(
+            root.join("observations.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "exit_code": result.exit_code,
+                "root_code": result.root_status.code(),
+                "cancelled": result.cancelled,
+                "admitted": progress.root_admitted.as_secs_f64(),
+                "exit_observed": progress.root_exit_observed.as_secs_f64(),
+                "retired": progress.retired.as_secs_f64(),
+                "control": control,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::process::exit(result.exit_code);
+    }
+
+    fn assert_root_admission_failures() {
         let failure = run_external_process_host_with_progress([]).unwrap_err();
         assert_eq!(failure.phase, ProcessHostPhase::Arguments);
         assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
@@ -857,17 +887,44 @@ mod tests {
         let original = std::fs::read(absent.path().join("failed.json")).unwrap();
         println!("PROCESS_COMPLETION_CORPUS_refused_BYTES={original:?}");
         let refused: serde_json::Value = serde_json::from_slice(&original).unwrap();
-        assert_eq!(refused["schema"], "acyclic.process-custody-completion.v3");
-        assert_eq!(refused["invocation"], PHASE_BINDING);
-        assert_eq!(refused["failure"]["phase"], "root-admission");
         assert_eq!(
-            refused["failure"]["error"]["raw_os_error"].as_i64(),
+            refused.get("schema").unwrap(),
+            "acyclic.process-custody-completion.v3"
+        );
+        assert_eq!(refused.get("invocation").unwrap(), PHASE_BINDING);
+        assert_eq!(
+            refused.get("failure").unwrap().get("phase").unwrap(),
+            "root-admission"
+        );
+        assert_eq!(
+            refused
+                .get("failure")
+                .unwrap()
+                .get("error")
+                .unwrap()
+                .get("raw_os_error")
+                .unwrap()
+                .as_i64(),
             failure.error.raw_os_error().map(i64::from)
         );
-        assert_eq!(refused["process_tree_retired"], false);
-        assert!(refused["root_status"].is_null());
-        assert!(refused["phases"]["root_admitted_seconds"].is_null());
-        assert!(refused["phases"]["retired_seconds"].is_null());
+        assert_eq!(refused.get("process_tree_retired").unwrap(), false);
+        assert!(refused.get("root_status").unwrap().is_null());
+        assert!(
+            refused
+                .get("phases")
+                .unwrap()
+                .get("root_admitted_seconds")
+                .unwrap()
+                .is_null()
+        );
+        assert!(
+            refused
+                .get("phases")
+                .unwrap()
+                .get("retired_seconds")
+                .unwrap()
+                .is_null()
+        );
         let mut unavailable = Completion(Some(
             std::fs::File::open(absent.path().join("failed.json")).unwrap(),
         ));
@@ -881,164 +938,213 @@ mod tests {
         assert_eq!(publication.raw_os_error(), direct.raw_os_error());
         assert_eq!(failure.phase, ProcessHostPhase::RootAdmission);
         assert!(failure.progress.retired.is_none());
-        for version in ["2", "3"] {
-            for mode in ["exit", "input", "eof"]
-                .into_iter()
-                .chain(cfg!(unix).then_some("failed"))
-            {
-                let root = tempfile::tempdir().unwrap();
-                let file = std::fs::OpenOptions::new()
-                    .create_new(true)
-                    .read(true)
-                    .write(true)
-                    .open(root.path().join("blocked.lock"))
-                    .unwrap();
-                let _held = crate::FileLock::acquire(file, crate::FileLockMode::Exclusive).unwrap();
-                let mut command = ProcessCommand::new(std::env::current_exe().unwrap());
-                command
-                    .args(["--exact", HOST_TEST, "--nocapture"])
-                    .env(PHASE_ROOT, root.path())
-                    .env(PHASE_MODE, mode)
-                    .env(PHASE_RECEIPT, version)
-                    .stdin(ProcessStdio::piped())
-                    .stdout(ProcessStdio::piped())
-                    .stderr(ProcessStdio::inherit());
-                let mut owner = ProcessTree::spawn(&mut command).unwrap();
-                let child = owner.child.as_mut().unwrap();
-                let mut control = child.stdin.take();
-                let output = child.stdout.take().unwrap();
-                let mut output = io::BufReader::new(output);
-                let ready = mode == "failed"
-                    || output.by_ref().lines().any(|line| {
-                        line.expect("read original root readiness")
-                            .ends_with("phase-root-ready")
-                    });
-                assert!(ready, "original root exited before signalling readiness");
-                match mode {
-                    "input" => control.as_mut().unwrap().write_all(b"x").unwrap(),
-                    "eof" => drop(control.take()),
-                    _ => {}
-                }
-                super::super::platform::wait_without_reaping(owner.child.as_ref().unwrap())
-                    .unwrap();
-                let status = owner.try_wait(None).unwrap().unwrap();
-                owner.terminate(None).unwrap();
-                drop(control);
-                assert_eq!(
-                    status.code(),
-                    Some(if mode == "failed" { 125 } else { 124 })
-                );
-                assert!(owner.is_reaped());
-                let observation: serde_json::Value = serde_json::from_slice(
-                    &std::fs::read(root.path().join("observations.json")).unwrap(),
-                )
-                .unwrap();
-                assert_eq!(observation["cancelled"], mode != "exit");
-                let admitted = observation["admitted"].as_f64().unwrap();
-                let exited = observation["exit_observed"].as_f64().unwrap();
-                let retired = observation["retired"].as_f64().unwrap();
-                assert!(admitted <= exited && exited <= retired);
-                if version == "3" {
-                    let original = std::fs::read(root.path().join("completion.json")).unwrap();
-                    println!("PROCESS_COMPLETION_CORPUS_{mode}_BYTES={original:?}");
-                    let receipt: serde_json::Value = serde_json::from_slice(&original).unwrap();
-                    assert_eq!(receipt["schema"], "acyclic.process-custody-completion.v3");
-                    assert_eq!(receipt["invocation"], PHASE_BINDING);
-                    assert_eq!(receipt["platform"], std::env::consts::OS);
-                    assert_eq!(
-                        receipt["host_exit_code"],
-                        if mode == "failed" { 125 } else { 124 }
-                    );
-                    assert_eq!(receipt["cancelled"], mode != "exit");
-                    assert_eq!(receipt["root_status"]["code"], observation["root_code"]);
-                    assert!(receipt["root_status"]["native"].is_number());
-                    assert_eq!(receipt["process_tree_retired"], true);
-                    assert_eq!(
-                        receipt["phases"]["root_admitted_seconds"],
-                        observation["admitted"]
-                    );
-                    assert_eq!(
-                        receipt["phases"]["root_exit_observed_seconds"],
-                        observation["exit_observed"]
-                    );
-                    assert_eq!(receipt["phases"]["retired_seconds"], observation["retired"]);
-                    if mode == "failed" {
-                        assert_eq!(receipt["failure"]["phase"], "control");
-                        assert_eq!(
-                            receipt["failure"]["error"]["raw_os_error"],
-                            observation["raw_os_error"]
-                        );
-                    } else {
-                        assert!(receipt["failure"].is_null());
-                    }
-                }
-                if mode == "failed" {
-                    assert_eq!(observation["failed"], true);
-                    assert_eq!(observation["phase"], "Control");
-                    #[cfg(unix)]
-                    {
-                        let expected = std::fs::File::open(root.path())
-                            .unwrap()
-                            .read(&mut [0])
-                            .unwrap_err();
-                        assert_eq!(
-                            observation["raw_os_error"].as_i64(),
-                            expected.raw_os_error().map(i64::from)
-                        );
-                    }
-                    assert_eq!(observation["control_failed"], true);
-                    assert_eq!(observation["root_status_observed"], true);
-                    assert_ne!(observation["root_code"], 124);
-                    if version == "2" {
-                        assert!(
-                            std::fs::read(root.path().join("completion.json"))
-                                .unwrap()
-                                .is_empty()
-                        );
-                    }
-                    assert_eq!(
-                        std::fs::read_dir(root.path().join("custody"))
-                            .unwrap()
-                            .count(),
-                        0
-                    );
-                    continue;
-                }
-                assert_eq!(observation["exit_code"], 124);
-                if mode == "exit" {
-                    assert_eq!(observation["root_code"], 124);
-                    assert!(observation["control"].is_null());
-                } else {
-                    assert_ne!(
-                        observation["root_code"], 124,
-                        "host cancellation must not invent the root status"
-                    );
-                    assert_eq!(observation["control"]["outcome"], mode);
-                    let control = observation["control"]["elapsed"].as_f64().unwrap();
-                    assert!(admitted <= control && control <= retired);
-                }
-                assert_eq!(
-                    std::fs::read_dir(root.path().join("custody"))
-                        .unwrap()
-                        .count(),
-                    0
-                );
-                if version == "2" {
-                    let receipt: serde_json::Value = serde_json::from_slice(
-                        &std::fs::read(root.path().join("completion.json")).unwrap(),
-                    )
-                    .unwrap();
-                    assert_eq!(receipt["schema"], "acyclic.process-custody-completion.v2");
-                    assert_eq!(
-                        receipt.as_object().unwrap().len(),
-                        5,
-                        "the original receipt field set stays exact"
-                    );
-                    assert_eq!(receipt["cancelled"], mode != "exit");
-                    assert_eq!(receipt["process_tree_retired"], true);
-                }
-            }
+    }
+
+    fn assert_bound_phase_receipt(root: &Path, mode: &str, observation: &serde_json::Value) {
+        let original = std::fs::read(root.join("completion.json")).unwrap();
+        println!("PROCESS_COMPLETION_CORPUS_{mode}_BYTES={original:?}");
+        let receipt: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        assert_eq!(
+            receipt.get("schema").unwrap(),
+            "acyclic.process-custody-completion.v3"
+        );
+        assert_eq!(receipt.get("invocation").unwrap(), PHASE_BINDING);
+        assert_eq!(receipt.get("platform").unwrap(), std::env::consts::OS);
+        assert_eq!(
+            receipt.get("host_exit_code").unwrap(),
+            if mode == "failed" { 125 } else { 124 }
+        );
+        assert_eq!(receipt.get("cancelled").unwrap(), mode != "exit");
+        assert_eq!(
+            receipt.get("root_status").unwrap().get("code").unwrap(),
+            observation.get("root_code").unwrap()
+        );
+        assert!(
+            receipt
+                .get("root_status")
+                .unwrap()
+                .get("native")
+                .unwrap()
+                .is_number()
+        );
+        assert_eq!(receipt.get("process_tree_retired").unwrap(), true);
+        assert_eq!(
+            receipt
+                .get("phases")
+                .unwrap()
+                .get("root_admitted_seconds")
+                .unwrap(),
+            observation.get("admitted").unwrap()
+        );
+        assert_eq!(
+            receipt
+                .get("phases")
+                .unwrap()
+                .get("root_exit_observed_seconds")
+                .unwrap(),
+            observation.get("exit_observed").unwrap()
+        );
+        assert_eq!(
+            receipt
+                .get("phases")
+                .unwrap()
+                .get("retired_seconds")
+                .unwrap(),
+            observation.get("retired").unwrap()
+        );
+        if mode == "failed" {
+            assert_eq!(
+                receipt.get("failure").unwrap().get("phase").unwrap(),
+                "control"
+            );
+            assert_eq!(
+                receipt
+                    .get("failure")
+                    .unwrap()
+                    .get("error")
+                    .unwrap()
+                    .get("raw_os_error")
+                    .unwrap(),
+                observation.get("raw_os_error").unwrap()
+            );
+        } else {
+            assert!(receipt.get("failure").unwrap().is_null());
         }
+    }
+
+    fn assert_phase_observation(
+        root: &Path,
+        mode: &str,
+        version: &str,
+        observation: &serde_json::Value,
+        admitted: f64,
+        retired: f64,
+    ) {
+        if mode == "failed" {
+            assert_eq!(observation.get("failed").unwrap(), true);
+            assert_eq!(observation.get("phase").unwrap(), "Control");
+            #[cfg(unix)]
+            {
+                let expected = std::fs::File::open(root)
+                    .unwrap()
+                    .read(&mut [0])
+                    .unwrap_err();
+                assert_eq!(
+                    observation.get("raw_os_error").unwrap().as_i64(),
+                    expected.raw_os_error().map(i64::from)
+                );
+            }
+            assert_eq!(observation.get("control_failed").unwrap(), true);
+            assert_eq!(observation.get("root_status_observed").unwrap(), true);
+            assert_ne!(observation.get("root_code").unwrap(), 124);
+            if version == "2" {
+                assert!(
+                    std::fs::read(root.join("completion.json"))
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+            assert_eq!(std::fs::read_dir(root.join("custody")).unwrap().count(), 0);
+            return;
+        }
+        assert_eq!(observation.get("exit_code").unwrap(), 124);
+        if mode == "exit" {
+            assert_eq!(observation.get("root_code").unwrap(), 124);
+            assert!(observation.get("control").unwrap().is_null());
+        } else {
+            assert_ne!(
+                observation.get("root_code").unwrap(),
+                124,
+                "host cancellation must not invent the root status"
+            );
+            assert_eq!(
+                observation.get("control").unwrap().get("outcome").unwrap(),
+                mode
+            );
+            let control = observation
+                .get("control")
+                .unwrap()
+                .get("elapsed")
+                .unwrap()
+                .as_f64()
+                .unwrap();
+            assert!(admitted <= control && control <= retired);
+        }
+        assert_eq!(std::fs::read_dir(root.join("custody")).unwrap().count(), 0);
+        if version == "2" {
+            let receipt: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join("completion.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                receipt.get("schema").unwrap(),
+                "acyclic.process-custody-completion.v2"
+            );
+            assert_eq!(
+                receipt.as_object().unwrap().len(),
+                5,
+                "the original receipt field set stays exact"
+            );
+            assert_eq!(receipt.get("cancelled").unwrap(), mode != "exit");
+            assert_eq!(receipt.get("process_tree_retired").unwrap(), true);
+        }
+    }
+
+    fn phase_case(version: &str, mode: &str) {
+        use std::io::BufRead as _;
+        let root = tempfile::tempdir().unwrap();
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(root.path().join("blocked.lock"))
+            .unwrap();
+        let _held = crate::FileLock::acquire(file, crate::FileLockMode::Exclusive).unwrap();
+        let mut command = ProcessCommand::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", HOST_TEST, "--nocapture"])
+            .env(PHASE_ROOT, root.path())
+            .env(PHASE_MODE, mode)
+            .env(PHASE_RECEIPT, version)
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::inherit());
+        let mut owner = ProcessTree::spawn(&mut command).unwrap();
+        let child = owner.child.as_mut().unwrap();
+        let mut control = child.stdin.take();
+        let output = child.stdout.take().unwrap();
+        let mut output = io::BufReader::new(output);
+        let ready = mode == "failed"
+            || output.by_ref().lines().any(|line| {
+                line.expect("read original root readiness")
+                    .ends_with("phase-root-ready")
+            });
+        assert!(ready, "original root exited before signalling readiness");
+        match mode {
+            "input" => control.as_mut().unwrap().write_all(b"x").unwrap(),
+            "eof" => drop(control.take()),
+            _ => {}
+        }
+        super::super::platform::wait_without_reaping(owner.child.as_ref().unwrap()).unwrap();
+        let status = owner.try_wait(None).unwrap().unwrap();
+        owner.terminate(None).unwrap();
+        drop(control);
+        assert_eq!(
+            status.code(),
+            Some(if mode == "failed" { 125 } else { 124 })
+        );
+        assert!(owner.is_reaped());
+        let observation: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.path().join("observations.json")).unwrap())
+                .unwrap();
+        assert_eq!(observation.get("cancelled").unwrap(), mode != "exit");
+        let admitted = observation.get("admitted").unwrap().as_f64().unwrap();
+        let exited = observation.get("exit_observed").unwrap().as_f64().unwrap();
+        let retired = observation.get("retired").unwrap().as_f64().unwrap();
+        assert!(admitted <= exited && exited <= retired);
+        if version == "3" {
+            assert_bound_phase_receipt(root.path(), mode, &observation);
+        }
+        assert_phase_observation(root.path(), mode, version, &observation, admitted, retired);
     }
 
     #[test]
@@ -1341,10 +1447,10 @@ mod tests {
         ) {
             // Conformance to the original executable's portable argv, not
             // another parser model or rewritten installation paths.
-            let original = recorded["arguments"].as_array().unwrap().iter()
+            let original = recorded.get("arguments").unwrap().as_array().unwrap().iter()
                 .map(|value| OsString::from(value.as_str().unwrap()));
             proptest::prop_assert_eq!(Invocation::parse(original).is_ok(),
-                recorded["code"] == 17);
+                recorded.get("code").unwrap() == 17);
             let path = std::env::current_exe().unwrap().into_os_string();
             let executable = if literal { "relative-program".into() } else { path.clone() };
             let mut tail: Vec<OsString> = arguments.into_iter().map(|bytes| {
@@ -1373,14 +1479,14 @@ mod tests {
                 if inherit_input { vec!["--inherit-input".into()] } else { vec![] },
             ];
             let mut positions = [0, 1, 2, 3, 4];
-            positions.sort_by_key(|index| order[*index]);
+            positions.sort_by_key(|index| *order.get(*index).unwrap());
             let mut command: Vec<OsString> = positions.into_iter()
-                .flat_map(|index| std::mem::take(&mut options[index])).collect();
+                .flat_map(|index| std::mem::take(options.get_mut(index).unwrap())).collect();
             if literal { command.push("--".into()); }
             command.push(executable.clone());
             command.extend(tail.clone());
             let parsed = Invocation::parse(command).unwrap();
-            proptest::prop_assert_eq!(parsed.executable, executable.clone());
+            proptest::prop_assert_eq!(parsed.executable, executable);
             proptest::prop_assert_eq!(parsed.arguments, tail);
             proptest::prop_assert_eq!(parsed.inherit_input, inherit_input);
             proptest::prop_assert_eq!(parsed.control.as_deref(), control.then(|| Path::new(&path)));
@@ -1419,7 +1525,7 @@ mod tests {
                 vec!["--completion".into(), path.clone(), "--invocation".into(), invalid_unicode, path.clone()],
                 vec!["--completion".into(), path.clone(), "--invocation".into(), binding.clone().into(),
                     "--invocation".into(), binding.clone().into(), path.clone()],
-                vec!["--invocation".into(), binding.clone().into(), path.clone()],
+                vec!["--invocation".into(), binding.into(), path.clone()],
                 vec!["--inherit-input".into(), "--inherit-input".into(), path.clone()],
                 vec!["--custody".into(), path.clone(), "--lease".into(), path.clone(), path]] {
                 proptest::prop_assert_eq!(Invocation::parse(refused).unwrap_err().kind(),

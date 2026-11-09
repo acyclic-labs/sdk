@@ -74,10 +74,12 @@ struct SubscriberFailure {
     panics: AtomicUsize,
 }
 
+type OriginalCompletion = Arc<CompletionMutex<CompletionState<()>>>;
+
 #[derive(Clone)]
 struct Probe {
     admission: Arc<crate::sync::Mutex<crate::workers::AdmissionState>>,
-    original: Arc<Mutex<Option<Arc<CompletionMutex<CompletionState<()>>>>>>,
+    original: Arc<Mutex<Option<OriginalCompletion>>>,
     consumed: Arc<Mutex<Option<io::Result<()>>>>,
     sender: std::thread::ThreadId,
     delay: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
@@ -186,241 +188,23 @@ fn original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_e
     tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
         let waiting = obs::waiting("persistence-completion", 7, std::future::pending::<()>());
         let _entered = waiting.context().enter();
-        let actual = std::fs::File::open(tempfile::tempdir()?.path().join("absent"))
-            .err()
-            .ok_or_else(|| io::Error::other("missing-file control succeeded"))?;
-        let original_code = actual.raw_os_error();
-        let mut first = task(move || Err(actual))?;
-        *probe
-            .original
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = first.state.clone();
-        assert!(matches!(submit(&workers, &mut first), Poll::Ready(Ok(()))));
-        // Full is the original primitive's rejection of this candidate, even
-        // though the diagnostic stage-one marker has already been observed.
-        let mut full = task(|| Ok(()))?;
-        assert!(submit(&workers, &mut full).is_pending());
-        assert!(matches!(
-            full.pending.as_ref(),
-            Some(NativeJob::Task { queued: false, .. })
-        ));
-        crate::workers::remove_capacity_waiter(&workers, full.waiter.take());
-        drop(full);
-        let rejected = sample(&mut output)?;
-        assert_eq!(rejected.sample().outcome, Outcome::Incomplete);
-        assert_eq!(
-            rejected.sample().native_task.and_then(|task| task.queued),
-            None
-        );
-        drop(rejected);
-        drop(first); // Detach the observer before the accepted job runs.
-        let job = crate::workers::receive_job(&receive, &workers.admission)
-            .ok_or(io::ErrorKind::BrokenPipe)?;
-        std::thread::spawn(move || {
-            tracing::dispatcher::with_default(&tracing::Dispatch::none(), || job.run())
-        })
-        .join()
-        .map_err(|_| io::Error::other("original worker panicked"))?;
-        let consumed = probe
-            .consumed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| io::Error::other("original result not consumed"))?;
-        assert_eq!(
-            consumed.err().and_then(|error| error.raw_os_error()),
-            original_code
-        );
-        let retained = sample(&mut output)?;
-        let evidence = retained.sample();
-        assert_eq!(evidence.outcome, Outcome::Err);
-        assert_eq!(evidence.error_kind, Some("not_found"));
-        assert_eq!(evidence.parent_id, waiting.context().id().as_ref());
-        assert!(
-            evidence.binding.is_none(),
-            "native IDs supplied no authenticated admission"
-        );
-        let native = evidence.native_task.ok_or(io::ErrorKind::InvalidData)?;
-        assert_eq!((native.queued, native.started), (Some(true), Some(true)));
-        assert_eq!(native.terminal, Some(NativeTaskTerminal::IoError));
-        assert_eq!(native.os_error, original_code);
-        assert_eq!(credit.available_permits(), 0);
-
-        // Original completion progresses while the one output credit is held.
-        let mut blocked = task(|| Ok(()))?;
-        assert!(matches!(
-            submit(&workers, &mut blocked),
-            Poll::Ready(Ok(()))
-        ));
-        let job = crate::workers::receive_job(&receive, &workers.admission)
-            .ok_or(io::ErrorKind::BrokenPipe)?;
-        let _ = job.run();
-        let state = blocked.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
-        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-        assert!(!state.task_pending);
-        assert!(matches!(state.result.take(), Some(Ok(()))));
-        drop(state);
-        drop(blocked);
-        assert_eq!(export.stats().full, Some(1));
-        assert_eq!(export.stats().high_water, 1);
-        drop(retained);
-        assert_eq!(credit.available_permits(), 1);
-
-        // Terminal may precede the sender's acceptance callback. Both edges
-        // still name the very same task, with no callback under admission.
-        let (done, finished) = mpsc::channel();
-        *probe.delay.lock().unwrap_or_else(PoisonError::into_inner) = Some(finished);
-        let mut racing = task(|| Ok(()))?;
-        std::thread::scope(|scope| -> io::Result<()> {
-            let receive = &receive;
-            let admission = &workers.admission;
-            let worker = scope.spawn(move || {
-                if let Some(job) = crate::workers::receive_job(receive, admission) {
-                    let _ = job.run();
-                }
-                let _ = done.send(());
-            });
-            assert!(matches!(submit(&workers, &mut racing), Poll::Ready(Ok(()))));
-            worker
-                .join()
-                .map_err(|_| io::Error::other("racing worker panicked"))?;
-            Ok(())
-        })?;
-        drop(racing);
-        let terminal = sample(&mut output)?;
-        assert_eq!(terminal.sample().outcome, Outcome::Ok);
-        let native = terminal
-            .sample()
-            .native_task
-            .ok_or(io::ErrorKind::InvalidData)?;
-        assert_eq!((native.queued, native.started), (Some(true), Some(true)));
-        assert_eq!(native.terminal, Some(NativeTaskTerminal::Ok));
-        drop(terminal);
-
-        // Accepted work without its producer is incomplete, not successful.
-        let mut lost = task(|| Ok(()))?;
-        assert!(matches!(submit(&workers, &mut lost), Poll::Ready(Ok(()))));
-        drop(lost);
-        drop(crate::workers::receive_job(&receive, &workers.admission));
-        let lost = sample(&mut output)?;
-        assert_eq!(lost.sample().outcome, Outcome::Incomplete);
-        let native = lost
-            .sample()
-            .native_task
-            .ok_or(io::ErrorKind::InvalidData)?;
-        assert_eq!(native.queued, Some(true));
-        assert_eq!((native.started, native.terminal), (None, None));
-        drop(lost);
-
-        // The same catch/publish owner retains panic independently of I/O.
-        let mut panicked = task(|| panic!("original producer control"))?;
-        assert!(matches!(
-            submit(&workers, &mut panicked),
-            Poll::Ready(Ok(()))
-        ));
-        let _ = crate::workers::receive_job(&receive, &workers.admission)
-            .ok_or(io::ErrorKind::BrokenPipe)?
-            .run();
-        let panic = sample(&mut output)?;
-        assert_eq!(panic.sample().outcome, Outcome::Err);
-        assert_eq!(panic.sample().error_kind, Some("panic"));
-        assert_eq!(
-            panic.sample().native_task.and_then(|task| task.panicked),
-            Some(true)
-        );
-        assert_eq!(
-            panic.sample().native_task.and_then(|task| task.terminal),
-            Some(NativeTaskTerminal::Panic)
-        );
-        assert!(
-            panicked
-                .state
-                .as_ref()
-                .ok_or(io::ErrorKind::InvalidData)?
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .panic
-                .is_some()
-        );
-        drop(panic);
-        drop(panicked);
-
-        // Result and panic are independent original carriers. A panic after
-        // staging an I/O result cannot erase its native cause or result.
-        let actual = std::fs::File::open(tempfile::tempdir()?.path().join("absent"))
-            .err()
-            .ok_or_else(|| io::Error::other("missing-file control succeeded"))?;
-        let original_code = actual.raw_os_error();
-        let mut both = task(|| Ok(()))?;
-        let original = both
-            .state
-            .as_ref()
-            .ok_or(io::ErrorKind::InvalidData)?
-            .clone();
-        if let Some(NativeJob::Task { operation, .. }) = both.pending.as_mut() {
-            *operation = Box::new(move || {
-                original
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .result = Some(Err(actual));
+        {
+            let mut scenario = QueueScenario {
+                workers: &workers,
+                receive: &receive,
+                probe: &probe,
+                credit: &credit,
+                export: &export,
+                output: &mut output,
+            };
+            scenario.backpressure(waiting.context().id().as_ref())?;
+            scenario.racing_terminal()?;
+            scenario.lost_and_panicked_producers(|| panic!("original producer control"))?;
+            scenario.independent_result_and_panic(|| {
                 panic!("panic after original result publication control");
-            });
+            })?;
+            scenario.missing_result()?;
         }
-        assert!(matches!(submit(&workers, &mut both), Poll::Ready(Ok(()))));
-        let _ = crate::workers::receive_job(&receive, &workers.admission)
-            .ok_or(io::ErrorKind::BrokenPipe)?
-            .run();
-        let joined = sample(&mut output)?;
-        assert_eq!(joined.sample().outcome, Outcome::Err);
-        assert_eq!(joined.sample().error_kind, Some("not_found"));
-        let evidence = joined
-            .sample()
-            .native_task
-            .ok_or(io::ErrorKind::InvalidData)?;
-        assert_eq!(evidence.terminal, Some(NativeTaskTerminal::IoError));
-        assert_eq!(evidence.panicked, Some(true));
-        assert_eq!(evidence.os_error, original_code);
-        let original = both
-            .state
-            .as_ref()
-            .ok_or(io::ErrorKind::InvalidData)?
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        assert_eq!(
-            original
-                .result
-                .as_ref()
-                .and_then(|result| result.as_ref().err())
-                .and_then(io::Error::raw_os_error),
-            original_code
-        );
-        assert!(original.panic.is_some());
-        drop(original);
-        drop(joined);
-        drop(both);
-
-        // Suppress the original result producer: the receipt must fail its
-        // terminal obligation rather than certify accepted work as successful.
-        let mut missing = task(|| Ok(()))?;
-        if let Some(NativeJob::Task { operation, .. }) = missing.pending.as_mut() {
-            *operation = Box::new(|| {});
-        }
-        assert!(matches!(
-            submit(&workers, &mut missing),
-            Poll::Ready(Ok(()))
-        ));
-        let _ = crate::workers::receive_job(&receive, &workers.admission)
-            .ok_or(io::ErrorKind::BrokenPipe)?
-            .run();
-        let absent = sample(&mut output)?;
-        assert_eq!(absent.sample().outcome, Outcome::Incomplete);
-        assert_eq!(
-            absent.sample().native_task.and_then(|task| task.terminal),
-            Some(NativeTaskTerminal::Missing)
-        );
-        drop(absent);
-        drop(missing);
-
         // Original channel closure is a typed refusal, not queue acceptance.
         drop(receive);
         let mut disconnected = task(|| Ok(()))?;
@@ -488,13 +272,6 @@ fn original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_e
 
 #[test]
 fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()> {
-    struct CountWake(AtomicUsize);
-    impl std::task::Wake for CountWake {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
     // Each row panics once in the SAME original subscriber, before work,
     // after physical completion, or after terminal wake custody transfers.
     for (field, worker, occurrence) in [
@@ -515,129 +292,454 @@ fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()>
             if field == "error.os" && outcome != 1 {
                 continue;
             }
-            let (sender, receiver) = mpsc::sync_channel(1);
-            let workers = NativeWorkers::single(sender, crate::workers::AdmissionState::new());
-            let failure = Arc::new(SubscriberFailure {
+            subscriber_unwind_case(
                 field,
                 worker,
                 occurrence,
-                seen: AtomicUsize::new(0),
-                panics: AtomicUsize::new(0),
-                panic: |field| panic!("original subscriber control: {field}"),
-            });
-            let probe = Probe {
-                admission: Arc::clone(&workers.admission),
-                original: Arc::default(),
-                consumed: Arc::default(),
-                sender: std::thread::current().id(),
-                delay: Arc::default(),
-                failure: Some(Arc::clone(&failure)),
-            };
-            let dispatch =
-                tracing::Dispatch::new(tracing_subscriber::registry().with(probe.clone()));
-            tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
-                let waiting =
-                    obs::waiting("persistence-completion", 9, std::future::pending::<()>());
-                let entered = waiting.context().enter();
-                let actual = std::fs::File::open(tempfile::tempdir()?.path().join("absent"))
-                    .err()
-                    .ok_or_else(|| io::Error::other("missing-file control succeeded"))?;
-                let original_code = actual.raw_os_error();
-                let calls = Arc::new(AtomicUsize::new(0));
-                let called = Arc::clone(&calls);
-                let mut task = task(move || {
-                    called.fetch_add(1, Ordering::SeqCst);
-                    match outcome {
-                        0 => Ok(()),
-                        1 => Err(actual),
-                        _ => panic!("original operation panic remains distinct"),
-                    }
-                })?;
-                // Release the caller's span references so only the SAME
-                // accepted producer can close them during physical retirement.
-                drop(entered);
-                drop(waiting);
-                let wake = Arc::new(CountWake(AtomicUsize::new(0)));
-                let waker = Waker::from(Arc::clone(&wake));
-                let original = task.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
-                assert!(CompletionState::poll_result(original, &waker).is_pending());
-                let fence = Arc::new(OperationFence::default());
-                if let Some(NativeJob::Task { completion, .. }) = task.pending.as_mut() {
-                    *completion = Some(Arc::clone(&fence));
-                }
-                let receiver = crate::sync::Mutex::new(receiver);
-                let sender_closes = field == "close.persistence" && !worker;
-                let (done, finished) = mpsc::channel();
-                if sender_closes {
-                    // The original acceptance callback stays entered until the
-                    // worker retires. Its retained span is then the last owner.
-                    *probe.delay.lock().unwrap_or_else(PoisonError::into_inner) = Some(finished);
-                } else {
-                    assert!(matches!(submit(&workers, &mut task), Poll::Ready(Ok(()))));
-                }
-                std::thread::scope(|scope| -> io::Result<()> {
-                    let worker = scope.spawn(|| {
-                        let job = crate::workers::receive_job(&receiver, &workers.admission)
-                            .expect("accepted original job");
-                        if let Some(waker) = job.run() {
-                            waker.wake();
-                        }
-                        let _ = done.send(());
-                    });
-                    if sender_closes {
-                        assert!(matches!(submit(&workers, &mut task), Poll::Ready(Ok(()))));
-                    }
-                    worker
-                        .join()
-                        .map_err(|_| io::Error::other("original worker panicked"))?;
-                    Ok(())
-                })?;
-
-                // Joining the physical worker makes each oracle synchronous;
-                // a missing terminal or lost wake fails without waiting again.
-                assert_eq!(
-                    failure.panics.load(Ordering::SeqCst),
-                    1,
-                    "subscriber cut {field}, worker={worker}, outcome={outcome}"
-                );
-                assert_eq!(calls.load(Ordering::SeqCst), 1);
-                assert_eq!(wake.0.load(Ordering::SeqCst), 1);
-                assert!(
-                    fence
-                        .state
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .complete
-                );
-                let original = task.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
-                let mut state = original.lock().unwrap_or_else(PoisonError::into_inner);
-                assert!(!state.task_pending);
-                assert!(state.waker.is_none());
-                assert_eq!(state.panic.is_some(), outcome == 2);
-                match outcome {
-                    0 => assert!(matches!(state.result.take(), Some(Ok(())))),
-                    1 => assert_eq!(
-                        state
-                            .result
-                            .take()
-                            .and_then(Result::err)
-                            .and_then(|error| error.raw_os_error()),
-                        original_code
-                    ),
-                    _ => {
-                        assert!(state.result.is_none());
-                        assert_eq!(
-                            state
-                                .panic
-                                .as_ref()
-                                .and_then(|payload| payload.downcast_ref::<&str>().copied()),
-                            Some("original operation panic remains distinct")
-                        );
-                    }
-                }
-                Ok(())
-            })?;
+                outcome,
+                |field| panic!("original subscriber control: {field}"),
+                || panic!("original operation panic remains distinct"),
+            )?;
         }
     }
     Ok(())
+}
+
+struct QueueScenario<'a> {
+    workers: &'a NativeWorkers,
+    receive: &'a crate::sync::Mutex<mpsc::Receiver<NativeJob>>,
+    probe: &'a Probe,
+    credit: &'a Arc<tokio::sync::Semaphore>,
+    export: &'a Export,
+    output: &'a mut ExportReceiver,
+}
+
+impl QueueScenario<'_> {
+    fn backpressure(&mut self, parent: Option<&tracing::Id>) -> io::Result<()> {
+        let workers = self.workers;
+        let receive = self.receive;
+        let probe = self.probe;
+        let credit = self.credit;
+        let export = self.export;
+        let output = &mut *self.output;
+        let actual = std::fs::File::open(tempfile::tempdir()?.path().join("absent"))
+            .err()
+            .ok_or_else(|| io::Error::other("missing-file control succeeded"))?;
+        let original_code = actual.raw_os_error();
+        let mut first = task(move || Err(actual))?;
+        *probe
+            .original
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = first.state.clone();
+        assert!(matches!(submit(workers, &mut first), Poll::Ready(Ok(()))));
+        // Full is the original primitive's rejection of this candidate, even
+        // though the diagnostic stage-one marker has already been observed.
+        let mut full = task(|| Ok(()))?;
+        assert!(submit(workers, &mut full).is_pending());
+        assert!(matches!(
+            full.pending.as_ref(),
+            Some(NativeJob::Task { queued: false, .. })
+        ));
+        crate::workers::remove_capacity_waiter(workers, full.waiter.take());
+        drop(full);
+        let rejected = sample(output)?;
+        assert_eq!(rejected.sample().outcome, Outcome::Incomplete);
+        assert_eq!(
+            rejected.sample().native_task.and_then(|task| task.queued),
+            None
+        );
+        drop(rejected);
+        drop(first); // Detach the observer before the accepted job runs.
+        let job = crate::workers::receive_job(receive, &workers.admission)
+            .ok_or(io::ErrorKind::BrokenPipe)?;
+        std::thread::spawn(move || {
+            tracing::dispatcher::with_default(&tracing::Dispatch::none(), || job.run())
+        })
+        .join()
+        .map_err(|_| io::Error::other("original worker panicked"))?;
+        let consumed = probe
+            .consumed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| io::Error::other("original result not consumed"))?;
+        assert_eq!(
+            consumed.err().and_then(|error| error.raw_os_error()),
+            original_code
+        );
+        let retained = sample(output)?;
+        let evidence = retained.sample();
+        assert_eq!(evidence.outcome, Outcome::Err);
+        assert_eq!(evidence.error_kind, Some("not_found"));
+        assert_eq!(evidence.parent_id, parent);
+        assert!(
+            evidence.binding.is_none(),
+            "native IDs supplied no authenticated admission"
+        );
+        let native = evidence.native_task.ok_or(io::ErrorKind::InvalidData)?;
+        assert_eq!((native.queued, native.started), (Some(true), Some(true)));
+        assert_eq!(native.terminal, Some(NativeTaskTerminal::IoError));
+        assert_eq!(native.os_error, original_code);
+        assert_eq!(credit.available_permits(), 0);
+
+        // Original completion progresses while the one output credit is held.
+        let mut blocked = task(|| Ok(()))?;
+        assert!(matches!(submit(workers, &mut blocked), Poll::Ready(Ok(()))));
+        let job = crate::workers::receive_job(receive, &workers.admission)
+            .ok_or(io::ErrorKind::BrokenPipe)?;
+        let _ = job.run();
+        let state = blocked.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(!state.task_pending);
+        assert!(matches!(state.result.take(), Some(Ok(()))));
+        drop(state);
+        drop(blocked);
+        assert_eq!(export.stats().full, Some(1));
+        assert_eq!(export.stats().high_water, 1);
+        drop(retained);
+        assert_eq!(credit.available_permits(), 1);
+
+        Ok(())
+    }
+
+    fn racing_terminal(&mut self) -> io::Result<()> {
+        let workers = self.workers;
+        let receive = self.receive;
+        let probe = self.probe;
+        let output = &mut *self.output;
+        // Terminal may precede the sender's acceptance callback. Both edges
+        // still name the very same task, with no callback under admission.
+        let (done, finished) = mpsc::channel();
+        *probe.delay.lock().unwrap_or_else(PoisonError::into_inner) = Some(finished);
+        let mut racing = task(|| Ok(()))?;
+        std::thread::scope(|scope| -> io::Result<()> {
+            let admission = &workers.admission;
+            let worker = scope.spawn(move || {
+                if let Some(job) = crate::workers::receive_job(receive, admission) {
+                    let _ = job.run();
+                }
+                let _ = done.send(());
+            });
+            assert!(matches!(submit(workers, &mut racing), Poll::Ready(Ok(()))));
+            worker
+                .join()
+                .map_err(|_| io::Error::other("racing worker panicked"))?;
+            Ok(())
+        })?;
+        drop(racing);
+        let terminal = sample(output)?;
+        assert_eq!(terminal.sample().outcome, Outcome::Ok);
+        let native = terminal
+            .sample()
+            .native_task
+            .ok_or(io::ErrorKind::InvalidData)?;
+        assert_eq!((native.queued, native.started), (Some(true), Some(true)));
+        assert_eq!(native.terminal, Some(NativeTaskTerminal::Ok));
+        drop(terminal);
+
+        Ok(())
+    }
+
+    fn lost_and_panicked_producers(&mut self, panic: fn() -> !) -> io::Result<()> {
+        let workers = self.workers;
+        let receive = self.receive;
+        let output = &mut *self.output;
+        // Accepted work without its producer is incomplete, not successful.
+        let mut lost = task(|| Ok(()))?;
+        assert!(matches!(submit(workers, &mut lost), Poll::Ready(Ok(()))));
+        drop(lost);
+        drop(crate::workers::receive_job(receive, &workers.admission));
+        let lost = sample(output)?;
+        assert_eq!(lost.sample().outcome, Outcome::Incomplete);
+        let native = lost
+            .sample()
+            .native_task
+            .ok_or(io::ErrorKind::InvalidData)?;
+        assert_eq!(native.queued, Some(true));
+        assert_eq!((native.started, native.terminal), (None, None));
+        drop(lost);
+
+        // The same catch/publish owner retains panic independently of I/O.
+        let mut panicked = task(move || panic())?;
+        assert!(matches!(
+            submit(workers, &mut panicked),
+            Poll::Ready(Ok(()))
+        ));
+        let _ = crate::workers::receive_job(receive, &workers.admission)
+            .ok_or(io::ErrorKind::BrokenPipe)?
+            .run();
+        let panic = sample(output)?;
+        assert_eq!(panic.sample().outcome, Outcome::Err);
+        assert_eq!(panic.sample().error_kind, Some("panic"));
+        assert_eq!(
+            panic.sample().native_task.and_then(|task| task.panicked),
+            Some(true)
+        );
+        assert_eq!(
+            panic.sample().native_task.and_then(|task| task.terminal),
+            Some(NativeTaskTerminal::Panic)
+        );
+        assert!(
+            panicked
+                .state
+                .as_ref()
+                .ok_or(io::ErrorKind::InvalidData)?
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .panic
+                .is_some()
+        );
+        drop(panic);
+        drop(panicked);
+
+        Ok(())
+    }
+
+    fn independent_result_and_panic(&mut self, panic: fn() -> !) -> io::Result<()> {
+        let workers = self.workers;
+        let receive = self.receive;
+        let output = &mut *self.output;
+        // Result and panic are independent original carriers. A panic after
+        // staging an I/O result cannot erase its native cause or result.
+        let actual = std::fs::File::open(tempfile::tempdir()?.path().join("absent"))
+            .err()
+            .ok_or_else(|| io::Error::other("missing-file control succeeded"))?;
+        let original_code = actual.raw_os_error();
+        let mut both = task(|| Ok(()))?;
+        let original = both
+            .state
+            .as_ref()
+            .ok_or(io::ErrorKind::InvalidData)?
+            .clone();
+        if let Some(NativeJob::Task { operation, .. }) = both.pending.as_mut() {
+            *operation = Box::new(move || {
+                original
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .result = Some(Err(actual));
+                panic();
+            });
+        }
+        assert!(matches!(submit(workers, &mut both), Poll::Ready(Ok(()))));
+        let _ = crate::workers::receive_job(receive, &workers.admission)
+            .ok_or(io::ErrorKind::BrokenPipe)?
+            .run();
+        let joined = sample(output)?;
+        assert_eq!(joined.sample().outcome, Outcome::Err);
+        assert_eq!(joined.sample().error_kind, Some("not_found"));
+        let evidence = joined
+            .sample()
+            .native_task
+            .ok_or(io::ErrorKind::InvalidData)?;
+        assert_eq!(evidence.terminal, Some(NativeTaskTerminal::IoError));
+        assert_eq!(evidence.panicked, Some(true));
+        assert_eq!(evidence.os_error, original_code);
+        let original = both
+            .state
+            .as_ref()
+            .ok_or(io::ErrorKind::InvalidData)?
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(
+            original
+                .result
+                .as_ref()
+                .and_then(|result| result.as_ref().err())
+                .and_then(io::Error::raw_os_error),
+            original_code
+        );
+        assert!(original.panic.is_some());
+        drop(original);
+        drop(joined);
+        drop(both);
+
+        Ok(())
+    }
+
+    fn missing_result(&mut self) -> io::Result<()> {
+        let workers = self.workers;
+        let receive = self.receive;
+        let output = &mut *self.output;
+        // Suppress the original result producer: the receipt must fail its
+        // terminal obligation rather than certify accepted work as successful.
+        let mut missing = task(|| Ok(()))?;
+        if let Some(NativeJob::Task { operation, .. }) = missing.pending.as_mut() {
+            *operation = Box::new(|| {});
+        }
+        assert!(matches!(submit(workers, &mut missing), Poll::Ready(Ok(()))));
+        let _ = crate::workers::receive_job(receive, &workers.admission)
+            .ok_or(io::ErrorKind::BrokenPipe)?
+            .run();
+        let absent = sample(output)?;
+        assert_eq!(absent.sample().outcome, Outcome::Incomplete);
+        assert_eq!(
+            absent.sample().native_task.and_then(|task| task.terminal),
+            Some(NativeTaskTerminal::Missing)
+        );
+        drop(absent);
+        drop(missing);
+
+        Ok(())
+    }
+}
+
+struct CountWake(AtomicUsize);
+impl std::task::Wake for CountWake {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn assert_retired_task(
+    failure: &SubscriberFailure,
+    calls: &AtomicUsize,
+    wake: &CountWake,
+    fence: &OperationFence,
+    task: &NativeCompletion<()>,
+    outcome: u8,
+    original_code: Option<i32>,
+) -> io::Result<()> {
+    // Joining the physical worker makes each oracle synchronous;
+    // a missing terminal or lost wake fails without waiting again.
+    assert_eq!(
+        failure.panics.load(Ordering::SeqCst),
+        1,
+        "subscriber cut {}, worker={}, outcome={outcome}",
+        failure.field,
+        failure.worker
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(wake.0.load(Ordering::SeqCst), 1);
+    assert!(
+        fence
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .complete
+    );
+    let original = task.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+    let mut state = original.lock().unwrap_or_else(PoisonError::into_inner);
+    assert!(!state.task_pending);
+    assert!(state.waker.is_none());
+    assert_eq!(state.panic.is_some(), outcome == 2);
+    match outcome {
+        0 => assert!(matches!(state.result.take(), Some(Ok(())))),
+        1 => assert_eq!(
+            state
+                .result
+                .take()
+                .and_then(Result::err)
+                .and_then(|error| error.raw_os_error()),
+            original_code
+        ),
+        _ => {
+            assert!(state.result.is_none());
+            assert_eq!(
+                state
+                    .panic
+                    .as_ref()
+                    .and_then(|payload| payload.downcast_ref::<&str>().copied()),
+                Some("original operation panic remains distinct")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn subscriber_unwind_case(
+    field: &'static str,
+    worker: bool,
+    occurrence: usize,
+    outcome: u8,
+    subscriber_panic: fn(&str) -> !,
+    operation_panic: fn() -> !,
+) -> io::Result<()> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let workers = NativeWorkers::single(sender, crate::workers::AdmissionState::new());
+    let failure = Arc::new(SubscriberFailure {
+        field,
+        worker,
+        occurrence,
+        seen: AtomicUsize::new(0),
+        panics: AtomicUsize::new(0),
+        panic: subscriber_panic,
+    });
+    let probe = Probe {
+        admission: Arc::clone(&workers.admission),
+        original: Arc::default(),
+        consumed: Arc::default(),
+        sender: std::thread::current().id(),
+        delay: Arc::default(),
+        failure: Some(Arc::clone(&failure)),
+    };
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(probe.clone()));
+    tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
+        let waiting = obs::waiting("persistence-completion", 9, std::future::pending::<()>());
+        let entered = waiting.context().enter();
+        let actual = std::fs::File::open(tempfile::tempdir()?.path().join("absent"))
+            .err()
+            .ok_or_else(|| io::Error::other("missing-file control succeeded"))?;
+        let original_code = actual.raw_os_error();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = Arc::clone(&calls);
+        let mut task = task(move || {
+            called.fetch_add(1, Ordering::SeqCst);
+            match outcome {
+                0 => Ok(()),
+                1 => Err(actual),
+                _ => operation_panic(),
+            }
+        })?;
+        // Release the caller's span references so only the SAME
+        // accepted producer can close them during physical retirement.
+        drop(entered);
+        drop(waiting);
+        let wake = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&wake));
+        let original = task.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+        assert!(CompletionState::poll_result(original, &waker).is_pending());
+        let fence = Arc::new(OperationFence::default());
+        if let Some(NativeJob::Task { completion, .. }) = task.pending.as_mut() {
+            *completion = Some(Arc::clone(&fence));
+        }
+        let receiver = crate::sync::Mutex::new(receiver);
+        let sender_closes = field == "close.persistence" && !worker;
+        let (done, finished) = mpsc::channel();
+        if sender_closes {
+            // The original acceptance callback stays entered until the
+            // worker retires. Its retained span is then the last owner.
+            *probe.delay.lock().unwrap_or_else(PoisonError::into_inner) = Some(finished);
+        } else {
+            assert!(matches!(submit(&workers, &mut task), Poll::Ready(Ok(()))));
+        }
+        std::thread::scope(|scope| -> io::Result<()> {
+            let worker = scope.spawn(|| -> io::Result<()> {
+                let job = crate::workers::receive_job(&receiver, &workers.admission)
+                    .ok_or_else(|| io::Error::other("accepted original job absent"))?;
+                if let Some(waker) = job.run() {
+                    waker.wake();
+                }
+                let _ = done.send(());
+                Ok(())
+            });
+            if sender_closes {
+                assert!(matches!(submit(&workers, &mut task), Poll::Ready(Ok(()))));
+            }
+            worker
+                .join()
+                .map_err(|_| io::Error::other("original worker panicked"))??;
+            Ok(())
+        })?;
+
+        assert_retired_task(
+            &failure,
+            &calls,
+            &wake,
+            &fence,
+            &task,
+            outcome,
+            original_code,
+        )?;
+        Ok(())
+    })
 }

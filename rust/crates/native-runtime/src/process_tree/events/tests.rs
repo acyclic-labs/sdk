@@ -524,34 +524,6 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
     if crate::delivery::isolated()? {
         return Ok(());
     }
-    use std::sync::mpsc;
-
-    struct Notified(mpsc::Sender<()>);
-    impl Wake for Notified {
-        fn wake(self: Arc<Self>) {
-            self.0
-                .send(())
-                .expect("original waiter retains notification");
-        }
-    }
-    fn isolated() -> io::Result<Hub> {
-        // A pipe is a live owned OS object, but is not an epoll/kqueue/IOCP
-        // queue. The actual platform call supplies the error, never a fixture.
-        Ok(Hub {
-            poller: platform::Poller::refused_wait()?,
-            registry: Mutex::new(Registry::default()),
-            stride: 1,
-            service_failure: Arc::new(OnceLock::new()),
-            locks: std::sync::atomic::AtomicUsize::new(0),
-        })
-    }
-    fn failure(wait: &mut Wait<'_>, context: &mut Context<'_>) -> Arc<io::Error> {
-        match Pin::new(wait).poll(context) {
-            Poll::Ready(ProcessWaitOutcome::ServiceFailed(error)) => error,
-            other => panic!("original wait did not return producer failure: {other:?}"),
-        }
-    }
-
     let hub = isolated()?;
     // Grow and retire actual registrations before leaving three live waits.
     // The terminal owner traverses this dense live set, never its history.
@@ -597,7 +569,7 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
         hub.run();
         blocked.join().expect("blocking waiter completed")
     });
-    notified.recv().expect("original pending waiter was woken");
+    notified.recv().map_err(io::Error::other)?;
     for error in [
         failure(&mut pending, &mut context),
         failure(&mut early, &mut context),
@@ -620,39 +592,14 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
     drop(registry);
     drop((pending, early));
 
-    let hub = isolated()?;
-    let mut waiter = arm_on(&hub, &[], None)?;
-    assert!(Pin::new(&mut waiter).poll(&mut context).is_pending());
-    std::thread::scope(|scope| {
-        let hub = &hub;
-        let owner = scope.spawn(move || {
-            let _retirement = Retirement(hub);
-            // Unwind the same producer ownership used by Hub::run.
-            std::panic::resume_unwind(Box::new("original process event producer lost"));
-        });
-        assert!(owner.join().is_err());
-    });
-    notified
-        .recv()
-        .expect("lost original producer wakes its waiter");
-    assert_eq!(
-        failure(&mut waiter, &mut context).kind(),
-        io::ErrorKind::BrokenPipe
-    );
-    assert_eq!(
-        failure(&mut arm_on(&hub, &[], None)?, &mut context).kind(),
-        io::ErrorKind::BrokenPipe
-    );
-
+    assert_producer_unwind(&mut context, &notified)?;
     // A failed native timer notification is a service failure, even before
     // the wait loop runs. Existing and later waiters retain the same cause.
     let hub = isolated()?;
     let mut existing = arm_on(&hub, &[], None)?;
     assert!(Pin::new(&mut existing).poll(&mut context).is_pending());
     let mut timed = arm_on(&hub, &[], Some(Instant::now() + Duration::from_secs(3600)))?;
-    notified
-        .recv()
-        .expect("failed original notification wakes waiter");
+    notified.recv().map_err(io::Error::other)?;
     let first = failure(&mut existing, &mut context);
     assert!(first.raw_os_error().is_some());
     assert!(Arc::ptr_eq(&first, &failure(&mut timed, &mut context)));
@@ -669,6 +616,72 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
     assert!(hub.registry().armed.is_empty());
     assert!(hub.registry().positions.is_empty());
 
+    assert_consumer_unwind(&mut context, &notified, &first)?;
+    Ok(())
+}
+
+use std::sync::mpsc;
+
+struct Notified(mpsc::Sender<()>);
+impl Wake for Notified {
+    fn wake(self: Arc<Self>) {
+        self.0
+            .send(())
+            .expect("original waiter retains notification");
+    }
+}
+fn isolated() -> io::Result<Hub> {
+    // A pipe is a live owned OS object, but is not an epoll/kqueue/IOCP
+    // queue. The actual platform call supplies the error, never a fixture.
+    Ok(Hub {
+        poller: platform::Poller::refused_wait()?,
+        registry: Mutex::new(Registry::default()),
+        stride: 1,
+        service_failure: Arc::new(OnceLock::new()),
+        locks: std::sync::atomic::AtomicUsize::new(0),
+    })
+}
+fn failure(wait: &mut Wait<'_>, context: &mut Context<'_>) -> Arc<io::Error> {
+    match Pin::new(wait).poll(context) {
+        Poll::Ready(ProcessWaitOutcome::ServiceFailed(error)) => error,
+        other => panic!("original wait did not return producer failure: {other:?}"),
+    }
+}
+
+fn assert_producer_unwind(
+    context: &mut Context<'_>,
+    notified: &std::sync::mpsc::Receiver<()>,
+) -> io::Result<()> {
+    let hub = isolated()?;
+    let mut waiter = arm_on(&hub, &[], None)?;
+    assert!(Pin::new(&mut waiter).poll(context).is_pending());
+    std::thread::scope(|scope| {
+        let hub = &hub;
+        let owner = scope.spawn(move || {
+            let _retirement = Retirement(hub);
+            // Unwind the same producer ownership used by Hub::run.
+            std::panic::resume_unwind(Box::new("original process event producer lost"));
+        });
+        assert!(owner.join().is_err());
+    });
+    notified.recv().map_err(io::Error::other)?;
+    assert_eq!(
+        failure(&mut waiter, context).kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(
+        failure(&mut arm_on(&hub, &[], None)?, context).kind(),
+        io::ErrorKind::BrokenPipe
+    );
+
+    Ok(())
+}
+
+fn assert_consumer_unwind(
+    context: &mut Context<'_>,
+    notified: &std::sync::mpsc::Receiver<()>,
+    first: &Arc<io::Error>,
+) -> io::Result<()> {
     // A consumer unwind cannot discard terminal outcomes already removed
     // from the registry. Delivery retains the remaining original producers.
     struct Panicking(&'static str);
@@ -695,29 +708,22 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
             )))))
             .is_pending()
     );
-    assert!(following.poll(&mut context).is_pending());
+    assert!(following.poll(context).is_pending());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         deliver(
             [panicking, second, Arc::clone(&following)]
                 .into_iter()
-                .map(|signal| {
-                    (
-                        signal,
-                        ProcessWaitOutcome::ServiceFailed(Arc::clone(&first)),
-                    )
-                }),
+                .map(|signal| (signal, ProcessWaitOutcome::ServiceFailed(Arc::clone(first)))),
         );
     }));
     assert_eq!(
         result.unwrap_err().downcast_ref::<&str>(),
         Some(&"original waiter unwound during terminal delivery")
     );
-    notified
-        .recv()
-        .expect("remaining original waiter was woken");
-    let Poll::Ready(ProcessWaitOutcome::ServiceFailed(error)) = following.poll(&mut context) else {
+    notified.recv().map_err(io::Error::other)?;
+    let Poll::Ready(ProcessWaitOutcome::ServiceFailed(error)) = following.poll(context) else {
         panic!("consumer unwind discarded the following original terminal")
     };
-    assert!(Arc::ptr_eq(&first, &error));
+    assert!(Arc::ptr_eq(first, &error));
     Ok(())
 }

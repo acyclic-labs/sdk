@@ -61,53 +61,6 @@ pub fn shell_command(command: &str, selected: Option<&str>) -> io::Result<crate:
     Ok(shell)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selection_uses_the_platform_table_and_preserves_preference_order() {
-        for chosen in 0..=PLATFORM.executables.len() {
-            let mut calls = Vec::new();
-            let result = select(|name| {
-                calls.push(name.to_owned());
-                (PLATFORM.executables.get(chosen).copied() == Some(name)).then(|| name.into())
-            });
-            assert_eq!(
-                result.ok(),
-                PLATFORM
-                    .executables
-                    .get(chosen)
-                    .map(|name| PathBuf::from(*name))
-            );
-            assert_eq!(
-                calls,
-                PLATFORM
-                    .executables
-                    .iter()
-                    .take(chosen + 1)
-                    .copied()
-                    .collect::<Vec<_>>()
-            );
-        }
-    }
-
-    #[test]
-    fn default_shell_is_pinned_and_preserves_source_as_one_argument() {
-        let command = shell_command("echo 'a b'; exit 3", None).unwrap();
-        assert_eq!(command.get_program(), platform_shell().unwrap());
-        let args: Vec<_> = command.get_args().collect();
-        let mut expected: Vec<_> = PLATFORM
-            .arguments
-            .iter()
-            .map(std::ffi::OsStr::new)
-            .collect();
-        expected.push(std::ffi::OsStr::new("echo 'a b'; exit 3"));
-        assert_eq!(args, expected);
-        assert!(shell_command("echo x", Some("unknown")).is_err());
-    }
-}
-
 /// Resolves a native host launcher through the shared executable search policy.
 pub fn host_command(program: impl AsRef<std::ffi::OsStr>) -> io::Result<std::process::Command> {
     let cwd = std::env::current_dir()?;

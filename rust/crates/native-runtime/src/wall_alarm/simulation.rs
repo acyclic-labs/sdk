@@ -138,9 +138,8 @@ mod tests {
                 })
             }));
             drop(schedule);
-            let error = match std::thread::spawn(late).join().unwrap() {
-                Ok(_) => panic!("late callback admitted an alarm after its clock producer closed"),
-                Err(error) => error,
+            let Err(error) = std::thread::spawn(late).join().unwrap() else {
+                panic!("late callback admitted an alarm after its clock producer closed");
             };
             assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
             assert!(error.to_string().contains("step=wall-alarm-producer"));

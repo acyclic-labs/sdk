@@ -342,17 +342,6 @@ fn owner(mode: &str) {
 
 /// Exercises irreversible credential changes only in an isolated real owner.
 fn security_owner() {
-    fn status(custody: &ProcessCustody) -> String {
-        let mut command = ProcessCommand::new("/bin/cat");
-        command.arg("/proc/self/status");
-        output(&mut command, custody)
-    }
-    fn field<'a>(status: &'a str, key: &str) -> &'a str {
-        status
-            .lines()
-            .find(|line| line.starts_with(key))
-            .expect(key)
-    }
     let (root, first_custody) = custody();
     let before = status(&first_custody);
     let first_runner = runner_pid().expect("initial runner");
@@ -391,38 +380,7 @@ fn security_owner() {
             .join()
             .expect("launching thread");
     });
-    let before_ignored = runner_pid().expect("runner before ignored signal change");
-    // Ignored dispositions survive exec, unlike installed handlers. A
-    // long-lived runner must not preserve the owner's earlier disposition.
-    // SAFETY: this isolated owner has no other signal users; save and restore
-    // the original action without installing a Rust signal handler.
-    unsafe {
-        let mut ignored: libc::sigaction = std::mem::zeroed();
-        let mut original: libc::sigaction = std::mem::zeroed();
-        ignored.sa_sigaction = libc::SIG_IGN;
-        assert_eq!(libc::sigemptyset(&raw mut ignored.sa_mask), 0);
-        assert_eq!(
-            libc::sigaction(libc::SIGUSR1, &raw const ignored, &raw mut original),
-            0
-        );
-        let direct = Command::new("/bin/cat")
-            .arg("/proc/self/status")
-            .output()
-            .expect("direct child with ignored signal");
-        let direct = String::from_utf8(direct.stdout).expect("status");
-        let observed = status(&first_custody);
-        assert_ne!(field(&direct, "SigIgn:"), field(&before, "SigIgn:"));
-        assert_eq!(field(&observed, "SigIgn:"), field(&direct, "SigIgn:"));
-        let ignoring_runner = runner_pid().expect("runner with current ignored signals");
-        assert_ne!(ignoring_runner, before_ignored);
-        assert_eq!(
-            libc::sigaction(libc::SIGUSR1, &raw const original, std::ptr::null_mut()),
-            0
-        );
-        let restored = status(&first_custody);
-        assert_eq!(field(&restored, "SigIgn:"), field(&before, "SigIgn:"));
-        assert_ne!(runner_pid(), Some(ignoring_runner));
-    }
+    ignored_signal_transition(&first_custody, &before);
     let current_runner = runner_pid().expect("current runner");
     let original = fs::read_to_string("/proc/thread-self/status").expect("owner status");
     if field(&original, "NoNewPrivs:").ends_with('0') {
@@ -489,35 +447,12 @@ fn truncate_probe() {
 }
 
 /// Landlock changes the calling thread's inherited policy without changing
-/// NoNewPrivs or the seccomp status fields, even on the same thread.
+/// `NoNewPrivs` or the seccomp status fields, even on the same thread.
 fn landlock_owner() {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
-    // Query the native ABI before changing this helper's policy. Older or
-    // disabled kernels still run every other launch-admission control.
-    // SAFETY: VERSION queries no attributes and takes no output pointer.
-    let abi = unsafe {
-        libc::syscall(
-            libc::SYS_landlock_create_ruleset,
-            std::ptr::null::<u8>(),
-            0,
-            1,
-        )
-    };
-    if abi < 0 {
-        let error = std::io::Error::last_os_error();
-        if matches!(
-            error.raw_os_error(),
-            Some(libc::ENOSYS | libc::EOPNOTSUPP | libc::EPERM)
-        ) {
-            eprintln!("Landlock truncate control NotRun: ABI query refused: {error}");
-            return;
-        }
-        panic!("Landlock ABI query failed: {error}");
-    }
-    if abi < 3 {
-        eprintln!("Landlock truncate control NotRun: ABI {abi} lacks truncate support");
+    let Some(abi) = truncate_abi() else {
         return;
-    }
+    };
     let (root, custody) = custody();
     let path = root.path().join("protected");
     fs::write(&path, b"original bytes").expect("protected file");
@@ -576,30 +511,7 @@ fn landlock_owner() {
         0
     );
     let after = fs::read_to_string("/proc/thread-self/status").expect("restricted status");
-    let fingerprint = |status: &str| {
-        status
-            .lines()
-            .filter(|line| {
-                [
-                    "Uid:",
-                    "Gid:",
-                    "Groups:",
-                    "SigIgn:",
-                    "Cap",
-                    "NoNewPrivs:",
-                    "Seccomp",
-                ]
-                .iter()
-                .any(|prefix| line.starts_with(prefix))
-            })
-            .map(str::to_owned)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        fingerprint(&before),
-        fingerprint(&after),
-        "status cannot attest Landlock identity"
-    );
+    assert_same_status_fingerprint(&before, &after);
     let direct = Command::new(std::env::current_exe().expect("test executable"))
         .args([
             "--exact",
@@ -852,4 +764,108 @@ fn a_custodied_program_inherits_the_owners_current_mask_and_limits() {
     // Control: the change is visible to a direct fork.
     assert_ne!(expected, before, "the owner's change is not observable");
     assert_eq!(after, expected);
+}
+
+fn status(custody: &ProcessCustody) -> String {
+    let mut command = ProcessCommand::new("/bin/cat");
+    command.arg("/proc/self/status");
+    output(&mut command, custody)
+}
+fn field<'a>(status: &'a str, key: &str) -> &'a str {
+    status
+        .lines()
+        .find(|line| line.starts_with(key))
+        .expect(key)
+}
+
+fn assert_same_status_fingerprint(before: &str, after: &str) {
+    let fingerprint = |status: &str| {
+        status
+            .lines()
+            .filter(|line| {
+                [
+                    "Uid:",
+                    "Gid:",
+                    "Groups:",
+                    "SigIgn:",
+                    "Cap",
+                    "NoNewPrivs:",
+                    "Seccomp",
+                ]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+            })
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        fingerprint(before),
+        fingerprint(after),
+        "status cannot attest Landlock identity"
+    );
+}
+
+fn ignored_signal_transition(first_custody: &ProcessCustody, before: &str) {
+    let before_ignored = runner_pid().expect("runner before ignored signal change");
+    // Ignored dispositions survive exec, unlike installed handlers. A
+    // long-lived runner must not preserve the owner's earlier disposition.
+    // SAFETY: this isolated owner has no other signal users; save and restore
+    // the original action without installing a Rust signal handler.
+    unsafe {
+        let mut ignored: libc::sigaction = std::mem::zeroed();
+        let mut original: libc::sigaction = std::mem::zeroed();
+        ignored.sa_sigaction = libc::SIG_IGN;
+        assert_eq!(libc::sigemptyset(&raw mut ignored.sa_mask), 0);
+        assert_eq!(
+            libc::sigaction(libc::SIGUSR1, &raw const ignored, &raw mut original),
+            0
+        );
+        let direct = Command::new("/bin/cat")
+            .arg("/proc/self/status")
+            .output()
+            .expect("direct child with ignored signal");
+        let direct = String::from_utf8(direct.stdout).expect("status");
+        let observed = status(first_custody);
+        assert_ne!(field(&direct, "SigIgn:"), field(before, "SigIgn:"));
+        assert_eq!(field(&observed, "SigIgn:"), field(&direct, "SigIgn:"));
+        let ignoring_runner = runner_pid().expect("runner with current ignored signals");
+        assert_ne!(ignoring_runner, before_ignored);
+        assert_eq!(
+            libc::sigaction(libc::SIGUSR1, &raw const original, std::ptr::null_mut()),
+            0
+        );
+        let restored = status(first_custody);
+        assert_eq!(field(&restored, "SigIgn:"), field(before, "SigIgn:"));
+        assert_ne!(runner_pid(), Some(ignoring_runner));
+    }
+}
+
+fn truncate_abi() -> Option<libc::c_long> {
+    // Query the native ABI before changing this helper's policy. Older or
+    // disabled kernels still run every other launch-admission control.
+    // SAFETY: VERSION queries no attributes and takes no output pointer.
+    let abi = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<u8>(),
+            0,
+            1,
+        )
+    };
+    if abi < 0 {
+        let error = std::io::Error::last_os_error();
+        if matches!(
+            error.raw_os_error(),
+            Some(libc::ENOSYS | libc::EOPNOTSUPP | libc::EPERM)
+        ) {
+            eprintln!("Landlock truncate control NotRun: ABI query refused: {error}");
+            return None;
+        }
+        panic!("Landlock ABI query failed: {error}");
+    }
+    if abi < 3 {
+        eprintln!("Landlock truncate control NotRun: ABI {abi} lacks truncate support");
+        return None;
+    }
+    Some(abi)
 }

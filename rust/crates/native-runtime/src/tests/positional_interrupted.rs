@@ -79,7 +79,12 @@ fn transfer(
     };
     // SAFETY: the caller supplied this live descriptor and buffer. Only the
     // offered length is reduced; pointer, offset and syscall direction persist.
-    unsafe { libc::syscall(operation, descriptor, pointer, length, offset) as libc::ssize_t }
+    let result = unsafe { libc::syscall(operation, descriptor, pointer, length, offset) };
+    libc::ssize_t::try_from(result).unwrap_or_else(|_| {
+        // SAFETY: errno belongs to this calling thread.
+        unsafe { *libc::__errno_location() = libc::EOVERFLOW };
+        -1
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -147,7 +152,7 @@ fn probe<T>(
 }
 
 fn physical_bytes(file: &File) -> io::Result<Vec<u8>> {
-    let mut bytes = vec![0; file.metadata()?.len() as usize];
+    let mut bytes = vec![0; usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?];
     file.read_exact_at(&mut bytes, 0)?;
     Ok(bytes)
 }
@@ -175,9 +180,10 @@ fn positional_writes_return_first_failure_and_keep_only_the_physical_prefix() ->
                 let mut expected = if prefix == 0 {
                     Vec::new()
                 } else {
-                    vec![0; OFFSET as usize]
+                    vec![0; usize::try_from(OFFSET).map_err(io::Error::other)?]
                 };
-                expected.extend_from_slice(&PAYLOAD[..prefix]);
+                expected
+                    .extend_from_slice(PAYLOAD.get(..prefix).ok_or(io::ErrorKind::InvalidData)?);
                 assert_eq!(physical_bytes(&file)?, expected);
                 assert_eq!(file.stream_position()?, 91);
                 assert_eq!(
@@ -190,8 +196,13 @@ fn positional_writes_return_first_failure_and_keep_only_the_physical_prefix() ->
                 );
                 // A later explicit invocation writes only the unacknowledged
                 // suffix; it is not an automatic reissue of the failed step.
-                write_all_at(&file, OFFSET + prefix as u64, &PAYLOAD[prefix..], selected)?;
-                let mut expected = vec![0; OFFSET as usize];
+                write_all_at(
+                    &file,
+                    OFFSET + prefix as u64,
+                    PAYLOAD.get(prefix..).ok_or(io::ErrorKind::InvalidData)?,
+                    selected,
+                )?;
+                let mut expected = vec![0; usize::try_from(OFFSET).map_err(io::Error::other)?];
                 expected.extend_from_slice(PAYLOAD);
                 assert_eq!(physical_bytes(&file)?, expected);
                 assert_eq!(file.stream_position()?, 91);
@@ -255,11 +266,20 @@ fn bounded_reads_end_on_interruption_without_losing_initialized_prefixes() -> io
                 assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
                 assert_eq!(calls, call);
                 let prefix = (call - 1) * CHUNK;
-                assert_eq!(&bytes[..prefix], &PAYLOAD[..prefix]);
+                assert_eq!(
+                    bytes.get(..prefix).ok_or(io::ErrorKind::InvalidData)?,
+                    PAYLOAD.get(..prefix).ok_or(io::ErrorKind::InvalidData)?
+                );
                 if spare {
                     assert_eq!(bytes.len(), prefix);
                 } else {
-                    assert!(bytes[prefix..].iter().all(|byte| *byte == 0xa5));
+                    assert!(
+                        bytes
+                            .get(prefix..)
+                            .ok_or(io::ErrorKind::InvalidData)?
+                            .iter()
+                            .all(|byte| *byte == 0xa5)
+                    );
                 }
                 assert_eq!(meter.used_operations.load(Ordering::Acquire), call as u64);
                 assert_eq!(meter.used_bytes.load(Ordering::Acquire), prefix as u64);
@@ -280,8 +300,16 @@ fn bounded_reads_end_on_interruption_without_losing_initialized_prefixes() -> io
         } else {
             assert_eq!(result?, PAYLOAD.len());
         }
-        assert_eq!(&bytes[..PAYLOAD.len()], PAYLOAD);
-        assert_eq!(bytes[PAYLOAD.len()], 0xa5);
+        assert_eq!(
+            bytes
+                .get(..PAYLOAD.len())
+                .ok_or(io::ErrorKind::InvalidData)?,
+            PAYLOAD
+        );
+        assert_eq!(
+            *bytes.get(PAYLOAD.len()).ok_or(io::ErrorKind::InvalidData)?,
+            0xa5
+        );
         assert_eq!(calls, PAYLOAD.len().div_ceil(CHUNK) + 1);
     }
     Ok(())

@@ -131,7 +131,16 @@ fn evaluate_work(
                     4 => arch,
                     offset @ 16..64 if offset % 4 == 0 => {
                         let offset = (offset - 16) as usize;
-                        (arguments[offset / 8] >> ((offset % 8) * 8)) as u32
+                        let word = arguments
+                            .get(offset / 8)
+                            .ok_or_else(|| TestCaseError::fail("invalid argument offset"))?
+                            .to_le_bytes();
+                        u32::from_le_bytes(
+                            word.get(offset % 8..offset % 8 + 4)
+                                .ok_or_else(|| TestCaseError::fail("invalid word offset"))?
+                                .try_into()
+                                .map_err(|_| TestCaseError::fail("invalid word width"))?,
+                        )
                     }
                     offset => {
                         return Err(TestCaseError::fail(format!(
@@ -177,7 +186,12 @@ fn syscall_dispatch_preserves_classification_with_bounded_work() -> Result<(), T
     const CODE: [Instruction; LEN] = dispatch::<LEN>().instructions;
     let ranges = syscall_ranges();
     let bound = 1 + 2 * ranges.len.next_power_of_two().ilog2() as usize + 4;
-    let last = ranges.ranges[ranges.len - 1].last;
+    let last = ranges
+        .ranges
+        .get(..ranges.len)
+        .and_then(|ranges| ranges.last())
+        .ok_or_else(|| TestCaseError::fail("empty syscall ranges"))?
+        .last;
     let mut maximum = 0;
     // Exhaust every current number and gap, both outer boundaries, and the
     // largest future number. The unchanged declaration is the independent
@@ -222,7 +236,7 @@ proptest! {
         arguments in any::<[u64; 6]>(),
     ) {
         let code = filter(&ExecutionNetwork::On).unwrap();
-        if !ALLOWED_SYSCALLS.iter().any(|call| *call as u32 == syscall)
+        if !ALLOWED_SYSCALLS.iter().any(|call| *call == i64::from(syscall))
             && ![libc::SYS_read, libc::SYS_write, libc::SYS_fcntl,
                 libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid,
                 libc::SYS_clone3].contains(&(i64::from(syscall))) {
@@ -234,26 +248,26 @@ proptest! {
             libc::SYS_mq_open, libc::SYS_mq_unlink, libc::SYS_process_vm_writev,
             libc::SYS_process_madvise, libc::SYS_process_mrelease,
             libc::SYS_setpgid, libc::SYS_setsid] {
-            prop_assert_eq!(evaluate(code, ARCH, call as u32, arguments)?, DENY);
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, DENY);
         }
         for call in [libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid] {
             for pid in [arguments[0], 0, 1, u64::MAX] {
                 let mut selected = arguments;
                 selected[0] = pid;
-                prop_assert_eq!(evaluate(code, ARCH, call as u32, selected)?,
-                    if pid as u32 == 0 { ALLOW } else { DENY });
+                prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, selected)?,
+                    if pid & u64::from(u32::MAX) == 0 { ALLOW } else { DENY });
             }
         }
         for command in [libc::F_SETOWN, libc::F_GETOWN, libc::F_SETLEASE] {
             let mut control = arguments;
-            control[1] = command as u64;
-            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_fcntl as u32, control)?, DENY);
+            control[1] = u64::try_from(command).map_err(|_| TestCaseError::fail("negative fcntl command"))?;
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_fcntl).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, control)?, DENY);
         }
         for command in [libc::F_GETFD, libc::F_SETFD, libc::F_GETFL, libc::F_SETFL,
             libc::F_DUPFD_CLOEXEC] {
             let mut control = arguments;
-            control[1] = command as u64;
-            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_fcntl as u32, control)?, ALLOW);
+            control[1] = u64::try_from(command).map_err(|_| TestCaseError::fail("negative fcntl command"))?;
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_fcntl).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, control)?, ALLOW);
         }
         // Restore a permissive default in the actual generated program.
         // The same host IPC operation is then admitted without any path or FD.
@@ -263,7 +277,7 @@ proptest! {
                 instruction.k = ALLOW;
             }
         }
-        prop_assert_eq!(evaluate(&permissive, ARCH, libc::SYS_shmat as u32, arguments)?, ALLOW);
+        prop_assert_eq!(evaluate(&permissive, ARCH, u32::try_from(libc::SYS_shmat).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, ALLOW);
     }
 
     #[test]
@@ -277,14 +291,14 @@ proptest! {
         for (call, argument) in [(libc::SYS_sendto, 3), (libc::SYS_sendmsg, 2),
             (libc::SYS_sendmmsg, 3)] {
             let mut arguments = [0; 6];
-            arguments[argument] = u64::from(flags);
-            prop_assert_eq!(evaluate(code, ARCH, call as u32, arguments)?,
+            *arguments.get_mut(argument).ok_or_else(|| TestCaseError::fail("invalid flags argument"))? = u64::from(flags);
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?,
                 if flags & libc::MSG_FASTOPEN as u32 == 0 { ALLOW } else { DENY });
         }
         let mut arguments = [0; 6];
         arguments[1] = u64::from(level) | (u64::from(flags) << 32);
         arguments[2] = u64::from(option) | (u64::from(flags.rotate_left(16)) << 32);
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_setsockopt as u32, arguments)?,
+        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_setsockopt).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?,
             if level == libc::IPPROTO_TCP as u32 && option == libc::TCP_FASTOPEN_CONNECT as u32 {
                 DENY
             } else {
@@ -292,13 +306,13 @@ proptest! {
             });
         arguments[1] = libc::IPPROTO_TCP as u64;
         arguments[2] = libc::TCP_FASTOPEN_CONNECT as u64;
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_setsockopt as u32, arguments)?, DENY);
+        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_setsockopt).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, DENY);
         // The same real filter generator retains this option without a port
         // ceiling; a blanket setsockopt refusal would also reject NODELAY.
         let unrestricted = filter(&ExecutionNetwork::On).unwrap();
-        prop_assert_eq!(evaluate(unrestricted, ARCH, libc::SYS_setsockopt as u32, arguments)?, ALLOW);
+        prop_assert_eq!(evaluate(unrestricted, ARCH, u32::try_from(libc::SYS_setsockopt).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, ALLOW);
         arguments[2] = libc::TCP_NODELAY as u64;
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_setsockopt as u32, arguments)?, ALLOW);
+        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_setsockopt).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, ALLOW);
     }
 
     // Generated programs must not admit a second syscall ABI, x32 numbers,
@@ -321,18 +335,18 @@ proptest! {
         }
         prop_assert_eq!(evaluate(code, ARCH, syscall | 0x4000_0000, arguments)?, DENY);
         for syscall in [libc::SYS_ptrace, libc::SYS_setns, libc::SYS_mount, libc::SYS_socketpair] {
-            prop_assert_eq!(evaluate(code, ARCH, syscall as u32, arguments)?, DENY);
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(syscall).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, DENY);
         }
         for flag in [libc::CLONE_NEWUSER, libc::CLONE_NEWNET, libc::CLONE_NEWPID, libc::CLONE_PARENT] {
             let mut clone = arguments;
-            clone[0] |= flag as u64;
-            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_clone as u32, clone)?, DENY);
+            clone[0] |= u64::try_from(flag).map_err(|_| TestCaseError::fail("negative clone flag"))?;
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_clone).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, clone)?, DENY);
         }
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_clone3 as u32, arguments)?,
+        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_clone3).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?,
             0x0005_0000 | libc::ENOSYS as u32);
         let mut socket = arguments;
         socket[0] = libc::AF_UNIX as u64;
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_socket as u32, socket)?, DENY);
+        prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_socket).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, socket)?, DENY);
     }
 
     #[test]
@@ -357,20 +371,20 @@ proptest! {
             let enabled = matches!(network, ExecutionNetwork::On)
                 || matches!(&network, ExecutionNetwork::TcpPorts(ports) if !ports.is_empty());
             let mut socket = [0; 6];
-            socket[1] = (libc::SOCK_STREAM | socket_flags) as u64;
+            socket[1] = u64::try_from(libc::SOCK_STREAM | socket_flags).map_err(|_| TestCaseError::fail("negative socket flags"))?;
             socket[2] = libc::IPPROTO_TCP as u64;
             for family in [family, libc::AF_INET as u32, libc::AF_INET6 as u32, libc::AF_UNIX as u32] {
                 socket[0] = u64::from(family);
-                prop_assert_eq!(evaluate(code, ARCH, libc::SYS_socket as u32, socket)?,
+                prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_socket).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, socket)?,
                     if enabled && (family == libc::AF_INET as u32 || family == libc::AF_INET6 as u32) { ALLOW } else { DENY });
             }
             let mut clone = [0; 6];
             clone[0] = (libc::CLONE_VM | libc::CLONE_FS | libc::CLONE_FILES
                 | libc::CLONE_SIGHAND | libc::CLONE_THREAD | libc::CLONE_SYSVSEM) as u64;
-            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_clone as u32, clone)?, ALLOW);
+            prop_assert_eq!(evaluate(code, ARCH, u32::try_from(libc::SYS_clone).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, clone)?, ALLOW);
             if !enabled {
                 for syscall in [libc::SYS_socket, libc::SYS_connect, libc::SYS_socketpair] {
-                    prop_assert_eq!(evaluate(code, ARCH, syscall as u32, [0; 6])?, DENY);
+                    prop_assert_eq!(evaluate(code, ARCH, u32::try_from(syscall).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, [0; 6])?, DENY);
                 }
             }
         }

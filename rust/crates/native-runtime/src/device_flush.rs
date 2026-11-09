@@ -12,7 +12,7 @@
 //! through two counters in a per-device file each maps, with the file's lock
 //! held across a drain. The file lives in the user's system temporary
 //! directory, never `TMPDIR`: processes that each get their own `TMPDIR`
-//! (every GraphCoder case, every sandboxed tool) would otherwise each drain
+//! (every `GraphCoder` case, every sandboxed tool) would otherwise each drain
 //! alone and saturate the device together. Per request the cost is O(1): two
 //! locks, at most one drain, one wake.
 //!
@@ -759,14 +759,21 @@ mod tests {
         for started in [0, u64::MAX - 1] {
             let coalescer = Coalescer::default();
             {
-                let mut progress = coalescer.progress.lock().unwrap();
+                let mut progress = coalescer
+                    .progress
+                    .lock()
+                    .map_err(|_| io::Error::other("coalescer progress poisoned"))?;
                 progress.started = started;
                 progress.completed = started;
             }
             for unwind in [false, true] {
                 let ordered = coalescer.ordered_cut();
                 assert_eq!(ordered.is_some(), started == 0);
-                let completed = coalescer.progress.lock().unwrap().completed;
+                let completed = coalescer
+                    .progress
+                    .lock()
+                    .map_err(|_| io::Error::other("coalescer progress poisoned"))?
+                    .completed;
                 let mut attempted = false;
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     coalescer.flush(|| {
@@ -795,17 +802,31 @@ mod tests {
                         Some(&"drain producer unwound")
                     );
                 } else {
-                    assert_eq!(result.unwrap().unwrap_err().kind(), io::ErrorKind::NotFound);
+                    assert_eq!(
+                        result
+                            .map_err(|_| io::Error::other("drain unexpectedly unwound"))?
+                            .unwrap_err()
+                            .kind(),
+                        io::ErrorKind::NotFound
+                    );
                 }
                 // Check before another acquisition: restoring either missing
                 // release fails here without waiting on the abandoned producer.
                 assert!(
-                    !coalescer.progress.lock().unwrap().draining,
+                    !coalescer
+                        .progress
+                        .lock()
+                        .map_err(|_| io::Error::other("coalescer progress poisoned"))?
+                        .draining,
                     "original drain ended without releasing its in-flight state"
                 );
                 assert!(!lock.is_held());
                 assert_eq!(
-                    coalescer.progress.lock().unwrap().completed,
+                    coalescer
+                        .progress
+                        .lock()
+                        .map_err(|_| io::Error::other("coalescer progress poisoned"))?
+                        .completed,
                     completed,
                     "unsuccessful original drain acknowledged durability"
                 );
@@ -814,29 +835,61 @@ mod tests {
                     "failed original drain covered an ordered cut"
                 );
                 drop(FileLock::try_acquire(open()?, FileLockMode::Exclusive)?);
-                let mut attempts = 0;
-                let mut during = None;
-                catch_unwind(AssertUnwindSafe(|| {
-                    coalescer.flush(|| {
-                        attempts += 1;
-                        during = coalescer.ordered_cut();
-                        lock.with_lock(FileLockMode::Exclusive, || Ok(()))
-                    })
-                }))
-                .expect("exhausted drain counters must keep successful requests executing")?;
-                assert_eq!(attempts, 1, "failed drain cannot cover the next request");
-                assert_eq!(during.is_some(), started == 0);
-                assert!(
-                    ordered.is_none_or(|ordered| coalescer.covers(ordered)),
-                    "successful later drain lost coverage"
-                );
-                assert!(
-                    during.is_none_or(|during| !coalescer.covers(during)),
-                    "running drain covered a later ordered cut"
-                );
+                assert_successful_handoff(&coalescer, &lock, ordered, started)?;
             }
         }
 
+        Ok(())
+    }
+
+    fn assert_successful_handoff(
+        coalescer: &Coalescer,
+        lock: &crate::FileLock,
+        ordered: Option<u64>,
+        started: u64,
+    ) -> io::Result<()> {
+        use crate::FileLockMode;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let mut attempts = 0;
+        let mut during = None;
+        catch_unwind(AssertUnwindSafe(|| {
+            coalescer.flush(|| {
+                attempts += 1;
+                during = coalescer.ordered_cut();
+                lock.with_lock(FileLockMode::Exclusive, || Ok(()))
+            })
+        }))
+        .map_err(|_| io::Error::other("successful drain unwound"))??;
+        assert_eq!(attempts, 1, "failed drain cannot cover the next request");
+        assert_eq!(during.is_some(), started == 0);
+        assert!(
+            ordered.is_none_or(|ordered| coalescer.covers(ordered)),
+            "successful later drain lost coverage"
+        );
+        assert!(
+            during.is_none_or(|during| !coalescer.covers(during)),
+            "running drain covered a later ordered cut"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_drain_recovers_after_original_producer_unwinds() -> io::Result<()> {
+        use crate::{FileLock, FileLockMode};
+        use std::fs::OpenOptions;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("drain");
+        let open = || {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+        };
+        let lock = FileLock::new(open()?);
         // An actual concurrent request has entered the original coalescer
         // before the producer unwinds. Its same-lock release and notification
         // must let that request perform its own drain, never accept the failed one.
@@ -861,7 +914,12 @@ mod tests {
                 lock.with_lock(FileLockMode::Exclusive, || Ok(()))
             })?;
             assert_eq!(attempts, 1);
-            assert!(first.join().unwrap().is_err());
+            assert!(
+                first
+                    .join()
+                    .map_err(|_| io::Error::other("producer thread panicked"))?
+                    .is_err()
+            );
             Ok::<(), io::Error>(())
         })?;
         Ok(())

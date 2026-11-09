@@ -622,29 +622,9 @@ fn process_tree_helper() {
             std::io::stderr().flush().expect("flush partial stderr");
             wait_for_owner_stop();
         }
-        "output" => {
-            assert_eq!(
-                std::env::var("EXPLICIT_PROCESS_INPUT").expect("explicit input"),
-                "allowed"
-            );
-            assert!(std::env::var_os("PATH").is_none());
-            assert!(std::env::var_os("HOME").is_none());
-            assert!(std::env::var_os("CODEX_HOME").is_none());
-            std::io::stdout()
-                .write_all(b"stdout-marker")
-                .expect("stdout");
-            std::io::stderr()
-                .write_all(b"stderr-marker")
-                .expect("stderr");
-            let mut input = Vec::new();
-            std::io::stdin()
-                .read_to_end(&mut input)
-                .expect("closed stdin");
-            assert!(input.is_empty());
-            std::process::exit(0);
-        }
+        "output" => output_helper(),
         "stdin-stall" | "stdin-handshake" | "stdin-cancel" | "stdin-save" => {
-            stdin_helper(&mode, &root)
+            stdin_helper(&mode, &root);
         }
         "stream-notify" => stream_notify_helper(&root),
         "exit-code" => std::process::exit(7),
@@ -1246,6 +1226,11 @@ fn streaming_exchange_uses_the_same_capture_and_cleanup_owner() {
         );
         assert!(tree.is_reaped());
     }
+}
+
+#[test]
+fn withdrawn_exchange_producer_preserves_cleanup() {
+    use super::ProcessInput;
     // No stdout producer remains, but the original root is still alive and
     // stderr stays open. Waiting only for process exit would hang here.
     #[cfg(unix)]
@@ -1435,6 +1420,10 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
         assert!(failure.cleanup_completed);
         assert!(tree.is_reaped());
     }
+}
+
+#[test]
+fn stalled_streaming_input_preserves_deadline_and_cleanup() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut command = command("stdin-stall", temporary.path());
     command.stdin(ProcessStdio::piped());
@@ -1776,4 +1765,26 @@ mod seeded_capture {
         assert!(!one_submission(&scheduled), "{scheduled:?}");
         Ok(())
     }
+}
+
+fn output_helper() {
+    assert_eq!(
+        std::env::var("EXPLICIT_PROCESS_INPUT").expect("explicit input"),
+        "allowed"
+    );
+    assert!(std::env::var_os("PATH").is_none());
+    assert!(std::env::var_os("HOME").is_none());
+    assert!(std::env::var_os("CODEX_HOME").is_none());
+    std::io::stdout()
+        .write_all(b"stdout-marker")
+        .expect("stdout");
+    std::io::stderr()
+        .write_all(b"stderr-marker")
+        .expect("stderr");
+    let mut input = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut input)
+        .expect("closed stdin");
+    assert!(input.is_empty());
+    std::process::exit(0);
 }

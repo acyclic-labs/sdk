@@ -26,7 +26,7 @@ pub fn check(bytes: &[u8]) -> io::Result<()> {
     // A long fixed marker detects plaintext publication without mistaking a
     // short arbitrary input's incidental ciphertext bytes for disclosure.
     let mut plain = MARKER.to_vec();
-    plain.extend_from_slice(&bytes[..bytes.len().min(4096 - MARKER.len())]);
+    plain.extend_from_slice(bytes.split_at(bytes.len().min(4096 - MARKER.len())).0);
     let mut record = encode(&plain)?;
     #[cfg(windows)]
     assert!(!record.windows(MARKER.len()).any(|window| window == MARKER));
@@ -37,10 +37,15 @@ pub fn check(bytes: &[u8]) -> io::Result<()> {
         bytes.get(i).copied().unwrap_or(0)
     })));
     let changed = choice % record.len();
-    record[changed] ^= 1;
+    *record.get_mut(changed).ok_or(io::ErrorKind::InvalidData)? ^= 1;
     refused(&record, MAXIMUM);
-    record[changed] ^= 1;
-    refused(&record[..choice % record.len()], MAXIMUM);
+    *record.get_mut(changed).ok_or(io::ErrorKind::InvalidData)? ^= 1;
+    refused(
+        record
+            .get(..choice % record.len())
+            .ok_or(io::ErrorKind::InvalidData)?,
+        MAXIMUM,
+    );
     refused(&record, record.len() as u64 - 1);
 
     let maximum = (choice % 40) as u64;
@@ -70,9 +75,12 @@ pub fn check_retained(bytes: &[u8]) -> io::Result<()> {
     check(bytes)?;
     for index in 0..bytes.len() {
         let mut changed = bytes.to_vec();
-        changed[index] ^= 1;
+        *changed.get_mut(index).ok_or(io::ErrorKind::InvalidData)? ^= 1;
         refused(&changed, MAXIMUM);
-        refused(&bytes[..index], MAXIMUM);
+        refused(
+            bytes.get(..index).ok_or(io::ErrorKind::InvalidData)?,
+            MAXIMUM,
+        );
     }
     Ok(())
 }
