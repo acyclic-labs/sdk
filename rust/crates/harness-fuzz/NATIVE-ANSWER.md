@@ -1,5 +1,6 @@
-The `native_answer` target includes the shipping
-`harness/src/local/host_process/children/answer.rs` reducer directly, with the
+The `native_answer` target calls the shared oracle through
+`acyclic_harness::test_support::native_answer`. The oracle lives beside the shipping
+`harness/src/local/host_process/children/answer.rs` reducer and uses its
 original `Outcome` type and answer bound. Input uses the production `LineBuffer`
 and event bound used by `children::output`. The same semantic oracle compares
 fragmented pipe reads with full pages, including malformed and incomplete frames;
@@ -141,7 +142,7 @@ cargo +nightly fuzz run --fuzz-dir . native_answer --no-default-features --featu
 cargo +nightly fuzz coverage --fuzz-dir . native_answer --no-default-features --features native-answer
 ```
 
-Coverage must be read for the included shipping `answer.rs` and production
+Coverage must be read for the shipping `answer.rs` and production
 `native-runtime/src/lines.rs`, separately from the oracle and serde code. Request
 Rust branch instrumentation with `-Zcoverage-options=branch`, preserve the full
 `llvm-cov export` and annotated source branch map, and use LLVM tools from the
