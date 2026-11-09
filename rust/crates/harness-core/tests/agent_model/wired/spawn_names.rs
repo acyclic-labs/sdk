@@ -98,7 +98,8 @@ async fn fixture(
         }
         Ok(())
     });
-    let agents = committing(&stream, &files, ExecutorDriver::new(turns))?;
+    let templates = turns.templates().ok_or("missing creation templates")?;
+    let agents = committing(&stream, &files, ExecutorDriver::new(turns))?.with_templates(templates);
     let mut adoption = adopted(root.id());
     adoption.volumes = vec![binding];
     agents.create(&intent("root"), adoption).await?;
