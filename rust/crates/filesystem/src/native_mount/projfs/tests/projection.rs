@@ -255,8 +255,8 @@ async fn a_projected_directory_link_leads_into_its_directory()
 
 #[test]
 fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(mode) = std::env::var_os(super::metadata::client::MODE) {
-        return super::metadata::client::execute(&mode);
+    if let Some(mode) = std::env::var_os(super::metadata_client::MODE) {
+        return super::metadata_client::execute(&mode);
     }
     held_link_workload()
 }
@@ -279,7 +279,7 @@ async fn held_link_workload() -> Result<(), Box<dyn std::error::Error>> {
         let projected = destination.join("name");
         // ProjFS suppresses the provider's own handle notifications. Keep the
         // real blocking handle in an external client, as with metadata edits.
-        super::metadata::client::run_with_release(TEST, "held-link", &projected, |mut release| {
+        super::metadata_client::run_with_release(TEST, "held-link", &projected, |mut release| {
             let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
             let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
             let context = driver.context.ok_or("missing ProjFS context")?;
