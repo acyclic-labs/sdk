@@ -221,6 +221,21 @@ const claims = {
       { patch: "rust/proofs/revision-floor-merge/incarnation.patch", label: "admitted-foreign-incarnation", diagnostic: "revision floor accepted a foreign incarnation" },
     ] },
   ],
+  "native-usage-counters": [
+    "rust/crates/harness-core/src/executor/model_usage.rs", "acyclic-harness-core",
+    "executor::model_usage::tests::usage_dialects_preserve_units_absence_and_malformed_controls",
+    "Test failed:", ["--features", "filesystem-local,native-execution,test-support"],
+  ],
+  "native-event-cut": [
+    "rust/crates/harness/src/local/host_process/children.rs", "acyclic-harness",
+    "local::host_process::children::tests::an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof",
+    "exited native terminal without LF was discarded", nativeHarness,
+  ],
+  "native-event-retention": [
+    "rust/crates/harness/src/local/host_process.rs", "acyclic-harness",
+    "local::host_owner::tests::native_event_log_keeps_late_usage_and_resume_after_recovery",
+    "native event publication lost records after the old cutoff", nativeHarness,
+  ],
   "capture-marker-retirement": [
     "rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs", "acyclic-harness-core",
     "filesystem::native_process::capture::tests::interactive_completion_retains_input_producer_and_cleanup",

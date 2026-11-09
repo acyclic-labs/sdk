@@ -24,7 +24,8 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 pub(crate) mod answer;
-use answer::{EVENT_LIMIT, NativeAnswer};
+use super::EVENT_LINE_BYTES as EVENT_LIMIT;
+use answer::NativeAnswer;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod readiness_validation;
@@ -52,6 +53,20 @@ struct Running {
 }
 
 impl Running {
+    /// Live frames and the final captured frame share one admission path.
+    fn record_event(&mut self, line: std::io::Result<String>) -> Result<()> {
+        let Ok(line) = line else {
+            self.answer.omit();
+            return self.process.record_event(EVENT_OMITTED);
+        };
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            return Ok(());
+        };
+        self.process.record_event(line.as_bytes())?;
+        self.answer.record(&event);
+        Ok(())
+    }
+
     /// Consumes the same armed result before attempting another child pass.
     fn poll_readiness(&mut self) -> Poll<()> {
         let Some(wait) = self.armed.as_mut() else {
@@ -502,7 +517,13 @@ impl NativeChildren {
                 // original progress edge. Exit cannot truncate a reply still
                 // behind already captured bytes, nor wait for inherited EOF.
                 Ok(true) => return Ok(None),
-                Ok(false) => {}
+                Ok(false) => {
+                    if let Some(line) = running.events.finish()
+                        && let Err(error) = running.record_event(line)
+                    {
+                        exited = Err(error.to_string());
+                    }
+                }
                 Err(error) => exited = Err(error.to_string()),
             }
         }
@@ -664,27 +685,16 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
             return Ok(stderr.read_bytes > 0);
         };
         if count == 0 {
+            if let Some(line) = running.events.finish() {
+                running.record_event(line)?;
+            }
             return Ok(stderr.read_bytes > 0);
         }
         let bytes = buffer
             .get(..count)
             .ok_or_else(|| invalid("native output count invalid"))?;
         for line in running.events.push(bytes) {
-            let Ok(line) = line else {
-                // A dropped answer replaces an earlier preview, preserving
-                // terminal refusals. Keep draining through the same framer
-                // and owner; later complete answers remain usable.
-                running.answer.omit();
-                // The saved log marks where the event was dropped.
-                running.process.record_event(EVENT_OMITTED)?;
-                continue;
-            };
-            let Ok(event) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            // The whole event stream joins the conversation at settlement.
-            running.process.record_event(line.as_bytes())?;
-            running.answer.record(&event);
+            running.record_event(line)?;
         }
     }
     Ok(true)
