@@ -89,7 +89,7 @@ impl From<StreamError> for Status {
 
 /// Encodes a Stream failure through the shared server mapping.
 #[must_use]
-pub(crate) fn error_status(error: &StreamError) -> Status {
+pub fn error_status(error: &StreamError) -> Status {
     match error {
         StreamError::InvalidResponse => Status::data_loss("invalid_response"),
         StreamError::InvalidPath => Status::invalid_argument("invalid_path"),
