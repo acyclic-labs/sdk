@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import test from "node:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import test, { beforeEach } from "node:test";
 import { spawnSync } from "node:child_process";
 import { loomEnvironment, qualificationMain, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom, qualifyNativeExecutor, qualifyNativeSources } from "./qualify-mcp-loom.mjs";
@@ -9,6 +10,32 @@ import { gateQualifications, qualificationPlan, qualifyMcpLoom, qualifyFsBinding
 
 const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+beforeEach(t => {
+  const runner = process.env.SDK_CHECKER_RUNNER;
+  delete process.env.SDK_CHECKER_RUNNER;
+  t.after(() => {
+    if (runner === undefined) delete process.env.SDK_CHECKER_RUNNER;
+    else process.env.SDK_CHECKER_RUNNER = runner;
+  });
+});
+
+test("shared runner receives the binary and original arguments and must return a complete suite", t => {
+  const directory = mkdtempSync(join(tmpdir(), "checker runner "));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const runner = join(directory, "runner.mjs");
+  process.env.SDK_CHECKER_RUNNER = runner;
+  for (const passed of [6, 0]) {
+    writeFileSync(runner, `import assert from "node:assert/strict";
+assert.deepEqual(process.argv.slice(2), ["--", "model-binary", "mcp_loom::"]);
+process.stdout.write(${JSON.stringify(summary(passed))});
+`);
+    const run = (command, args, options) => command === "cargo"
+      ? { status: 0, stdout: JSON.stringify(artifact) }
+      : spawnSync(command, args, options);
+    qualifyOrReject(passed === 6 ? null : "empty suite", () => qualifyMcpLoom(undefined, run));
+  }
+});
 
 test("checker CLI publishes a terminal FAIL even when selection fails before compilation", () => {
   const result = spawnSync(process.execPath, ["scripts/qualify-mcp-loom.mjs", "--missing-obligation"], { encoding: "utf8" });
