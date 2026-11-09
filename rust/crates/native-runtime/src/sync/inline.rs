@@ -37,6 +37,16 @@ impl<T> Mutex<T> {
             .map_err(TryLockError::Poisoned)
     }
 
+    /// Consumes the mutex, preserving the original value and poison state.
+    pub fn into_inner(self) -> LockResult<T> {
+        let value = self.inner.into_inner();
+        if self.poisoned.into_inner() {
+            Err(PoisonError::new(value))
+        } else {
+            Ok(value)
+        }
+    }
+
     fn guard<'a>(&'a self, inner: parking_lot::MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
         checked(MutexGuard {
             inner,
@@ -166,6 +176,7 @@ mod tests {
         });
         assert!(matches!(mutex.try_lock(), Err(TryLockError::Poisoned(_))));
         assert_eq!(*mutex.lock().unwrap_err().into_inner(), 7);
+        assert_eq!(mutex.into_inner().unwrap_err().into_inner(), 7);
 
         // Acquiring a lock while unwinding must not newly poison it.
         struct DuringUnwind<'a>(&'a Mutex<u8>);

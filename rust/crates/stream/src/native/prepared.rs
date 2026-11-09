@@ -63,7 +63,7 @@ type RecordSlotState = (
 
 /// One private ingress cell, not a journal, authority or request queue.
 pub(crate) struct NativeCommitRecordSlot {
-    state: std::sync::Mutex<RecordSlotState>,
+    state: crate::query_sync::SyncMutex<RecordSlotState>,
     _allocation: acyclic_native_runtime::ReadAllocation,
 }
 
@@ -75,7 +75,7 @@ impl NativeCommitRecordSlot {
         let allocation = acyclic_native_runtime::ReadAllocation::new(meter, bytes)?;
         meter.admit_codec(0, bytes as u64, 0)?;
         let record = Arc::new(Self {
-            state: std::sync::Mutex::new((None, None)),
+            state: crate::query_sync::SyncMutex::new((None, None)),
             _allocation: allocation,
         });
         meter.record_codec(0, bytes as u64, 0)?;
@@ -150,7 +150,7 @@ mod tests {
         let mut physical = None;
         let observed = acyclic_test_support::measure(|| {
             physical = Some(Arc::new(NativeCommitRecordSlot {
-                state: std::sync::Mutex::new((None, None)),
+                state: crate::query_sync::SyncMutex::new((None, None)),
                 _allocation: allocation,
             }));
         });

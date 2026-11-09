@@ -5,6 +5,33 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const DEADLINE: Duration = Duration::from_secs(10);
 const CAP_CHILD: &str = "ACYCLIC_FSEVENTS_CAP_CHILD";
+const REPLAY_CHILD: &str = "ACYCLIC_FSEVENTS_REPLAY_CHILD";
+
+/// Controlled replay state must not affect other tests sharing the process hub.
+fn isolated_replay(name: &str) -> TestResult {
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args(["--exact", name, "--nocapture"])
+        .env(REPLAY_CHILD, "1")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn suspend_callbacks(hub: &Hub) -> Suspended {
+    extern "C" fn suspend(queue: *mut c_void) {
+        // SAFETY: the live serial queue is resumed by the returned guard.
+        unsafe { dispatch_suspend(queue) };
+    }
+    // SAFETY: suspend runs after all earlier callbacks and stops subsequent
+    // callbacks before returning, without leaving an in-flight delivery.
+    unsafe { dispatch_sync_f(hub.queue(), hub.queue(), suspend) };
+    Suspended(hub.queue())
+}
 
 fn hub() -> TestResult<&'static Hub> {
     let cancellation = crate::CancellationToken::new();
@@ -65,15 +92,40 @@ fn watch_all(
     Ok(started.into_inner().map_err(|_| "poisoned")?)
 }
 
-fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+fn wait_until(events: &std::sync::mpsc::Receiver<()>, mut done: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + DEADLINE;
     while !done() {
-        if Instant::now() >= deadline {
+        if events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .is_err()
+        {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(5));
     }
     true
+}
+
+fn wait_for_arm(hub: &Hub, registration: &Registration, before: u64) -> bool {
+    let (mut state, _) = hub
+        .armed
+        .wait_timeout_while(hub.state(), DEADLINE, |state| {
+            state
+                .of(registration)
+                .is_some_and(|shard| shard.arms <= before)
+        })
+        .unwrap_or_else(PoisonError::into_inner);
+    state
+        .of(registration)
+        .is_some_and(|shard| shard.arms > before)
+}
+
+fn receive_roots(events: &std::sync::mpsc::Receiver<usize>, count: usize) -> TestResult {
+    let deadline = Instant::now() + DEADLINE;
+    let mut seen = std::collections::HashSet::new();
+    while seen.len() != count {
+        seen.insert(events.recv_timeout(deadline.saturating_duration_since(Instant::now()))?);
+    }
+    Ok(())
 }
 
 fn threads() -> i32 {
@@ -110,7 +162,9 @@ fn a_thousand_roots_share_the_bounded_streams() -> TestResult {
             .collect::<Vec<_>>(),
     );
     let started = Instant::now();
+    let (changed, events) = std::sync::mpsc::channel();
     let streams = watch_all(&roots, |index| {
+        let changed = changed.clone();
         let (seen, touched) = (Arc::clone(&seen), roots[index].join("touched"));
         Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
             let events = events.expect("native stream delivery failed");
@@ -120,6 +174,7 @@ fn a_thousand_roots_share_the_bounded_streams() -> TestResult {
             {
                 seen[index].store(true, Ordering::Release);
             }
+            let _ = changed.send(());
         })
     })?;
     let registered = started.elapsed();
@@ -128,7 +183,9 @@ fn a_thousand_roots_share_the_bounded_streams() -> TestResult {
     for root in &roots {
         std::fs::write(root.join("touched"), b"event")?;
     }
-    let delivered = wait_until(|| seen.iter().all(|seen| seen.load(Ordering::Acquire)));
+    let delivered = wait_until(&events, || {
+        seen.iter().all(|seen| seen.load(Ordering::Acquire))
+    });
     let missing = seen
         .iter()
         .filter(|seen| !seen.load(Ordering::Acquire))
@@ -161,7 +218,9 @@ fn a_burst_across_many_roots_loses_nothing() -> TestResult {
             })
             .collect::<Vec<_>>(),
     );
+    let (changed, events) = std::sync::mpsc::channel();
     let streams = watch_all(&roots, |index| {
+        let changed = changed.clone();
         let (seen, root) = (Arc::clone(&seen), roots[index].clone());
         Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
             let events = events.expect("native stream delivery failed");
@@ -174,6 +233,7 @@ fn a_burst_across_many_roots_loses_nothing() -> TestResult {
                     names.insert(path.to_path_buf());
                 }
             }
+            let _ = changed.send(());
         })
     })?;
     for file in 0..FILES {
@@ -190,7 +250,7 @@ fn a_burst_across_many_roots_loses_nothing() -> TestResult {
                 .len()
                 == FILES
     };
-    let delivered = wait_until(|| seen.iter().all(covered));
+    let delivered = wait_until(&events, || seen.iter().all(covered));
     let rescanned = seen
         .iter()
         .filter(|seen| seen.rescanned.load(Ordering::Acquire))
@@ -214,6 +274,7 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
     let (_parent, roots) = roots(1 + GROWTH)?;
     let watched = roots[0].clone();
     let delivered = Arc::new(Mutex::new(Vec::<(PathBuf, u32, u64)>::new()));
+    let (changed, events) = std::sync::mpsc::channel();
     let stream = watch(&watched, {
         let delivered = Arc::clone(&delivered);
         Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
@@ -223,6 +284,7 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
             for ((path, flags), &id) in events.iter().zip(ids) {
                 delivered.push((path.to_path_buf(), flags, id));
             }
+            let _ = changed.send(());
         })
     })?;
     let registration = stream.registration.clone().ok_or("unregistered")?;
@@ -240,7 +302,7 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
         }
         // A shard that is replaying re-arms once its replay is done.
         hub.rearm(&registration);
-        if !wait_until(|| hub.arms(&registration) > before) {
+        if !wait_for_arm(hub, &registration, before) {
             return Err(format!("the watched shard stopped re-arming in round {round}").into());
         }
     }
@@ -252,7 +314,7 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
             .map(|(path, ..)| path.clone())
             .collect::<std::collections::HashSet<_>>()
     };
-    let complete = wait_until(|| {
+    let complete = wait_until(&events, || {
         let delivered = delivered.lock().unwrap_or_else(PoisonError::into_inner);
         names(&delivered).len() == FILES
             || delivered
@@ -295,23 +357,200 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
 }
 
 #[test]
+fn pending_registration_replays_changes_across_history_done() -> TestResult {
+    if std::env::var_os(REPLAY_CHILD).is_none() {
+        return isolated_replay(
+            "fsevents::hub::tests::pending_registration_replays_changes_across_history_done",
+        );
+    }
+    let hub = hub()?;
+    let (_parent, roots) = roots(1)?;
+    let streams = (0..SHARDS)
+        .map(|_| watch(&roots[0], Arc::new(|_| {})))
+        .collect::<Result<Vec<_>, _>>()?;
+    let suspended = suspend_callbacks(hub);
+    // Hold native callbacks and simulate an unfinished replay on every shard,
+    // so the next registration must wait with its saved floor.
+    for shard in &mut hub.state().shards {
+        shard.replaying = true;
+    }
+    let (changed, events) = std::sync::mpsc::channel();
+    let registration = Arc::new(Registration::new(
+        vec![roots[0].clone()],
+        Arc::new(move |batch| {
+            let batch = batch.expect("native stream delivery failed");
+            changed.send(batch.ids().to_vec()).expect("receiver alive");
+        }),
+    ));
+    hub.register(&registration)?;
+    let (old, floor, arms) = {
+        let mut state = hub.state();
+        let shard = state.of(&registration).ok_or("missing shard")?;
+        let pending = shard.pending.first().ok_or("missing pending route")?;
+        (shard.stream, pending.floor, shard.arms)
+    };
+    let path = std::ffi::CString::new(roots[0].as_os_str().as_bytes())?;
+    hub.deliver(
+        old,
+        &[path.as_ptr(); 3],
+        &[ITEM_CREATED, HISTORY_DONE, ITEM_CREATED],
+        &[floor + 1, floor + 1, floor + 2],
+    );
+    assert!(events.try_recv().is_err());
+    let stream = {
+        let mut state = hub.state();
+        let shard = state.of(&registration).ok_or("missing shard")?;
+        assert_eq!(shard.arms, arms + 1, "pending routes need their own replay");
+        shard.stream
+    };
+    hub.deliver(
+        stream,
+        &[path.as_ptr(); 3],
+        &[ITEM_CREATED, ITEM_CREATED, HISTORY_DONE],
+        &[floor + 1, floor + 2, floor + 2],
+    );
+    assert_eq!(events.try_recv()?, vec![floor + 1, floor + 2]);
+    hub.unregister(&registration);
+    drop(suspended);
+    drop(streams);
+    Ok(())
+}
+
+#[test]
+fn replay_filters_old_moves_before_synthesizing_root_changes() -> TestResult {
+    if std::env::var_os(REPLAY_CHILD).is_none() {
+        return isolated_replay(
+            "fsevents::hub::tests::replay_filters_old_moves_before_synthesizing_root_changes",
+        );
+    }
+    let hub = hub()?;
+    let (_parent, roots) = roots(1)?;
+    let (changed, events) = std::sync::mpsc::channel();
+    let stream = watch(
+        &roots[0],
+        Arc::new(move |batch| {
+            let batch = batch.expect("native stream delivery failed");
+            changed
+                .send(
+                    batch
+                        .ids()
+                        .iter()
+                        .copied()
+                        .zip(batch.flags.iter().copied())
+                        .collect::<Vec<_>>(),
+                )
+                .expect("receiver alive");
+        }),
+    )?;
+    let suspended = suspend_callbacks(hub);
+    let registration = stream.registration.as_ref().ok_or("unregistered")?;
+    let floor = hub.current_event_id();
+    let native = {
+        let mut state = hub.state();
+        let shard = state.of(registration).ok_or("missing shard")?;
+        shard.replaying = true;
+        for route in shard.routes.values_mut().flatten() {
+            route.floor = floor;
+        }
+        shard.stream
+    };
+    // Discard real startup deliveries before injecting the replay batch.
+    while events.try_recv().is_ok() {}
+    let root = std::ffi::CString::new(roots[0].as_os_str().as_bytes())?;
+    let parent =
+        std::ffi::CString::new(roots[0].parent().ok_or("no parent")?.as_os_str().as_bytes())?;
+    hub.deliver(
+        native,
+        &[
+            root.as_ptr(),
+            parent.as_ptr(),
+            root.as_ptr(),
+            parent.as_ptr(),
+            root.as_ptr(),
+        ],
+        &[
+            IS_DIR | ITEM_RENAMED,
+            IS_DIR | ITEM_REMOVED,
+            IS_DIR | ITEM_REMOVED,
+            IS_DIR | ITEM_RENAMED,
+            ROOT_CHANGED,
+        ],
+        &[floor - 1, floor, floor + 1, floor + 2, 0],
+    );
+    let delivered = events.try_recv()?;
+    assert_eq!(
+        delivered.iter().map(|&(id, _)| id).collect::<Vec<_>>(),
+        vec![floor + 1, floor + 2, 0]
+    );
+    assert!(delivered.iter().all(|&(_, flag)| flag & ROOT_CHANGED != 0));
+    assert!(events.try_recv().is_err());
+    drop(suspended);
+    drop(stream);
+    Ok(())
+}
+
+#[test]
+fn shared_coverage_preserves_root_and_ancestor_moves() -> TestResult {
+    let outer = tempfile::tempdir()?;
+    let parent = outer.path().canonicalize()?.join("parent");
+    std::fs::create_dir(&parent)?;
+    let roots = (0..2 * SHARDS)
+        .map(|index| {
+            let root = parent.join(format!("root-{index}"));
+            std::fs::create_dir(&root).map(|()| root)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let (changed, events) = std::sync::mpsc::channel();
+    let (ready, received_ready) = std::sync::mpsc::channel();
+    let streams = watch_all(&roots, |index| {
+        let changed = changed.clone();
+        let ready = ready.clone();
+        let touched = roots[index].join("ready");
+        Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
+            let events = events.expect("native stream delivery failed");
+            if events.iter().any(|(_, flags)| flags & ROOT_CHANGED != 0) {
+                let _ = changed.send(index);
+            }
+            if events
+                .iter()
+                .any(|(path, flags)| path == touched || rescans(path, flags, &touched))
+            {
+                let _ = ready.send(index);
+            }
+        })
+    })?;
+    for root in &roots {
+        std::fs::write(root.join("ready"), b"ready")?;
+    }
+    receive_roots(&received_ready, roots.len())?;
+    std::fs::rename(&roots[0], parent.join("moved-root"))?;
+    assert_eq!(events.recv_timeout(DEADLINE)?, 0);
+    std::fs::rename(&parent, outer.path().join("moved-parent"))?;
+    receive_roots(&events, roots.len())?;
+    drop(streams);
+    Ok(())
+}
+
+#[test]
 fn a_panicking_handler_does_not_stop_the_hub() -> TestResult {
     hub()?;
     let (_parent, roots) = roots(2)?;
     let panicking = watch(&roots[0], Arc::new(|_| panic!("handler panic")))?;
     let seen = Arc::new(AtomicUsize::new(0));
+    let (changed, events) = std::sync::mpsc::channel();
     let counting = watch(&roots[1], {
         let seen = Arc::clone(&seen);
         Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
             let events = events.expect("native stream delivery failed");
             seen.fetch_add(events.iter().len(), Ordering::AcqRel);
+            let _ = changed.send(());
         })
     })?;
     for round in 0..2 {
         let before = seen.load(Ordering::Acquire);
         std::fs::write(roots[0].join(format!("panic-{round}")), b"panic")?;
         std::fs::write(roots[1].join(format!("count-{round}")), b"count")?;
-        assert!(wait_until(|| seen.load(Ordering::Acquire) > before));
+        assert!(wait_until(&events, || seen.load(Ordering::Acquire) > before));
     }
     drop((panicking, counting));
     Ok(())

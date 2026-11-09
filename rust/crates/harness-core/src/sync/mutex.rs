@@ -1,6 +1,2 @@
-#[cfg(loom)]
 #[doc(hidden)]
-pub use loom::sync::Mutex;
-#[cfg(not(loom))]
-#[doc(hidden)]
-pub use std::sync::Mutex;
+pub use acyclic_stream::query_sync::SyncMutex as Mutex;

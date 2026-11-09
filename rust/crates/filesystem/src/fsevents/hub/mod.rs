@@ -7,7 +7,12 @@
 //! registration joins the least-loaded shard, and each event reaches the
 //! registrations whose root is its path or a component-boundary ancestor.
 //!
-//! A shard whose roots grow is re-armed: its new stream replays history from
+//! Each shard watches one common ancestor of its routes. `WatchRoot` opens a
+//! descriptor for every native path, so passing the route list would still
+//! exhaust descriptors with only a few streams. New routes already beneath
+//! that ancestor reuse its stream; only expanding coverage re-arms it.
+//!
+//! A shard whose coverage grows is re-armed: its new stream replays history from
 //! the older of the last event the shard delivered and each new
 //! registration's start id. Every route drops an event at or below its
 //! floor, the last id its registration has had or did not want, so a re-arm
@@ -15,8 +20,7 @@
 //! shard re-arms only once its replay is done. Re-arming suspends the queue
 //! rather than waiting for it, so a blocked handler delays no registration
 //! and a handler may register or stop watches. Unregistering only removes routes;
-//! the stream forgets their roots at its next re-arm, which comes at once
-//! when more of its roots are dead than live.
+//! the stream stops when its last registration leaves.
 
 use super::*;
 use std::cell::UnsafeCell;
@@ -80,10 +84,10 @@ struct Route {
 
 struct Shard {
     stream: FsEventStreamRef,
+    root: Option<PathBuf>,
     routes: BTreeMap<PathBuf, Vec<Route>>,
     pending: Vec<Route>,
     load: usize,
-    armed: usize,
     last_id: u64,
     replaying: bool,
     purge: bool,
@@ -95,15 +99,30 @@ impl Shard {
     const fn new() -> Self {
         Self {
             stream: std::ptr::null_mut(),
+            root: None,
             routes: BTreeMap::new(),
             pending: Vec::new(),
             load: 0,
-            armed: 0,
             last_id: 0,
             replaying: false,
             purge: false,
             #[cfg(test)]
             arms: 0,
+        }
+    }
+
+    fn route(&mut self, batch: impl IntoIterator<Item = Route>) {
+        for route in batch {
+            if !route.registration.live.load(Ordering::Acquire) {
+                continue;
+            }
+            for root in &route.registration.roots {
+                self.routes.entry(root.clone()).or_default().push(Route {
+                    registration: Arc::clone(&route.registration),
+                    floor: route.floor,
+                });
+            }
+            route.registration.routed.store(true, Ordering::Release);
         }
     }
 }
@@ -148,6 +167,8 @@ pub(super) struct Hub {
     // Held by whoever replaces a shard's stream.
     arm: Mutex<()>,
     state: Mutex<State>,
+    #[cfg(test)]
+    armed: std::sync::Condvar,
 }
 
 // SAFETY: the queue is a process-lifetime serial dispatch queue, safe to use
@@ -157,6 +178,16 @@ unsafe impl Send for Hub {}
 unsafe impl Sync for Hub {}
 
 impl Hub {
+    /// Bootstrap process custody once, before finite original work starts.
+    pub(super) fn initialize_services() -> notify::Result<()> {
+        if HUB.get().is_some() {
+            return Ok(());
+        }
+        let cancellation = crate::CancellationToken::new();
+        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        Self::get(&mut work).map(|_| ()).map_err(notify_error)
+    }
+
     /// The hub, made with its queue on first use outside finite original work.
     pub(super) fn get<W: SourceDemandReadWork>(work: &mut W) -> Result<&'static Self, DemandError> {
         static LOADING: Mutex<()> = Mutex::new(());
@@ -184,6 +215,8 @@ impl Hub {
             queue,
             arm: Mutex::new(()),
             state: Mutex::new(State { shards: Vec::new() }),
+            #[cfg(test)]
+            armed: std::sync::Condvar::new(),
         }))
     }
 
@@ -209,6 +242,22 @@ impl Hub {
             let (index, shard) = state.least_loaded();
             shard.load += registration.roots.len();
             registration.shard.store(index, Ordering::Relaxed);
+            if !shard.stream.is_null()
+                && !shard.replaying
+                && shard.root.as_ref().is_some_and(|root| {
+                    registration.roots.iter().all(|path| path.starts_with(root))
+                })
+                && let Ok(_arm) = self.arm.try_lock()
+            {
+                // Routing custody prevents a callback from passing this floor
+                // before the route is visible. Try-only arm custody excludes a
+                // concurrent replacement without reversing the blocking order.
+                shard.route(std::iter::once(Route {
+                    registration: Arc::clone(registration),
+                    floor: self.current_event_id(),
+                }));
+                return Ok(());
+            }
             // It starts when its stream does, as a stream of its own would.
             shard.pending.push(Route {
                 registration: Arc::clone(registration),
@@ -248,18 +297,17 @@ impl Hub {
         let mine = |route: &Route| Arc::ptr_eq(&route.registration, registration);
         if let Some(index) = shard.pending.iter().position(mine) {
             shard.pending.swap_remove(index);
-            return;
-        }
-        for root in &registration.roots {
-            if let Some(routes) = shard.routes.get_mut(root) {
-                routes.retain(|route| !mine(route));
-                if routes.is_empty() {
-                    shard.routes.remove(root);
+        } else {
+            for root in &registration.roots {
+                if let Some(routes) = shard.routes.get_mut(root) {
+                    routes.retain(|route| !mine(route));
+                    if routes.is_empty() {
+                        shard.routes.remove(root);
+                    }
                 }
             }
         }
-        let live = shard.routes.len();
-        if shard.armed.saturating_sub(live) > live && !shard.purge {
+        if shard.load == 0 && !shard.purge {
             shard.purge = true;
             drop(state);
             // SAFETY: the hub is static; the job runs on its serial queue.
@@ -277,7 +325,7 @@ impl Hub {
         self.queue
     }
 
-    /// Re-arms every shard that has grown or holds mostly dead roots. Arm
+    /// Re-arms every shard whose coverage grew or whose last route left. Arm
     /// custody serializes it; its holder never waits for the queue.
     fn arm_all(&self) {
         // Failure jobs are enqueued under routing custody, but cannot enter a
@@ -295,7 +343,7 @@ impl Hub {
 
     fn arm_shard(&self, index: usize) {
         let now = self.current_event_id();
-        let (mut batch, roots, since, old) = {
+        let (mut batch, root, since, old) = {
             let mut state = self.state();
             let Some(shard) = state.shards.get_mut(index) else {
                 return;
@@ -311,29 +359,36 @@ impl Hub {
                     route.floor = now;
                 }
             }
-            let mut roots = shard.routes.keys().cloned().collect::<Vec<_>>();
+            let mut root = shard.root.clone().filter(|_| !shard.routes.is_empty());
             for route in &batch {
                 if route.registration.live.load(Ordering::Acquire) {
-                    roots.extend(route.registration.roots.iter().cloned());
+                    for path in &route.registration.roots {
+                        if let Some(root) = &mut root {
+                            while !path.starts_with(root.as_path()) {
+                                if !root.pop() {
+                                    break;
+                                }
+                            }
+                        } else {
+                            root = Some(path.clone());
+                        }
+                    }
                 }
             }
-            roots.sort_unstable();
-            roots.dedup();
             let since = batch
                 .iter()
                 .map(|route| route.floor)
                 .chain((!shard.stream.is_null()).then_some(shard.last_id))
                 .min()
                 .unwrap_or(EVENT_ID_SINCE_NOW);
-            (batch, roots, since, shard.stream)
+            (batch, root, since, shard.stream)
         };
         // No callback runs between the new stream's start and the switch to
         // it, so none of its events finds it not yet the shard's.
         let suspended = Suspended::new(self.queue);
-        let stream = if roots.is_empty() {
-            Ok(std::ptr::null_mut())
-        } else {
-            self.create(&roots, since)
+        let stream = match &root {
+            Some(root) => self.create(std::array::from_ref(root), since),
+            None => Ok(std::ptr::null_mut()),
         };
         let mut state = self.state();
         // Shards are never removed.
@@ -381,26 +436,16 @@ impl Hub {
                 route.floor = route.floor.max(last);
             }
         }
-        for route in batch {
-            if !route.registration.live.load(Ordering::Acquire) {
-                continue;
-            }
-            for root in &route.registration.roots {
-                shard.routes.entry(root.clone()).or_default().push(Route {
-                    registration: Arc::clone(&route.registration),
-                    floor: route.floor,
-                });
-            }
-            route.registration.routed.store(true, Ordering::Release);
-        }
+        shard.route(batch);
         shard.stream = stream;
+        shard.root = root;
         shard.last_id = since;
         shard.replaying = !stream.is_null();
-        shard.armed = roots.len();
         shard.purge = false;
         #[cfg(test)]
         {
             shard.arms += 1;
+            self.armed.notify_all();
         }
         drop(state);
         if !old.is_null() {
@@ -415,7 +460,7 @@ impl Hub {
         drop(suspended);
     }
 
-    fn create(&self, roots: &[PathBuf], since: u64) -> Result<FsEventStreamRef, DemandError> {
+    fn create(&self, roots: &[PathBuf; 1], since: u64) -> Result<FsEventStreamRef, DemandError> {
         // The shared streams are process custody: no one watch's work pays
         // for the other roots its re-arm restates.
         let cancellation = crate::CancellationToken::new();
@@ -491,8 +536,11 @@ impl Hub {
                     continue;
                 }
                 shard.last_id = shard.last_id.max(id);
-                let mut route = |route: &Route| {
-                    // RootChanged has id zero and must survive replay filtering.
+                let moved = flag & ROOT_CHANGED != 0
+                    || flag & IS_DIR != 0 && flag & (ITEM_RENAMED | ITEM_REMOVED) != 0;
+                let mut route = |route: &Route, routed_flag: u32| {
+                    // Only the original native RootChanged may bypass the floor:
+                    // synthesized root changes still have ordinary event ids.
                     if (id <= route.floor && flag & ROOT_CHANGED == 0)
                         || !route.registration.live.load(Ordering::Acquire)
                     {
@@ -505,7 +553,7 @@ impl Hub {
                             batches.len() - 1
                         });
                     if let Some(batch) = batches.get_mut(slot) {
-                        let added = batch.push(event, path, flag);
+                        let added = batch.push(event, path, routed_flag);
                         #[cfg(test)]
                         if added {
                             batch.ids.push(id);
@@ -515,7 +563,9 @@ impl Hub {
                     }
                 };
                 if flag & (USER_DROPPED | KERNEL_DROPPED) != 0 {
-                    shard.routes.values().flatten().for_each(&mut route);
+                    for entry in shard.routes.values().flatten() {
+                        route(entry, flag);
+                    }
                     continue;
                 }
                 // SAFETY: the callback passes a live NUL-terminated path.
@@ -523,17 +573,30 @@ impl Hub {
                 let target = Path::new(OsStr::from_bytes(bytes));
                 for ancestor in target.ancestors() {
                     if let Some(routes) = shard.routes.get(ancestor) {
-                        routes.iter().for_each(&mut route);
+                        for entry in routes {
+                            route(
+                                entry,
+                                flag | if moved && ancestor == target {
+                                    ROOT_CHANGED
+                                } else {
+                                    0
+                                },
+                            );
+                        }
                     }
                 }
-                // A rescan or mount covers every root beneath its path too.
-                if flag & (MUST_SCAN_SUBDIRS | MOUNT | UNMOUNT) != 0 {
+                // A shared native root can be above a registration's root.
+                // Moving either that root or an intervening directory invalidates
+                // every route beneath it, just as WatchRoot did per path.
+                if moved || flag & (MUST_SCAN_SUBDIRS | MOUNT | UNMOUNT) != 0 {
                     let beneath = shard
                         .routes
                         .range::<Path, _>((Bound::Excluded(target), Bound::Unbounded))
                         .take_while(|(root, _)| root.starts_with(target));
                     for (_, routes) in beneath {
-                        routes.iter().for_each(&mut route);
+                        for entry in routes {
+                            route(entry, flag | if moved { ROOT_CHANGED } else { 0 });
+                        }
                     }
                 }
             }
@@ -610,6 +673,8 @@ impl Batch {
             self.last = Some(event);
             self.paths.push(path);
             self.flags.push(flags);
+        } else if let Some(previous) = self.flags.last_mut() {
+            *previous |= flags;
         }
         added
     }

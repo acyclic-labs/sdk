@@ -2,11 +2,11 @@
 use super::*;
 use crate::conversation::FileRef;
 use crate::sync::SyncMutex;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sync::SyncMutex as Mutex;
 use crate::sync::atomic::{AtomicU64, Ordering};
 use acyclic_fs::kernel::{KernelAccounting, KernelOwnedAllocation, allocation::AllocationLedger};
 use acyclic_fs::{CancellationToken, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError};
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Mutex;
 #[cfg(all(test, not(loom)))]
 mod charge_tests;
 mod codec;
