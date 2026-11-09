@@ -26,6 +26,7 @@ import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { variants } from "./serial.mjs";
 import { conversation } from "./conversation.mjs";
+import { nativeHostEnvironment } from "../../plugin/tests/hosts/native-host.mjs";
 
 const [binaryArg, mockArg, ...selected] = process.argv.slice(2);
 const recovery = [process.execPath, ...process.argv.slice(1)];
@@ -45,6 +46,9 @@ assert.ok(process.platform !== "win32" || selected.length === 1,
 const cases = suites.filter(test => !selected.length || selected.includes(test.id))
   .map(test => ({ ...test, root: join(scratch, test.variant) }));
 assert.ok(cases.length, "no matching cases");
+const hosts = new Set(cases.flatMap(test => test.inputs.flatMap(input =>
+  input.format === "installed-host" ? [input.host] : input.format === "scripted-host" ? ["codex"] : [])));
+const { env: hostEnvironment } = await nativeHostEnvironment(hosts, process.env);
 const roots = [...new Set(cases.map(test => test.root))];
 for (const root of roots) mkdirSync(root, { recursive: true });
 assert.equal(new Set(cases.map(test => test.id)).size, cases.length, "case identities must be unique");
@@ -96,7 +100,7 @@ async function prepare(test, gitOrigin) {
   fixture.url = `http://127.0.0.1:${port}/${test.id}/v1`;
   fixture.binary = binary;
   fixture.output = artifact;
-  fixture.env = environment(fixture.settings);
+  fixture.env = environment(fixture.settings, hostEnvironment);
   if (nativeCases.has(test.id)) {
     fixture.url = `http://127.0.0.1:${port}/native-${test.id}/v1`;
     fixture.nativeCapability = nativeCapability;

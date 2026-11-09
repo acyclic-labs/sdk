@@ -151,13 +151,22 @@ pub fn parent_flags(host: &str, args: &[String], cwd: &Path) -> Result<Vec<Strin
     Ok(flags)
 }
 
+/// A native conversation identity and its retained history file.
+#[derive(Clone, Copy)]
+pub struct NativeSession<'a> {
+    /// Stable native identity across managed turns.
+    pub id: &'a str,
+    /// Host-owned history, when the host identifies it separately.
+    pub file: Option<&'a str>,
+}
+
 /// The non-interactive child command for one turn in `cwd`, resuming the
 /// native `session` reference when one is held.
 pub fn child(
     host: &str,
     args: &[String],
     cwd: &Path,
-    session: Option<&str>,
+    session: Option<NativeSession<'_>>,
 ) -> Result<ProcessCommand> {
     let arguments = child_arguments(host, args, cwd, session)?;
     let resolved = acyclic_native_runtime::host_command(program(host)?).map_err(storage)?;
@@ -178,10 +187,12 @@ pub fn child_arguments(
     host: &str,
     args: &[String],
     cwd: &Path,
-    session: Option<&str>,
+    session: Option<NativeSession<'_>>,
 ) -> Result<Vec<OsString>> {
     validate(host, args)?;
-    if session.is_some_and(|reference| reference.starts_with('-')) {
+    if session.is_some_and(|reference| {
+        reference.id.starts_with('-') || reference.file.is_some_and(|file| file.starts_with('-'))
+    }) {
         return Err(invalid("native resume reference cannot be an option"));
     }
     let native_arguments = match host {
@@ -191,14 +202,14 @@ pub fn child_arguments(
     };
     let policy = args.iter().map(Into::into);
     let mut arguments =
-        Vec::with_capacity(args.len() + native_arguments + 2 * usize::from(session.is_some()));
+        Vec::with_capacity(args.len() + native_arguments + 4 * usize::from(session.is_some()));
     match host {
         "codex" => {
             arguments.extend(policy);
             arguments.extend(["exec", "--json", "--cd"].into_iter().map(OsString::from));
             arguments.push(cwd.into());
-            if let Some(id) = session {
-                arguments.extend(["resume", id].into_iter().map(OsString::from));
+            if let Some(session) = session {
+                arguments.extend(["resume", session.id].into_iter().map(OsString::from));
             }
             arguments.push("-".into());
         }
@@ -209,8 +220,8 @@ pub fn child_arguments(
                     .map(OsString::from),
             );
             arguments.extend(policy);
-            if let Some(id) = session {
-                arguments.extend(["--resume", id].into_iter().map(OsString::from));
+            if let Some(session) = session {
+                arguments.extend(["--resume", session.id].into_iter().map(OsString::from));
             }
         }
         _ => {
@@ -218,9 +229,19 @@ pub fn child_arguments(
             arguments.extend(policy);
             // Each turn runs in a fresh view directory and the previous one
             // is retired, so Pi refuses to reopen a session bound to it.
-            // A fork carries the whole conversation into this turn's cwd.
-            if let Some(file) = session {
-                arguments.extend(["--fork", file].into_iter().map(OsString::from));
+            // Rebind the full conversation while explicitly retaining its
+            // original native identity; an implicit fork creates a new one.
+            if let Some(session) = session {
+                arguments.extend(
+                    [
+                        "--fork",
+                        session.file.unwrap_or(session.id),
+                        "--session-id",
+                        session.id,
+                    ]
+                    .into_iter()
+                    .map(OsString::from),
+                );
             }
         }
     }

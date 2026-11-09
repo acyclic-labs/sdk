@@ -132,7 +132,11 @@ request-count and final project-byte assertions.
 | --- | --- |
 | `E2E_PLUGIN_BINARY` | Matching normal `acyclic` executable |
 | `E2E_PROVIDER_TEST_BINARY` | `acyclic-harness-providers` library test executable |
-| `E2E_CODEX`, `E2E_CLAUDE`, `E2E_PI` | Optional host executables; default `plugin/tests/hosts/node_modules/.bin/` |
+| `E2E_CODEX`, `E2E_CLAUDE`, `E2E_PI` | Optional declared package entries; default pinned `plugin/tests/hosts/node_modules/` installation |
+
+The driver admits the hosts required by the selected cases before execution,
+including Codex for scripted lifecycle cases. It exports their declared entries
+and places the pinned launchers and the runner's Node on the descendant PATH.
 
 `installed-codex`, `installed-claude` and `installed-pi-recursive` share one
 driver, `plugin/tests/hosts/native-model.mjs`, under the matrix's process owner,

@@ -33,7 +33,8 @@
           "when": {
             "contains": [
               "resource not found: Unknown command: /marke"
-            ]
+            ],
+            "query_failure": "resource not found: Unknown command: /marke"
           },
           "prompt": "r extra"
         },

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFile,realpath,stat} from 'node:fs/promises';
-import {basename,dirname,extname,isAbsolute,join} from 'node:path';
+import {basename,delimiter,dirname,extname,isAbsolute,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const packages=Object.freeze({
@@ -10,6 +10,24 @@ const packages=Object.freeze({
  // provider/CLI control qualifies this refusal, not a substitute credential.
  pi:['pi','@earendil-works/pi-coding-agent',null],
 });
+
+// Root hosts and managed descendants use the same admitted installation.
+// npm launchers also need the runner's Node, even with a minimal system PATH.
+export async function nativeHostEnvironment(hosts,env,root) {
+ const configured={...env},admitted={};
+ const pathKeys=Object.keys(env).filter(key=>(process.platform==='win32'?key.toUpperCase():key)==='PATH');
+ const inheritedPath=env.PATH??env[pathKeys[0]];
+ for(const key of pathKeys)delete configured[key];
+ const paths=new Set([dirname(process.execPath)]);
+ for(const host of hosts) {
+  const native=await nativeHost(host,env,root);
+  configured['E2E_'+packages[host][0].toUpperCase()]=native.entry;
+  paths.add(dirname(native.entry));paths.add(native.path);
+  admitted[host]=native;
+ }
+ configured.PATH=[...paths,...(inheritedPath?[inheritedPath]:[])].join(delimiter);
+ return {env:configured,hosts:admitted};
+}
 
 // The capability is issued and checked by the original proxy. It is a real
 // short-lived local credential, never an upstream provider API key.
