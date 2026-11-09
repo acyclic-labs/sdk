@@ -20,6 +20,8 @@ mod workspace;
 /// Production native settings boundaries for decoder conformance.
 #[cfg(feature = "test-support")]
 pub mod test_support {
+    #[cfg(feature = "hooks")]
+    pub use super::validation::check_settings;
     pub use super::validation::{check_model_selection, check_workspace};
     /// Admits the same model and provider fields as the configured-model loader.
     pub fn parse_model_selection(bytes: &[u8]) -> Result<Option<String>, String> {
