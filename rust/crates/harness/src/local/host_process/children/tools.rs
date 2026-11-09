@@ -51,6 +51,12 @@ pub fn serve(host: &str) -> Result<()> {
 impl ToolProvider for Coordination {
     type Error = Error;
 
+    fn progressed(&mut self) -> BTreeSet<String> {
+        self.children
+            .as_mut()
+            .map_or_else(BTreeSet::new, NativeChildren::take_progress)
+    }
+
     fn tools(&self) -> Value {
         // Spawn admits new work through the harness approval hook. The others
         // act only on this owner's own children, keep their history, and say

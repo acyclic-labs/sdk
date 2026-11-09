@@ -5,6 +5,55 @@ use std::path::PathBuf;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[test]
+fn headless_root_prompts_cannot_change_inherited_native_policy() -> Result {
+    let root = tempfile::tempdir()?;
+    for (host, policy) in [
+        (
+            "codex",
+            vec![
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "never",
+            ],
+        ),
+        (
+            "claude-code",
+            vec!["--settings", "{}", "--permission-mode", "default"],
+        ),
+        ("pi", vec![]),
+        ("opencode", vec![]),
+        ("agy", vec!["--sandbox", "--mode", "accept-edits"]),
+    ] {
+        for prompt in ["--settings malicious.json", "--", "line one\nline two", ""] {
+            let mut args = vec![host.into(), "--prompt".into(), prompt.into(), "--".into()];
+            args.extend(policy.iter().map(|value| (*value).into()));
+            let (selected, input, supplied) = invocation(&args)?;
+            let flags = parent_flags(selected, supplied, root.path())?;
+            let command = root_arguments(selected, &flags, root.path(), input)?;
+            let expected = if host == "agy" {
+                format!("--print={prompt}")
+            } else {
+                prompt.into()
+            };
+            assert_eq!(command.last(), Some(&OsString::from(expected)));
+            assert!(!flags.iter().any(|flag| flag == "--prompt"));
+            if host != "agy" {
+                assert_eq!(command.iter().rev().nth(1), Some(&OsString::from("--")));
+            }
+        }
+    }
+    for malformed in [
+        vec!["agy", "--prompt"],
+        vec!["agy", "--prompt", "text"],
+        vec!["agy", "--prompt", "text", "--sandbox"],
+    ] {
+        assert!(invocation(&malformed.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result {
     let fixture = tempfile::tempdir()?;
     let workspace = fixture.path().join("workspace");
@@ -154,7 +203,7 @@ fn relative_file_permissions_preserve_native_policy_in_each_view() -> Result {
             let flags = parent_flags("agy", &["--sandbox".into(), "--mode".into(), mode.into(), "--settings".into(), supplied], &root).expect("admitted native settings");
             for cwd in [&root, &child] {
                 let args = if cwd == &root {
-                    policy_arguments("agy", &flags, cwd)
+                    root_arguments("agy", &flags, cwd, Some("--settings is prompt text"))
                 } else {
                     child_arguments("agy", &flags, cwd, Some(NativeSession { id: "native-session", file: None }))
                 }.expect("relative policy resolution");
@@ -204,7 +253,13 @@ fn relative_file_permissions_preserve_native_policy_in_each_view() -> Result {
                     Err(Error::Invalid(_))
                 ));
                 assert!(matches!(
-                    run_root_session(&root, "agy", OsStr::new("agy"), &flags),
+                    run_root_session(
+                        &root,
+                        "agy",
+                        OsStr::new("agy"),
+                        &flags,
+                        Some("must not launch")
+                    ),
                     Err(Error::Invalid(_))
                 ));
                 assert!(matches!(

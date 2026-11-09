@@ -44,7 +44,7 @@ async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Resul
         let mut command = native_fixture(&view, "", "0");
         running
             .process
-            .spawn(&mut command, running.claim.operation)?;
+            .spawn(&mut command, running.claim.operation, None)?;
         let pid = shell_pid(&mut running)?;
         let writer = fs::OpenOptions::new()
             .write(true)
@@ -101,7 +101,7 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
             let mut command = native_fixture(&view, "", "0");
             running
                 .process
-                .spawn(&mut command, running.claim.operation)?;
+                .spawn(&mut command, running.claim.operation, None)?;
             let pid = shell_pid(&mut running)?;
             let mut writer = fs::OpenOptions::new()
                 .write(true)
@@ -307,7 +307,7 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
         }
         let mut command = completed_write(&view, &format!("turn-{turn}"));
         let operation = running.claim.operation;
-        running.process.spawn(&mut command, operation)?;
+        running.process.spawn(&mut command, operation, None)?;
         wait_exit(&mut running)?;
         if turn == 0 {
             // Reusing the local name must still create a distinct child of
@@ -332,7 +332,7 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
             );
             assert_eq!(fs::read(inner_view.join("turn-0"))?, b"turn");
             let mut command = completed_write(&inner_view, "nested.txt");
-            inner.process.spawn(&mut command, inner.claim.operation)?;
+            inner.process.spawn(&mut command, inner.claim.operation, None)?;
             wait_exit(&mut inner)?;
             finish_turn(&nested, "idle", &mut inner)?;
             let foreign = sessions
@@ -497,7 +497,7 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     };
     let mut command = native_fixture(&view, events, exit);
     let claim = running.claim.operation;
-    running.process.spawn(&mut command, claim)?;
+    running.process.spawn(&mut command, claim, None)?;
     let lease = running
         .process
         .lease

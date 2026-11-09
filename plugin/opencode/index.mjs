@@ -40,6 +40,10 @@ export default async function acyclic({client, directory}) {
         throw new Error("step=install OpenCode coordinator: acyclic-sessions already configured; recovery=remove the duplicate native MCP registration");
       config.mcp["acyclic-sessions"] = {
         type: "local", command: [executable, "__mcp", "opencode"], enabled: true,
+        // OpenCode 1.19.5 mcp/catalog.ts resets on real MCP progress. A quiet
+        // child can legitimately emit no events: no timed keepalive or polling.
+        // This is the largest delay its JS runtime can schedule without overflow.
+        timeout: 2 ** 31 - 1,
       };
     },
     "chat.message": async input => { await select(input.sessionID); },

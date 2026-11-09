@@ -5,6 +5,7 @@ use super::*;
 struct Fixture {
     released: bool,
     cancelled: Vec<String>,
+    advanced: bool,
 }
 
 impl ToolProvider for Fixture {
@@ -16,7 +17,10 @@ impl ToolProvider for Fixture {
 
     fn call(&mut self, name: &str, arguments: &Value) -> io::Result<ToolCall> {
         Ok(match name {
-            "echo" => ToolCall::Answer(arguments.clone()),
+            "echo" => {
+                self.advanced = arguments.get("advance").and_then(Value::as_bool) == Some(true);
+                ToolCall::Answer(arguments.clone())
+            }
             "strict" => ToolCall::Invalid("strict takes no arguments".into()),
             _ => ToolCall::Park("held".into()),
         })
@@ -24,6 +28,14 @@ impl ToolProvider for Fixture {
 
     fn cancel(&mut self, key: &str) {
         self.cancelled.push(key.into());
+    }
+
+    fn progressed(&mut self) -> BTreeSet<String> {
+        if std::mem::take(&mut self.advanced) {
+            BTreeSet::from(["held".into()])
+        } else {
+            BTreeSet::new()
+        }
     }
 
     fn progress(
@@ -79,6 +91,42 @@ fn serve(provider: &mut Fixture, input: &str) -> (Result<(), ServeError<io::Erro
 
 fn code(reply: &Value) -> Option<i64> {
     reply.pointer("/error/code").and_then(Value::as_i64)
+}
+
+#[test]
+fn progress_requires_a_real_provider_event_and_the_requests_own_token() {
+    for token in [None, Some(json!("wait-token")), Some(json!(17))] {
+        let mut hold = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"hold","arguments":{}}});
+        if let Some(token) = &token {
+            hold["params"]["_meta"] = json!({"progressToken":token});
+        }
+        let input = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n",
+            json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":PROTOCOL_VERSION}}),
+            hold,
+            json!({"jsonrpc":"2.0","id":2,"method":"ping"}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"advance":true}}}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}),
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"echo","arguments":{"advance":true}}})
+        );
+        let (served, replies) = serve(&mut Fixture::default(), &input);
+        assert!(served.is_ok(), "{served:?}");
+        let progress = replies
+            .iter()
+            .filter(|reply| reply["method"] == "notifications/progress")
+            .collect::<Vec<_>>();
+        if let Some(token) = token {
+            assert_eq!(
+                progress,
+                vec![&json!({"jsonrpc":"2.0","method":"notifications/progress",
+                "params":{"progressToken":token,"progress":1}})]
+            );
+        } else {
+            assert!(progress.is_empty());
+        }
+        assert_eq!(replies.iter().filter(|reply| reply["id"] == 1).count(), 1);
+    }
 }
 
 #[test]

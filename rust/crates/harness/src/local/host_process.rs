@@ -30,9 +30,10 @@ pub fn run_root_session(
     host: &str,
     program: &std::ffi::OsStr,
     arguments: &[String],
+    prompt: Option<&str>,
 ) -> Result<std::process::ExitStatus> {
     use super::host_owner::HostAction;
-    let native_arguments = launch::policy_arguments(host, arguments, cwd)?;
+    let native_arguments = launch::root_arguments(host, arguments, cwd, prompt)?;
     let location = super::host_files::request(
         cwd,
         HostAction::Open {
@@ -47,8 +48,8 @@ pub fn run_root_session(
             .ok_or_else(|| Error::Invalid("native root task absent".into()))?,
     )
     .map_err(storage)?;
-    let status = acyclic_native_runtime::host_command(program)
-        .map_err(storage)?
+    let mut command = acyclic_native_runtime::host_command(program).map_err(storage)?;
+    command
         .args(native_arguments)
         .current_dir(cwd)
         .env(
@@ -56,9 +57,59 @@ pub fn run_root_session(
             serde_json::to_string(arguments).map_err(storage)?,
         )
         .env("ACYCLIC_WORKSPACE", cwd)
-        .env("ACYCLIC_TASK", task.to_string())
-        .status()
-        .map_err(storage)?;
+        .env("ACYCLIC_TASK", task.to_string());
+    let status = if prompt.is_some() {
+        use std::io::{Read as _, Write as _};
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped());
+        let model = launch::selected_model(host, arguments);
+        let mut child = command.spawn().map_err(storage)?;
+        let output = child
+            .stdout
+            .take()
+            .ok_or_else(|| storage("native stdout absent"))?;
+        let copied: Result<()> = (|| {
+            let mut output = output;
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(&native_context(&task, cwd, model)?)
+                .map_err(storage)?;
+            stdout.write_all(b"\n").map_err(storage)?;
+            let mut lines = acyclic_native_runtime::lines::LineBuffer::new(65_536);
+            let mut buffer = [0; 8192];
+            loop {
+                let count = output.read(&mut buffer).map_err(storage)?;
+                let bytes = if count == 0 {
+                    &b"\n"[..]
+                } else {
+                    &buffer[..count]
+                };
+                for line in lines.push(bytes) {
+                    let line = line.map_err(storage)?;
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let event = attribute_model(line.as_bytes(), model)?;
+                    stdout.write_all(&event).map_err(storage)?;
+                    stdout.write_all(b"\n").map_err(storage)?;
+                }
+                stdout.flush().map_err(storage)?;
+                if count == 0 {
+                    break;
+                }
+            }
+            Ok(())
+        })();
+        if copied.is_err() {
+            let _ = child.kill();
+        }
+        let status = child.wait().map_err(storage)?;
+        copied?;
+        status
+    } else {
+        command.status().map_err(storage)?
+    };
     super::host_files::request(cwd, HostAction::Capture { task })?;
     Ok(status)
 }
@@ -266,6 +317,32 @@ struct EventLog {
     file: std::fs::File,
     written: u64,
     omitted: bool,
+    model: Option<String>,
+}
+
+fn native_context(task: &AgentPath, cwd: &Path, model: Option<&str>) -> Result<Vec<u8>> {
+    let mut context = serde_json::json!({
+        "type": "acyclic.host_context", "version": 1, "task": task, "cwd": cwd,
+    });
+    if let Some(model) = model {
+        context["model"] = model.into();
+    }
+    serde_json::to_vec(&context).map_err(storage)
+}
+
+/// Native events keep reported models; the explicit launch selection fills an
+/// absent name in the same conversation event for every host family.
+fn attribute_model<'a>(line: &'a [u8], model: Option<&str>) -> Result<std::borrow::Cow<'a, [u8]>> {
+    if let Some(model) = model
+        && let Ok(serde_json::Value::Object(mut event)) = serde_json::from_slice(line)
+        && !event.contains_key("model")
+    {
+        event.insert("model".into(), model.into());
+        return serde_json::to_vec(&event)
+            .map(std::borrow::Cow::Owned)
+            .map_err(storage);
+    }
+    Ok(std::borrow::Cow::Borrowed(line))
 }
 
 impl EventLog {
@@ -273,9 +350,10 @@ impl EventLog {
         if self.omitted {
             return Ok(());
         }
+        let line = attribute_model(line, self.model.as_deref())?;
         let mut bytes = Vec::with_capacity(line.len() + 1);
         if self.written + line.len() as u64 + 1 + EVENTS_OMITTED.len() as u64 <= EVENT_LOG_BYTES {
-            bytes.extend_from_slice(line);
+            bytes.extend_from_slice(&line);
             bytes.push(b'\n');
         } else {
             self.omitted = true;
@@ -311,7 +389,12 @@ fn polling_work() -> Result<acyclic_fs::NativeMaterializationWork> {
 impl HostSessionProcess {
     /// Starts the process of turn `claim` in the exact admitted view. Hosts
     /// retain their tools and policy.
-    pub fn spawn(&mut self, command: &mut ProcessCommand, claim: OperationId) -> Result<()> {
+    pub fn spawn(
+        &mut self,
+        command: &mut ProcessCommand,
+        claim: OperationId,
+        model: Option<&str>,
+    ) -> Result<()> {
         let lease = self.lease.as_ref().ok_or_else(|| Error::Conflict(
             "step=spawn native session: process already released; recovery: reopen the task through acyclic host".into()
         ))?;
@@ -327,21 +410,7 @@ impl HostSessionProcess {
         command
             .env("ACYCLIC_WORKSPACE", &lease.view)
             .env("ACYCLIC_TASK", lease.task.to_string());
-        #[derive(serde::Serialize)]
-        struct Context<'a> {
-            #[serde(rename = "type")]
-            kind: &'static str,
-            version: u8,
-            task: &'a AgentPath,
-            cwd: &'a Path,
-        }
-        let context = serde_json::to_vec(&Context {
-            kind: "acyclic.host_context",
-            version: 1,
-            task: &lease.task,
-            cwd: &lease.view,
-        })
-        .map_err(storage)?;
+        let context = native_context(&lease.task, &lease.view, model)?;
         // A relaunch of the same claim restarts its log.
         let log = event_log(claim);
         remove_absent(&lease.root, &log)?;
@@ -350,6 +419,7 @@ impl HostSessionProcess {
             file,
             written: 0,
             omitted: false,
+            model: model.map(str::to_owned),
         };
         events.record(&context)?;
         if events.omitted {
@@ -487,6 +557,47 @@ impl HostSessionProcess {
 mod tests {
     use super::*;
 
+    #[test]
+    fn launched_model_joins_native_usage_without_overwriting_reported_models() -> Result<()> {
+        let root = tempfile::tempdir().map_err(storage)?;
+        let path = root.path().join("events.jsonl");
+        let arguments = [
+            "--settings",
+            "--model",
+            "--sandbox",
+            "--mode",
+            "accept-edits",
+            "--model",
+            "gemini-2.5-flash",
+        ];
+        let arguments = arguments.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let model = launch::selected_model("agy", &arguments).map(str::to_owned);
+        let mut log = EventLog {
+            file: std::fs::File::create(&path).map_err(storage)?,
+            written: 0,
+            omitted: false,
+            model,
+        };
+        for event in [
+            br#"{"event":"result","result":{"usage":{"input_tokens":128,"output_tokens":4}}}"#
+                .as_slice(),
+            br#"{"model":"reported-model","usage":{"input_tokens":2}}"#.as_slice(),
+        ] {
+            log.record(event)?;
+        }
+        drop(log);
+        let bytes = std::fs::read_to_string(path).map_err(storage)?;
+        let events = bytes
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<serde_json::Result<Vec<_>>>()
+            .map_err(storage)?;
+        assert_eq!(events[0]["model"], "gemini-2.5-flash");
+        assert_eq!(events[0]["result"]["usage"]["input_tokens"], 128);
+        assert_eq!(events[1]["model"], "reported-model");
+        Ok(())
+    }
+
     fn test_agent() -> AgentPath {
         AgentPath::root(&crate::agent::AgentId::from_bytes(
             *uuid::Uuid::new_v4().as_bytes(),
@@ -505,7 +616,7 @@ mod tests {
             .current_dir(&view)
             .stdout(acyclic_native_runtime::ProcessStdio::piped())
             .stderr(acyclic_native_runtime::ProcessStdio::piped());
-        process.spawn(&mut command, OperationId::new())?;
+        process.spawn(&mut command, OperationId::new(), None)?;
         let before = work.remaining().map_err(storage)?;
         let live = work.live_allocation_bytes();
         let mut progressed = false;
@@ -557,7 +668,7 @@ mod tests {
         let host_view = acyclic_host_platform::paths::strip_verbatim(&view);
         command.current_dir(host_view.as_ref());
         let error = process
-            .spawn(&mut command, OperationId::new())
+            .spawn(&mut command, OperationId::new(), None)
             .expect_err("missing program started");
         assert!(
             matches!(error, Error::Storage(_)),
@@ -566,7 +677,9 @@ mod tests {
         assert!(HostProcessLease::acquire(&view, &task, &view).is_err());
         process.release()?;
         assert!(
-            process.spawn(&mut command, OperationId::new()).is_err(),
+            process
+                .spawn(&mut command, OperationId::new(), None)
+                .is_err(),
             "retired owner cannot spawn again"
         );
         HostProcessLease::acquire(&view, &task, &view)?
@@ -591,7 +704,7 @@ mod tests {
         let mut command = ProcessCommand::new("must-not-execute");
         command.current_dir(outside.path());
         let error = process
-            .spawn(&mut command, OperationId::new())
+            .spawn(&mut command, OperationId::new(), None)
             .expect_err("foreign cwd admitted");
         assert!(error.to_string().contains("cwd differs from admitted view"));
         process.release()?;

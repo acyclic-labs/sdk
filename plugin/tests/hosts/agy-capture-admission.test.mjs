@@ -47,7 +47,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
       return result;
     };
     const invoke = async args => {
-      const running = await scope.startOwned(agy, args, { cwd: workspace, env });
+      const running = await scope.startOwned(binary, ["host", "agy", ...args], { cwd: workspace, env });
       const events = new Spool(running.child.stdout, running.closed);
       let firstError, repetition;
       const unsubscribe = events.subscribe(event => {
@@ -111,8 +111,8 @@ test("native AGY fences capture, executes tools and settles managed children", a
       });
       Object.assign(env, { GEMINI_API_KEY: capability,
         GOOGLE_GEMINI_BASE_URL: `http://127.0.0.1:${provider.address().port}` });
-      const args = ["--print=Capture the native pre-invocation hook without invoking a model.",
-        "--output-format", "stream-json", "--sandbox", "--mode", "accept-edits",
+      const args = ["--prompt", "Capture the native pre-invocation hook without invoking a model.", "--",
+        "--sandbox", "--mode", "accept-edits", "--model", "gemini-2.5-flash",
         "--settings", JSON.stringify({ modelProvider: "gemini" })];
       // The native host produces every callback and terminal. Print mode leaves
       // the physical owner's cancellation pipe separate from native input.
@@ -131,7 +131,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
       }
       assert.notEqual(refused.code, 0, refused.stderr);
       assert.equal(requests, 0, "native PreInvocation admitted a provider request after the shared capture failed");
-      assert.match(refused.stdout, /host-admitted mount root was replaced/);
+      assert.match(refused.stdout + refused.stderr, /host-admitted mount root was replaced/);
 
       step = "admit the same native invocation after restoring the original directory";
       const admitted = await invoke(args);
@@ -196,14 +196,12 @@ test("native AGY fences capture, executes tools and settles managed children", a
       const { port } = await modelEvents.keyed("ready");
       env.GOOGLE_GEMINI_BASE_URL = `http://127.0.0.1:${port}`;
       step = "complete an original native tool turn after successful capture";
-      const toolArgs = [`--print=${prompt}`, ...args.slice(1)];
+      const toolArgs = [...args]; toolArgs[1] = prompt;
       toolArgs[toolArgs.indexOf("--mode") + 1] = "accept-edits";
-      // AGY 1.5.3 requires absolute sandbox file targets, including on the
-      // first root command. This direct native invocation uses the resolved
-      // policy shape emitted by the shared root/child launcher.
+      // The root launcher resolves the original relative native policy.
       toolArgs[toolArgs.indexOf("--settings") + 1] = JSON.stringify({ modelProvider: "gemini",
         toolPermission: "proceed-in-sandbox", permissions: {
-          allow: [`read_file(${workspace})`, `write_file(${workspace})`, `command(${rootCommand})`],
+          allow: ["read_file(.)", "write_file(.)", `command(${rootCommand})`],
         } });
       const completed = await invoke(toolArgs);
       const calls = (await readFile(recorded, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
@@ -264,7 +262,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
       assert.deepEqual(allCalls.map(call => [call.status, call.step]).sort((a, b) => a[1] - b[1]),
         [[200, 0], [200, 1], [200, 2], [200, 3]], "each original native child must complete one model request");
       step = "complete native model-issued coordination through the installed MCP adapter";
-      const coordinatedArgs = [...toolArgs]; coordinatedArgs[0] = `--print=${coordinationPrompt}`;
+      const coordinatedArgs = [...toolArgs]; coordinatedArgs[1] = coordinationPrompt;
       // Headless native MCP calls require explicit user policy, independently
       // of edit approval. Grant only these two coordination operations.
       coordinatedArgs[coordinatedArgs.indexOf("--settings") + 1] = JSON.stringify({ modelProvider: "gemini",
@@ -304,7 +302,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
       assert.equal(await readFile(join(reopened.cwd, "native-tool.txt"), "utf8"), contents,
         "relative native deny rule was lost in the child view");
       step = "refuse native delegation through the installed pre-tool hook";
-      const delegationArgs = [...toolArgs]; delegationArgs[0] = `--print=${delegationPrompt}`;
+      const delegationArgs = [...toolArgs]; delegationArgs[1] = delegationPrompt;
       const delegation = await invoke(delegationArgs);
       assert.equal(delegation.code, 0, delegation.stderr + delegation.stdout);
       const delegationResult = delegation.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
