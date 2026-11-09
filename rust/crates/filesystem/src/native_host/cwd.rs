@@ -261,6 +261,139 @@ fn cwd_ancestor_name<W: NativeHostWork>(
     result
 }
 
+#[cfg(all(target_os = "linux", any(test, feature = "native-watch")))]
+fn linux_directory_path_held<W: NativeHostWork>(
+    directory: &Dir,
+    descriptor_directory: &std::ffi::CStr,
+    work: &mut W,
+) -> Result<Option<(std::path::PathBuf, W::Allocation)>, W::Error> {
+    use std::os::fd::FromRawFd as _;
+    use std::os::unix::ffi::OsStringExt as _;
+    // Only an unavailable descriptor-path capability selects the ancestry
+    // implementation. Permission, cancellation and semantic failures propagate.
+    // Resolve service-directory symlinks (such as /proc/self) before deciding
+    // capability availability. O_NOFOLLOW | O_DIRECTORY would report ENOTDIR
+    // for an available symlinked directory. The held result is verified as
+    // procfs below; the caller's root descriptor is never reopened by path.
+    let descriptors = work.attempt_io(READ, || {
+        let descriptor = unsafe {
+            // SAFETY: the static terminated path remains live for open.
+            libc::open(
+                descriptor_directory.as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if descriptor < 0 {
+            let error = io::Error::last_os_error();
+            return if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) {
+                Ok(None)
+            } else {
+                Err(error)
+            };
+        }
+        // SAFETY: open returned a new, owned descriptor.
+        Ok(Some(unsafe { File::from_raw_fd(descriptor) }))
+    })?;
+    let Some(descriptors) = descriptors else {
+        return Ok(None);
+    };
+    let procfs = work.attempt_io(READ, || {
+        let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        // SAFETY: the descriptor and writable statfs storage remain live.
+        if unsafe { libc::fstatfs(descriptors.as_raw_fd(), stat.as_mut_ptr()) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fstatfs initialized stat on success.
+        Ok(unsafe { stat.assume_init() }.f_type == libc::PROC_SUPER_MAGIC)
+    })?;
+    if !procfs {
+        return Ok(None);
+    }
+    let mut name = [0_u8; 11];
+    let mut value = u32::try_from(directory.as_raw_fd()).map_err(|_| W::invalid_request())?;
+    let mut start = name.len() - 1;
+    loop {
+        start -= 1;
+        name[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    work.started_io(copy_work((name.len() - start) as u64))?;
+    let mut capacity = 256_usize;
+    loop {
+        let (mut output, allocation) = buffer::<u8, _>(capacity, work)?;
+        let result: Result<Option<bool>, W::Error> = (|| {
+            work.started_io(copy_work(output.capacity() as u64))?;
+            output.resize(output.capacity(), 0);
+            let reading = WorkCounters {
+                source_bytes_read: capacity as u64,
+                ..WorkCounters::UNCHARGED
+            };
+            work.admit(reading)?;
+            let count = work.attempt_io(READ, || {
+                // SAFETY: both held descriptors, terminated name and initialized
+                // bounded output remain live throughout readlinkat.
+                let count = unsafe {
+                    libc::readlinkat(
+                        descriptors.as_raw_fd(),
+                        name[start..].as_ptr().cast(),
+                        output.as_mut_ptr().cast(),
+                        capacity,
+                    )
+                };
+                if count < 0 {
+                    let error = io::Error::last_os_error();
+                    // Linux's d_path cannot represent paths beyond its native
+                    // query capacity. The held-capability walk supports them.
+                    return if error.raw_os_error() == Some(libc::ENAMETOOLONG) {
+                        Ok(None)
+                    } else {
+                        Err(error)
+                    };
+                }
+                Ok(Some(count as usize))
+            })?;
+            let Some(count) = count else {
+                return Ok(None);
+            };
+            work.record(WorkCounters {
+                source_bytes_read: count as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            if count < capacity {
+                // A deleted descriptor has no canonical namespace identity.
+                // Do not trim the textual suffix: it can be a legitimate name.
+                let stat = fstat(directory.as_raw_fd(), c"", work)?;
+                if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "host root is not a real directory",
+                    )
+                    .into());
+                }
+                if stat.st_nlink == 0 {
+                    return Err(io::Error::from_raw_os_error(libc::ENOENT).into());
+                }
+                work.check()?;
+                output.truncate(count);
+                return Ok(Some(true));
+            }
+            Ok(Some(false))
+        })();
+        if matches!(result, Ok(Some(true))) {
+            return Ok(Some((OsString::from_vec(output).into(), allocation)));
+        }
+        drop(output);
+        work.release(allocation)?;
+        if result?.is_none() {
+            return Ok(None);
+        }
+        capacity = capacity.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
+    }
+}
+
 #[cfg(unix)]
 #[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
@@ -269,63 +402,8 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
 ) -> Result<(std::path::PathBuf, W::Allocation), W::Error> {
     use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
     #[cfg(target_os = "linux")]
-    {
-        use std::io::Write as _;
-        // The kernel already knows the held directory's spelling. Walking
-        // every sibling of each ancestor makes this query's IO depend on
-        // unrelated processes creating files in shared ancestors such as /tmp.
-        let mut link = [0_u8; 64];
-        let mut remaining = &mut link[..];
-        write!(remaining, "/proc/self/fd/{}\0", current.as_raw_fd())?;
-        let length = 64 - remaining.len();
-        work.started_io(WorkCounters {
-            bytes_encoded: length as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let link = std::ffi::CStr::from_bytes_with_nul(&link[..length])
-            .map_err(|_| W::invalid_request())?;
-        let mut path = [0_u8; libc::PATH_MAX as usize];
-        let length = work.attempt_io(READ, || {
-            // SAFETY: the NUL-terminated input and initialized output are live.
-            let length =
-                unsafe { libc::readlink(link.as_ptr(), path.as_mut_ptr().cast(), path.len()) };
-            Ok((length >= 0 && (length as usize) < path.len()).then_some(length as usize))
-        })?;
-        if let Some(length) = length {
-            let (mut output, allocation) = buffer(length, work)?;
-            let result = (|| {
-                work.started_io(copy_work(length as u64))?;
-                output.extend_from_slice(&path[..length]);
-                let candidate = Path::new(OsStr::from_bytes(&output));
-                // Reject deleted-descriptor spellings and path replacement.
-                // A missing procfs or a racing rename uses the held walk below.
-                let reopened = unix_name(candidate.as_os_str(), work, |name, work| {
-                    open_unix(libc::AT_FDCWD, name, cwd_metadata_flags(), work)
-                        .map(Dir::from_std_file)
-                });
-                match reopened {
-                    Ok(directory) => Ok(directory_identity(&directory, work)?
-                        == directory_identity(&current, work)?),
-                    Err(error)
-                        if matches!(
-                            W::io_error_kind(&error),
-                            Some(io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
-                        ) =>
-                    {
-                        Ok(false)
-                    }
-                    Err(error) => Err(error),
-                }
-            })();
-            match result {
-                Ok(true) => return Ok((OsString::from_vec(output).into(), allocation)),
-                result => {
-                    drop(output);
-                    work.release(allocation)?;
-                    result?;
-                }
-            }
-        }
+    if let Some(path) = linux_directory_path_held(&current, c"/proc/self/fd", work)? {
+        return Ok(path);
     }
     #[cfg(target_os = "macos")]
     {
@@ -419,4 +497,147 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
         return Err(error);
     }
     Ok((OsString::from_vec(output).into(), allocation))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+
+    #[test]
+    fn held_path_query_preserves_raw_names_and_rejects_unlinked_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let original = temporary.path().join("original");
+        let moved = temporary
+            .path()
+            .join(OsString::from_vec(b"renamed-\xff (deleted)".to_vec()));
+        std::fs::create_dir(&original)?;
+        let directory = Dir::open_ambient_dir(&original, cap_std::ambient_authority())?;
+        std::fs::rename(&original, &moved)?;
+        std::fs::create_dir(&original)?;
+        let mut work = ordinary_work();
+        let (path, allocation) = canonical_directory_path_held(directory.try_clone()?, &mut work)?;
+        assert_eq!(
+            path.as_os_str().as_bytes(),
+            moved.canonicalize()?.as_os_str().as_bytes()
+        );
+        drop(path);
+        work.release(allocation)?;
+        assert_eq!(work.live_allocation_bytes(), 0);
+        std::fs::remove_dir(&moved)?;
+        assert!(matches!(
+            canonical_directory_path_held(directory, &mut work),
+            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::NotFound
+        ));
+        assert_eq!(work.live_allocation_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn held_path_query_does_not_accept_a_non_directory_descriptor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("file");
+        std::fs::write(&path, b"not a directory")?;
+        let directory = Dir::from_std_file(File::open(path)?);
+        let mut work = ordinary_work();
+        assert!(matches!(
+            canonical_directory_path_held(directory, &mut work),
+            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert_eq!(work.live_allocation_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn held_path_growth_charges_truncated_reads_and_retires_old_buffers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let mut directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
+        let mut expected = temporary.path().canonicalize()?;
+        for _ in 0..3 {
+            let name = OsString::from_vec(vec![b'a'; 200]);
+            directory.create_dir(&name)?;
+            directory = directory.open_dir(&name)?;
+            expected.push(name);
+        }
+        let mut work = ordinary_work();
+        let (path, allocation) = canonical_directory_path_held(directory, &mut work)?;
+        assert_eq!(path, expected);
+        assert!(
+            work.receipt().source_bytes_read > path.as_os_str().len() as u64,
+            "truncated native queries were not charged",
+        );
+        assert_eq!(work.live_allocation_bytes(), path.capacity() as u64);
+        drop(path);
+        work.release(allocation)?;
+        assert_eq!(work.live_allocation_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn held_path_query_retires_buffers_at_original_work_limits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
+        let mut measured = ordinary_work();
+        let (path, allocation) =
+            canonical_directory_path_held(directory.try_clone()?, &mut measured)?;
+        drop(path);
+        measured.release(allocation)?;
+        // Exercise every refused native read, including those after a query
+        // buffer has been funded, without pinning the implementation's count.
+        for read_limit in 0..measured.receipt().backend_read_operations {
+            let cancellation = crate::CancellationToken::new();
+            let work = NativeMaterializationWork::new(
+                WorkBudget {
+                    backend_read_operations: read_limit,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .map_err(|(error, _)| error)?;
+            let baseline = work.live_allocation_bytes();
+            assert!(matches!(
+                canonical_directory_path_held(directory.try_clone()?, &mut &work),
+                Err(NativeTreeMaterializationError::Work(
+                    crate::WorkError::BudgetExceeded {
+                        counter: "backend_read_operations",
+                        ..
+                    }
+                ))
+            ));
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn descriptor_path_capability_absence_is_not_a_semantic_error_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
+        let mut work = ordinary_work();
+        assert!(
+            linux_directory_path_held(&directory, c"/proc/self/fd/no-such-directory", &mut work)?
+                .is_none()
+        );
+        // This is procfs, but not its descriptor table. A failed descriptor
+        // query is a semantic failure, not an unsupported-capability fallback.
+        assert!(matches!(
+            linux_directory_path_held(&directory, c"/proc/self", &mut work),
+            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::NotFound
+        ));
+        assert_eq!(work.live_allocation_bytes(), 0);
+        let cancellation = crate::CancellationToken::new();
+        cancellation.cancel();
+        let mut cancelled = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        assert!(matches!(
+            linux_directory_path_held(&directory, c"/proc/self/fd", &mut cancelled),
+            Err(DemandError::Cancelled)
+        ));
+        assert_eq!(cancelled.receipt(), WorkCounters::UNCHARGED);
+        Ok(())
+    }
 }
