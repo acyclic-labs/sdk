@@ -5,6 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordedRequests, requests, subset, toolResults } from "./assertions.mjs";
 import { requireTools } from "./live.mjs";
+import { fuzz } from "./tool-outcome.fuzz.mjs";
+
+test("tool failure admission conforms to every production message and captured shell outcome", async () => {
+  const corpus = readFileSync(new URL("./fixtures/live-shell-results.json", import.meta.url));
+  fuzz(corpus);
+  const source = readFileSync(new URL("./assertions.mjs", import.meta.url), "utf8");
+  const boundary = "(?:$|[:;( ])";
+  assert.equal(source.split(boundary).length, 2);
+  const former = await import("data:text/javascript;base64," +
+    Buffer.from(source.replace(boundary, "[:( ]")).toString("base64"));
+  assert.throws(() => fuzz(corpus, former.toolOutcome), { code: "ERR_ASSERTION" });
+});
 
 const rejectedWait = JSON.parse(readFileSync(new URL("./fixtures/rejected-wait.json", import.meta.url), "utf8"));
 
