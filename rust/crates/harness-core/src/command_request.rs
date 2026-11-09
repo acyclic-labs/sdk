@@ -223,9 +223,11 @@ pub enum CommandFileRoot {
     Session,
     /// Selected task's protected namespace in the agent's private volume.
     Task,
+    /// Selected agent's authored `ui/` directory in its private volume.
+    Ui,
 }
 
-/// Read-only projection of files from the three authorized live-query roots.
+/// Read-only projection of files from the authorized live-query roots.
 pub type CommandFileSnapshot = BTreeMap<CommandFileRoot, BTreeMap<String, Value>>;
 
 /// Ordinary file publication data. The FS client applies its existing generation

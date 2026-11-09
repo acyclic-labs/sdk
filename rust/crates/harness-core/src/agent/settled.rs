@@ -9,7 +9,7 @@ use futures::TryStreamExt as _;
 use std::sync::Arc;
 
 /// `agent`'s phase if it has settled every inbox record committed before this
-/// call ([`Phase::Idle`] or [`Phase::Done`]), else `None`: one read of its
+/// call (idle, waiting for a user, or done), else `None`: one read of its
 /// inbox tail and its original actor state, never a wait. `within` selects
 /// the original account and namespace; no actor discovery or history scan.
 ///
@@ -28,7 +28,9 @@ pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
         .await?;
     Ok(match &state.phase {
         Phase::Done { .. } => Some(state.phase),
-        Phase::Idle if state.settled_before(cursor) >= inbox => Some(state.phase),
+        Phase::Idle | Phase::WaitingUser { .. } if state.settled_before(cursor) >= inbox => {
+            Some(state.phase)
+        }
         _ => None,
     })
 }

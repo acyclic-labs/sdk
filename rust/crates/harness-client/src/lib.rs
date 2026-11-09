@@ -65,6 +65,9 @@ pub use reader::{Reader, ReaderPolicy};
 /// Agent tree and history renders over the reader.
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub mod explorer;
+/// Lazy private-volume UI projection and ordinary inbox replies.
+#[cfg(any(feature = "agents", feature = "wasm"))]
+pub mod ui;
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub use explorer::Explorer;
 

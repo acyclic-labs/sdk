@@ -16,6 +16,14 @@ doctest = false
 bench = false
 
 [[bin]]
+name = "ui_blocks"
+path = "fuzz_targets/ui_blocks.rs"
+required-features = ["client"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "native_answer"
 path = "fuzz_targets/native_answer.rs"
 required-features = ["native-answer"]

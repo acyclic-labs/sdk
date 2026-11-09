@@ -43,6 +43,8 @@ pub use notices::NoticeSelection;
 pub(crate) mod records;
 mod reply;
 mod settled;
+#[cfg(test)]
+mod ui_tests;
 pub use settled::{TurnChildren, answer, settled};
 mod messaging;
 mod slots;
