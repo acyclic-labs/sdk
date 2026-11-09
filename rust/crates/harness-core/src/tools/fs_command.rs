@@ -10,8 +10,7 @@ pub struct FsCommand {
     pub volume: Option<String>,
 }
 
-#[doc(hidden)]
-pub fn agent_diff(args: &[String]) -> Option<&str> {
+pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
     match args {
         [command, branch] if command == "diff" && branch.starts_with("agents/") => Some(branch),
         _ => None,

@@ -102,8 +102,8 @@ async fn check_replay_payload_cost(native: bool) -> Result<()> {
 
 #[tokio::test]
 async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
-    // A memory backend owns every historical payload on its original ledger.
-    // Use the actual local backends so durable history is not live test memory.
+    // Exercise the durable codecs as well as their retained in-memory history;
+    // all live allocations must remain on their original ledger.
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let stream =
         acyclic_stream::LocalStream::open(directory.path().join("journal"), Default::default())
@@ -189,11 +189,21 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
                 "hot summary grew with history: step={step}, entries={entries}"
             );
         }
+        // Two 256-bit index paths each contain at most 256 branches and two
+        // leaf/value records. A branch is at most 86 bytes; count both node
+        // encoding and the local durable copy, with 64 bytes of record framing.
+        // The fixed event, checkpoint and commit envelope fit in another 4 KiB.
+        let encoding_bound = 2 * 258 * (2 * 86 + 64) + 4_096;
+        let encoded = after.bytes_encoded - before.bytes_encoded;
+        assert!(
+            encoded <= encoding_bound,
+            "append encoding exceeded the fixed per-append bound at step {step}: encoded={encoded}"
+        );
         // Local storage also encodes its own durable records. Its exact work
         // belongs to this invocation, independently of earlier appends.
         assert_eq!(
             io.remaining()?.bytes_encoded,
-            budget.bytes_encoded - (after.bytes_encoded - before.bytes_encoded),
+            budget.bytes_encoded - encoded,
             "append charged work outside its invocation at step {step}"
         );
     }
