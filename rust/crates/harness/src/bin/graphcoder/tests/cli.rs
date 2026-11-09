@@ -475,7 +475,9 @@ async fn failed_prompt_and_replay_report_the_original_cause() {
         ),
     )
     .await;
-    let cause = acyclic_harness::Error::Unauthorized("model HTTP status 403".into()).to_string();
+    // Native dispatch retains the admitted diagnostic, without the host's
+    // typed Display prefix. Prompt output must preserve those original bytes.
+    let cause = "model HTTP status 403";
     for _ in 0..2 {
         let output = graphcoder(
             &fixture,
