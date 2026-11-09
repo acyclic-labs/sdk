@@ -976,3 +976,6 @@ impl AllocationError {
 #[cfg(test)]
 #[path = "tests/allocation.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "memory", not(acyclic_fs_loom)))]
+mod snapshot_tests;
