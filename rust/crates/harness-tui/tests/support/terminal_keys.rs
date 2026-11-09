@@ -3,6 +3,7 @@ use acyclic_harness_tui::key_event::KeyCode;
 // Independent protocol examples from xterm ctlseqs "PC-Style Function Keys"
 // and kitty keyboard-protocol "Functional key definitions". These are wire
 // examples, not values obtained from the production encoder's tables.
+/// Independent xterm numbered functional-key protocol examples.
 pub const NUMBERED: &[(KeyCode, &str)] = &[
     (KeyCode::Home, "1~"),
     (KeyCode::Insert, "2~"),
@@ -34,6 +35,7 @@ pub const NUMBERED: &[(KeyCode, &str)] = &[
     (KeyCode::F(20), "34~"),
 ];
 
+/// Independent xterm final-byte functional-key protocol examples.
 pub const FINAL: &[(KeyCode, &str)] = &[
     (KeyCode::Up, "A"),
     (KeyCode::Down, "B"),
@@ -47,6 +49,7 @@ pub const FINAL: &[(KeyCode, &str)] = &[
     (KeyCode::F(4), "S"),
 ];
 
+/// Independent kitty functional-key protocol examples.
 pub const KITTY: &[(KeyCode, &str)] = &[
     (KeyCode::Null, "0u"),
     (KeyCode::Esc, "27u"),

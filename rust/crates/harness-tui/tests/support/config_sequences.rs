@@ -21,33 +21,47 @@ pub enum Stage {
     Unknown,
 }
 
+/// Mutation applied to one observed production parse result.
 pub type Tamper = fn(Stage, &mut Parsed);
 
+/// Production observations consumed by the independent configuration invariants.
 #[derive(Debug)]
 pub enum Seen {
+    /// An admitted file after encoding and parsing it again.
     Reparsed {
+        /// Configuration schema used by the production parser.
         file: ConfigFile,
+        /// Original admitted configuration value.
         value: Value,
+        /// Actual production parse result after encoding.
         reparsed: Parsed,
     },
     /// `keymap` is whether the canonical keymap parses back to itself.
     Canonical {
+        /// Original admitted configuration value.
         value: Value,
+        /// Whether the typed keymap survives canonical encoding.
         keymap: bool,
+        /// Actual production parse result after encoding.
         reparsed: Parsed,
     },
+    /// Defaults parsed after adding an unknown top-level key.
     Unknown {
+        /// Configuration schema used by the production parser.
         file: ConfigFile,
+        /// Actual production result for the unknown-key mutation.
         parsed: Parsed,
     },
 }
 
+/// A semantic invariant over one observed production parse.
 pub type Check = fn(&Seen) -> Result<(), String>;
 
 fn same(parsed: &Parsed, value: &Value) -> bool {
     matches!(parsed, Ok(parsed) if parsed == value)
 }
 
+/// Round-trip, canonical keymap and unknown-field admission contracts.
 pub const INVARIANTS: [(&str, Check); 3] = [
     ("roundtrip", |seen| match seen {
         Seen::Reparsed {
@@ -84,6 +98,9 @@ pub const INVARIANTS: [(&str, Check); 3] = [
 ];
 
 /// Fuzz entry: every invariant, as panics.
+///
+/// # Panics
+/// Panics when a production parse violates any shared configuration invariant.
 pub fn exercise(file: ConfigFile, bytes: &[u8]) {
     let judged = observe(file, bytes, |_, _| {}, &mut |seen| {
         for (name, check) in INVARIANTS {
@@ -105,6 +122,9 @@ fn parse(file: ConfigFile, stage: Stage, bytes: &[u8], tamper: Tamper) -> Parsed
 
 /// Records how `bytes` parse as `file` and round trip, and how the defaults
 /// with an unknown key parse.
+///
+/// # Panics
+/// Panics if validated keymaps cannot parse or shipped defaults are not JSON objects.
 pub fn observe<S>(
     file: ConfigFile,
     bytes: &[u8],

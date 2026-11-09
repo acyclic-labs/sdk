@@ -1,3 +1,4 @@
+//! Check native child references through the production parser and oracle.
 #![no_main]
 
 libfuzzer_sys::fuzz_target!(|input: &[u8]| {

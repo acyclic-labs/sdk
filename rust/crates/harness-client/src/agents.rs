@@ -202,7 +202,7 @@ impl AgentClient {
     }
 
     /// Combined focused/visible budget. Each agent owns a conversation and a
-    /// status follow, charged to the same finite WireSession stream budget.
+    /// status follow, charged to the same finite `WireSession` stream budget.
     pub fn selected_capacity() -> usize {
         DemandPolicy::default().selected_capacity() / 2
     }
@@ -330,7 +330,7 @@ impl AgentClient {
             .and_then(|(_, _, path)| self.session.view(path))
     }
 
-    /// Selected agent identity; status paths come from AgentPath, never suffixes.
+    /// Selected agent identity; status paths come from `AgentPath`, never suffixes.
     pub const fn agent(&self) -> &AgentPath {
         &self.agent
     }
@@ -400,7 +400,7 @@ impl AgentClient {
             .transpose()
     }
 
-    /// Borrow the same core for counters and rendering; no second ClientViews.
+    /// Borrow the same core for counters and rendering; no second `ClientViews`.
     pub const fn session(&self) -> &WireSession {
         &self.session
     }

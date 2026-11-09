@@ -270,25 +270,25 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     ] {
         roots.insert(path);
     }
-    let generators: &[&str] = match key {
-        "actors" => &[
-            "scripts/generate-actors.mjs",
-            "scripts/generate-actors-routes.mjs",
-            "scripts/generate-actors-rpc-inventory.mjs",
-        ],
-        "stream" => &[
-            "scripts/actors-napi-types.mjs",
-            "scripts/generate-actors.mjs",
-            "scripts/generate-actors-routes.mjs",
-            "scripts/generate-actors-rpc-inventory.mjs",
+    // Both native families include the Actors dependency and its generated contracts.
+    for path in [
+        "scripts/actors-napi-types.mjs",
+        "scripts/generate-actors.mjs",
+        "scripts/generate-actors-authorization.mjs",
+        "scripts/generate-actors-routes.mjs",
+        "scripts/generate-actors-rpc-inventory.mjs",
+    ] {
+        roots.insert(path.to_owned());
+    }
+    if key == "stream" {
+        for path in [
+            "scripts/generate-stream-authorization.mjs",
             "scripts/generate-stream-rpc-inventory.mjs",
             "scripts/generate-stream-http-contract.mjs",
             "scripts/generate-stream-token-operations.mjs",
-        ],
-        _ => &[],
-    };
-    for path in generators {
-        roots.insert((*path).to_owned());
+        ] {
+            roots.insert(path.to_owned());
+        }
     }
     Ok(
         json!({"schema":"acyclic.native-family.v1", "key":key, "rustPackageName":package.name.to_string(), "version":package.version.to_string(), "rustTarget":library.name, "manifestRelative":manifest, "packageRelative":format!("{package_path}/package.json"), "packageDirectory":package_path, "companionDirectory":napi.companion_directory, "wasmPackageName":napi.wasm_package, "wasm":{"artifact":wasm_library.name, "outName":napi.wasm_output_name, "targetDirectory":napi.wasm_target_directory, "features":napi.wasm_features, "noDefaultFeatures":napi.wasm_no_default_features}, "npmPackage":napi.npm_package, "targets":napi.targets, "features":napi.build_features, "buildScript":format!("scripts/build-{key}-native.mjs"), "sourceRoots":roots.into_iter().collect::<Vec<_>>() }),

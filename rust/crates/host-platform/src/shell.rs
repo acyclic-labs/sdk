@@ -99,17 +99,15 @@ mod tests {
                 let (arguments, stdin) = spec.prepare(owned);
                 let arguments: Vec<_> = arguments.collect();
                 prop_assert_eq!(arguments.len(), spec.arguments.len() + 1);
-                prop_assert_eq!(&arguments[..spec.arguments.len()], spec.arguments);
+                prop_assert!(arguments.iter().map(String::as_str)
+                    .take(spec.arguments.len()).eq(spec.arguments.iter().copied()));
                 let script = arguments.last().unwrap();
-                let actual = match spec.stdin_bootstrap {
-                    Some(bootstrap) => {
-                        prop_assert_eq!(script, bootstrap);
-                        stdin.as_deref().unwrap()
-                    }
-                    None => {
-                        prop_assert!(stdin.is_none());
-                        script.as_bytes()
-                    }
+                let actual = if let Some(bootstrap) = spec.stdin_bootstrap {
+                    prop_assert_eq!(script, bootstrap);
+                    stdin.as_deref().unwrap()
+                } else {
+                    prop_assert!(stdin.is_none());
+                    script.as_bytes()
                 };
                 prop_assert_eq!(actual, source.as_bytes());
                 prop_assert_eq!(actual.as_ptr(), original);

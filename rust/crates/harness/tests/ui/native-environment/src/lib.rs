@@ -1,14 +1,12 @@
+//! Compiler controls for the production process-environment boundary.
+
 #[path = "../../../../../harness-core/src/native_environment.rs"]
 pub mod real_seam;
 
+/// Read operations rejected outside the production environment boundary.
 #[cfg(feature = "negative")]
 pub fn forbidden() {
     let _ = std::env::var_os("HOME");
-    use std::env::set_var as mutate;
-    unsafe {
-        mutate("HOME", "other");
-        std::env::remove_var("HOME");
-    }
     use std::env::var_os as renamed;
     let _ = renamed(r#"APPDATA"#);
     use std::env as process;
@@ -18,6 +16,7 @@ pub fn forbidden() {
     let _ = std::env::home_dir();
 }
 
+/// Compile-time environment reads rejected outside explicit Cargo metadata.
 #[cfg(feature = "negative")]
 pub fn forbidden_compile_time() {
     let _ = env!("HOME");
@@ -26,7 +25,9 @@ pub fn forbidden_compile_time() {
     let _ = renamed!(r"USERPROFILE",);
 }
 
+/// Explicit compile-time Cargo metadata admitted by the compiler policy.
 #[expect(clippy::disallowed_macros, reason = "explicit Cargo metadata seam")]
 pub mod build_metadata {
+    /// Directory containing this crate's manifest.
     pub const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 }

@@ -15,7 +15,7 @@ impl AuthorityGuard for CommitBoundary {
         Ok(())
     }
 
-    async fn native_commit<P: acyclic_stream::NativeStreamProvider>(
+    async fn native_commit<P: acyclic_stream::NativeStreamProvider + ?Sized>(
         &mut self,
         provider: &P,
         request: acyclic_stream::CommitRequest,

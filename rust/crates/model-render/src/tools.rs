@@ -119,7 +119,7 @@ impl<'a, P> ToolDeclarations<'a, P> {
         self.family
     }
 
-    /// GenerateContent's NONE controls function declarations only; it cannot
+    /// `GenerateContent`'s NONE controls function declarations only; it cannot
     /// establish that a built-in server tool will not execute.
     pub(crate) const fn has_server_tools(&self) -> bool {
         self.server_tools
@@ -157,15 +157,16 @@ impl<P: Serialize> ToolDeclarations<'_, P> {
                     .iter()
                     .take_while(|tool| matches!(tool, ToolDeclaration::Function { .. }))
                     .count();
+                let (functions, rest) = remaining.split_at(count);
                 #[derive(Serialize)]
                 struct Functions<'a, 'b, P> {
                     #[serde(rename = "functionDeclarations")]
                     declarations: FunctionList<'a, 'b, P>,
                 }
                 sequence.serialize_element(&Functions {
-                    declarations: FunctionList(&remaining[..count]),
+                    declarations: FunctionList(functions),
                 })?;
-                remaining = &remaining[count..];
+                remaining = rest;
             } else {
                 sequence.serialize_element(&Declaration {
                     family: self.family,

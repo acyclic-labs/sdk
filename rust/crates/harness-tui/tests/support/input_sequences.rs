@@ -9,6 +9,10 @@ use acyclic_harness_tui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Exercise input transitions against the shared production semantic oracle.
+///
+/// # Panics
+/// Panics if an input transition violates semantic or structural invariants.
 pub fn exercise(data: &[u8]) {
     exercise_variant(data, false);
 }
@@ -288,6 +292,7 @@ fn assert_prompt(input: &PromptInput, text: &str, cursor: usize, reason: &str) {
 }
 
 /// Independent CRT argument encoder used by both properties and fuzz assertions.
+/// Encode generated argument words using Windows command-line quoting rules.
 pub fn windows_command_line(words: &[String]) -> String {
     words
         .iter()

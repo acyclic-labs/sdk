@@ -10,7 +10,7 @@ pub enum SearchBackend {
     /// Exa Search.
     #[default]
     Exa,
-    /// TinyFish Search.
+    /// `TinyFish` Search.
     #[serde(rename = "tinyfish")]
     TinyFish,
 }

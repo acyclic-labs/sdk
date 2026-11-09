@@ -206,9 +206,10 @@ pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLi
 pub use async_storage::NativeAuthorityGuard;
 pub use async_storage::{
     AppendGroupOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, AuthorityError,
-    AuthorityGroupCost, AuthorityGuard, AuthorityWork, GenerationFork, GenerationForkSource,
-    OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTask, PolicyCut, PolicyOwner,
-    PublicationScope, WorkspaceForkCommit, WorkspaceForkOutcome,
+    AuthorityGroupCost, AuthorityGuard, AuthorityWork, DynObjectStore, GenerationFork,
+    GenerationForkSource, OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTask, PolicyCut,
+    PolicyOwner, PublicationScope, SharedObjectStore, WorkspaceForkCommit, WorkspaceForkOutcome,
+    shared_objects,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};

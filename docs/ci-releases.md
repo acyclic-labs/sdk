@@ -1,6 +1,8 @@
 # CI and SDK releases
 
-Every PR and main push runs `SDK Static`, one required Linux job. Run
+Every PR and main push runs `SDK Static`, one required Linux job that checks
+manifest and lockfile consistency without compiling. It also supports manual
+dispatch with `gh workflow run static.yml --ref <branch>`. Run
 `node scripts/check-cargo-lock.mjs` locally to reproduce its manifest and lockfile
 check. The checker compares the lockfile with Cargo's own canonical output from
 `cargo update --workspace`, preserving locked dependency versions while avoiding

@@ -18,9 +18,13 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let original = serde_json::to_value(&caller)?;
     let mut empty = original.clone();
-    empty["accountId"] = Vec::<u8>::new().into();
-    let mut expiry = original.clone();
-    expiry["expiresAtMs"] = "01".into();
+    *empty
+        .get_mut("accountId")
+        .ok_or("original caller lacks accountId")? = Vec::<u8>::new().into();
+    let mut expiry = original;
+    *expiry
+        .get_mut("expiresAtMs")
+        .ok_or("original caller lacks expiresAtMs")? = "01".into();
     let mut capability =
         serde_json::to_value(caller.with_capability(CallerCapability::new(1, "cap".into())?)?)?;
     let positional = Value::Array(
@@ -34,10 +38,15 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
             "expiresAtMs",
             "capability",
         ]
-        .map(|field| capability[field].clone())
-        .into(),
+        .map(|field| capability.get(field).cloned())
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or("original capability lacks a positional field")?,
     );
-    capability["capability"]["version"] = 0.into();
+    *capability
+        .get_mut("capability")
+        .and_then(|value| value.get_mut("version"))
+        .ok_or("original capability lacks version")? = 0.into();
     let mut caller = serde_json::to_value(
         AdmittedCaller::new(
             b"account".to_vec(),
@@ -49,7 +58,10 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
         )?
         .with_capability(CallerCapability::new(1, "opaque".into())?)?,
     )?;
-    caller["future"] = true.into();
+    caller
+        .as_object_mut()
+        .ok_or("original caller is not an object")?
+        .insert("future".into(), true.into());
     for (name, value, accepted) in [
         ("caller.json", caller, true),
         ("caller-positional.json", positional, true),

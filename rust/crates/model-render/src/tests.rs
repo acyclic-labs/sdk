@@ -682,18 +682,45 @@ proptest! {
         for (key, value) in nested.iter().rev() {
             backwards.insert(key.clone(), value.clone());
         }
-        let entries = [
-            (Field::Temperature, json!(0.5)),
-            (Field::Reasoning, Value::Object(nested)),
-            (Field::Model, json!("target-model")),
-            (Field::MaxTokens, json!(64)),
+        let schema = [
+            (Field::Model, "model"),
+            (Field::Stream, "stream"),
+            (Field::StreamOptions, "stream_options"),
+            (Field::Include, "include"),
+            (Field::Store, "store"),
+            (Field::Instructions, "instructions"),
+            (Field::ParallelToolCalls, "parallel_tool_calls"),
+            (Field::System, "system"),
+            (Field::SystemInstruction, "systemInstruction"),
+            (Field::PromptCacheKey, "prompt_cache_key"),
+            (Field::CacheControl, "cache_control"),
+            (Field::Reasoning, "reasoning"),
+            (Field::ReasoningEffort, "reasoning_effort"),
+            (Field::Thinking, "thinking"),
+            (Field::OutputConfig, "output_config"),
+            (Field::Text, "text"),
+            (Field::Personality, "personality"),
+            (Field::Conversation, "conversation"),
+            (Field::PreviousResponseId, "previous_response_id"),
+            (Field::Truncation, "truncation"),
+            (Field::AddGenerationPrompt, "add_generation_prompt"),
+            (Field::MaxCompletionTokens, "max_completion_tokens"),
+            (Field::MaxOutputTokens, "max_output_tokens"),
+            (Field::MaxTokens, "max_tokens"),
+            (Field::Temperature, "temperature"),
+            (Field::TopP, "top_p"),
+            (Field::Seed, "seed"),
+            (Field::GenerationConfig, "generationConfig"),
+            (Field::ToolChoice, "tool_choice"),
+            (Field::ToolConfig, "toolConfig"),
         ];
         let mut forward = Fields::default();
         let mut backward = Fields::default();
-        for (field, value) in entries.iter().cloned() { forward.insert(field, value); }
-        for (field, value) in entries.into_iter().rev() {
-            let value = if field == Field::Reasoning { Value::Object(backwards.clone()) } else { value };
-            backward.insert(field, value);
+        for (field, name) in schema {
+            forward.insert(field, json!({"field": name, "nested": nested}));
+        }
+        for (field, name) in schema.into_iter().rev() {
+            backward.insert(field, json!({"nested": backwards, "field": name}));
         }
         if reverse { std::mem::swap(&mut forward, &mut backward); }
         let render_with = |fields: &Fields| {
@@ -706,9 +733,18 @@ proptest! {
         prop_assert_eq!(&bytes, &render_with(&backward));
         let text = std::str::from_utf8(&bytes).unwrap();
         // Header slots, then the conversation, then the call controls.
-        let positions: Vec<_> = ["\"model\"", "\"reasoning\"", "\"messages\"", "\"max_tokens\"", "\"temperature\""]
-            .iter().map(|key| text.find(key).unwrap()).collect();
+        let positions: Vec<_> = schema.iter().map(|(_, key)| *key)
+            .chain(std::iter::once("messages"))
+            .map(|key| text.find(&format!("\"{key}\":")).unwrap()).collect();
+        // The fixed protocol cut places messages before the call controls.
+        let mut positions = positions;
+        let messages = positions.pop().unwrap();
+        positions.insert(21, messages);
         prop_assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        let actual: Value = serde_json::from_slice(&bytes).unwrap();
+        for (_, name) in schema {
+            prop_assert_eq!(&actual[name], &json!({"field": name, "nested": nested}));
+        }
         let mut sorted = keys.clone();
         sorted.sort();
         sorted.dedup();

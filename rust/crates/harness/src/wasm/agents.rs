@@ -238,6 +238,7 @@ impl WasmAgentRegistry {
 
 #[wasm_bindgen]
 impl WasmAgentRegistry {
+    /// Creates an empty registry for explicitly admitted models and tools.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self::default()

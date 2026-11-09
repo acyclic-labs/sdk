@@ -1,0 +1,12 @@
+diff --git a/typescript/packages/stream/test/session-deadline-model-driver.ts b/typescript/packages/stream/test/session-deadline-model-driver.ts
+--- a/typescript/packages/stream/test/session-deadline-model-driver.ts
++++ b/typescript/packages/stream/test/session-deadline-model-driver.ts
+@@ -177,7 +177,7 @@ async function command(action: string) {
+     default: throw new Error(`unknown deadline action ${action}`);
+   }
+   await checkpoint();
+-  return { settled, returned, blocked, siblingError: siblingError === undefined ? null : String(siblingError), code, cleanup, expired, seen, stoppedAt, siblingSeen,
++  return { settled, returned, blocked, code, cleanup, expired, seen, stoppedAt, siblingSeen,
+     active: peer.active, outstanding: peer.outstandingFrames, connections: peer.connections.length, connecting,
+     timerActive, timerCreated, timerCleaned, deadlineCode: Code.DeadlineExceeded };
+ }

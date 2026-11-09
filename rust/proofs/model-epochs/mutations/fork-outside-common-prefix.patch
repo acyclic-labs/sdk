@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/conversation/epochs/protocol.rs b/rust/crates/harness-core/src/conversation/epochs/protocol.rs
+--- a/rust/crates/harness-core/src/conversation/epochs/protocol.rs
++++ b/rust/crates/harness-core/src/conversation/epochs/protocol.rs
+@@ -227,9 +227,6 @@ impl State {
+     /// producer cannot be discarded or replicated into children. Forks inherit
+     /// only a committed summary contained in their common source prefix.
+     pub fn fork(self, common_prefix: u64) -> Result<Self, Refusal> {
+-        if self.cursor > common_prefix {
+-            return Err(Refusal::Range);
+-        }
+         if self.pending.is_some() {
+             return Err(Refusal::NotReady);
+         }

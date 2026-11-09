@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/conversation/epochs/protocol.rs b/rust/crates/harness-core/src/conversation/epochs/protocol.rs
+--- a/rust/crates/harness-core/src/conversation/epochs/protocol.rs
++++ b/rust/crates/harness-core/src/conversation/epochs/protocol.rs
+@@ -230,9 +230,6 @@ impl State {
+         if self.cursor > common_prefix {
+             return Err(Refusal::Range);
+         }
+-        if self.pending.is_some() {
+-            return Err(Refusal::NotReady);
+-        }
+         Ok(self)
+     }
+ }

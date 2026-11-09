@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkGeneratedDirectory } from "./generated-bindings.mjs";
 import { generate } from "./proto-codegen.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -19,9 +21,15 @@ async function rustGenerate(output) {
   await writeFile(join(dirname(output), "readonly.ts"), generate(["readonly"]));
 }
 
-export async function write() {
-  await mkdir(packageGenerated, { recursive: true });
-  await rustGenerate(join(packageGenerated, "actors-service.ts"));
+export async function write(check = false) {
+  const output = check ? await mkdtemp(join(tmpdir(), "actors-generated-")) : packageGenerated;
+  try {
+    await mkdir(output, { recursive: true });
+    await rustGenerate(join(output, "actors-service.ts"));
+    if (check) checkGeneratedDirectory(output, packageGenerated);
+  } finally {
+    if (check) await rm(output, { recursive: true, force: true });
+  }
 }
 
 export async function serviceGenerate(family, directory, output) {

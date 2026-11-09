@@ -201,6 +201,22 @@ impl<'a> RecordSegment<'a> {
     }
 }
 
+#[derive(Default)]
+struct MetadataLru {
+    direct: BTreeMap<u64, StreamPath>,
+    inherited: BTreeMap<u64, StreamPath>,
+}
+
+impl MetadataLru {
+    fn for_origin(&mut self, inherited: bool) -> &mut BTreeMap<u64, StreamPath> {
+        if inherited {
+            &mut self.inherited
+        } else {
+            &mut self.direct
+        }
+    }
+}
+
 /// Bounded immutable record cache shared by every renderer.
 pub struct RecordCache {
     pub(super) access: super::Access,
@@ -208,7 +224,7 @@ pub struct RecordCache {
     lru: BTreeMap<u64, Key>,
     meta: BTreeMap<StreamPath, Meta>,
     dependents: BTreeMap<StreamPath, BTreeSet<StreamPath>>,
-    meta_lru: [BTreeMap<u64, StreamPath>; 2],
+    meta_lru: MetadataLru,
     /// Values served uncached, with their charge, while a want covers them.
     passed: BTreeMap<Key, Entry>,
     passed_lru: BTreeMap<u64, Key>,
@@ -274,7 +290,8 @@ impl RecordCache {
         self.lru.clear();
         self.meta.clear();
         self.dependents.clear();
-        self.meta_lru.iter_mut().for_each(BTreeMap::clear);
+        self.meta_lru.direct.clear();
+        self.meta_lru.inherited.clear();
         self.passed.clear();
         self.passed_lru.clear();
         self.children.clear();
@@ -384,8 +401,10 @@ impl RecordCache {
             }
         }
         if previous.is_some() != current {
-            self.meta_lru[usize::from(previous.is_some())].remove(&used);
-            self.meta_lru[usize::from(current)].insert(used, stream.clone());
+            self.meta_lru.for_origin(previous.is_some()).remove(&used);
+            self.meta_lru
+                .for_origin(current)
+                .insert(used, stream.clone());
         }
     }
 
@@ -603,12 +622,14 @@ impl RecordCache {
             // most bytes) survives longest. When every retained fact is in
             // use the frame needs them all: retain it rather than thrash.
             let mark = self.mark;
-            let victim = self.meta_lru.iter().find_map(|index| {
-                index
-                    .first_key_value()
-                    .filter(|(used, _)| **used <= mark)
-                    .map(|(_, path)| path.clone())
-            });
+            let victim = [&self.meta_lru.direct, &self.meta_lru.inherited]
+                .into_iter()
+                .find_map(|index| {
+                    index
+                        .first_key_value()
+                        .filter(|(used, _)| **used <= mark)
+                        .map(|(_, path)| path.clone())
+                });
             if let Some(victim) = victim {
                 // Cached bytes must not outlive the anchor that identifies them.
                 self.forget(&victim);
@@ -617,7 +638,7 @@ impl RecordCache {
         }
         self.clock += 1;
         let meta = self.meta.entry(stream.clone()).or_default();
-        let index = &mut self.meta_lru[usize::from(meta.fork.is_some())];
+        let index = self.meta_lru.for_origin(meta.fork.is_some());
         index.remove(&meta.used);
         meta.used = self.clock;
         meta.observed = self.clock;
@@ -636,7 +657,9 @@ impl RecordCache {
 
     fn remove_meta(&mut self, stream: &StreamPath) {
         if let Some(meta) = self.meta.remove(stream) {
-            self.meta_lru[usize::from(meta.fork.is_some())].remove(&meta.used);
+            self.meta_lru
+                .for_origin(meta.fork.is_some())
+                .remove(&meta.used);
             if let Some(origin) = meta.fork {
                 self.unlink_origin(stream, &origin.source);
             }
@@ -647,7 +670,7 @@ impl RecordCache {
     pub fn touch_stream(&mut self, stream: &StreamPath) {
         if let Some(meta) = self.meta.get_mut(stream) {
             self.clock += 1;
-            let index = &mut self.meta_lru[usize::from(meta.fork.is_some())];
+            let index = self.meta_lru.for_origin(meta.fork.is_some());
             index.remove(&meta.used);
             meta.used = self.clock;
             index.insert(meta.used, stream.clone());
@@ -1205,8 +1228,8 @@ impl RecordCache {
         if put_binding(&mut out, binding.as_ref(), self.max_bytes).is_err() {
             return Vec::new();
         }
-        let mut direct = self.meta_lru[0].keys().rev().peekable();
-        let mut inherited = self.meta_lru[1].keys().rev().peekable();
+        let mut direct = self.meta_lru.direct.keys().rev().peekable();
+        let mut inherited = self.meta_lru.inherited.keys().rev().peekable();
         let oldest = std::iter::from_fn(|| match (direct.peek(), inherited.peek()) {
             (Some(a), Some(b)) if a >= b => direct.next(),
             (Some(_), Some(_)) | (None, Some(_)) => inherited.next(),

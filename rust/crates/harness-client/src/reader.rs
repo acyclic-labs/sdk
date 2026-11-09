@@ -116,8 +116,8 @@ impl ReaderPolicy {
         let ok = self.requests > 0
             && self.prefetch_requests < self.requests
             && self.follow_requests > 0
-            && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.read_limit)
-            && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.listing_limit)
+            && (1..=acyclic_stream::MAX_ITEMS as u64).contains(&u64::from(self.read_limit))
+            && (1..=acyclic_stream::MAX_ITEMS as u64).contains(&u64::from(self.listing_limit))
             && self.lag >= 1
             && self.deliveries > 0
             && self.timeout_ms > 0
@@ -1074,7 +1074,8 @@ impl Reader {
         self.rtt_ms = if self.rtt_ms == 0 {
             rtt
         } else {
-            (self.rtt_ms * 7 + rtt) / 8
+            // The weighted mean fits u64 even when its numerator does not.
+            ((u128::from(self.rtt_ms) * 7 + u128::from(rtt)) / 8) as u64
         };
         let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
@@ -1161,8 +1162,8 @@ impl Reader {
                                 .is_none_or(|origin| origin.source != child.path)
                     })
                     && children
-                        .windows(2)
-                        .all(|pair| pair[0].path.as_str() < pair[1].path.as_str());
+                        .array_windows::<2>()
+                        .all(|[left, right]| left.path.as_str() < right.path.as_str());
                 if valid {
                     self.hierarchy = Some(version);
                     self.listed(
@@ -1376,14 +1377,14 @@ impl Reader {
             used,
         });
         anchors.used = used;
-        if index % anchors.stride != 0 {
+        if !index.is_multiple_of(anchors.stride) {
             return;
         }
         anchors.at.insert(index, after);
         if anchors.at.len() > MAX_ANCHORS {
             anchors.stride *= 2;
             let stride = anchors.stride;
-            anchors.at.retain(|index, _| index % stride == 0);
+            anchors.at.retain(|index, _| index.is_multiple_of(stride));
         }
     }
 

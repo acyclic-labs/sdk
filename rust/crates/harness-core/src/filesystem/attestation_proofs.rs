@@ -55,8 +55,8 @@ proptest::proptest! {
                     assert!(matches!(attested.commit(super::CommitRequest { deadline_unix_millis: Some(u64::MAX), ..commit.clone() }).await, Err(super::StreamError::AccessDenied)));
                     assert!(matches!(attested.native_append(append.clone(), work.runtime_meter()).await.expect("native transport"), Err(super::StreamError::AccessDenied)));
                     assert!(matches!(attested.native_commit(commit.clone(), None, work.runtime_meter()).await.expect("native transport"), Err(super::StreamError::AccessDenied)));
-                    let guarded = attested.native_commit_guarded::<super::StreamError, _, _>(
-                        commit.clone(), None, work.runtime_meter(), || std::future::ready(Ok(())))
+                    let guarded = acyclic_stream::NativeStreamProviderExt::native_commit_with_guard::<super::StreamError, _, _>(
+                        &attested, commit.clone(), None, work.runtime_meter(), || std::future::ready(Ok(())))
                         .await.expect("native transport");
                     assert!(matches!(guarded, Err(super::StreamError::AccessDenied)));
                     assert!(matches!(attested.native_prepare_commit(commit.clone(), 256, work.runtime_meter())

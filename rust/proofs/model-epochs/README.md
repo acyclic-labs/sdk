@@ -25,16 +25,81 @@ table describes their assertions, rather than claiming an executed proof result.
 
 | Production operation | Checked cases | Missing cases |
 | --- | --- | --- |
-| `State::restore` | Valid empty preparation | Invalid cursor, generation and pending range |
-| `State::prepare` | New valid preparation | Duplicate intent, competing intent and invalid range |
-| `State::complete` | Ready/Failed and contradictory terminal result | Absent or foreign pending identity, identical terminal replay |
-| `State::demand` | Failed terminal | Unprepared, Await and Swap assertions |
-| `State::swap` | Ready success, failed terminal, stale generation, exhausted generation | Absent/foreign pending identity and head below prepared cut |
-| `State::fork` | Pending, settled inherited prefix and prefix exclusion | Failed pending and empty state |
+| `State::restore` | Arbitrary full-width cursor/head/generation, absent or arbitrary pending value; exact range/stale refusal and preserved admitted fields | Storage provenance |
+| `State::prepare` | Arbitrary new, duplicate and competing identity/cut requests; range validation precedes replay; every refusal and exact replay preserves the complete pending state | Storage conditional commit |
+| `State::complete` | Arbitrary Ready/Failed observation, absent/foreign producer, both terminal contradictions and identical terminal replay; preserved identity/cut/generation and exact state on refusal | Producer observation provenance |
+| `State::demand` | Unprepared, Await, Swap and Failed from every admitted restored state; Unprepared after swap | Producer observation |
+| `State::swap` | Arbitrary restored state and request: absent/foreign identity, incomplete/failed terminal, stale/exhausted generation, regressed head and successful exact cut; every refusal leaves the complete state unchanged | Storage conditional commit |
+| `State::fork` | Every admitted restored state, full-width generation and prefix; unfinished/ready/failed pending refusal, range refusal before pending refusal, empty and settled success preserving the whole state | Storage provenance and producer lifetime |
 
 The fan-out harness checks a retained `Pending` value. It does not observe the
 producer itself, so its name refers to pending identity rather than producer
 lifetime.
+
+The single `restore_and_swap_preserve_the_exact_prepared_identity` harness
+replaces the narrower ready-state stale/exhaustion harness. It checks the actual
+restore, demand and swap functions with arbitrary scalar and identity inputs,
+without constructing a second reducer. Cover goals require each restore refusal,
+absent and foreign swap identities, every terminal refusal and successful swap
+to be reachable. Run it with:
+
+```sh
+cargo kani --manifest-path rust/proofs/model-epochs/Cargo.toml --harness restore_and_swap_preserve_the_exact_prepared_identity
+```
+
+The retained production mutation admits an unfinished summary as ready. The
+same harness must fail while this mutation is applied; restore it before the
+positive run:
+
+```sh
+git apply rust/proofs/model-epochs/mutations/admit-unfinished-summary.patch
+git apply -R rust/proofs/model-epochs/mutations/admit-unfinished-summary.patch
+```
+
+The `preparation_and_completion_preserve_the_current_intent` harness replaces
+only the narrower failed-summary terminal harness. It constructs absent,
+unfinished, ready and failed preparations through the actual reducer, then checks
+an arbitrary prepare request followed by an arbitrary completion observation.
+All scalar values and summary identities retain their full width. Fourteen cover
+goals require each refusal, new preparation, exact-intent replay, initial terminal
+outcome and identical terminal replay to be reachable. The restore/swap harness
+separately retains failed-summary swap refusal.
+
+```sh
+cargo kani --manifest-path rust/proofs/model-epochs/Cargo.toml --harness preparation_and_completion_preserve_the_current_intent
+```
+
+The retained foreign-completion mutation removes the production summary-identity
+filter. Apply it for the negative control, then restore it before verification:
+
+```sh
+git apply rust/proofs/model-epochs/mutations/admit-foreign-completion.patch
+git apply -R rust/proofs/model-epochs/mutations/admit-foreign-completion.patch
+```
+
+These commands describe the qualification procedure, not an executed result.
+
+The fan-out harness checks arbitrary valid restored states, including empty
+epochs and failed preparations, rather than one generation-zero prepare/swap
+trace. Eight cover goals require both range-refusal cases, all three pending
+terminal states and empty, settled and maximum-generation success. The actual
+fork function returns the exact settled state or the contract's typed refusal.
+It has two constant-size guards and no waits, history traversal or producer
+observations.
+
+```sh
+cargo kani --manifest-path rust/proofs/model-epochs/Cargo.toml --harness fanout_preserves_settled_coverage_and_pending_identity
+```
+
+The retained mutations independently omit each production fork guard. Each must
+fail the same harness; restore the guard before the positive run:
+
+```sh
+git apply rust/proofs/model-epochs/mutations/fork-with-pending-summary.patch
+git apply -R rust/proofs/model-epochs/mutations/fork-with-pending-summary.patch
+git apply rust/proofs/model-epochs/mutations/fork-outside-common-prefix.patch
+git apply -R rust/proofs/model-epochs/mutations/fork-outside-common-prefix.patch
+```
 
 `epochs.qnt` is a separate design model with bounded agents, heads and proposals.
 It has no checked refinement to the Rust implementation. Its `omitSummary`

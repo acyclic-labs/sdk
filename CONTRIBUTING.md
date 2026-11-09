@@ -1,5 +1,12 @@
 # Contributing
 
+Run `node scripts/check-generated.mjs` to check generated contracts, model
+fixtures, schemas and published projections against their source generators.
+Pinned files are compared without rewriting them; ignored build outputs are
+regenerated. `node scripts/check-generated.mjs --no-compile` checks README
+examples, compatibility digests and packaged source copies without invoking
+Rust. Regenerate changed artifacts with `bun run generate`.
+
 Contributions are licensed under Apache-2.0. Every commit must include a
 `Signed-off-by` trailer certifying the [Developer Certificate of Origin](DCO.md).
 

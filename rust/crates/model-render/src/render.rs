@@ -476,16 +476,16 @@ fn render_request<S: Segment>(
         // the final user turn. Each item is visited once; storage stays fixed.
         let mut pending = None;
         for item in items {
-            if item.selected(&header.target)? {
-                if let Some(previous) = pending.replace(item) {
-                    write(previous, None)?;
-                }
+            if item.selected(&header.target)?
+                && let Some(previous) = pending.replace(item)
+            {
+                write(previous, None)?;
             }
         }
-        if let Some(last) = pending {
-            if write(last, summary)? {
-                summary = None;
-            }
+        if let Some(last) = pending
+            && write(last, summary)?
+        {
+            summary = None;
         }
     } else {
         for item in items {

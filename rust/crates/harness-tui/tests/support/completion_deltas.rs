@@ -2,17 +2,27 @@ use acyclic_harness_tui::{CompletionMenu, Editor};
 
 /// Compare incremental popup output and acceptance with a fresh full parse after
 /// every edit. The reference menu never shares cached parser/editor state.
+///
+/// # Panics
+/// Panics if catalogue setup fails or incremental completion differs from a full parse.
 pub fn exercise(data: &[u8]) {
     let mut catalog = CompletionMenu::default();
     for path in ["workspace/a.rs", "workspace/a b.rs", "workspace/aa file.rs"] {
-        catalog.set_file(path, Some(b"")).unwrap();
+        let inserted = catalog.set_file(path, Some(b""));
+        assert!(
+            inserted.is_ok(),
+            "completion catalogue {path}: {inserted:?}"
+        );
     }
-    catalog.set_file("commands/a.md", Some(b"a")).unwrap();
+    let inserted = catalog.set_file("commands/a.md", Some(b"a"));
+    assert!(
+        inserted.is_ok(),
+        "completion command catalogue: {inserted:?}"
+    );
     let mut menu = catalog.clone();
     let mut editor = Editor::default();
     menu.refresh(&editor);
-    for (step, chunk) in data.chunks(8).enumerate() {
-        let (&op, bytes) = chunk.split_first().unwrap();
+    for (step, (&op, bytes)) in data.chunks(8).filter_map(<[u8]>::split_first).enumerate() {
         let text = String::from_utf8_lossy(bytes);
         match op % 9 {
             0 => editor.insert(&text, step as u64),

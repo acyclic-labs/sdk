@@ -336,7 +336,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             let outcome = match guard.as_deref_mut() {
                 Some(guard) => {
                     guard
-                        .native_commit(self.provider.native_provider(), request, deadline, meter)
+                        .native_commit(&*self.provider, request, deadline, meter)
                         .await
                 }
                 None => {

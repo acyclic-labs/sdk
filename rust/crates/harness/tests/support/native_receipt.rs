@@ -3,6 +3,11 @@ use acyclic_harness::{Error, agent::AgentPath, local::host_process::Receipt};
 use serde_json::Value;
 use std::path::PathBuf;
 
+/// Compare receipt admission and confirmation with the public task identity.
+///
+/// # Panics
+///
+/// If a receipt changes task identity, accepts a foreign task, or loses its view.
 pub fn verify(input: &[u8]) {
     let Ok(value) = serde_json::from_slice::<Value>(input) else {
         return;
@@ -22,7 +27,7 @@ pub fn verify(input: &[u8]) {
     assert_eq!(
         accepted.is_ok(),
         task.is_some(),
-        "receipt admission changed"
+        "receipt admission changed: {accepted:?}, task {task:?}"
     );
     let (Ok(receipt), Some(task)) = (accepted, task) else {
         return;
@@ -40,13 +45,13 @@ pub fn verify(input: &[u8]) {
         if current.as_ref().is_some_and(|current| current != &task) {
             assert!(
                 matches!(result, Err(Error::Conflict(_))),
-                "foreign task passed native receipt confirmation"
+                "foreign task passed native receipt confirmation: {result:?}"
             );
         } else {
             assert_eq!(
-                result.ok(),
-                expected,
-                "native receipt view admission changed"
+                result.as_ref().ok(),
+                expected.as_ref(),
+                "native receipt view admission changed: {result:?}"
             );
         }
     }

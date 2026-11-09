@@ -1,6 +1,10 @@
 use acyclic_harness_tui::{Editor, Layout, Motion};
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Apply editor operations and check grapheme, paste, layout and undo semantics.
+///
+/// # Panics
+/// Panics if a production editor transition violates a shared invariant.
 pub fn exercise(data: &[u8]) -> Editor {
     let mut editor = Editor::default();
     let mut history = acyclic_harness_tui::PromptHistory::default();

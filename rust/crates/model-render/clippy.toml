@@ -1,3 +1,5 @@
+# large_futures ceiling: the same value and rationale as the workspace clippy.toml.
+future-size-threshold = 131072
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true

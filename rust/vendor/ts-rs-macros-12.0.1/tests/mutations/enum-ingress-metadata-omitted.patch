@@ -1,0 +1,12 @@
+diff --git a/rust/vendor/ts-rs-macros-12.0.1/src/attr/enum.rs b/rust/vendor/ts-rs-macros-12.0.1/src/attr/enum.rs
+index 037820464a7..85673bb72a2 100644
+--- a/rust/vendor/ts-rs-macros-12.0.1/src/attr/enum.rs
++++ b/rust/vendor/ts-rs-macros-12.0.1/src/attr/enum.rs
+@@ -293,7 +293,6 @@ impl_parse! {
+         "try_from" => {
+             let _: Type = parse_assign_from_str(input)?;
+         },
+-        "deny_unknown_fields" => {},
+ 
+         // parse #[serde(crate = "...")] to not emit a warning
+         "crate" => {

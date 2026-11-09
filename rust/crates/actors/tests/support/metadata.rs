@@ -10,6 +10,7 @@ fn field<'a>(value: &'a Value, name: &str, index: usize) -> Option<&'a Value> {
     }
 }
 
+/// Check the independent metadata text contract.
 pub fn text(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 1024
@@ -62,6 +63,10 @@ fn caller(value: &Value) -> bool {
         && field(value, "capability", 7).is_none_or(|v| v.is_null() || handle(v))
 }
 
+/// Compare public metadata constructors and deserializers with independent admission.
+///
+/// # Panics
+/// Panics when production admission differs from the metadata contract.
 pub fn check(input: &[u8]) {
     let Ok(value) = serde_json::from_slice::<Value>(input) else {
         return;

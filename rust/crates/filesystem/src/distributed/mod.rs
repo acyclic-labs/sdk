@@ -40,23 +40,12 @@ const PUBLICATION_GATE_ACTIVE: &[u8] = b"acyclic-fs-publication-gate-v1\0active\
 
 /// Stream placement accepted by the canonical authority journal.
 ///
-/// Native publication preserves a typed original-owner guard, so its provider
-/// must support concrete generic dispatch. Browser publication has no native
-/// guard and can retain an event-loop-owned provider behind a trait object.
+/// Native publication requires native admission; any such provider, including
+/// `dyn NativeStreamProvider`, qualifies.
 #[cfg(not(target_arch = "wasm32"))]
-pub trait AuthorityProvider: acyclic_stream::NativeStreamProvider {
-    /// Concrete dispatch required by the original native publication guard.
-    type NativeProvider: acyclic_stream::NativeStreamProvider;
-    /// Borrows this same provider without erasing the native guard's type.
-    fn native_provider(&self) -> &Self::NativeProvider;
-}
+pub trait AuthorityProvider: acyclic_stream::NativeStreamProvider {}
 #[cfg(not(target_arch = "wasm32"))]
-impl<P: acyclic_stream::NativeStreamProvider> AuthorityProvider for P {
-    type NativeProvider = P;
-    fn native_provider(&self) -> &P {
-        self
-    }
-}
+impl<P: acyclic_stream::NativeStreamProvider + ?Sized> AuthorityProvider for P {}
 
 /// Stream placement accepted by the canonical browser authority journal.
 #[cfg(target_arch = "wasm32")]

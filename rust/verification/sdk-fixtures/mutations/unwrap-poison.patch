@@ -1,0 +1,12 @@
+diff --git a/rust/crates/sdk-generation/tests/cli_regressions/cache.rs b/rust/crates/sdk-generation/tests/cli_regressions/cache.rs
+--- a/rust/crates/sdk-generation/tests/cli_regressions/cache.rs
++++ b/rust/crates/sdk-generation/tests/cli_regressions/cache.rs
+@@ -33,7 +33,7 @@ pub fn get_or_try_init<T, E>(
+     slot: &Mutex<Option<Arc<T>>>,
+     initialize: impl FnOnce() -> Result<T, E>,
+ ) -> Result<Arc<T>, InitError<E>> {
+-    let mut value = slot.lock().map_err(|_| InitError::Poisoned)?;
++    let mut value = slot.lock().unwrap();
+     if let Some(value) = value.as_ref() {
+         return Ok(Arc::clone(value));
+     }

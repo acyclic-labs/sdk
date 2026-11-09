@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeStreamProviderExt as _;
 
 #[test]
 fn native_caller_abort_keeps_sdk_request_and_accepted_flush_owned()
@@ -182,13 +183,18 @@ fn native_guard_lease_survives_caller_abort_and_real_durability_terminal()
                     scope
                         .scope(async move {
                             provider
-                                .native_commit_guarded(request, None, meter.original(), move || {
-                                    let lease = Arc::clone(&lease);
-                                    async move {
-                                        let _original_lease = lease;
-                                        Ok::<(), NativeGuardFailure>(())
-                                    }
-                                })
+                                .native_commit_with_guard(
+                                    request,
+                                    None,
+                                    meter.original(),
+                                    move || {
+                                        let lease = Arc::clone(&lease);
+                                        async move {
+                                            let _original_lease = lease;
+                                            Ok::<(), NativeGuardFailure>(())
+                                        }
+                                    },
+                                )
                                 .await
                         })
                         .await

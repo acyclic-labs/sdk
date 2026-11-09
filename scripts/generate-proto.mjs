@@ -2,11 +2,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
+import { projectGenerated, compatibilityArtifacts, packagedTypeScriptBindings, retiredTypeScriptBindingPackages, writeChanged } from "./generated-bindings.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-export function generateProto(packages = new Set([...packagedTypeScriptBindings.flatMap(([, names]) => names), ...retiredTypeScriptBindingPackages])) {
+export function generateProto(packages = new Set([...packagedTypeScriptBindings.flatMap(([, names]) => names), ...retiredTypeScriptBindingPackages]), check = false) {
   // A selected family owns its full proto output directory even when its last
   // binding was deleted. Never adopt stale projections as current output.
   /** @type {Map<string, Set<string>>} */
@@ -20,7 +20,10 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
       if (!existsSync(directory)) continue;
       for (const entry of readdirSync(directory, { recursive: true, withFileTypes: true })) {
         const path = join(entry.parentPath, entry.name);
-        if (!entry.isDirectory() && !expected.has(path)) rmSync(path);
+        if (!entry.isDirectory() && !expected.has(path)) {
+          if (check) throw new Error(`STEP_FAILED generated-protobuf: obsolete ${path}; recovery: bun run generate`);
+          rmSync(path);
+        }
       }
     }
   };
@@ -56,8 +59,11 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
           let expected = outputs.get(directory);
           if (!expected) { expected = new Set(); outputs.set(directory, expected); }
           expected.add(destination);
-          mkdirSync(dirname(destination), { recursive: true });
-          writeChanged(destination, bytes);
+          if (check) projectGenerated(destination, bytes, true);
+          else {
+            mkdirSync(dirname(destination), { recursive: true });
+            writeChanged(destination, bytes);
+          }
         }
       }
     }

@@ -7,10 +7,16 @@ use prost::Message as _;
 fuzz_target!(|bytes: &[u8]| {
     if let Ok(request) = serde_json::from_slice::<acyclic_harness::interaction::Interaction>(bytes)
     {
-        assert!(serde_json::to_vec(&request).is_ok_and(|encoded| {
-            serde_json::from_slice::<acyclic_harness::interaction::Interaction>(&encoded)
-                .is_ok_and(|decoded| decoded == request)
-        }));
+        let decoded = serde_json::to_vec(&request)
+            .map_err(|error| ("serialize", error))
+            .and_then(|encoded| {
+                serde_json::from_slice::<acyclic_harness::interaction::Interaction>(&encoded)
+                    .map_err(|error| ("decode", error))
+            });
+        assert!(
+            decoded.as_ref().is_ok_and(|decoded| decoded == &request),
+            "interaction round trip failed: original={request:?}; decoded={decoded:?}"
+        );
     }
     let _ = acyclic_harness::interaction::ApprovalDecisionFile::decode(bytes, bytes.len() as u64);
     if let Ok(request) = wire::CommitRequest::decode(bytes)

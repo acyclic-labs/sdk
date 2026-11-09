@@ -3,8 +3,10 @@
 //! under the turn the call belongs to, holds
 //! `request.json`, `stdout/{sequence}`, `stderr/{sequence}` and `result.json`.
 use super::*;
-use crate::local::tool_output::CHUNK_BYTES as OUTPUT_BATCH_BYTES;
 use acyclic_native_runtime::ProcessOutput;
+
+/// Largest output chunk a shell call stages.
+const OUTPUT_BATCH_BYTES: usize = 64 * 1024;
 
 pub(super) struct Writer {
     context: ToolContext,

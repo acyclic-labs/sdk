@@ -1,3 +1,4 @@
+//! Check recorded and arbitrary invocation headers against production admission.
 #![no_main]
 
 use acyclic_actors::{domain, wire};
@@ -21,13 +22,13 @@ macro_rules! check {
             expected.body.clear();
             assert_eq!(encoded, expected, "metadata must remain unchanged");
             let decoded = wire::$request::decode(encoded.encode_to_vec().as_slice())
-                .expect("canonical request encoding");
-            assert_eq!(
-                wire::$request::from(
-                    domain::$header::try_from(decoded).expect("body-free canonical header")
-                ),
-                expected
-            );
+                .map_err(|error| format!("canonical request decode: {error}"))
+                .and_then(|decoded| {
+                    domain::$header::try_from(decoded)
+                        .map_err(|error| format!("body-free header admission: {error}"))
+                })
+                .map(wire::$request::from);
+            assert_eq!(decoded, Ok(expected));
             true
         } else {
             false
@@ -39,23 +40,27 @@ fuzz_target!(|input: &[u8]| {
     // Original public-constructor/prost captures; the first eight bytes select
     // the shared protobuf corpus type and are not part of the request packet.
     assert!(
-        check!(
-            &include_bytes!(
-                "../../rust/codec-fuzz/corpus/protobuf/acyclic.actors.v1.InvokeActorRequest-semantic"
-            )[8..],
-            InvokeActorRequest,
-            InvokeActorHeader
-        ),
+        match include_bytes!(
+            "../../rust/codec-fuzz/corpus/protobuf/acyclic.actors.v1.InvokeActorRequest-semantic"
+        )
+        .as_slice()
+        {
+            [_, _, _, _, _, _, _, _, payload @ ..] =>
+                check!(payload, InvokeActorRequest, InvokeActorHeader),
+            _ => false,
+        },
         "captured actor invocation was refused"
     );
     assert!(
-        check!(
-            &include_bytes!(
-                "../../rust/codec-fuzz/corpus/protobuf/acyclic.actors.v1.InvokeWorkerRequest-semantic"
-            )[8..],
-            InvokeWorkerRequest,
-            InvokeWorkerHeader
-        ),
+        match include_bytes!(
+            "../../rust/codec-fuzz/corpus/protobuf/acyclic.actors.v1.InvokeWorkerRequest-semantic"
+        )
+        .as_slice()
+        {
+            [_, _, _, _, _, _, _, _, payload @ ..] =>
+                check!(payload, InvokeWorkerRequest, InvokeWorkerHeader),
+            _ => false,
+        },
         "captured worker invocation was refused"
     );
     check!(input, InvokeActorRequest, InvokeActorHeader);

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/conversation/epochs/protocol.rs b/rust/crates/harness-core/src/conversation/epochs/protocol.rs
+--- a/rust/crates/harness-core/src/conversation/epochs/protocol.rs
++++ b/rust/crates/harness-core/src/conversation/epochs/protocol.rs
+@@ -209,7 +209,7 @@ impl State {
+         {
+             return Err(Refusal::Stale);
+         }
+-        if pending.completion != Some(Completion::Ready) {
++        if pending.completion == Some(Completion::Failed) {
+             return Err(Refusal::NotReady);
+         }
+         if pending.through > head {

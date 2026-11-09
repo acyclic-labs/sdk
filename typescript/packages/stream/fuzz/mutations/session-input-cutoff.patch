@@ -1,0 +1,12 @@
+--- a/typescript/packages/stream/fuzz/fuzz_targets/session.rs
++++ b/typescript/packages/stream/fuzz/fuzz_targets/session.rs
+@@ -10,6 +10,9 @@
+ fn check(input: &[u8]) -> io::Result<()> {
++    if input.len() > 4096 {
++        return Ok(());
++    }
+     static DRIVER: driver::Shared = driver::Shared::new();
+     let result = driver::Driver::shared(
+         &DRIVER,
+         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
+         "decode",

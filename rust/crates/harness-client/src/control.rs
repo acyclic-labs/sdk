@@ -43,7 +43,7 @@ fn decode_invocation(encoded: &[u8]) -> Result<wire::InvokeActorRequest, Command
 
 /// The owning host's pure decoder for the same public invocation sent by the
 /// client. Construct this before provider I/O, then pass the actual session's
-/// CallAuthorization through the host's existing admission and execution path.
+/// `CallAuthorization` through the host's existing admission and execution path.
 /// This value asserts no identity, performs no dispatch and owns no retry loop.
 pub struct AgentCall {
     invocation: wire::InvokeActorRequest,
@@ -199,17 +199,17 @@ impl AgentBinding {
     /// endpoint. `url`, relative or absolute, names discovery's or this
     /// binding's route by its path and query alone, and `body` is one frame
     /// of the caller's prepared command, kept byte for byte: the result is
-    /// the envelope a session ActorCall carries here for the same frame.
+    /// the envelope a session `ActorCall` carries here for the same frame.
     /// Both URLs retain this binding's complete selection and metadata.
     ///
     /// # Errors
     /// [`CommandError::Invalid`] for another URL or a body that is not a
     /// command frame; [`CommandError::Capacity`] past the frame budget.
-    pub fn routed(&self, url: &str, body: Vec<u8>) -> Result<Bytes, CommandError> {
-        PreparedCommand::decode(&body)?;
+    pub fn routed(&self, url: &str, body: &[u8]) -> Result<Bytes, CommandError> {
+        PreparedCommand::decode(body)?;
         let route = route_path(url);
         if route == route_path(DISCOVERY_URL) || route == route_path(&self.0.url) {
-            with_body(&self.0, &body)
+            with_body(&self.0, body)
         } else {
             Err(CommandError::Invalid)
         }
@@ -339,12 +339,133 @@ pub enum AgentExchangeError {
     /// This is not a decoded agent refusal or proof of mutation settlement.
     #[error("agent session failed: {0}")]
     Session(StreamError),
+    /// The prepared command or decoded reply violates the wire contract.
     #[error(transparent)]
     Command(#[from] CommandError),
+    /// The host refused the command or retained an uncertain commit outcome.
     #[error(transparent)]
     Control(#[from] AgentControlFailure),
+    /// The actor rejected the invocation before an agent reply was decoded.
     #[error("actor invocation refused with status {0}")]
     ActorStatus(u32),
+}
+
+impl AgentExchangeError {
+    /// Stable classification without flattening an owned uncertain request.
+    pub fn code(&self) -> &str {
+        match self {
+            Self::Session(cause) => cause.code(),
+            Self::Command(cause) => cause.code(),
+            Self::Control(cause) => cause.code(),
+            Self::ActorStatus(_) => "actor_invocation_refused",
+        }
+    }
+}
+
+/// One exact command bound to its canonical Actors invocation. Host composition
+/// supplies the actor/method binding; neither the client nor transport invents a
+/// backend-specific route. The command remains caller-owned across every await.
+pub struct PreparedAgentInvocation<'a> {
+    command: Cow<'a, PreparedCommand>,
+    /// One invocation per frame of the command, in the order they are sent.
+    invocations: Vec<Bytes>,
+}
+
+impl<'a> PreparedAgentInvocation<'a> {
+    /// `command` on `route`: one canonical Actors invocation per frame.
+    fn new(
+        route: &wire::InvokeActorRequest,
+        command: Cow<'a, PreparedCommand>,
+    ) -> Result<Self, CommandError> {
+        let invocations = command
+            .frames()
+            .map(|frame| with_body(route, frame))
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            command,
+            invocations,
+        })
+    }
+
+    /// The exact invocations this command is sent as, retained unchanged after
+    /// interruption: its staged parts, then their head; or the one command.
+    pub fn invocations(&self) -> &[Bytes] {
+        &self.invocations
+    }
+
+    /// Send the command once through `exchange`, which carries one canonical
+    /// Actors invocation and yields its encoded response: every staged part
+    /// in order, each answered as staged, then the head, answered as the
+    /// whole command. Every transport sends through this one path, so no
+    /// path sends a head without its parts. Each part stages exactly once
+    /// under its digest and position, so a resend stages nothing twice.
+    ///
+    /// # Errors
+    /// The exchange's own failure, or a response that is not this command's.
+    pub async fn send<E, F, Fut>(
+        &self,
+        mut exchange: F,
+    ) -> Result<Result<AgentReply, AgentControlFailure>, E>
+    where
+        E: From<AgentExchangeError>,
+        F: FnMut(Bytes) -> Fut,
+        Fut: std::future::Future<Output = Result<Bytes, E>>,
+    {
+        let invalid = || E::from(AgentExchangeError::from(CommandError::Invalid));
+        let (head, parts) = self.invocations.split_last().ok_or_else(invalid)?;
+        for (frame, invocation) in self.command.frames().zip(parts) {
+            let part = PreparedCommand::decode(frame)
+                .map_err(|error| E::from(AgentExchangeError::from(error)))?;
+            match response(&exchange(invocation.clone()).await?, &part)? {
+                Ok(AgentReply::Staged {}) => {}
+                Ok(_) => return Err(invalid()),
+                Err(failure) => return Ok(Err(failure)),
+            }
+        }
+        let command = self
+            .command
+            .decoded()
+            .map_err(|error| E::from(AgentExchangeError::from(error)))?;
+        Ok(response(&exchange(head.clone()).await?, &command)?)
+    }
+
+    /// Execute once on the caller's existing session. This method installs no
+    /// queue, follow loop, retry, result index or backend-specific error mapping.
+    pub async fn execute(
+        &self,
+        session: &Client,
+        credential: u32,
+    ) -> Result<AgentReply, AgentExchangeError> {
+        self.send(|invocation| async move {
+            session
+                .actor_call(
+                    &invocation,
+                    credential,
+                    acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+                )
+                .await
+                .map_err(AgentExchangeError::Session)
+        })
+        .await?
+        .map_err(AgentExchangeError::Control)
+    }
+}
+
+/// One invocation's encoded response, its reply checked against `command`.
+fn response(
+    bytes: &[u8],
+    command: &AgentCommand,
+) -> Result<Result<AgentReply, AgentControlFailure>, AgentExchangeError> {
+    let response = wire::InvokeActorResponse::decode(bytes).map_err(|_| CommandError::Invalid)?;
+    if response.encode_to_vec().as_slice() != bytes {
+        return Err(CommandError::Invalid.into());
+    }
+    let response =
+        domain::InvokeActorResponse::try_from(response).map_err(|_| CommandError::Invalid)?;
+    if response.status() != 200 {
+        return Err(AgentExchangeError::ActorStatus(response.status()));
+    }
+    Ok(decode_agent_reply(response.body(), command)?)
 }
 
 #[cfg(test)]
@@ -539,18 +660,21 @@ mod tests {
         ] {
             let body = format!("{{ \"kind\" : \"{kind}\" }}").into_bytes();
             let command = PreparedCommand::from_bytes(body.clone())?;
-            let routed = binding.routed(url, body.clone())?;
-            assert_eq!(route.prepare(&command)?.invocations(), [routed.clone()]);
+            let routed = binding.routed(url, &body)?;
+            assert_eq!(
+                route.prepare(&command)?.invocations(),
+                std::slice::from_ref(&routed)
+            );
             assert_eq!(AgentCall::decode(&routed)?.invocation().body, body);
         }
         assert!(matches!(
-            binding.routed("/agents/other", b"{\"kind\":\"root\"}".to_vec()),
+            binding.routed("/agents/other", b"{\"kind\":\"root\"}"),
             Err(CommandError::Invalid)
         ));
         assert!(matches!(
             binding.routed(
                 DISCOVERY_URL,
-                b"{\"kind\":\"bind\",\"principal\":\"admin\"}".to_vec()
+                b"{\"kind\":\"bind\",\"principal\":\"admin\"}"
             ),
             Err(CommandError::Invalid)
         ));
@@ -583,122 +707,4 @@ mod tests {
             assert!(matches!(error, AgentExchangeError::Session(original) if original == cause));
         }
     }
-}
-
-impl AgentExchangeError {
-    /// Stable classification without flattening an owned uncertain request.
-    pub fn code(&self) -> &str {
-        match self {
-            Self::Session(cause) => cause.code(),
-            Self::Command(cause) => cause.code(),
-            Self::Control(cause) => cause.code(),
-            Self::ActorStatus(_) => "actor_invocation_refused",
-        }
-    }
-}
-
-/// One exact command bound to its canonical Actors invocation. Host composition
-/// supplies the actor/method binding; neither the client nor transport invents a
-/// backend-specific route. The command remains caller-owned across every await.
-pub struct PreparedAgentInvocation<'a> {
-    command: Cow<'a, PreparedCommand>,
-    /// One invocation per frame of the command, in the order they are sent.
-    invocations: Vec<Bytes>,
-}
-
-impl<'a> PreparedAgentInvocation<'a> {
-    /// `command` on `route`: one canonical Actors invocation per frame.
-    fn new(
-        route: &wire::InvokeActorRequest,
-        command: Cow<'a, PreparedCommand>,
-    ) -> Result<Self, CommandError> {
-        let invocations = command
-            .frames()
-            .map(|frame| with_body(route, frame))
-            .collect::<Result<_, _>>()?;
-        Ok(Self {
-            command,
-            invocations,
-        })
-    }
-
-    /// The exact invocations this command is sent as, retained unchanged after
-    /// interruption: its staged parts, then their head; or the one command.
-    pub fn invocations(&self) -> &[Bytes] {
-        &self.invocations
-    }
-
-    /// Send the command once through `exchange`, which carries one canonical
-    /// Actors invocation and yields its encoded response: every staged part
-    /// in order, each answered as staged, then the head, answered as the
-    /// whole command. Every transport sends through this one path, so no
-    /// path sends a head without its parts. Each part stages exactly once
-    /// under its digest and position, so a resend stages nothing twice.
-    ///
-    /// # Errors
-    /// The exchange's own failure, or a response that is not this command's.
-    pub async fn send<E, F, Fut>(
-        &self,
-        mut exchange: F,
-    ) -> Result<Result<AgentReply, AgentControlFailure>, E>
-    where
-        E: From<AgentExchangeError>,
-        F: FnMut(Bytes) -> Fut,
-        Fut: std::future::Future<Output = Result<Bytes, E>>,
-    {
-        let invalid = || E::from(AgentExchangeError::from(CommandError::Invalid));
-        let (head, parts) = self.invocations.split_last().ok_or_else(invalid)?;
-        for (frame, invocation) in self.command.frames().zip(parts) {
-            let part = PreparedCommand::decode(frame)
-                .map_err(|error| E::from(AgentExchangeError::from(error)))?;
-            match response(&exchange(invocation.clone()).await?, &part)? {
-                Ok(AgentReply::Staged {}) => {}
-                Ok(_) => return Err(invalid()),
-                Err(failure) => return Ok(Err(failure)),
-            }
-        }
-        let command = self
-            .command
-            .decoded()
-            .map_err(|error| E::from(AgentExchangeError::from(error)))?;
-        Ok(response(&exchange(head.clone()).await?, &command)?)
-    }
-
-    /// Execute once on the caller's existing session. This method installs no
-    /// queue, follow loop, retry, result index or backend-specific error mapping.
-    pub async fn execute(
-        &self,
-        session: &Client,
-        credential: u32,
-    ) -> Result<AgentReply, AgentExchangeError> {
-        self.send(|invocation| async move {
-            session
-                .actor_call(
-                    &invocation,
-                    credential,
-                    acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
-                )
-                .await
-                .map_err(AgentExchangeError::Session)
-        })
-        .await?
-        .map_err(AgentExchangeError::Control)
-    }
-}
-
-/// One invocation's encoded response, its reply checked against `command`.
-fn response(
-    bytes: &[u8],
-    command: &AgentCommand,
-) -> Result<Result<AgentReply, AgentControlFailure>, AgentExchangeError> {
-    let response = wire::InvokeActorResponse::decode(bytes).map_err(|_| CommandError::Invalid)?;
-    if response.encode_to_vec().as_slice() != bytes {
-        return Err(CommandError::Invalid.into());
-    }
-    let response =
-        domain::InvokeActorResponse::try_from(response).map_err(|_| CommandError::Invalid)?;
-    if response.status() != 200 {
-        return Err(AgentExchangeError::ActorStatus(response.status()));
-    }
-    Ok(decode_agent_reply(response.body(), command)?)
 }

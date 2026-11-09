@@ -52,7 +52,9 @@ impl<I: AsyncRead + Unpin> AsyncRead for Socket<'_, I> {
                 Ok(remaining) => remaining,
                 Err(error) => return this.failed(error.into()),
             };
-            maximum = maximum.min(remaining.source_bytes_read as usize).max(1);
+            maximum = maximum
+                .min(usize::try_from(remaining.source_bytes_read).unwrap_or(maximum))
+                .max(1);
             // Keep all accepted transport bytes and the next read buffer funded
             // until the TLS/HTTP connection drops its retained frames/buffers.
             if let Some(held) = &mut this.held {
@@ -79,13 +81,13 @@ impl<I: AsyncRead + Unpin> AsyncRead for Socket<'_, I> {
         let initialized = buffer.initialized().len() - buffer.filled().len();
         let zeroed = maximum.saturating_sub(initialized);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = this.work {
-            if let Err(error) = work.charge(acyclic_fs::WorkCounters {
+        if let Some(work) = this.work
+            && let Err(error) = work.charge(acyclic_fs::WorkCounters {
                 bytes_copied: zeroed as u64,
                 ..Default::default()
-            }) {
-                return this.failed(error.into());
-            }
+            })
+        {
+            return this.failed(error.into());
         }
         let _ = zeroed;
         let mut limited = ReadBuf::new(buffer.initialize_unfilled_to(maximum));
@@ -94,13 +96,13 @@ impl<I: AsyncRead + Unpin> AsyncRead for Socket<'_, I> {
         buffer.advance(count);
         this.received += count as u64;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(reserved) = reserved {
-            if let Err(error) = reserved.record_completed(acyclic_fs::WorkCounters {
+        if let Some(reserved) = reserved
+            && let Err(error) = reserved.record_completed(acyclic_fs::WorkCounters {
                 source_bytes_read: count as u64,
                 ..Default::default()
-            }) {
-                return this.failed(error.into());
-            }
+            })
+        {
+            return this.failed(error.into());
         }
         result
     }

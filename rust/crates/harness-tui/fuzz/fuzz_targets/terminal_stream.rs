@@ -1,3 +1,4 @@
+//! Check terminal stream partitioning and recovery against protocol examples.
 #![no_main]
 
 use acyclic_harness_tui::key_event::{InputEvent, KeyEvent, KeyModifiers};
@@ -16,9 +17,15 @@ fuzz_target!(|data: &[u8]| {
     let mut stream = Vec::new();
     let mut expected = Vec::new();
     for index in data.iter().copied().take(32).chain(std::iter::once(0)) {
-        let (code, body) = rows[usize::from(index) % rows.len()];
-        stream.extend_from_slice(format!("\x1b[{body}").as_bytes());
-        expected.push(InputEvent::Key(KeyEvent::new(*code, KeyModifiers::NONE)));
+        let row = rows.get(usize::from(index) % rows.len());
+        assert!(
+            row.is_some(),
+            "terminal protocol example selection is in bounds"
+        );
+        if let Some((code, body)) = row {
+            stream.extend_from_slice(format!("\x1b[{body}").as_bytes());
+            expected.push(InputEvent::Key(KeyEvent::new(*code, KeyModifiers::NONE)));
+        }
     }
     stream.extend_from_slice(b"\x1b[200~valid paste\x1b[201~\x1b]11;rgb:ffff/0000/0000\x07");
     expected.push(InputEvent::Paste("valid paste".into()));
@@ -36,7 +43,14 @@ fuzz_target!(|data: &[u8]| {
             .get(bit / 8)
             .is_some_and(|byte| byte & (1 << (bit % 8)) != 0);
         if cut || end == stream.len() {
-            assert!(split.feed(&stream[start..end]).is_ok());
+            let chunk = stream.get(start..end);
+            assert!(
+                chunk.is_some(),
+                "selected terminal partition {start}..{end} is in bounds"
+            );
+            if let Some(chunk) = chunk {
+                assert!(split.feed(chunk).is_ok());
+            }
             start = end;
         }
     }

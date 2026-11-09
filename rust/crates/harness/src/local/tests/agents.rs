@@ -1670,8 +1670,8 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
                 .clone(),
         )
         .expect("one parent binding");
-    let (agents, root) = harness.agents().await?;
-    let (agents, root) = (Arc::clone(agents), root.clone());
+    let (_, root) = harness.agents().await?;
+    let root = root.clone();
     let connection = harness.connect().await?;
     // Two frames and more: the client stages the command, and the host stages
     // the brief once on the parent, where the child's adoption names it.

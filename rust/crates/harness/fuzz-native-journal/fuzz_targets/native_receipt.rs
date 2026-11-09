@@ -1,3 +1,4 @@
+//! Replay native receipts through the shared public receipt contract.
 #![no_main]
 
 #[path = "../../tests/support/native_receipt.rs"]

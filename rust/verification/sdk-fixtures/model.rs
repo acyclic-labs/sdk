@@ -6,7 +6,7 @@ use loom::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
 };
-use sdk_fixture_verification::get_or_try_init;
+use sdk_fixture_verification::{get_or_try_init, InitError};
 
 #[path = "../../crates/sdk-generation/src/parallel.rs"]
 mod parallel;
@@ -280,7 +280,13 @@ fn failed_initialization_leaves_the_slot_retryable() {
             })
         });
         let results = jobs.map(|job| job.join().unwrap());
-        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(InitError::Initialize(()))))
+                .count(),
+            1
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(slot.lock().unwrap().as_ref().unwrap().as_slice(), &[1, 2]);
     });

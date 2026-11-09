@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeStreamProviderExt as _;
 use crate::{OwnedBytes, test_meter::Meter};
 use std::sync::atomic::{AtomicU64, Ordering};
 type MemoryResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -54,7 +55,7 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
         }
     };
     let output = provider
-        .native_commit_guarded(request.clone(), None, meter.original(), before)
+        .native_commit_with_guard(request.clone(), None, meter.original(), before)
         .await??;
     let CommitOutcome::Committed(envelope) = output.value() else {
         panic!("canonical Commit")
@@ -91,7 +92,7 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
     );
     let replay_clock = Arc::clone(&clock);
     let replay = provider
-        .native_commit_guarded(request, None, meter.original(), move || {
+        .native_commit_with_guard(request, None, meter.original(), move || {
             replay_clock.store(999, Ordering::SeqCst);
             std::future::ready(Ok::<(), Box<dyn std::error::Error + Send + Sync>>(()))
         })
