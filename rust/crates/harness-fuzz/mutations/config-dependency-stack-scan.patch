@@ -39,5 +39,5 @@
          }
 -        let next = next.clone();
          let bytes = tree.read(&next).await?;
-         reads.push(ModuleRead {
-             path: next.clone(),
+         observations.observe(&next, bytes.as_deref());
+         let Some(bytes) = bytes else {

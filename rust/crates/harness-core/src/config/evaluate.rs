@@ -53,7 +53,9 @@ pub struct Evaluated {
 mod prepared;
 pub use prepared::{Evaluation, ModuleRead, Prepared, prepare};
 mod composition;
-pub use composition::{Composition, LayerInput, LayerState, ModuleCut, compose_with_evidence};
+pub use composition::{
+    Composition, LayerInput, LayerState, ModuleCut, compose_result, compose_with_evidence,
+};
 
 /// Evaluates the module at `path` holding `source`, with `base` as the value
 /// below it. Imports resolve in `tree`. A throw, an exhausted budget, an
@@ -66,9 +68,26 @@ pub async fn evaluate(
     base: &Value,
     surface: Surface,
 ) -> Result<Evaluated> {
-    evaluate_cached(path, source, tree, base, surface, cache()).await
+    evaluate_decision(path, source, tree, base, surface)
+        .await?
+        .into_result()
 }
 
+/// Evaluate once while retaining the original input identity on semantic
+/// refusal. This is the same inline path as [`evaluate`]; it allocates no
+/// additional preparation future. Operational tree failures remain outer
+/// errors. Use [`prepare`] when the original scripts must be evaluated again.
+pub async fn evaluate_decision(
+    path: &str,
+    source: &[u8],
+    tree: &dyn Tree,
+    base: &Value,
+    surface: Surface,
+) -> Result<Evaluation> {
+    evaluate_decision_cached(path, source, tree, base, surface, cache()).await
+}
+
+#[cfg(any(test, feature = "test-support"))]
 async fn evaluate_cached(
     path: &str,
     source: &[u8],
@@ -77,10 +96,22 @@ async fn evaluate_cached(
     surface: Surface,
     cache: &Cache,
 ) -> Result<Evaluated> {
-    prepared::prepare_inner(path, source, tree)
+    evaluate_decision_cached(path, source, tree, base, surface, cache)
         .await?
-        .evaluate_cached(base, surface, cache)?
         .into_result()
+}
+
+async fn evaluate_decision_cached(
+    path: &str,
+    source: &[u8],
+    tree: &dyn Tree,
+    base: &Value,
+    surface: Surface,
+    cache: &Cache,
+) -> Result<Evaluation> {
+    prepared::load(path, source, tree, false)
+        .await?
+        .evaluate_cached(path, base, surface, cache)
 }
 
 /// Folds the copies of a settings entry point over `layers` (lowest first)
@@ -91,7 +122,7 @@ pub async fn compose(
     tree: &dyn Tree,
     base: Value,
 ) -> Result<(Value, Vec<Link>)> {
-    composition::compose_plain(path, layers, tree, base).await
+    compose_result(path, layers, tree, base).await?
 }
 
 /// The most recently evaluated result or failure. Replacing the entry drops

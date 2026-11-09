@@ -4,11 +4,23 @@ use serde_json::json;
 use std::borrow::Cow;
 use std::cell::Cell;
 mod composition;
+#[cfg(feature = "hooks")]
+mod plugins;
 mod prepared;
 
 thread_local! {
     static VM_ENTRIES: Cell<usize> = const { Cell::new(0) };
     static DEPENDENCY_CHECKS: Cell<usize> = const { Cell::new(0) };
+    static RETAINED_READS: Cell<usize> = const { Cell::new(0) };
+    static RETAINED_ROOTS: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) fn read_retained() {
+    RETAINED_READS.set(RETAINED_READS.get().wrapping_add(1));
+}
+
+pub(super) fn root_retained() {
+    RETAINED_ROOTS.set(RETAINED_ROOTS.get().wrapping_add(1));
 }
 
 pub(super) fn entered() {
@@ -230,6 +242,8 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
 pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     prepared::check(bytes).await?;
     composition::check(bytes).await?;
+    #[cfg(feature = "hooks")]
+    plugins::check(bytes).await?;
     raw_source(bytes).await?;
     let cache = Cache::default();
     let mode = bytes.first().copied().unwrap_or_default() % 13;
