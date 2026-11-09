@@ -212,6 +212,20 @@ impl Args {
                 "output projection: usage export also selects stdout; recovery: graphcoder --usage-jsonl usage.jsonl --output-format jsonl exec 'TASK'",
             );
         }
+        let files = [&self.output, &self.event_cursor, &self.usage_jsonl];
+        let files = files
+            .iter()
+            .filter_map(|path| path.as_deref())
+            .filter(|path| path.as_os_str() != "-");
+        if self
+            .transcripts
+            .as_ref()
+            .is_some_and(|directory| files.clone().any(|path| path.starts_with(directory)))
+        {
+            return Err(
+                "transcript directory is reserved for agent files; recovery: place other outputs outside --transcripts DIR",
+            );
+        }
         Ok(())
     }
 
@@ -282,15 +296,6 @@ impl Args {
             .iter()
             .filter_map(|path| path.as_deref())
             .filter(|path| path.as_os_str() != "-");
-        if self
-            .transcripts
-            .as_ref()
-            .is_some_and(|directory| files.clone().any(|path| path.starts_with(directory)))
-        {
-            return Err(
-                "transcript directory is reserved for agent files; recovery: place other outputs outside --transcripts DIR",
-            );
-        }
         if files
             .clone()
             .enumerate()
