@@ -185,7 +185,7 @@ impl StockExecution<'_> {
         // Summaries retain the selected source, including its existing notices.
         // Only the transient instruction is appended; tools cannot be invoked.
         if compose_tools && self.summary.is_none() {
-            self.code_tools_notice(&mut context, &tools)?;
+            self.tools_notice(&mut context, &tools)?;
         }
         let message_count = context.messages.len();
         let request =
@@ -271,7 +271,22 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn request_tools(&self) -> Result<Vec<crate::tool::ToolDefinition>> {
-        stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)
+        let mut tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?;
+        if let Some(epoch) = &self.stock.epoch_tools {
+            tools.retain(|tool| !crate::tools::catalog::is_native_declaration(&tool.name));
+            for tool in epoch
+                .iter()
+                .filter(|tool| crate::tools::catalog::is_native_declaration(&tool.name))
+            {
+                stock_vec_push(
+                    &mut tools,
+                    crate::model::clone_tool_definition(tool, self.io)?,
+                    self.io,
+                )?;
+            }
+            tools.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        Ok(tools)
     }
 
     fn request_from_parts(
@@ -294,13 +309,15 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn code_composition(&self, tools: &[crate::tool::ToolDefinition]) -> Result<bool> {
-        Ok(!cfg!(target_arch = "wasm32")
-            && tools.iter().any(|tool| tool.name == "code")
-            && self
-                .stock
-                .tools
-                .get("code", None, self.io)?
-                .is_some_and(|tool| tool.executor.is_code_mode()))
+        Ok(self.stock.epoch_tools.is_some()
+            || self.stock.tools.has_sources()
+            || (!cfg!(target_arch = "wasm32")
+                && tools.iter().any(|tool| tool.name == "code")
+                && self
+                    .stock
+                    .tools
+                    .get("code", None, self.io)?
+                    .is_some_and(|tool| tool.executor.is_code_mode())))
     }
 
     pub(super) fn validate_response_request(
@@ -317,7 +334,7 @@ impl StockExecution<'_> {
         let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
         if request.summary != self.summary.is_some()
             || request.model != self.stock.model
-            || request.tools != tools
+            || (!request.compose_tools && request.tools != tools)
             || request.compose_tools != self.code_composition(&tools)?
             || request.max_output_tokens != self.output_tokens()
             || request.sampling != self.sampling()?

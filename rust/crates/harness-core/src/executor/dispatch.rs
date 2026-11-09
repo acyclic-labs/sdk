@@ -82,6 +82,9 @@ impl StockExecution<'_> {
                 history: mut prior_messages,
                 prepared,
             } = request;
+            let retained = self
+                .retained_dispatch_step(journal, input.operation_id, step, purpose)
+                .await?;
             let scope = ModelStepScope {
                 purpose,
                 boundary: match &prior_messages {
@@ -120,6 +123,28 @@ impl StockExecution<'_> {
                 }
                 steering.admit(from..history.len(), self.io)?;
             }
+            if retained.request.is_none() {
+                self.stock.tools.refresh().await?;
+            }
+            if let request::ModelStepHistory::Turn(history, _) = &mut prior_messages {
+                let live;
+                let tools = match retained.request.as_ref() {
+                    Some(recorded) => &recorded.request().tools,
+                    None => {
+                        live = self.request_tools()?;
+                        &live
+                    }
+                };
+                if self.code_composition(tools)? {
+                    let mut context = crate::context::Context {
+                        messages: std::mem::take(history),
+                        ..Default::default()
+                    };
+                    let result = self.tools_notice(&mut context, tools);
+                    **history = context.messages;
+                    result?;
+                }
+            }
             let prior_messages = match &prior_messages {
                 request::ModelStepHistory::Turn(history, _) => history.as_slice(),
                 request::ModelStepHistory::Selected(history) => history,
@@ -137,6 +162,7 @@ impl StockExecution<'_> {
                     input,
                     step,
                     (prior_messages, prepared),
+                    retained,
                     scope,
                     phase,
                 )
@@ -291,6 +317,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         material: (&[ModelMessage], Option<crate::model::PreparedModelRequest>),
+        retained: RetainedModelStep,
         scope: ModelStepScope<'_>,
         phase: &mut DispatchPhase,
     ) -> Result<PreparedDispatchStep> {
@@ -303,9 +330,7 @@ impl StockExecution<'_> {
             request,
             admission,
             events,
-        } = self
-            .retained_dispatch_step(journal, input.operation_id, step, purpose)
-            .await?;
+        } = retained;
         let started = request.is_some();
         if started {
             phase.start();

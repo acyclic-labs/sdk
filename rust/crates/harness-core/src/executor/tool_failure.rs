@@ -154,6 +154,9 @@ impl fmt::Display for RefusalText<'_> {
             );
         }
         match reason {
+            ToolFailureKind::Removed => {
+                write!(formatter, "{name} was removed")
+            }
             ToolFailureKind::Unavailable => write!(
                 formatter,
                 "tool `{name}` is not available; call one of the declared tools"
@@ -256,13 +259,14 @@ mod tests {
     }
 
     /// Every failure kind; `entry` fails to compile when a kind is added without coverage.
-    const KINDS: [ToolFailureKind; 7] = [
+    const KINDS: [ToolFailureKind; 8] = [
         ToolFailureKind::ExecutorRejected,
         ToolFailureKind::InvalidOutput,
         ToolFailureKind::ProjectionRejected,
         ToolFailureKind::PublicationRejected,
         ToolFailureKind::Interrupted,
         ToolFailureKind::Unavailable,
+        ToolFailureKind::Removed,
         ToolFailureKind::InvalidInput,
     ];
 
@@ -275,7 +279,9 @@ mod tests {
     ) -> Result<ToolFailureCause> {
         match kind {
             // Unknown tool, schema-invalid arguments, policy denial: refused before dispatch.
-            ToolFailureKind::Unavailable | ToolFailureKind::InvalidInput => {
+            ToolFailureKind::Unavailable
+            | ToolFailureKind::Removed
+            | ToolFailureKind::InvalidInput => {
                 ToolFailureCause::refusal(name, kind, error, None, work)
             }
             // Executor error, output contract, projection and publication after a start.
@@ -386,7 +392,7 @@ mod tests {
                 let cause = with_history_io(Some(&io), |work| entry(kind, "example.tool", &error, work)).unwrap();
                 prop_assert!(cause.is_canonical(), "{kind:?}: {cause:?}");
                 prop_assert_eq!(cause.class, ToolErrorClass::Conflict);
-                if kind != ToolFailureKind::Unavailable {
+                if !matches!(kind, ToolFailureKind::Unavailable | ToolFailureKind::Removed) {
                     prop_assert!(cause.message.ends_with(&expected), "{kind:?}: {cause:?}");
                 }
                 prop_assert!(work.live_allocation_bytes() >= baseline + cause.message.capacity() as u64);
