@@ -1,9 +1,10 @@
 use super::{FileHealth, HealthOwner};
+use crate::sync::Mutex;
 use crate::{FileIdentity, HeldFile, NativeReadMeter, file_identity};
 use std::{
     fs::File,
     io,
-    sync::{Arc, Mutex, OnceLock, Weak, atomic::Ordering},
+    sync::{Arc, OnceLock, Weak, atomic::Ordering},
 };
 
 pub(crate) static FILE_HEALTH: OnceLock<Mutex<FileHealthRegistry>> = OnceLock::new();
