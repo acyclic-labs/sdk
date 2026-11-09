@@ -5,7 +5,7 @@ use acyclic_auth::contract::{
 };
 use acyclic_auth::verify::VerifiedCapability;
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_native_runtime::sync::Mutex;
+use acyclic_native_runtime::InlineMutex as Mutex;
 #[cfg(target_arch = "wasm32")]
 use std::sync::Mutex;
 
