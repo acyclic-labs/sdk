@@ -105,3 +105,17 @@ different payload layout. Insufficient credit must retain an explicit omission;
 sufficient credit establishes equality only below the file read cap. Reverse
 the production patch and require the same test to pass. A compilation or setup
 failure does not qualify the mutation.
+
+`instruction-presence.patch` makes instruction discovery continue through the
+history after finding the instruction prefix. Apply it from the repository
+root and run:
+
+```sh
+cargo nextest run --locked -p acyclic-harness-core --features filesystem,test-support --lib -E 'test(=model::instruction_review_tests::read_projection_has_exact_linear_index_work_and_quadratic_negative)' --no-tests=fail
+```
+
+The retained property must fail at `history traversal must visit only the
+presence prefix and each message/part once`. It also compares authenticated
+projection output and checks original-ledger retirement and linear work.
+A compilation or setup failure does not qualify the mutation. Reverse the
+patch afterward; restored production must pass the same property.

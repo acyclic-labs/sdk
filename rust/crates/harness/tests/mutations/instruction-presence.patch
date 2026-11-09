@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/model/instruction_reads.rs b/rust/crates/harness-core/src/model/instruction_reads.rs
+--- a/rust/crates/harness-core/src/model/instruction_reads.rs
++++ b/rust/crates/harness-core/src/model/instruction_reads.rs
+@@ -22,7 +22,7 @@ pub(crate) fn deduplicate_reads(
+                 }
+             ) {
+                 instructions = true;
+-                break 'presence;
++                break;
+             }
+         }
+     }
