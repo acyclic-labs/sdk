@@ -142,11 +142,11 @@ impl StockExecution<'_> {
                     .map(|hooks| ("1", &hooks.manifest)),
                 inherited_prefix: self.inherited_prefix().map(|(reference, _)| reference),
                 compaction: self.compaction_policy()?,
-                // Disabled compaction has always bound a null capacity. Hard
-                // admission belongs to fresh dispatch, not the turn identity.
+                // Ordinary disabled-compaction turns bind null. Single
+                // inference and threshold turns retain their capacity binding.
                 model_capacity: match self.compaction_policy()? {
-                    crate::context::CompactionPolicy::Disabled => None,
-                    crate::context::CompactionPolicy::Threshold(_) => Some(self.model_capacity()?),
+                    crate::context::CompactionPolicy::Disabled if !self.single_request => None,
+                    _ => Some(self.model_capacity()?),
                 },
                 task_context,
             },
