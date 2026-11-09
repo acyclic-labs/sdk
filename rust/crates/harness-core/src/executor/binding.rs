@@ -85,7 +85,7 @@ impl StockExecution<'_> {
             tool_hooks: Option<(&'static str, &'a [u8; 32])>,
             inherited_prefix: Option<&'a FileRef>,
             compaction: &'a crate::context::CompactionPolicy,
-            model_capacity: crate::context::ModelContextCapacity,
+            model_capacity: Option<crate::context::ModelContextCapacity>,
             #[serde(skip_serializing_if = "Option::is_none")]
             task_context: Option<IssuedContext<'a>>,
         }
@@ -142,7 +142,12 @@ impl StockExecution<'_> {
                     .map(|hooks| ("1", &hooks.manifest)),
                 inherited_prefix: self.inherited_prefix().map(|(reference, _)| reference),
                 compaction: self.compaction_policy()?,
-                model_capacity: self.model_capacity()?,
+                // Disabled compaction has always bound a null capacity. Hard
+                // admission belongs to fresh dispatch, not the turn identity.
+                model_capacity: match self.compaction_policy()? {
+                    crate::context::CompactionPolicy::Disabled => None,
+                    crate::context::CompactionPolicy::Threshold(_) => Some(self.model_capacity()?),
+                },
                 task_context,
             },
             io,
