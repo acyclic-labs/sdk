@@ -1,7 +1,7 @@
 //! Native stdin and selected-task admission, before any workspace operation.
 use acyclic_harness::{agent::AgentPath, local::host_owner::HostAction};
 use serde::de::DeserializeOwned;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::io::{self, Read as _};
 
 /// Admission result retaining the original parser or operating-system error.
