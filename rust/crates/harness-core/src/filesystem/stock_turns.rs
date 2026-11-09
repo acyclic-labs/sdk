@@ -295,6 +295,31 @@ impl TurnExecutors for StockExecutors {
                 }
                 _ => executor,
             };
+            let intervention = agent
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.continuation.as_ref())
+                .filter(|_| agent.conversation_tail == agent.conversation_base)
+                .and_then(|continuation| continuation.override_item.as_ref());
+            let executor = match intervention {
+                Some(file) => {
+                    let bytes = authority
+                        .content
+                        .reader
+                        .read(file, file.descriptor().byte_length(), None, None)?
+                        .await?;
+                    let request: crate::agent::ContinuationRequest = serde_json::from_slice(&bytes)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    if request.version != 1 {
+                        return Err(Error::Invalid("unsupported continuation version".into()));
+                    }
+                    match request.override_item {
+                        Some(item) => executor.with_intervention(item),
+                        None => executor,
+                    }
+                }
+                None => executor,
+            };
             Ok(Arc::new(executor) as Arc<dyn Executor>)
         })
     }

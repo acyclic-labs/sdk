@@ -177,7 +177,30 @@ impl StockExecution<'_> {
             };
             #[cfg(feature = "filesystem")]
             let _continuation_hold;
-            let continuation = if started {
+            let forced = self
+                .stock
+                .intervention
+                .as_deref()
+                .filter(|_| step == 0 && purpose == ModelPurpose::Response)
+                .and_then(crate::agent::ContinuationOverride::events);
+            let continuation = if let Some(mut events) = forced {
+                if !events.starts_with(&replayed) {
+                    return Err(Error::Conflict(
+                        "forced action differs from its journal prefix".into(),
+                    ));
+                }
+                if !started {
+                    self.claim_model_dispatch(
+                        journal,
+                        input,
+                        (step, scope, purpose_key),
+                        &request,
+                        phase,
+                    )
+                    .await?;
+                }
+                Some(events.split_off(replayed.len()))
+            } else if started {
                 self.reconcile_model_events(dispatch, &replayed).await?
             } else {
                 None

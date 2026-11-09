@@ -42,7 +42,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// four-byte big-endian version.
 /// Version 15 requires membership feeds created atomically with every agent.
 /// Version 16 retains committed agent actions and compact wait selections.
-pub const RECORD_VERSION: u32 = 16;
+/// Version 17 records forced continuation provenance in the creation profile.
+pub const RECORD_VERSION: u32 = 17;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -237,6 +238,8 @@ pub enum SpawnContext {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreationConfig {
+    /// Present only on an explicitly continued decider, never inherited by spawns.
+    pub continuation: Option<Box<super::Continuation>>,
     /// Conversation selected at creation, independent of a template name.
     pub context: SpawnContext,
     /// The exact original template file, absent for the root default.
@@ -366,8 +369,9 @@ pub struct SpawnRequest {
     pub by: Sender,
     /// Stable intent identity.
     pub id: IntentId,
-    /// Task brief, staged on the parent's private volume.
-    pub brief: Box<FileRef>,
+    /// Optional first input, staged on the parent's private volume. A fork
+    /// without a brief waits for an ordinary input after adoption.
+    pub brief: Option<Box<FileRef>>,
     /// The child's admitted creation snapshot.
     pub profile: CreationConfig,
     /// Select a retained prior turn instead of the current conversation head.

@@ -182,6 +182,266 @@ fn agent(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
 
+/// The control runs the same cut and model without an intervention. The
+/// treatment must execute a real filesystem tool before free generation.
+#[tokio::test]
+async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Result<()> {
+    use crate::{
+        agent::{ContinuationOverride, ContinuationRequest, ForcedCall},
+        client::{AgentCommand, AgentReply},
+        model::ModelContent,
+    };
+    use acyclic_fs::{CancellationToken, WorkBudget};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await
+    .map_err(agent)?;
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .open_workspace(
+            project.storage_name(&mut None)?,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| agent(failure.error))?
+        .value;
+    workspace
+        .write_text("/plan.md", "at cut")
+        .await
+        .map_err(agent)?;
+    let (dispatched, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let provider = Arc::new(
+        ScriptedModelProvider::new(
+            std::iter::once(super::ScriptedTurn::Events(vec![
+                crate::test_support::ScriptedEvent::Pending {},
+            ]))
+            .chain(
+                ["prefix", "later", "free", "free", "free", "free"]
+                    .map(|text| super::ScriptedTurn::Text(text.into())),
+            ),
+        )
+        .with_context_capacity(super::capacity())
+        .with_dispatch_observer(move |_| {
+            let _ = dispatched.send(());
+            Box::pin(async { Ok(()) })
+        }),
+    );
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let connection = harness.connect().await?;
+    let AgentReply::Spawned {
+        agent: original_child,
+        ..
+    } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: root.clone(),
+            id: crate::agent::IntentId::try_from("live-child").map_err(agent)?,
+            brief: ModelContent::Text("Remain live at the cut".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("spawn returned another reply".into()));
+    };
+    requests
+        .recv()
+        .await
+        .ok_or_else(|| Error::Storage("dispatch channel closed".into()))?;
+    let mut parent = ObservedConversation::open(&harness).await?;
+    parent.send("prefix", "decision point").await?;
+    let prefix = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
+    let saved = crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
+    assert!(saved.live_children);
+    workspace
+        .write_text("/plan.md", "after cut")
+        .await
+        .map_err(agent)?;
+    parent.send("later", "later decision").await?;
+
+    let override_item = ContinuationOverride::Assistant {
+        text: "FORCED_ACTION".into(),
+        calls: vec![ForcedCall {
+            name: "write".into(),
+            arguments: serde_json::json!({"path":"plan.md","content":"forced files"}),
+        }],
+    };
+    let source = format!("{root}@0");
+    for (operation, intervention) in [
+        ("treatment", Some(override_item.clone())),
+        ("control", None),
+        (
+            "instruction",
+            Some(ContinuationOverride::Instruction {
+                text: "INJECTED_INSTRUCTION".into(),
+            }),
+        ),
+    ] {
+        let request = ContinuationRequest {
+            version: 1,
+            override_item: intervention.clone(),
+        };
+        let branch =
+            crate::local::continuation::fork_from(&connection, &source, operation, request.clone())
+                .await?;
+        let child = branch.root().clone();
+        let state = agents.state(&child).await.map_err(agent)?;
+        assert!(state.open_children.is_empty());
+        assert_eq!(
+            records(&**agents.provider(), child.conversation().map_err(agent)?).await?,
+            prefix
+        );
+        let creation = state.profile.as_ref().expect("decider creation");
+        assert!(
+            creation.template.is_none(),
+            "continuation must retain the decider directive"
+        );
+        let metadata = creation
+            .continuation
+            .as_ref()
+            .expect("continuation metadata");
+        assert_eq!(metadata.version, 1);
+        assert_eq!(metadata.parent_run_id, root);
+        assert_eq!(metadata.stream_offset, 0);
+        assert!(metadata.live_children_at_cut);
+        assert_eq!(
+            metadata.workspace_generations[0].generation,
+            saved.volumes[0].generation
+        );
+        assert_eq!(
+            metadata.non_replay_manifest,
+            [
+                "wall_clocks",
+                "web_network",
+                "external_machine_state",
+                "model_sampling"
+            ]
+        );
+        assert_eq!(metadata.override_item.is_some(), intervention.is_some());
+        let binding = state
+            .volumes
+            .iter()
+            .find(|binding| binding.name == saved.volumes[0].binding.name)
+            .expect("project binding");
+        let forked = fs
+            .open_workspace(
+                binding.volume.storage_name(&mut None)?,
+                WorkBudget::UNBOUNDED,
+                &cancel,
+            )
+            .await
+            .map_err(|failure| agent(failure.error))?
+            .value;
+        assert_eq!(
+            forked
+                .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
+                .await
+                .map_err(|failure| agent(failure.error))?
+                .value
+                .as_ref(),
+            b"at cut"
+        );
+        let mut client = ObservedConversation::observe(Conversation::open(branch), Some(1)).await?;
+        if let Some(file) = &metadata.override_item {
+            let recorded: ContinuationRequest =
+                serde_json::from_str(&client.conversation.text(file).await?).map_err(agent)?;
+            assert_eq!(recorded, request);
+        }
+        let entry = client.send(operation, "continue").await?;
+        let output: crate::executor::TurnOutput =
+            serde_json::from_str(&client.conversation.text(&entry.output).await?).map_err(agent)?;
+        let has_text = |message: &crate::model::ModelMessage, expected: &str| {
+            matches!(&message.content, ModelContent::Text(text) if text == expected)
+                || message.content.parts().iter().any(|part| {
+                    matches!(part, crate::model::ModelContentPart::Text { text, .. } if text == expected)
+                })
+        };
+        let applied = output
+            .transcript
+            .iter()
+            .position(|message| has_text(message, "FORCED_ACTION"));
+        // Negative control: the identical assertion would fail without the override.
+        assert_eq!(applied.is_some(), operation == "treatment");
+        if let Some(forced) = applied {
+            let free = output
+                .transcript
+                .iter()
+                .position(|message| has_text(message, "free"))
+                .expect("freely sampled continuation");
+            assert!(forced < free, "the override must precede continuation");
+        }
+        assert_eq!(output.text, "free");
+        let context =
+            super::request_text(&harness, &provider.last_request().expect("free request")).await?;
+        assert!(context.contains("prefix"));
+        assert!(!context.contains("later decision"));
+        assert_eq!(
+            context.contains("INJECTED_INSTRUCTION"),
+            operation == "instruction"
+        );
+        assert_eq!(
+            forked
+                .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
+                .await
+                .map_err(|failure| agent(failure.error))?
+                .value
+                .as_ref(),
+            if operation == "treatment" {
+                b"forced files".as_slice()
+            } else {
+                b"at cut".as_slice()
+            }
+        );
+        let history = records(&**agents.provider(), child.conversation().map_err(agent)?).await?;
+        assert_eq!(&history[..prefix.len()], prefix.as_slice());
+        assert_eq!(history.len(), prefix.len() + 1);
+        if operation == "treatment" {
+            client.send("second", "continue freely again").await?;
+            let context =
+                super::request_text(&harness, &provider.last_request().expect("second request"))
+                    .await?;
+            assert_eq!(
+                context.matches("FORCED_ACTION").count(),
+                1,
+                "override must apply exactly once"
+            );
+        }
+    }
+    assert_eq!(
+        provider.request_count(),
+        7,
+        "forced action must not dispatch a model request"
+    );
+    assert!(
+        agents
+            .state(&root)
+            .await
+            .map_err(agent)?
+            .open_children
+            .contains(&original_child)
+    );
+    assert_eq!(
+        workspace
+            .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
+            .await
+            .map_err(|failure| agent(failure.error))?
+            .value
+            .as_ref(),
+        b"after cut"
+    );
+    Ok(())
+}
+
 /// Locate the committed input by identity; notices may follow it in a request.
 fn input_content<'a>(
     request: &'a crate::model::ModelRequest,
@@ -2493,6 +2753,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     }
     let crate::client::AgentReply::Spawned { agent: child, .. } = connection
         .execute(&crate::client::AgentCommand::Fork {
+            continuation: None,
             parent: root.clone(),
             id: crate::agent::IntentId::try_from("historical-child").map_err(agent)?,
             at: 0,

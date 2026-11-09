@@ -63,6 +63,18 @@ impl StockExecution<'_> {
         self.begin_working_history().await;
         self.begin_request_continuation().await;
         let mut prior_messages = Vec::new();
+        if let Some(crate::agent::ContinuationOverride::Instruction { text }) =
+            self.stock.intervention.as_deref()
+        {
+            stock_vec_push(
+                &mut prior_messages,
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text(stock_string_copy(text, self.io)?),
+                },
+                self.io,
+            )?;
+        }
         let mut steering = working_tail::retirement::SteeringHistory::default();
         let mut hook_context = Vec::new();
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]

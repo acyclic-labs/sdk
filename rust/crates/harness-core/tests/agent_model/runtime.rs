@@ -1075,6 +1075,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     assert!(failures.is_empty(), "{failures:?}");
     let request = InboxRecord::Spawn(SpawnRequest {
         profile: acyclic_harness_core::agent::CreationConfig {
+            continuation: None,
             context: acyclic_harness_core::agent::SpawnContext::Fork,
             template: None,
             peers: Default::default(),
@@ -1082,7 +1083,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
         history: None,
         by: user(),
         id: intent("s"),
-        brief: Box::new(super::driver::file("task").expect("file")),
+        brief: Some(Box::new(super::driver::file("task").expect("file"))),
     });
     let Delivered::Committed { inbox } = host.send(&root, &user(), &request).await? else {
         return Err("spawn request was not committed".into());
@@ -1138,6 +1139,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
                 peers: Default::default(),
@@ -1145,7 +1147,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
             history: None,
             by: user(),
             id: intent(&format!("s{n}")),
-            brief: Box::new(super::driver::file("task").expect("file")),
+            brief: Some(Box::new(super::driver::file("task").expect("file"))),
         })
     };
     let mut last = 0;
@@ -1183,6 +1185,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
                 peers: Default::default(),
@@ -1190,7 +1193,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
             history: None,
             by: user(),
             id: intent(&format!("s{n}")),
-            brief: Box::new(super::driver::file("task").expect("file")),
+            brief: Some(Box::new(super::driver::file("task").expect("file"))),
         })
     };
     let mut sequences = Vec::new();

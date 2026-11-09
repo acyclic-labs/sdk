@@ -284,10 +284,12 @@ impl HostDriver {
         })
     }
 
-    /// Reads one file on the agent's own volumes, or the exact brief its
+    /// Reads one file on the agent's own volumes, or an exact file its
     /// adoption named.
     async fn read(&self, agent: &AgentState, file: &FileRef, bound: u64) -> Result<Vec<u8>> {
-        let content = self.content(agent, bound, agent.brief_grant(file)).await?;
+        let content = self
+            .content(agent, bound, agent.adoption_grant(file))
+            .await?;
         Ok(content
             .reader
             .read(file, bound, None, None)?

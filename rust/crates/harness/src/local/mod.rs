@@ -29,6 +29,7 @@ mod checkout_tools;
 mod compaction;
 mod config;
 pub(crate) mod context;
+pub mod continuation;
 mod endpoint;
 mod files;
 #[cfg(feature = "native-execution")]

@@ -98,6 +98,12 @@ pub struct Args {
     /// Select an existing session by its canonical agent path.
     #[arg(long, global = true)]
     pub agent: Option<String>,
+    /// Fork a decider's retained conversation event and workspace generation.
+    #[arg(long, value_name = "AGENT_PATH@EVENT_OFFSET", conflicts_with_all = ["agent", "resume", "host_workspace"])]
+    pub fork_from: Option<String>,
+    /// Version-one continuation JSON: {"version":1,"override_item":...}.
+    #[arg(long = "override", value_name = "FILE", requires = "fork_from")]
+    pub override_file: Option<PathBuf>,
     #[arg(long)]
     pub inline: bool,
     /// Drive the agent tree an endpoint serves instead of this machine's
@@ -112,6 +118,11 @@ pub struct Args {
 impl Args {
     /// Normalize the exec shorthand before validating its input identity.
     pub fn prepare_input(&mut self) -> Result<(), &'static str> {
+        if self.fork_from.is_some() && !matches!(self.command, None | Some(Command::Exec { .. })) {
+            return Err(
+                "--fork-from requires an execution; use graphcoder --fork-from AGENT_PATH@EVENT_OFFSET exec 'Continue'",
+            );
+        }
         if let Some(Command::Exec { prompt }) = &self.command {
             if self.prompt.is_some() {
                 return Err("exec input: task supplied twice; recovery: graphcoder exec 'TASK'");

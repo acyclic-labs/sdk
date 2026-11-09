@@ -239,6 +239,7 @@ mod tests {
                     &mut None,
                 )?),
                 profile: crate::agent::CreationConfig {
+                    continuation: None,
                     context: crate::agent::SpawnContext::Fork,
                     template: None,
                     peers: Default::default(),

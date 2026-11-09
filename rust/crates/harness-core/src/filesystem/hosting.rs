@@ -541,7 +541,7 @@ where
 
     /// Reads at most `maximum` bytes of `file` from `offset`, through
     /// `agent`'s own authorized reader: only a file on one of `agent`'s
-    /// volumes, within its scope, or the exact brief its adoption named, is
+    /// volumes, within its scope, or an exact file its adoption named, is
     /// readable. Returns the bytes and the file's length.
     ///
     /// # Errors
@@ -561,7 +561,7 @@ where
             &self.admission,
             &state.path,
             &state.volumes,
-            state.brief_grant(file),
+            state.adoption_grant(file),
         )
         .await
         .map_err(turn)?;
