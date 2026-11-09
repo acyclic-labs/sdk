@@ -591,6 +591,7 @@ impl PreparedExecution {
 
     /// Adds enforcement after the process owner's custody hook. The command
     /// has already been admitted once and is consumed by the launch owner.
+    #[cfg(unix)]
     pub(crate) fn install(self, _command: &mut std::process::Command) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         self.platform.install(_command, self.grant);

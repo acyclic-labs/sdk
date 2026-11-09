@@ -10,9 +10,17 @@ use std::time::Instant;
 #[path = "../support/native_access.rs"]
 mod native_access;
 
-#[tokio::test]
-#[ignore = "requires a writable ProjFS host; run alone for profiling"]
-async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std::error::Error>> {
+#[test]
+fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(root) = std::env::var_os("ACYCLIC_PROJFS_PROFILE_ROOT") {
+        profile_external_client(std::path::PathBuf::from(root))
+    } else {
+        profile_workload()
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn profile_workload() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("ACYCLIC_PROJFS_PROFILE_TRACING").is_some() {
         tracing::subscriber::set_global_default(
             tracing_subscriber::fmt()
@@ -91,9 +99,8 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
     let mut command = acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
-            "--ignored",
             "--exact",
-            "projfs_profile::profile_external_client",
+            "projfs_profile::profile_enumeration_hydration_write_capture",
             "--nocapture",
         ])
         .env("ACYCLIC_PROJFS_PROFILE_ROOT", destination.join(prefix));
@@ -153,13 +160,7 @@ fn phase(name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-#[test]
-#[ignore = "contained external client for the ProjFS workload"]
-fn profile_external_client() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(root) = std::env::var_os("ACYCLIC_PROJFS_PROFILE_ROOT") else {
-        return Ok(());
-    };
-    let root = std::path::PathBuf::from(root);
+fn profile_external_client(root: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let (_, count) = profile_layout();
     phase("enumerate")?;
     let started = Instant::now();

@@ -1,6 +1,5 @@
 //! Shared oracle for the original persisted-window writer and reader.
 use super::*;
-use acyclic_stream::StreamProviderExt as _;
 
 /// Replays a mutation program against records produced by the public store.
 /// The first byte selects a valid phase, a known invalid state or an arbitrary

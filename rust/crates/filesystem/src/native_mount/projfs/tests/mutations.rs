@@ -7,7 +7,6 @@ use super::{
 };
 use crate::kernel::KernelAccounting;
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn stopped_projection_cannot_publish_a_late_open_writer()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -64,7 +63,6 @@ async fn stopped_projection_cannot_publish_a_late_open_writer()
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn write_through_a_handle_opened_before_a_rename_lands_at_the_new_name()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -95,7 +93,6 @@ async fn write_through_a_handle_opened_before_a_rename_lands_at_the_new_name()
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -118,7 +115,6 @@ async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::E
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -143,7 +139,6 @@ async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error:
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -170,7 +165,6 @@ async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_held_placeholder_is_replaced_before_revalidation_returns()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -222,7 +216,6 @@ async fn a_held_placeholder_is_replaced_before_revalidation_returns()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -273,7 +266,6 @@ async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn projected_directories_rename_and_what_moved_with_them_reads()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -346,7 +338,6 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_file_renamed_before_it_is_read_stays_as_renamed()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -377,7 +368,6 @@ async fn a_file_renamed_before_it_is_read_stays_as_renamed()
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn projected_file_rename_and_replacement_survive_remount()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
