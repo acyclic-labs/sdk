@@ -1,11 +1,11 @@
 //! The same production-bound oracles run in unit tests and fuzz targets.
 use super::{model_selection as selection, workspace};
-#[cfg(feature = "hooks")]
+#[cfg(all(test, feature = "hooks"))]
 use crate as harness;
 
 mod model;
 pub use model::exercise as check_model_selection;
-#[cfg(feature = "hooks")]
+#[cfg(all(test, feature = "hooks"))]
 mod settings;
 #[path = "validation/workspace.rs"]
 mod workspace_contract;
@@ -24,7 +24,7 @@ proptest::proptest! {
     }
 }
 
-#[cfg(feature = "hooks")]
+#[cfg(all(test, feature = "hooks"))]
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(8))]
     #[test]
