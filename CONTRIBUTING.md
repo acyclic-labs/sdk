@@ -73,6 +73,14 @@ bun run test    # type-check, then TypeScript and filesystem package tests
 cargo test --all-features --locked
 ```
 
+`node scripts/node-tests.mjs --all` discovers Node and Bun tests, runs the
+root's `test:prepare` recipe once, and reports every native failure with a
+`NODE_TEST_FAIL` identity and one terminal `NODE_TESTS_RESULT`. Pass changed
+repository paths for affected selection, or `--only FILE_OR_DIRECTORY` for an
+explicit scope. `--root tools/sdk-generator --all` runs the independent backend
+inventory without SDK preparation. On Windows, set `E2E_SCRATCH_ROOT` and
+`E2E_PROCESS_HOST` to absolute installed paths before invoking the runner.
+
 Full nextest runs include the live PostgreSQL and S3 controls when their features
 are enabled, and require real disposable services. Focused storage qualification
 can select either capability module with its named profile:

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="1" assertions="0" failures="1" skipped="0" time="0.011152633">
+  <testsuite name="bun.test.ts" file="bun.test.ts" tests="1" assertions="0" failures="1" skipped="0" time="0.001065424">
+    <testsuite name="parent" file="bun.test.ts" line="1" tests="1" assertions="0" failures="1" skipped="0" time="0">
+      <testcase name="failure &lt;&amp;&gt; 😀" classname="parent" time="0.000225" file="bun.test.ts" assertions="0">
+        <failure type="Error" message="planted original failure">Error: planted original failure&#10;      at bun.test.ts:1:123&#10;</failure>
+      </testcase>
+    </testsuite>
+  </testsuite>
+</testsuites>
