@@ -529,8 +529,9 @@ async fn parallel(
     let request = InboxRecord::Spawn(SpawnRequest {
         by: super::super::user(),
         id: intent("parallel-answer-child"),
-        brief: Box::new(answer(&**stream, parent, 0).await?.output),
+        brief: Some(Box::new(answer(&**stream, parent, 0).await?.output)),
         profile: CreationConfig {
+            continuation: None,
             context: SpawnContext::Fork,
             template: None,
             peers: Default::default(),

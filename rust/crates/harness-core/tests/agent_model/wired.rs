@@ -1517,8 +1517,9 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     let request = InboxRecord::Spawn(SpawnRequest {
         by: super::user(),
         id: intent("spawn"),
-        brief: Box::new(brief),
+        brief: Some(Box::new(brief)),
         profile: CreationConfig {
+            continuation: None,
             context: SpawnContext::Fork,
             template: None,
             peers: Default::default(),

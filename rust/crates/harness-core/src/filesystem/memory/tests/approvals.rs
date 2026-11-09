@@ -148,6 +148,8 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
         crate::filesystem::agent_effects::FilesystemTurnEffects::new(
             files,
             storage.stream.clone(),
+            acyclic_actors::addressing::ActorReference::new(b"test", b"agents", b"owner")
+                .expect("approval actor namespace"),
             AgentPath::root(&agent),
             (OperationId::new(), 0),
             65_536,
