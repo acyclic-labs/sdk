@@ -33,6 +33,7 @@ struct Storage {
     volume_stream: Arc<LocalStream>,
     scratch: VolumeRef,
     journal: VolumeRef,
+    seed: (VolumeRef, crate::resources::GenerationRef),
     #[cfg(any(test, feature = "native-execution"))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
@@ -284,7 +285,21 @@ impl Opening {
                 id: owner.task.to_string(),
             },
         )?;
-        let PrivateVolumes { scratch, journal } = PrivateVolumes::open(&files, &owner).await?;
+        // The private volumes and the seed are idempotent creations named
+        // only by later frames of the same journal, so they share one drain
+        // instead of one each. It lands before the checkout state, the
+        // native project or the root agent can name them.
+        let (PrivateVolumes { scratch, journal }, seed) =
+            acyclic_stream::deferring_provider_durability(volume_stream.as_ref(), async {
+                Ok::<_, Error>((
+                    PrivateVolumes::open(&files, &owner).await?,
+                    files.seed_layer().await?,
+                ))
+            })
+            .await?;
+        acyclic_stream::StreamProvider::durability_barrier(volume_stream.as_ref())
+            .await
+            .map_err(storage)?;
         #[cfg(any(test, feature = "native-execution"))]
         let workspace = self
             .workspace(&filesystem, &directory, &owner, &issuer, &scratch, checkout)
@@ -322,6 +337,7 @@ impl Opening {
             volume_stream,
             scratch,
             journal,
+            seed,
             #[cfg(any(test, feature = "native-execution"))]
             workspace,
         })
@@ -409,11 +425,11 @@ impl Opening {
             volume_stream,
             scratch,
             journal,
+            seed,
             #[cfg(any(test, feature = "native-execution"))]
             workspace,
         } = opened;
         let verifier = issuer.verifier(&mut None)?;
-        let seed = files.seed_layer().await?;
         let system = if self.config.system_files.is_empty() {
             None
         } else {

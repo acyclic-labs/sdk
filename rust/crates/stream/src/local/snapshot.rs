@@ -111,7 +111,8 @@ fn incarnation(root: &Path, fresh: bool) -> Result<u128, LocalStreamError> {
         sync_file(&file, LocalDurability::FullFlush)?;
     }
     acyclic_native_runtime::rename_file(&temporary, &path)?;
-    sync_directory(root, LocalDurability::FullFlush)?;
+    // Journal::open publishes this name with the journal's directory entry
+    // before recovered or new records become observable.
     Ok(incarnation)
 }
 

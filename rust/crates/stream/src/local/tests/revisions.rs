@@ -80,7 +80,26 @@ async fn a_foreign_token_is_refused_and_an_own_token_survives_reopen() -> Result
 
     // A reopen, even through another path spelling, keeps the scope and the
     // incarnation, and a replay carries the original revision.
-    let provider = LocalStream::open(&alias, LocalStreamLimits::default()).await?;
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    let driver = tokio::spawn(async move {
+        while let Some(boundary) = events.recv().await {
+            boundary.release();
+        }
+    });
+    let provider = schedule
+        .scope(LocalStream::open(&alias, LocalStreamLimits::default()))
+        .await?;
+    schedule.drained().await;
+    driver.abort();
+    assert_eq!(
+        schedule
+            .durable_writes()
+            .iter()
+            .filter(|write| write.operation == "file:sync_parent")
+            .count(),
+        1,
+        "recovered records require one durable journal namespace publication"
+    );
     let served = provider
         .wait_applied(&crate::RevisionCut::of(issued.clone()))
         .await?;
