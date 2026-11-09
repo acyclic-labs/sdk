@@ -3,14 +3,11 @@ use super::*;
 
 impl LocalHarnessConfig {
     /// Collect native prerequisites even if model/settings admission will fail.
-    /// Checks the selected state root with a disposable write, without opening
-    /// an agent or acquiring its signing key.
+    /// Checks state separation and signing policy without creating directories,
+    /// allocating temporary state, opening storage or acquiring a signing key.
     pub fn preflight(&self) -> Vec<Error> {
         let mut failures = self.native_preflight();
-        let state = self.check_state_directory();
-        if let Err(error) = state {
-            failures.push(Error::Invalid(format!("state directory: {error}; recovery: select a writable user data directory outside the checkout (XDG_DATA_HOME on Linux, LOCALAPPDATA on Windows)")));
-        }
+        failures.extend(self.state_refusals());
         failures
     }
 
@@ -35,20 +32,33 @@ impl LocalHarnessConfig {
         self.native_refusals(native)
     }
 
-    fn check_state_directory(&self) -> Result<()> {
-        use std::io::Write as _;
-        let location = self.state_location()?;
-        let (config::StateLocation::Directory(path) | config::StateLocation::ProjectRoot(path)) =
-            location;
-        let workspace = match &self.project {
-            LocalProject::Workspace(path) => Some(path.as_path()),
-            LocalProject::Volume { .. } => None,
-        };
-        let path = owner::separated_directory(&path, workspace)?;
-        std::fs::create_dir_all(&path).map_err(storage)?;
-        let mut probe = tempfile::tempfile_in(path).map_err(storage)?;
-        probe.write_all(b"preflight").map_err(storage)?;
-        probe.sync_all().map_err(storage)
+    pub(super) fn state_refusals(&self) -> Vec<Error> {
+        let mut failures = Vec::new();
+        // Opening alone prepares lazy hermetic state. There is no selected
+        // directory to inspect until then; doctor must not create one.
+        if !self.hermetic || self.state_directory.is_some() {
+            let state = self.state_location().and_then(|location| {
+                let (config::StateLocation::Directory(path)
+                | config::StateLocation::ProjectRoot(path)) = location;
+                let workspace = match &self.project {
+                    LocalProject::Workspace(path) => Some(path.as_path()),
+                    LocalProject::Volume { .. } => None,
+                };
+                owner::planned_separated_directory(&path, workspace)
+            });
+            if let Err(error) = state {
+                failures.push(Error::Invalid(format!("state directory: {error}; recovery: select a user data directory outside the checkout (XDG_DATA_HOME on Linux, LOCALAPPDATA on Windows)")));
+            }
+        }
+        if !self.without_user_settings {
+            failures.extend(
+                acyclic_native_runtime::signing_key::SigningCustody::Configured
+                    .validate()
+                    .err()
+                    .map(storage),
+            );
+        }
+        failures
     }
 
     pub(super) fn native_refusals(&self, native: bool) -> Vec<Error> {

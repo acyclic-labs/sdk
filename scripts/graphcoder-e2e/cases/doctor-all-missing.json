@@ -18,7 +18,7 @@
     },
     "exit": 1,
     "stdout_contains": ["credentials file:", "provider key unavailable", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "--credentials FILE", "keychain:", "terminal:", "shell:", "provider network is unreachable", "state directory:", "filesystem mode:", "recovery:"],
-    "stdout_absent": ["NEVER_PRINT_E2E_KEY", "ok: a run with these flags starts"]
+    "stdout_absent": ["NEVER_PRINT_E2E_KEY", "ok: local prerequisites checked"]
   }],
   "assert": { "requests": 0 }
 }
