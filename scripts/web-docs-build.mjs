@@ -21,9 +21,9 @@ export function webDocsCommands(operation, selected) {
     ["node", "node_modules/typescript/bin/tsc", "-p", "scripts", "--pretty", "false"],
     ["bun", "run", "check:docs"],
   ];
-  if (operation === "package" && workspaceManifests(root).has(selected)) {
+  if (operation === "package" && selected !== undefined) {
     const manifest = workspaceManifests(root).get(selected);
-    return [["bun", "run", "--filter", manifest.name, "build"]];
+    if (manifest) return [["bun", "run", "--filter", manifest.name, "build"]];
   }
   if (operation === "readmes") return [["node", "scripts/check-sdk-readmes.mjs", "compile"]];
   throw new Error("usage: web-docs-build.mjs build|check|typescript|readmes|package PACKAGE");
