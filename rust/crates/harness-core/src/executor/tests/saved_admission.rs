@@ -110,7 +110,8 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
         Some(AccountingFault::Digest),
         [],
         [ScriptedReconciliation {
-            orphan: false,
+            // A restarted provider has not observed the retained dispatch.
+            orphan: true,
             observed: vec![],
             continuation: Some(vec![
                 ModelEvent::Content {
