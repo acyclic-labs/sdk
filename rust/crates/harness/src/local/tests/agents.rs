@@ -2911,10 +2911,21 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
 #[tokio::test]
 async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> Result<()> {
     use crate::test_support::ScriptedTurn;
-    let provider = super::scripted(["one", "two"].map(|text| ScriptedTurn::Text(text.into())));
-    let (_directory, harness, provider) =
-        checkout_scripted(&[("AGENTS.md".into(), b"RULE_ONE\n".to_vec())], provider).await?;
+    let provider = super::scripted(
+        ["one", "two", "three", "four", "five"].map(|text| ScriptedTurn::Text(text.into())),
+    );
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let workspace = directory.path().join("work");
+    std::fs::create_dir_all(workspace.join(".git")).map_err(agent)?;
+    let open = || {
+        Ok::<_, Error>(LocalHarness::open(
+            super::checkout_config(&workspace, (super::model()?, provider.clone()))?
+                .state_directory(directory.path().join("state")),
+        ))
+    };
+    let harness = Arc::new(open()?.await?);
     let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
+    std::fs::write(checkout.join("AGENTS.md"), b"RULE_ONE\n").map_err(agent)?;
     let mut client = ObservedConversation::open(&harness).await?;
     client.send("one", "FIRST_PROMPT").await?;
     std::fs::write(checkout.join("AGENTS.md"), b"RULE_TWO\n").map_err(agent)?;
@@ -2941,5 +2952,38 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
     assert_eq!(prefix(&second)?, prefix(&first)?);
     let appended = super::request_text(&harness, &second).await?;
     assert!(appended.contains("RULE_TWO"), "{appended}");
+
+    // Return to the frozen value while closed, then repeat the same transition.
+    // The durable frontier must correct B -> A and give A -> B a new intent.
+    std::fs::write(checkout.join("AGENTS.md"), b"RULE_ONE\n").map_err(agent)?;
+    drop(client);
+    drop(harness);
+    let harness = Arc::new(open()?.await?);
+    let mut client = ObservedConversation::open(&harness).await?;
+    client.send("three", "AFTER_REOPEN").await?;
+    let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
+    std::fs::write(checkout.join("AGENTS.md"), b"RULE_TWO\n").map_err(agent)?;
+    client.send("four", "REPEAT_EDIT").await?;
+    client.send("five", "UNCHANGED").await?;
+    for (index, expected) in [
+        (2, vec!["RULE_TWO\n", "RULE_ONE\n"]),
+        (3, vec!["RULE_TWO\n", "RULE_ONE\n", "RULE_TWO\n"]),
+        (4, vec!["RULE_TWO\n", "RULE_ONE\n", "RULE_TWO\n"]),
+    ] {
+        let current = request(index)?;
+        assert_eq!(prefix(&current)?, prefix(&first)?);
+        let edits = current
+            .messages
+            .iter()
+            .filter_map(|message| message.content.notice_parts())
+            .flat_map(|(notices, _)| notices)
+            .filter(|notice| notice.kind == crate::context::CONTEXT_CHANGED)
+            .filter_map(|notice| notice.body.get("text").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            edits, expected,
+            "request {index} must deliver each transition once"
+        );
+    }
     Ok(())
 }

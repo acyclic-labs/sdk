@@ -43,8 +43,19 @@ pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
 /// What one agent was last told of its epoch's model-visible sources.
 pub(super) struct Told {
     epoch: FileRef,
+    file: Option<FileRef>,
+    state: ToldState,
+}
+
+/// The durable delivery frontier, including the outbox entry that must be
+/// resent after a crash. Publishing it precedes the idempotent inbox send.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToldState {
+    version: u8,
     digests: std::collections::BTreeMap<String, [u8; 32]>,
     sent: u64,
+    pending: Option<crate::agent::InboxRecord>,
 }
 
 impl LocalHarness {
@@ -95,9 +106,9 @@ impl LocalHarness {
     /// Tells `agent`, as appended quiet notices, each model-visible source
     /// change since its epoch froze that it was not told yet. Its requests
     /// keep the epoch's prefix and see each change after it. A notice's
-    /// intent binds the epoch, the source, both digests and this process's
-    /// count, so a retry appends nothing twice; after a restart the first
-    /// delta restates the current state, which is redundant but cache-safe.
+    /// intent binds the epoch, the source, both digests and the durable
+    /// count. The retained outbox recovers a send interrupted by a crash;
+    /// unchanged requests use the in-memory frontier without storage reads.
     pub(super) async fn announce_changes(
         &self,
         agent: &crate::agent::AgentState,
@@ -110,62 +121,122 @@ impl LocalHarness {
             return Ok(());
         };
         let live = self.live_manifest(binding, publisher, Vec::new()).await?;
-        let told = self
+        let cached = self
             .told
             .lock()
             .map_err(|_| Error::Storage("context change lock poisoned".into()))?
-            .get(&agent.path)
-            .filter(|told| told.epoch == *epoch.manifest())
-            .map(|told| (told.digests.clone(), told.sent));
-        let (mut digests, mut sent) = match told {
+            .remove(&agent.path)
+            .filter(|told| told.epoch == *epoch.manifest());
+        let path = format!("{}.told.v1.json", epoch.manifest().path());
+        let mut told = match cached {
             Some(told) => told,
-            None => (epoch.digests(reader, self.limits).await?, 0),
+            None => {
+                let retained = reader
+                    .read_private_path(
+                        publisher.volume(),
+                        "inputs",
+                        &path,
+                        None,
+                        crate::conversation::MAX_EXACT_JS_INTEGER,
+                        crate::conversation::ContentAccess::default(),
+                    )?
+                    .await?;
+                let (file, state) = match retained {
+                    Some((file, bytes, _)) => {
+                        let state: ToldState = serde_json::from_slice(&bytes).map_err(storage)?;
+                        if state.version != 1 {
+                            return Err(Error::Invalid(
+                                "unsupported context delivery version".into(),
+                            ));
+                        }
+                        (Some(file), state)
+                    }
+                    None => (
+                        None,
+                        ToldState {
+                            version: 1,
+                            digests: epoch.digests(reader, self.limits).await?,
+                            sent: 0,
+                            pending: None,
+                        },
+                    ),
+                };
+                Told {
+                    epoch: epoch.manifest().clone(),
+                    file,
+                    state,
+                }
+            }
         };
         let by = crate::agent::Sender::Agent {
             path: agent.path.clone(),
         };
-        for change in ContextEpoch::changes(&digests, &live, reader).await? {
+        if let Some(pending) = told.state.pending.take() {
+            hosted
+                .agents()
+                .send(&agent.path, &by, &pending)
+                .await
+                .map_err(storage)?;
+        }
+        for change in ContextEpoch::changes(&told.state.digests, &live, reader).await? {
             let mut hash = blake3::Hasher::new_derive_key("acyclic.local.context-change.v1");
             hash.update(epoch.manifest().descriptor().sha256());
             hash.update(&(change.source.len() as u64).to_le_bytes());
             hash.update(change.source.as_bytes());
-            hash.update(digests.get(&change.source).unwrap_or(&[0; 32]));
+            hash.update(told.state.digests.get(&change.source).unwrap_or(&[0; 32]));
             hash.update(change.digest.as_ref().unwrap_or(&[0; 32]));
-            hash.update(&sent.to_le_bytes());
+            hash.update(&told.state.sent.to_le_bytes());
             let id = crate::agent::IntentId::try_from(format!(
                 "context:{}",
                 &hash.finalize().to_hex()[..32]
             ))
             .map_err(storage)?;
+            let operation =
+                publication_operation(b"acyclic.local.context-told/v1\0", id.as_str().as_bytes());
+            let record = crate::agent::InboxRecord::Notice {
+                id,
+                notice: crate::agent::NoticePayload::Quiet(change.notice),
+            };
+            match change.digest {
+                Some(digest) => told.state.digests.insert(change.source, digest),
+                None => told.state.digests.remove(&change.source),
+            };
+            told.state.sent += 1;
+            told.state.pending = Some(record.clone());
+            let bytes = serde_json::to_vec(&told.state).map_err(storage)?;
+            // The generation check prevents two writers from advancing the
+            // same frontier; the operation receipt recovers an uncertain write.
+            let (file, _) = match &told.file {
+                Some(file) => {
+                    publisher
+                        .stage_at(operation, file, &bytes, None, None)?
+                        .await?
+                }
+                None => {
+                    publisher
+                        .stage_once(
+                            operation,
+                            &path,
+                            &bytes,
+                            "application/json",
+                            "context-delivery.json",
+                            crate::conversation::ContentAccess::default(),
+                        )?
+                        .await?
+                }
+            };
+            told.file = Some(file);
             hosted
                 .agents()
-                .send(
-                    &agent.path,
-                    &by,
-                    &crate::agent::InboxRecord::Notice {
-                        id,
-                        notice: crate::agent::NoticePayload::Quiet(change.notice),
-                    },
-                )
+                .send(&agent.path, &by, &record)
                 .await
                 .map_err(storage)?;
-            match change.digest {
-                Some(digest) => digests.insert(change.source, digest),
-                None => digests.remove(&change.source),
-            };
-            sent += 1;
+            told.state.pending = None;
         }
         self.told
             .lock()
             .map_err(|_| Error::Storage("context change lock poisoned".into()))?
-            .insert(
-                agent.path.clone(),
-                Told {
-                    epoch: epoch.manifest().clone(),
-                    digests,
-                    sent,
-                },
-            );
+            .insert(agent.path.clone(), told);
         Ok(())
     }
 
