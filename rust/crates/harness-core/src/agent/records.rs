@@ -37,7 +37,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 11 adds admitted boundary steering and next-turn messages.
 /// Version 12 retains template capabilities only in their immutable source.
 /// Version 13 uses named MessagePack values after a four-byte big-endian version.
-pub const RECORD_VERSION: u32 = 13;
+/// Version 14 records forced continuation provenance in the creation profile.
+pub const RECORD_VERSION: u32 = 14;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -220,6 +221,8 @@ pub enum SpawnContext {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreationConfig {
+    /// Present only on an explicitly continued decider, never inherited by spawns.
+    pub continuation: Option<Box<super::Continuation>>,
     /// Conversation selected at creation, independent of a template name.
     pub context: SpawnContext,
     /// The exact original template file, absent for the root default.

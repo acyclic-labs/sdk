@@ -7,7 +7,7 @@ use crate::{
     Error, LocalHarness, LocalHarnessConfig, Result,
     agent::ConversationEntry,
     context::ModelContextCapacity,
-    conversation::{VolumeClass, VolumeOwner, VolumeRef},
+    conversation::{ContentResidencyVerifier, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::FilesystemHost,
     local::{Event, agent_conversation::Conversation},
     model::{Model, ModelProvider},
@@ -81,7 +81,31 @@ async fn request_text(
     harness: &LocalHarness,
     request: &crate::model::ModelRequest,
 ) -> Result<String> {
-    let reader = harness.client_reader()?;
+    // Requests may name inherited inputs and a child's tool results. Inspect
+    // exactly their immutable descriptors, rather than the root's volumes.
+    let grants = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.file_parts())
+        .map(|(file, _)| file.read_capability(&mut None))
+        .collect::<Result<Vec<_>>>()?;
+    let scope = harness
+        .root_authority
+        .as_ref()
+        .expect("scripted requests have local signing custody")
+        .bootstrap_scope(
+            "request-inspection",
+            &crate::Capabilities::new(grants),
+            None,
+            &mut None,
+        )?;
+    let reader = crate::filesystem::FilesystemContentVerifier::new(
+        Arc::clone(&harness.files),
+        &harness.verifier,
+        &scope,
+        harness.limits.file_bytes,
+        None,
+    )?;
     let mut text = String::new();
     for message in &request.messages {
         if let crate::model::ModelContent::Text(body) = &message.content {

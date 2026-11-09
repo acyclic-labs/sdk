@@ -246,6 +246,85 @@ fn verify_execution_payloads(lines: &[Value]) {
 }
 
 #[tokio::test]
+async fn forced_continuation_launches_independent_runs_from_a_trace_cut() {
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
+    let trace = succeeded(
+        &graphcoder(
+            &fixture,
+            &model.catalog,
+            vec![
+                "--output-format",
+                "jsonl",
+                "--operation",
+                "parent",
+                "exec",
+                "prefix",
+            ],
+            "",
+        )
+        .await,
+    );
+    let cut = trace
+        .lines()
+        .find_map(|line| {
+            let event: Value = serde_json::from_str(line).unwrap();
+            let resource = event["resource"].as_str()?;
+            let path = acyclic_stream::wire_codec::session::stream_path(resource).ok()?;
+            let agent = path.as_str().strip_suffix("/conversation")?;
+            Some(format!("{agent}@0"))
+        })
+        .expect("conversation event identifies the source run");
+    let override_file = fixture._directory.path().join("override.json");
+    std::fs::write(
+        &override_file,
+        r#"{"version":1,"override_item":{"kind":"assistant","text":"forced answer","calls":[]}}"#,
+    )
+    .unwrap();
+    for operation in ["fork-a", "fork-b", "fork-a"] {
+        let output = graphcoder(
+            &fixture,
+            &model.catalog,
+            vec![
+                "--fork-from",
+                &cut,
+                "--override",
+                override_file.to_str().unwrap(),
+                "--operation",
+                operation,
+                "exec",
+                "continue",
+            ],
+            "",
+        )
+        .await;
+        assert_eq!(succeeded(&output), "forced answer\n");
+    }
+    assert_eq!(
+        model.generated(),
+        1,
+        "forced actions and operation replay never sample"
+    );
+    let control = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--fork-from",
+            &cut,
+            "--operation",
+            "control",
+            "exec",
+            "continue",
+        ],
+        "",
+    )
+    .await;
+    assert_eq!(succeeded(&control), "fixture answer\n");
+    assert_eq!(model.generated(), 2);
+    model.close().await;
+}
+
+#[tokio::test]
 async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     let fixture = fixture();
     // The actual CLI processes share only the parent's in-memory fixture store;

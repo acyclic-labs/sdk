@@ -16,6 +16,7 @@ impl StockExecutor {
         tools: ToolRegistry,
     ) -> Self {
         Self {
+            intervention: None,
             model,
             sampling: Default::default(),
             resolved_sampling: once_cell::sync::OnceCell::new(),
@@ -37,6 +38,14 @@ impl StockExecutor {
             reconciliation_only: false,
             live_reply: None,
         }
+    }
+
+    /// Injects one instruction or replaces the first response step. The ordinary
+    /// journal retains the delta; later steps use the original provider.
+    #[must_use]
+    pub fn with_intervention(mut self, item: crate::agent::ContinuationOverride) -> Self {
+        self.intervention = Some(Arc::new(item));
+        self
     }
 
     /// Stages each model dispatch's text while it streams; see [`LiveReply`].

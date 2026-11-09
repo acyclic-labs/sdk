@@ -244,14 +244,20 @@ impl AgentState {
         })
     }
 
-    /// `file` when it is exactly the brief this agent's adoption named, the
-    /// one file outside its own volumes it may read; otherwise nothing.
+    /// `file` when this agent's immutable adoption names it: its brief,
+    /// template, or continuation request. No other external file is admitted.
     #[must_use]
-    pub fn brief_grant<'f>(&self, file: &'f FileRef) -> &'f [FileRef] {
+    pub fn adoption_grant<'f>(&self, file: &'f FileRef) -> &'f [FileRef] {
         let named = self
             .brief
             .is_some_and(|brief| brief_identity(file).is_ok_and(|identity| identity == brief));
-        if named {
+        let creation = self.profile.as_ref();
+        let pinned = creation.and_then(|creation| creation.template.as_ref()) == Some(file)
+            || creation
+                .and_then(|creation| creation.continuation.as_ref())
+                .and_then(|continuation| continuation.override_item.as_ref())
+                == Some(file);
+        if named || pinned {
             std::slice::from_ref(file)
         } else {
             &[]

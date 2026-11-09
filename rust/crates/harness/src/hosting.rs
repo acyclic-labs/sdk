@@ -811,7 +811,29 @@ where
                     return Err(Error::SpawnRefused(SpawnRefusal::Unhosted));
                 }
                 // The parent's role admits the child's before anything commits.
-                let profile = self.bound.child_profile(parent, role).await?;
+                let continuation = match command {
+                    AgentCommand::Fork { continuation, .. } => continuation.as_ref(),
+                    _ => None,
+                };
+                let mut profile = if let Some(request) = continuation {
+                    if request.version != 1 {
+                        return Err(Error::Record("unsupported continuation version; use v1"));
+                    }
+                    let mut profile = agents
+                        .state(parent)
+                        .await?
+                        .profile
+                        .ok_or(Error::Record("continuation requires a hosted decider"))?;
+                    if profile.context != crate::agent::SpawnContext::TopLevel
+                        && profile.continuation.is_none()
+                    {
+                        return Err(Error::Record("continuation v1 requires a decider"));
+                    }
+                    profile.context = crate::agent::SpawnContext::Fork;
+                    profile
+                } else {
+                    self.bound.child_profile(parent, role).await?
+                };
                 // A fork selects history, which a fresh-context role cannot
                 // inherit; it is refused before the parent's inbox admits it.
                 if matches!(command, AgentCommand::Fork { .. })
@@ -828,6 +850,48 @@ where
                         )
                         .await
                         .map_err(|error| Error::Turn(Box::new(error)))?;
+                        if let Some(request) = continuation {
+                            let override_item = if request.override_item.is_some() {
+                                let source = serde_json::to_string(request)
+                                    .map_err(|_| Error::Record("continuation cannot encode"))?;
+                                Some(
+                                    self.bound
+                                        .stage_text(
+                                            parent,
+                                            "continuation",
+                                            by,
+                                            id,
+                                            (&source, &source),
+                                        )
+                                        .await?,
+                                )
+                            } else {
+                                None
+                            };
+                            profile.continuation = Some(Box::new(crate::agent::Continuation {
+                                version: 1,
+                                parent_run_id: parent.clone(),
+                                stream_offset: *at,
+                                workspace_generations: saved
+                                    .volumes
+                                    .iter()
+                                    .map(|volume| crate::agent::HistoryVolume {
+                                        binding: volume.binding.clone(),
+                                        generation: volume.generation,
+                                    })
+                                    .collect(),
+                                override_item,
+                                live_children_at_cut: saved.live_children,
+                                non_replay_manifest: [
+                                    "wall_clocks",
+                                    "web_network",
+                                    "external_machine_state",
+                                    "model_sampling",
+                                ]
+                                .map(str::to_owned)
+                                .to_vec(),
+                            }));
+                        }
                         Some(crate::agent::HistorySelection {
                             conversation: saved.conversation,
                             checkpoint: saved.checkpoint,

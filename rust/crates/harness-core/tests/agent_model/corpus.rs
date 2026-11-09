@@ -99,6 +99,7 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
             "fork-adopted",
             InboxRecord::ForkAdopted(Box::new(ForkAdopted {
                 profile: Some(CreationConfig {
+                    continuation: None,
                     context: SpawnContext::Fork,
                     template: Some(notice_file()?),
                     peers: Default::default(),

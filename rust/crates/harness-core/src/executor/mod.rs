@@ -630,6 +630,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
 pub struct StockExecutor {
+    intervention: Option<Arc<crate::agent::ContinuationOverride>>,
     model: Model,
     sampling: Option<crate::model::ModelSampling>,
     resolved_sampling: once_cell::sync::OnceCell<crate::model::ModelSampling>,

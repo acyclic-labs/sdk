@@ -587,6 +587,7 @@ async fn trial(
         .ok_or_else(|| invalid("assignment names no arm"))?;
     let AgentReply::Spawned { agent, .. } = connection
         .execute(&AgentCommand::Fork {
+            continuation: None,
             parent: root.clone(),
             id: intent(format!(
                 "{operation}:{}:{}",
