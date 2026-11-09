@@ -904,9 +904,41 @@ async fn large_call_names_stream_without_losing_results_or_receipts() -> Result<
         allowed()?,
     )?;
     let journal = Journal::default();
-    executor.execute(input(), &journal).await?;
-    let value = result(&model);
-    assert_eq!(value, 42);
+    // This is a tool settlement boundary, independent of model context capacity.
+    let operation = OperationId::new();
+    let invocation = ToolInvocation::for_model_call(
+        operation,
+        0,
+        "program".into(),
+        "code".into(),
+        json!({"code":code}),
+        None,
+    )?;
+    let mut messages = vec![ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+            invocation.call_id.clone(),
+            invocation.name.clone(),
+            invocation.arguments.clone(),
+        ))),
+    }];
+    let progress = StockExecution::ordinary(&executor)
+        .settle_tool_call(
+            &journal,
+            operation,
+            0,
+            invocation,
+            0,
+            &mut messages,
+            &mut Vec::new(),
+        )
+        .await?;
+    let ExecutionProgress::Ready(Some((receipt, _hold))) = progress else {
+        panic!("large-name tool settlement did not retain its result");
+    };
+    let value = crate::tools::code_mode::output(&receipt.value)?;
+    assert_eq!(value, &json!(42));
+    assert!(model.requests().is_empty());
     assert!(value.get("omitted_calls").is_none());
     assert_eq!(echo.0.load(Ordering::SeqCst), 2);
     assert_eq!(logs(&journal).as_array().unwrap().len(), 2);
