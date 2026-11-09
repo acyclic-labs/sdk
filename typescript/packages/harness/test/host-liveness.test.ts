@@ -11,7 +11,7 @@ async function setup() {
   const keys = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]) as CryptoKeyPair;
   const key = [...new Uint8Array(await crypto.subtle.exportKey("raw", keys.publicKey))];
   const trust = { trust: new TextEncoder().encode(JSON.stringify({ environment: "test", environment_keys: [key],
-    account: "account", issuer_keys: [key], minimum_key_epoch: 1, revoked_key_ids: [], revoked_block_ids: [] })),
+    account: "account", issuer_keys: [key], minimum_key_epoch: 1, environment_keys_valid_until: null, revoked_key_ids: [], revoked_block_ids: [] })),
     audience: "workers:/test", holder: "account" };
   const authority = new WasmSessionAuthority(new TextDecoder().decode(trust.trust), trust.audience, trust.holder);
   return { agent, fixture, authority, trust };

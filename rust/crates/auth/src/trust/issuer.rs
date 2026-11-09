@@ -67,8 +67,8 @@ fn sign(key: &SigningKey, domain: &[u8], claims: &impl Message) -> Result<Vec<u8
 }
 
 impl Issuer {
-    /// Environment custody. `key` must be a current environment key; at
-    /// genesis it is the follower's pinned anchor.
+    /// Environment custody. `key` must be a current environment key; before
+    /// any environment keyring it is an anchor key.
     #[must_use]
     pub fn new(environment: impl Into<String>, key: SigningKey) -> Self {
         Self {
@@ -83,7 +83,7 @@ impl Issuer {
         &self.environment
     }
 
-    /// This custodian's public key: the pinned anchor of a new environment.
+    /// This custodian's public key: the anchor of a new environment.
     #[must_use]
     pub fn anchor(&self) -> Vec<BlockId> {
         vec![self.key.verifying_key().to_bytes()]

@@ -26,8 +26,8 @@ proptest! {
     fn arbitrary_noncanonical_request_facts_are_typed_denials(resource in any::<String>(), audience in any::<String>()) {
         let blocks = vec![root()]; let attributes = RecordAttributes::default(); let usage = limits(None);
         let result = permits(&blocks, &request(&resource, &audience, &attributes, &usage), PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact);
-        if !valid_resource(&resource) { prop_assert_eq!(result, Err(Deny::NonCanonicalResource)); }
-        else if !valid_resource(&audience) { prop_assert_eq!(result, Err(Deny::NonCanonicalAudience)); }
+        if !valid_resource(&resource) { prop_assert_eq!(result, Err(Deny::Malformed)); }
+        else if !valid_resource(&audience) { prop_assert_eq!(result, Err(Deny::Malformed)); }
     }
 
     #[test]
@@ -120,6 +120,6 @@ fn large_component_lists_validate_without_decoding_buffers() {
             PolicyDecision::Allow,
             acyclic_auth::authority::Scope::Exact
         ),
-        Err(Deny::NonCanonicalResource)
+        Err(Deny::Malformed)
     );
 }

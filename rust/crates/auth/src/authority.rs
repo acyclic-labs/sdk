@@ -16,22 +16,8 @@ pub enum PolicyDecision {
 
 pub use crate::method::Scope;
 
-/// Fail-closed authorization outcome, including malformed request facts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum Deny {
-    /// The product resource is not in its unique encoded spelling.
-    #[error("non-canonical request resource")]
-    NonCanonicalResource,
-    /// The authenticated recipient is not a canonical resource name.
-    #[error("non-canonical request audience")]
-    NonCanonicalAudience,
-    /// The owning product denied the request.
-    #[error("owner policy denied the request")]
-    OwnerPolicy,
-    /// The chain does not cover the request.
-    #[error("capability denied the request")]
-    Capability,
-}
+/// Final authorization outcome shared by every product and transport.
+pub use crate::DenialCause as Deny;
 
 /// Typed operation facts; resource grants never authorize socket destinations.
 #[derive(Clone, Copy, Debug)]
@@ -323,39 +309,54 @@ fn generation_open<'a>(pattern: &str, name: &'a str) -> std::borrow::Cow<'a, str
     name.into()
 }
 
-fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
+fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> Result<(), Deny> {
     if matches!(r.target, Target::Context) {
-        return true;
+        return Ok(());
     }
-    set.grants.iter().any(|g| grant_allows(g, r, record_facts))
+    let mut denied = Deny::NotCovered;
+    for grant in &set.grants {
+        match grant_verdict(grant, r, record_facts) {
+            Ok(()) => return Ok(()),
+            Err(Deny::QuotaDenied) => denied = Deny::QuotaDenied,
+            Err(_) => {}
+        }
+    }
+    Err(denied)
 }
 
 fn grant_allows(g: &Grant, r: &Request<'_>, record_facts: bool) -> bool {
+    grant_verdict(g, r, record_facts).is_ok()
+}
+
+fn grant_verdict(g: &Grant, r: &Request<'_>, record_facts: bool) -> Result<(), Deny> {
     #[cfg(test)]
     acyclic_test_support::differential::record(GrantMatch);
     let Target::Resource { action, resource } = r.target else {
-        return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
+        return if matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination))
+        {
+            Ok(())
+        } else {
+            Err(Deny::NotCovered)
+        };
     };
-    let grant = match &g.kind {
-        GrantKind::Resource(g) => g,
-        GrantKind::Execution(g)
-            if g.cpu_millis.is_none_or(|n| r.cpu_millis <= n)
+    let (grant, within_quota) = match &g.kind {
+        GrantKind::Resource(g) => (g, true),
+        GrantKind::Execution(g) => (
+            &g.grant,
+            g.cpu_millis.is_none_or(|n| r.cpu_millis <= n)
                 && g.memory_bytes.is_none_or(|n| r.memory_bytes <= n)
                 && g.max_concurrency
-                    .is_none_or(|n| r.usage.concurrency.unwrap_or(0) <= n) =>
-        {
-            &g.grant
-        }
-        GrantKind::Billing(g)
-            if g.spend_micros
-                .is_none_or(|n| r.usage.spend_micros.unwrap_or(0) <= n) =>
-        {
-            &g.grant
-        }
-        GrantKind::Filesystem(g) => &g.grant,
-        _ => return false,
+                    .is_none_or(|n| r.usage.concurrency.unwrap_or(0) <= n),
+        ),
+        GrantKind::Billing(g) => (
+            &g.grant,
+            g.spend_micros
+                .is_none_or(|n| r.usage.spend_micros.unwrap_or(0) <= n),
+        ),
+        GrantKind::Filesystem(g) => (&g.grant, true),
+        _ => return Err(Deny::NotCovered),
     };
-    grant.actions.iter().any(|a| a == action)
+    if grant.actions.iter().any(|a| a == action)
         && (resource_matches(&grant.resource, resource)
             || !record_facts
                 && matches!(action, "streams/list" | "fs/list")
@@ -366,6 +367,15 @@ fn grant_allows(g: &Grant, r: &Request<'_>, record_facts: bool) -> bool {
                     },
                     &grant.resource.name,
                 ))
+    {
+        if within_quota {
+            Ok(())
+        } else {
+            Err(Deny::QuotaDenied)
+        }
+    } else {
+        Err(Deny::NotCovered)
+    }
 }
 // An allowance limits spend on the billing products it covers and admits no
 // other billed work. The action catalog says what each action bills: unmetered
@@ -610,85 +620,111 @@ fn permits_inner<const CURRENT: bool>(
         _ => false,
     };
     if !admitted {
-        return Err(Deny::Capability);
+        return Err(Deny::NotCovered);
     }
     if matches!(r.target, Target::Resource { resource, .. } if !crate::valid_resource(resource)) {
-        return Err(Deny::NonCanonicalResource);
+        return Err(Deny::Malformed);
     }
     if !crate::valid_resource(r.audience) {
-        return Err(Deny::NonCanonicalAudience);
+        return Err(Deny::Malformed);
     }
     if policy == PolicyDecision::Deny {
         return Err(Deny::OwnerPolicy);
     }
-    if permits_canonical::<CURRENT>(
+    permits_canonical::<CURRENT>(
         blocks,
         r,
         scope == Scope::Exact && !matches!(r.target, Target::Context),
-    ) {
-        Ok(())
-    } else {
-        Err(Deny::Capability)
-    }
+    )
 }
 
 fn permits_canonical<const CURRENT: bool>(
     blocks: &[Block],
     r: &Request<'_>,
     record_facts: bool,
-) -> bool {
+) -> Result<(), Deny> {
     if !CURRENT && !valid_chain(blocks) {
-        return false;
+        return Err(Deny::Malformed);
     }
     let Some(certificates) = blocks.first().and_then(|block| block.certificates.as_ref()) else {
-        return false;
+        return Err(Deny::Malformed);
     };
     let Some(leaf) = certificates.keys.last() else {
-        return false;
+        return Err(Deny::Malformed);
     };
-    if !certificates.keys.iter().all(|cert| {
+    for cert in &certificates.keys {
         let key = &cert.key;
-        (CURRENT
-            || r.now_unix_seconds >= key.validity.not_before_unix_seconds
-                && r.now_unix_seconds < key.validity.expires_at_unix_seconds)
-            && grants_allow(&key.grants, r, record_facts)
-    }) || !allowances_cover(blocks, certificates, r)
-    {
-        return false;
+        if !CURRENT
+            && (r.now_unix_seconds < key.validity.not_before_unix_seconds
+                || r.now_unix_seconds >= key.validity.expires_at_unix_seconds)
+        {
+            return Err(Deny::Expired);
+        }
+        grants_allow(&key.grants, r, record_facts)?;
     }
-    blocks.iter().enumerate().all(|(i, block)| {
-        block.caveats.iter().all(|c| match &c.kind {
-            CaveatKind::Grants(set) => grants_allow(set, r, record_facts),
-            CaveatKind::ExpiresAtUnixSeconds(t) => CURRENT || r.now_unix_seconds < *t,
-            CaveatKind::NotBeforeUnixSeconds(t) => CURRENT || r.now_unix_seconds >= *t,
-            CaveatKind::Audience(a) => !a.prefix && resource_matches(a, r.audience),
-            CaveatKind::Holder(h) => h
-                .account
-                .as_deref()
-                .is_none_or(|account| r.holder == Some(account)),
-            CaveatKind::Filter(f) => {
-                !record_facts || filter_allows(f, r, &leaf.key.principal, blocks, i)
-            }
-            CaveatKind::Pin(pin) => {
-                !record_facts
-                    || r.attributes.as_slice().iter().any(|a| {
-                        a.name == pin.name
-                            && match &pin.value {
-                                PinValue::Literal(v) => a.value == *v,
-                                PinValue::SubjectId(_) => {
-                                    a.value == acting(&leaf.key.principal, blocks, i).as_bytes()
+    if !allowances_cover(blocks, certificates, r) {
+        return Err(Deny::NotCovered);
+    }
+    for (i, block) in blocks.iter().enumerate() {
+        for c in &block.caveats {
+            let (allowed, cause) = match &c.kind {
+                CaveatKind::Grants(set) => {
+                    grants_allow(set, r, record_facts)?;
+                    continue;
+                }
+                CaveatKind::ExpiresAtUnixSeconds(t) => {
+                    (CURRENT || r.now_unix_seconds < *t, Deny::Expired)
+                }
+                CaveatKind::NotBeforeUnixSeconds(t) => {
+                    (CURRENT || r.now_unix_seconds >= *t, Deny::Expired)
+                }
+                CaveatKind::Audience(a) => (
+                    !a.prefix && resource_matches(a, r.audience),
+                    Deny::WrongAudience,
+                ),
+                CaveatKind::Holder(h) => (
+                    h.account
+                        .as_deref()
+                        .is_none_or(|account| r.holder == Some(account)),
+                    Deny::WrongAccount,
+                ),
+                CaveatKind::Filter(f) => (
+                    !record_facts || filter_allows(f, r, &leaf.key.principal, blocks, i),
+                    Deny::NotCovered,
+                ),
+                CaveatKind::Pin(pin) => (
+                    !record_facts
+                        || r.attributes.as_slice().iter().any(|a| {
+                            a.name == pin.name
+                                && match &pin.value {
+                                    PinValue::Literal(v) => a.value == *v,
+                                    PinValue::SubjectId(_) => {
+                                        a.value == acting(&leaf.key.principal, blocks, i).as_bytes()
+                                    }
                                 }
-                            }
-                    })
+                        }),
+                    Deny::NotCovered,
+                ),
+                CaveatKind::Limits(limits) => (limits_allow(limits, r.usage), Deny::QuotaDenied),
+                CaveatKind::Allowance(signed) => {
+                    if !CURRENT && r.now_unix_seconds >= signed.allowance.expires_at_unix_seconds {
+                        return Err(Deny::Expired);
+                    }
+                    (
+                        r.usage.spend_micros.unwrap_or(0) <= signed.allowance.spend_micros,
+                        Deny::QuotaDenied,
+                    )
+                }
+                CaveatKind::LineageAppend(_) | CaveatKind::MaxDepth(_) | CaveatKind::Label(_) => {
+                    continue;
+                }
+            };
+            if !allowed {
+                return Err(cause);
             }
-            CaveatKind::Limits(limits) => limits_allow(limits, r.usage),
-            CaveatKind::Allowance(signed) => {
-                (CURRENT || r.now_unix_seconds < signed.allowance.expires_at_unix_seconds)
-                    && r.usage.spend_micros.unwrap_or(0) <= signed.allowance.spend_micros
-            }
-            CaveatKind::LineageAppend(_) | CaveatKind::MaxDepth(_) | CaveatKind::Label(_) => true,
-        })
-    })
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

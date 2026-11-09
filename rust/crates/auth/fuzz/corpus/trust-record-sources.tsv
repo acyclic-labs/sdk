@@ -1,4 +1,6 @@
 # Original SDK writer output; public deterministic test keys
+snapshot-unbounded	415	e997e9871966dd04adbc116c596a071d47d11493a140b88d308dc20768139e54	Follower::snapshot(account,100); Issuer::genesis(account,key[2;32],100); fixed anchor key[1;32]; serde_json::to_vec
+snapshot-retiring	532	52c86154c4a79f792baebc5e4a300cbbb81d8bcfc1a3ff57129b847fa041dca3	Follower::snapshot(account,100); AnchorKeys::rotate(key[9;32],100,20) after genesis; serde_json::to_vec
 foreign-keyring	152	4e4a89da1320c09efa8870519f34f21f00ddc6ffd4176c34aa8ba0d8ab038195	Issuer::genesis(other, signing-key[3;32],100)[0]
 foreign-checkpoint	81	286974b1c5b40fb16acf31e161c0fc9a947cc0cf44f31600db3fb24b470b8329	Issuer::genesis(other, signing-key[3;32],100)[1]
 selected-epoch	154	11e00931fcb65930f117523fd8f0da5fb3d9fb8b53d92816f4d0bcb5ff74c190	AccountRoot::raise_minimum_epoch(2,100); original account key[2;32]

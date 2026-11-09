@@ -183,14 +183,16 @@ impl NativeMachine for LocalBackend {
         };
         tokio::select! {
             biased;
+            // The original execution may itself mark retirement uncertain.
+            // Keep its ready result before observing that same state change.
+            execution = self.machine.exec(command, owner, until) => {
+                wait.completed = true;
+                Ok(Box::pin(execution) as ExecStream)
+            }
             _ = observed.wait_for(|state| *state != PhysicalState::Live) => {
                 Ok(Box::pin(futures::stream::iter([
                     Err(ProviderError::CommandIndeterminate(self.machine.id)),
                 ])) as ExecStream)
-            }
-            execution = self.machine.exec(command, owner, until) => {
-                wait.completed = true;
-                Ok(Box::pin(execution) as ExecStream)
             }
         }
     }

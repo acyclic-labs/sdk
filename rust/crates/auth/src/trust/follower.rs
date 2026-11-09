@@ -6,8 +6,15 @@
 //! [`SignedRevocation`] records in one total order. Every record value is one
 //! canonical [`TrustRecord`].
 //!
-//! Signers. A pinned anchor key signs environment keyring 1; each later
-//! environment keyring is signed by a key of the previous one. Each account
+//! Signers. Each environment keyring is signed by a key of the previous one.
+//! The configured anchor ([`AnchorKeys`], read live from its owner's watch,
+//! one snapshot per record) authenticates a keyring with no applied
+//! predecessor: one it signed, or one naming only anchor keys. Cold history
+//! may predate the current anchor, so a follower with no applied keyring
+//! accepts the first such keyring at any sequence; earlier records are
+//! superseded, never applied. Until then the anchor itself is the
+//! environment's key set. A retired anchor key authenticates nothing after
+//! its overlap window. Each account
 //! keyring names a single `root_public_key`, the account's only issuer root:
 //! an environment key may sign any keyring and is the only signer that sets a
 //! new root (rotation ends the previous root); the current root may sign one
@@ -35,7 +42,7 @@
 //! keyring publication also checks the environment revision it authenticated.
 //! Environment signatures hold no publication lock and must extend the same
 //! retained environment revision when they publish.
-use super::{ChangeSource, Changed, SourceClosed};
+use super::{AnchorKeys, AnchorSource, ChangeSource, Changed, SourceClosed};
 use crate::{
     ENVIRONMENT_DOMAIN, KEYRING_DOMAIN,
     contract::*,
@@ -87,48 +94,62 @@ pub enum Applied {
 #[derive(Clone)]
 pub struct EnvironmentFrontier {
     name: String,
+    anchor: AnchorKeys,
     revision: EnvironmentRevision,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct EnvironmentRevision {
+    // Every applied revision owns new backing; retained identity covers proof
+    // changes even when the wire sequence and digest stay the same.
     keys: Arc<[BlockId]>,
     sequence: u64,
     digest: BlockId,
     issued_at: u64,
+    /// A trusted key signed this position. Until one does, the anchor is the
+    /// key set and the recorded position is replaceable.
+    proven: bool,
 }
 
 impl EnvironmentFrontier {
-    /// The frontier before environment keyring 1: only `anchor` signs.
+    /// The frontier before any environment keyring: only `anchor`
+    /// authenticates.
     #[must_use]
-    pub fn genesis(environment: impl Into<String>, anchor: Vec<BlockId>) -> Self {
+    pub fn genesis(environment: impl Into<String>, anchor: AnchorKeys) -> Self {
         Self {
             name: environment.into(),
-            revision: EnvironmentRevision {
-                keys: anchor.into(),
-                sequence: 0,
-                digest: [0; 32],
-                issued_at: 0,
-            },
+            anchor,
+            revision: EnvironmentRevision::default(),
         }
     }
 
-    /// Replays the environment Stream's records from genesis, through the
-    /// same validation as [`Follower::apply`].
+    /// Replays the environment Stream's records from its start, through the
+    /// same validation and trusted time `now` as [`Follower::apply`]. Records
+    /// before the first one `anchor` authenticates are superseded history.
     ///
     /// # Errors
-    /// A gap, a foreign signer, a rollback, or a non-environment record.
+    /// A gap, a foreign signer, a rollback, a non-environment record, or
+    /// records none of which `anchor` authenticates.
     pub fn resume(
         environment: impl Into<String>,
-        anchor: Vec<BlockId>,
+        anchor: AnchorKeys,
         records: &[&[u8]],
+        now: u64,
     ) -> Result<Self, VerifyError> {
         let mut frontier = Self::genesis(environment, anchor);
         for record in records {
             let TrustRecordKind::Environment(signed) = decode(record)?.record else {
                 return Err(VerifyError::Trust);
             };
-            frontier.apply(&signed, u64::MAX)?;
+            match frontier.apply(&signed, now) {
+                Err(_) if frontier.revision.cold() => {}
+                result => {
+                    result?;
+                }
+            }
+        }
+        if !records.is_empty() && frontier.revision.sequence == 0 {
+            return Err(VerifyError::Trust);
         }
         Ok(frontier)
     }
@@ -139,10 +160,14 @@ impl EnvironmentFrontier {
         &self.name
     }
 
-    /// The current environment keys.
+    /// The current environment keys: before any keyring, the anchor's.
     #[must_use]
     pub fn keys(&self) -> &[BlockId] {
-        &self.revision.keys
+        if self.revision.cold() {
+            self.anchor.current()
+        } else {
+            &self.revision.keys
+        }
     }
 
     /// Last applied sequence (0 before keyring 1) and its digest.
@@ -167,25 +192,43 @@ impl EnvironmentFrontier {
         if signed.keyring.environment != self.name {
             return Err(VerifyError::Trust);
         }
-        self.revision.apply(signed, now)
+        self.revision.apply(signed, &self.anchor, now)
     }
 }
 
 impl EnvironmentRevision {
+    /// No trusted key signed this position: the anchor is the key set.
+    const fn cold(&self) -> bool {
+        !self.proven
+    }
+
+    /// The environment keys at `now` under the anchor snapshot `anchor`.
+    fn keys(&self, anchor: &AnchorKeys, now: u64) -> Arc<[BlockId]> {
+        if self.cold() {
+            anchor.at(now)
+        } else {
+            Arc::clone(&self.keys)
+        }
+    }
+
+    /// Authenticates and applies the next keyring under one anchor snapshot.
     fn apply(
         &mut self,
         signed: &SignedEnvironmentKeyring,
+        anchor: &AnchorKeys,
         now: u64,
     ) -> Result<(Applied, u64), VerifyError> {
         let next = &signed.keyring;
-        if next.sequence <= self.sequence {
+        if self.proven && next.sequence <= self.sequence {
             return Ok((Applied::Duplicate, self.issued_at));
         }
-        if self.sequence.checked_add(1) != Some(next.sequence)
-            || next.previous_digest != self.digest
-            || next.issued_at_unix_seconds < self.issued_at
-            || next.keys.is_empty()
-        {
+        let linked = self.sequence.checked_add(1) == Some(next.sequence)
+            && next.previous_digest == self.digest
+            && next.issued_at_unix_seconds >= self.issued_at;
+        // A proven position admits only its successor. Without one, any
+        // keyring the anchor authenticates may establish a position: an
+        // unproven sequence never makes a later keyring a duplicate.
+        if !(linked || self.cold()) || next.sequence == 0 || next.keys.is_empty() {
             return Err(VerifyError::Trust);
         }
         if next.issued_at_unix_seconds > now {
@@ -197,9 +240,6 @@ impl EnvironmentRevision {
             ENVIRONMENT_DOMAIN,
             &EnvironmentKeyringProto::from(next.clone()),
         )?;
-        #[cfg(test)]
-        tests::environment_verifying();
-        signed_by(&self.keys, &message, &signed.signature)?;
         let keys = next
             .keys
             .iter()
@@ -209,11 +249,35 @@ impl EnvironmentRevision {
                     .map_err(|_| VerifyError::Malformed)
             })
             .collect::<Result<Vec<BlockId>, _>>()?;
+        #[cfg(test)]
+        tests::environment_verifying();
+        // The previous keyring signs its successor. Without a proven
+        // position the anchor snapshot proves a keyring it signed. A keyring
+        // naming only anchor keys but signed by an older key is recorded as
+        // an unproven position: it changes no trusted key, and its sequence,
+        // digest and signature stay unauthenticated until an anchor key
+        // signs a successor.
+        let digest = block_id(&message, &signed.signature);
+        let proven = if self.cold() {
+            let anchor = anchor.at(now);
+            match signed_by(&anchor, &message, &signed.signature) {
+                Ok(()) => true,
+                Err(_) if keys.iter().all(|key| anchor.contains(key)) => false,
+                Err(error) => return Err(error),
+            }
+        } else {
+            signed_by(&self.keys, &message, &signed.signature)?;
+            true
+        };
+        if !proven && next.sequence == self.sequence && digest == self.digest {
+            return Ok((Applied::Duplicate, self.issued_at));
+        }
         *self = Self {
             keys: keys.into(),
             sequence: next.sequence,
-            digest: block_id(&message, &signed.signature),
+            digest,
             issued_at: next.issued_at_unix_seconds,
+            proven,
         };
         Ok((Applied::Changed, next.issued_at_unix_seconds))
     }
@@ -325,7 +389,9 @@ pub enum FollowerState {
 
 /// Follows signed trust records for any number of accounts of one environment.
 pub struct Follower {
-    environment: RwLock<EnvironmentFrontier>,
+    name: String,
+    environment: RwLock<EnvironmentRevision>,
+    anchor: AnchorSource,
     environment_refusal: RwLock<Option<VerifyError>>,
     accounts: RwLock<HashMap<String, Arc<AccountEntry>>>,
     floor: AtomicU64,
@@ -355,13 +421,18 @@ enum Target<'a> {
 }
 
 impl Follower {
-    /// A fenced follower pinned to `environment`'s anchor keys. It serves trust
+    /// A fenced follower of `environment`, authenticated by the anchor its
+    /// owner publishes on `anchor` ([`AnchorKeys::fixed`] for one that never
+    /// rotates). Every authentication reads the latest published snapshot, so
+    /// no follower is pinned to the keys it was built with. It serves trust
     /// once its driver has applied every Stream up to the tail it observed and
     /// called [`Self::resume`].
     #[must_use]
-    pub fn new(environment: impl Into<String>, anchor: Vec<BlockId>) -> Self {
+    pub fn new(environment: impl Into<String>, anchor: impl Into<AnchorSource>) -> Self {
         Self {
-            environment: RwLock::new(EnvironmentFrontier::genesis(environment, anchor)),
+            name: environment.into(),
+            environment: RwLock::default(),
+            anchor: anchor.into(),
             environment_refusal: RwLock::new(None),
             accounts: RwLock::default(),
             floor: AtomicU64::new(0),
@@ -369,33 +440,6 @@ impl Follower {
             state: tokio::sync::watch::Sender::new(FollowerState::Connecting),
             global: tokio::sync::watch::Sender::new(()),
         }
-    }
-
-    /// Replace the owner's bootstrap keys before the first environment record
-    /// authenticates. An established signed chain keeps its original frontier;
-    /// an anchor update cannot replace its keys or skip a signed rotation.
-    /// The feed calls this only on an actual owner key-set publication.
-    ///
-    /// # Errors
-    /// Inaccessible frontier storage. This does not serve trust:
-    /// the refused record must still authenticate and catch up first.
-    pub fn reanchor(&self, anchor: Arc<[BlockId]>) -> Result<(), VerifyError> {
-        let retired = {
-            let mut environment = self
-                .environment
-                .write()
-                .map_err(|_| VerifyError::Unavailable)?;
-            if environment.revision.sequence != 0
-                || Arc::ptr_eq(&environment.revision.keys, &anchor)
-            {
-                return Ok(());
-            }
-            std::mem::replace(&mut environment.revision.keys, anchor)
-        };
-        drop(retired);
-        self.notify(None);
-        self.global.send_replace(());
-        Ok(())
     }
 
     /// Original environment-record failure behind the retryable refusal fence.
@@ -426,13 +470,33 @@ impl Follower {
     }
 
     /// The followed environment.
-    pub fn environment(&self) -> Result<String, VerifyError> {
-        Ok(self
+    #[must_use]
+    pub fn environment(&self) -> &str {
+        &self.name
+    }
+
+    /// The anchor's publications: a driver awaits `changed` on it to retry a
+    /// refused environment record, never probing.
+    #[must_use]
+    pub fn anchor(&self) -> Option<tokio::sync::watch::Receiver<AnchorKeys>> {
+        self.anchor.watch()
+    }
+
+    /// The anchor published a new snapshot. Before any environment keyring the
+    /// anchor is the environment's key set, so every dependency rechecks.
+    pub fn anchor_changed(&self) {
+        self.notify(None);
+        self.global.send_replace(());
+    }
+
+    /// Whether an environment keyring has been authenticated. Before one, a
+    /// refused environment record is history the anchor may yet authenticate.
+    pub fn environment_initialized(&self) -> Result<bool, VerifyError> {
+        Ok(!self
             .environment
             .read()
             .map_err(|_| VerifyError::Unavailable)?
-            .name
-            .clone())
+            .cold())
     }
 
     /// Authenticate and apply one Stream record at trusted time `now`. Trust is
@@ -564,19 +628,18 @@ impl Follower {
         signed: &SignedEnvironmentKeyring,
         now: u64,
     ) -> Result<(Applied, u64), VerifyError> {
-        let mut prepared = {
-            let environment = self
-                .environment
-                .read()
-                .map_err(|_| VerifyError::Unavailable)?;
-            if signed.keyring.environment != environment.name {
-                return Err(VerifyError::Trust);
-            }
-            environment.revision.clone()
-        };
-        let sequence = prepared.sequence;
+        if signed.keyring.environment != self.name {
+            return Err(VerifyError::Trust);
+        }
+        let mut prepared = self
+            .environment
+            .read()
+            .map_err(|_| VerifyError::Unavailable)?
+            .clone();
         let keys = prepared.keys.clone();
-        let result = prepared.apply(signed, now)?;
+        // Exactly one published anchor snapshot authenticates this record.
+        let anchor = self.anchor.snapshot();
+        let result = prepared.apply(signed, &anchor, now)?;
         if result.0 == Applied::Duplicate {
             return Ok(result);
         }
@@ -585,12 +648,14 @@ impl Follower {
                 .environment
                 .write()
                 .map_err(|_| VerifyError::Unavailable)?;
-            if environment.revision.sequence != sequence
-                || !Arc::ptr_eq(&environment.revision.keys, &keys)
-            {
-                return Err(VerifyError::Unavailable);
-            }
-            std::mem::replace(&mut environment.revision, prepared)
+            self.anchor.with_snapshot(|current| {
+                if !Arc::ptr_eq(&environment.keys, &keys)
+                    || (environment.cold() && !anchor.same(current))
+                {
+                    return Err(VerifyError::Unavailable);
+                }
+                Ok(std::mem::replace(&mut *environment, prepared))
+            })?
         };
         // The same signature proof can publish only against its captured
         // frontier. Retiring the replaced key owner holds no publication lock.
@@ -609,19 +674,16 @@ impl Follower {
         let mut account = entry.state.write().map_err(|_| VerifyError::Unavailable)?;
         let result = match record {
             TrustRecordKind::Keyring(signed) => {
-                let (keys, revision) = {
+                let keys = {
                     let environment = self
                         .environment
                         .read()
                         .map_err(|_| VerifyError::Unavailable)?;
-                    (
-                        environment.revision.keys.clone(),
-                        environment.revision.sequence,
-                    )
+                    let anchor = self.anchor.snapshot();
+                    environment.keys(&anchor, now)
                 };
-                prepare_keyring(&account, signed, &keys, now).and_then(|prepared| {
-                    self.publish_keyring(&mut account, revision, &keys, prepared)
-                })
+                prepare_keyring(&account, signed, &keys, now)
+                    .and_then(|prepared| self.publish_keyring(&mut account, &keys, now, prepared))
             }
             _ => account.apply(id, record, &[], now),
         };
@@ -637,20 +699,24 @@ impl Follower {
     fn publish_keyring(
         &self,
         account: &mut Account,
-        revision: u64,
-        keys: &Arc<[BlockId]>,
+        authenticated: &[BlockId],
+        now: u64,
         prepared: PreparedKeyring,
     ) -> Result<(Applied, u64), VerifyError> {
         let environment = self
             .environment
             .read()
             .map_err(|_| VerifyError::Unavailable)?;
-        if environment.revision.sequence != revision
-            || !Arc::ptr_eq(&environment.revision.keys, keys)
-        {
-            return Err(VerifyError::Unavailable);
-        }
-        let retired = prepared.next.and_then(|next| account.keyring.replace(next));
+        // Publish only while the keys that authenticated the keyring are still
+        // the environment's trusted keys. Comparing the key set itself covers
+        // every way they change: a new revision, an unproven position becoming
+        // proven, and an anchor publication.
+        let retired = self.anchor.with_snapshot(|anchor| {
+            if *environment.keys(anchor, now) != *authenticated {
+                return Err(VerifyError::Unavailable);
+            }
+            Ok(prepared.next.and_then(|next| account.keyring.replace(next)))
+        })?;
         // Retiring an old checkpoint can free accumulated indexes. It must not
         // retain the environment publication lock during that destruction.
         drop(environment);
@@ -798,6 +864,17 @@ impl Follower {
         });
     }
 
+    /// Environment keys at `now`, never earlier than the protected time floor:
+    /// a retired anchor key stops at its deadline without another record.
+    fn environment_keys_at(&self, now: u64) -> Result<Arc<[BlockId]>, VerifyError> {
+        let environment = self
+            .environment
+            .read()
+            .map_err(|_| VerifyError::Unavailable)?;
+        let anchor = self.anchor.snapshot();
+        Ok(environment.keys(&anchor, now.max(self.floor.load(Ordering::SeqCst))))
+    }
+
     fn check(&self) -> Result<(), VerifyError> {
         if matches!(*self.state.borrow(), FollowerState::Serving) {
             Ok(())
@@ -817,22 +894,33 @@ impl Follower {
 
     /// `account`'s current trust as a self-contained [`Snapshot`], for an owner
     /// that hands trust to an isolated guest along with its own publications.
+    /// `now` is the owner's trusted time, clamped to its protected floor.
+    /// An unproven environment retains its anchor's earliest retirement
+    /// deadline; the guest must refresh this snapshot before using it then.
     ///
     /// # Errors
     /// The same refusals as serving the account's trust.
-    pub fn snapshot(&self, account: &str) -> Result<super::Snapshot, VerifyError> {
-        let (environment, environment_keys) = {
-            let current = self
+    pub fn snapshot(&self, account: &str, now: u64) -> Result<super::Snapshot, VerifyError> {
+        let environment = self.name.clone();
+        let (environment_keys, environment_keys_valid_until) = {
+            let revision = self
                 .environment
                 .read()
                 .map_err(|_| VerifyError::Unavailable)?;
-            (current.name.clone(), current.revision.keys.to_vec())
+            if revision.cold() {
+                self.anchor
+                    .snapshot()
+                    .export(now.max(self.floor.load(Ordering::SeqCst)))
+            } else {
+                (revision.keys.to_vec(), None)
+            }
         };
         self.with_account(account, |keyring, revocations| {
             let (keys, blocks, floor) = revocations.revoked();
             super::Snapshot {
                 environment,
                 environment_keys,
+                environment_keys_valid_until,
                 account: account.into(),
                 issuer_keys: keyring.root.to_vec(),
                 minimum_key_epoch: keyring.minimum_key_epoch.max(floor),
@@ -1044,14 +1132,10 @@ fn revocation(
 }
 
 impl Trust for Follower {
-    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
+    fn environment_keys(&self, environment: &str, now: u64) -> Result<Keys<'_>, VerifyError> {
         self.check()?;
-        let current = self
-            .environment
-            .read()
-            .map_err(|_| VerifyError::Unavailable)?;
-        if current.name == environment {
-            Ok(Keys::Shared(current.revision.keys.clone()))
+        if self.name == environment {
+            Ok(Keys::Shared(self.environment_keys_at(now)?))
         } else {
             Err(VerifyError::Trust)
         }

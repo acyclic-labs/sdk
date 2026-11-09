@@ -13,7 +13,7 @@ struct DeferredRequest {
 }
 
 fn producer_lost(_: oneshot::Canceled) -> CredentialError {
-    CredentialError::Provider(Box::new(CredentialCacheError::Unavailable))
+    CredentialCacheError::Unavailable.into()
 }
 
 impl CredentialRequest for DeferredRequest {
@@ -84,9 +84,13 @@ fn deferred_owner_requires_its_event_and_preserves_exact_rejection_after_replace
                     .now_or_never()
                     .expect("producer loss must wake admission")
                     .unwrap_err();
-                assert!(
-                    matches!(error, CredentialError::Provider(source) if matches!(source.downcast_ref::<CredentialCacheError>(), Some(CredentialCacheError::Unavailable)))
-                );
+                assert!(matches!(
+                    error,
+                    CredentialError::Cache {
+                        source: CredentialCacheError::Unavailable,
+                        cause: None
+                    }
+                ));
             }
             _ => {
                 drop(admission);

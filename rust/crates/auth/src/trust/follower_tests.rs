@@ -88,7 +88,7 @@ fn world() -> World {
 }
 
 fn follower(world: &World) -> Follower {
-    let follower = Follower::new("test", world.issuer.anchor());
+    let follower = Follower::new("test", AnchorKeys::fixed(world.issuer.anchor()));
     for record in &world.genesis {
         assert_eq!(follower.apply(record, NOW), Ok(Applied::Changed));
     }
@@ -100,14 +100,14 @@ fn follower(world: &World) -> Follower {
 #[test]
 fn reanchor_during_account_verification_cannot_publish_the_old_proof() {
     let world = world();
-    let trust = Arc::new(Follower::new("test", world.issuer.anchor()));
+    let (owner, watched) = tokio::sync::watch::channel(AnchorKeys::new(world.issuer.anchor()));
+    let trust = Arc::new(Follower::new("test", watched));
+    let reset = owner.clone();
     let concurrent = trust.clone();
     VERIFYING_KEYRING.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move || {
             assert!(concurrent.environment.try_write().is_ok());
-            concurrent
-                .reanchor(Issuer::new("test", key(9)).anchor().into())
-                .unwrap();
+            owner.send_replace(AnchorKeys::new(Issuer::new("test", key(9)).anchor()));
         }));
     });
     assert_eq!(
@@ -125,7 +125,7 @@ fn reanchor_during_account_verification_cannot_publish_the_old_proof() {
             .keyring
             .is_none()
     );
-    trust.reanchor(world.issuer.anchor().into()).unwrap();
+    reset.send_replace(AnchorKeys::new(world.issuer.anchor()));
     assert_eq!(
         trust.apply_account("account", &world.genesis[0], NOW),
         Ok(Applied::Changed)
@@ -140,28 +140,29 @@ fn reanchor_wakes_global_and_account_trust_dependencies() {
     let mut account = trust.changed_for("account");
     assert!((&mut global).now_or_never().is_none());
     assert!((&mut account).now_or_never().is_none());
-    let current = Issuer::new("test", key(9)).anchor();
-    trust.reanchor(current.clone().into()).unwrap();
+    trust.anchor_changed();
     assert_eq!(global.now_or_never(), Some(Ok(())));
     assert_eq!(account.now_or_never(), Some(Ok(())));
-    assert_eq!(*trust.environment_keys("test").unwrap(), current);
+    assert_eq!(
+        *trust.environment_keys("test", NOW).unwrap(),
+        world.issuer.anchor()
+    );
 }
 
 #[test]
 fn reanchor_during_environment_verification_cannot_publish_the_old_proof() {
     let world = world();
-    let trust = Arc::new(Follower::new("test", world.issuer.anchor()));
-    let mut frontier = EnvironmentFrontier::genesis("test", world.issuer.anchor());
+    let (owner, watched) = tokio::sync::watch::channel(AnchorKeys::new(world.issuer.anchor()));
+    let trust = Arc::new(Follower::new("test", watched));
+    let reset = owner.clone();
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(world.issuer.anchor()));
     let record = world
         .issuer
         .environment_keyring(&mut frontier, &world.issuer.anchor(), NOW)
         .unwrap();
-    let concurrent = trust.clone();
     VERIFYING_ENVIRONMENT.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move || {
-            concurrent
-                .reanchor(Issuer::new("test", key(9)).anchor().into())
-                .unwrap();
+            owner.send_replace(AnchorKeys::new(Issuer::new("test", key(9)).anchor()));
         }));
     });
     assert_eq!(
@@ -172,8 +173,8 @@ fn reanchor_during_environment_verification_cannot_publish_the_old_proof() {
         *trust.state().borrow(),
         FollowerState::Fenced(FenceCause::Refused)
     );
-    assert_eq!(trust.environment.read().unwrap().frontier(), (0, [0; 32]));
-    trust.reanchor(world.issuer.anchor().into()).unwrap();
+    assert_eq!(trust.environment.read().unwrap().sequence, 0);
+    reset.send_replace(AnchorKeys::new(world.issuer.anchor()));
     assert_eq!(trust.apply_environment(&record, NOW), Ok(Applied::Changed));
 }
 
@@ -458,7 +459,7 @@ fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
     let other_event = other.changed(&trust);
 
     let rotated = first.changed(&trust);
-    let mut frontier = EnvironmentFrontier::genesis("test", world.issuer.anchor());
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(world.issuer.anchor()));
     let successor = Issuer::new("test", key(7));
     let rotation = world
         .issuer
@@ -842,7 +843,7 @@ fn a_customer_root_proves_possession_then_creates_its_account() {
 fn environment_rotation_replays_and_refuses_retired_signers() {
     let issuer = Issuer::new("test", key(1));
     let successor = Issuer::new("test", key(5));
-    let mut frontier = EnvironmentFrontier::genesis("test", issuer.anchor());
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(issuer.anchor()));
     let first = issuer
         .environment_keyring(&mut frontier, &successor.anchor(), NOW)
         .unwrap();
@@ -856,27 +857,49 @@ fn environment_rotation_replays_and_refuses_retired_signers() {
     let second = successor
         .environment_keyring(&mut frontier, &issuer.anchor(), NOW + 1)
         .unwrap();
-    let trust = Follower::new("test", issuer.anchor());
+    let trust = Follower::new("test", AnchorKeys::fixed(issuer.anchor()));
     for record in [&first, &second] {
         assert_eq!(trust.apply(record, NOW + 1), Ok(Applied::Changed));
     }
-    let restored =
-        EnvironmentFrontier::resume("test", issuer.anchor(), &[&first, &second]).unwrap();
+    let restored = EnvironmentFrontier::resume(
+        "test",
+        AnchorKeys::new(issuer.anchor()),
+        &[&first, &second],
+        NOW + 1,
+    )
+    .unwrap();
     assert_eq!(restored.frontier(), frontier.frontier());
     assert_eq!(restored.keys(), issuer.anchor().as_slice());
     // Negative controls: a gap, a foreign anchor, an account record.
-    assert!(EnvironmentFrontier::resume("test", issuer.anchor(), &[&second]).is_err());
-    assert!(EnvironmentFrontier::resume("test", successor.anchor(), &[&first]).is_err());
+    let third = issuer
+        .environment_keyring(&mut frontier.clone(), &successor.anchor(), NOW + 1)
+        .unwrap();
+    let anchored = AnchorKeys::new(issuer.anchor());
+    assert!(
+        EnvironmentFrontier::resume("test", anchored.clone(), &[&first, &third], NOW + 1).is_err()
+    );
+    let foreign = AnchorKeys::new(vec![key(7).verifying_key().to_bytes()]);
+    assert!(EnvironmentFrontier::resume("test", foreign, &[&first], NOW + 1).is_err());
     let (_, genesis) = issuer.genesis("account", key(2), NOW).unwrap();
-    assert!(EnvironmentFrontier::resume("test", issuer.anchor(), &[&genesis[0]]).is_err());
+    assert!(
+        EnvironmentFrontier::resume(
+            "test",
+            AnchorKeys::new(issuer.anchor()),
+            &[&genesis[0]],
+            NOW + 1
+        )
+        .is_err()
+    );
 
     // Real follower admission must release its environment guard before the
     // canonical signature check. An independently signed successor can win
     // there; the obsolete proof cannot replace its current frontier afterward.
-    let trust = Arc::new(Follower::new("test", issuer.anchor()));
+    let trust = Arc::new(Follower::new("test", AnchorKeys::fixed(issuer.anchor())));
     trust.apply(&first, NOW + 1).unwrap();
     trust.resume();
-    let mut competing = EnvironmentFrontier::resume("test", issuer.anchor(), &[&first]).unwrap();
+    let mut competing =
+        EnvironmentFrontier::resume("test", AnchorKeys::new(issuer.anchor()), &[&first], NOW + 1)
+            .unwrap();
     let winner = successor
         .environment_keyring(
             &mut competing,
@@ -891,7 +914,7 @@ fn environment_rotation_replays_and_refuses_retired_signers() {
             // hang. The real check still uses its original captured signers.
             assert!(verifying.environment.try_write().is_ok());
             assert!(verifying.accounts.try_write().is_ok());
-            assert!(verifying.environment_keys("test").is_ok());
+            assert!(verifying.environment_keys("test", NOW).is_ok());
             assert_eq!(verifying.apply(&winner, NOW + 1), Ok(Applied::Changed));
         }));
     });
@@ -899,13 +922,13 @@ fn environment_rotation_replays_and_refuses_retired_signers() {
     VERIFYING_ENVIRONMENT.with(|slot| assert!(slot.borrow().is_none()));
     {
         let current = trust.environment.read().unwrap();
-        assert_eq!(current.frontier(), competing.frontier());
-        assert_eq!(current.keys(), competing.keys());
+        assert_eq!((current.sequence, current.digest), competing.frontier());
+        assert_eq!(&*current.keys, competing.keys());
     }
     assert_eq!(trust.check_open(), Err(SourceClosed));
     trust.resume();
     assert_eq!(trust.apply(&second, NOW + 1), Ok(Applied::Duplicate));
-    assert_eq!(trust.environment.read().unwrap().keys(), competing.keys());
+    assert_eq!(&*trust.environment.read().unwrap().keys, competing.keys());
 }
 
 #[test]
@@ -938,7 +961,8 @@ fn account_publication_does_not_hold_global_storage_or_accept_a_retired_signer()
         .revoke(&[(token.block_ids()[0], NOW + 10_000)], NOW)
         .unwrap();
     let successor = Issuer::new("test", key(5));
-    let mut environment = EnvironmentFrontier::genesis("test", world.issuer.anchor());
+    let mut environment =
+        EnvironmentFrontier::genesis("test", AnchorKeys::new(world.issuer.anchor()));
     let rotation = world
         .issuer
         .environment_keyring(&mut environment, &successor.anchor(), NOW)
@@ -1017,7 +1041,7 @@ fn account_publication_does_not_hold_global_storage_or_accept_a_retired_signer()
 #[test]
 fn forged_records_are_refused() {
     let world = world();
-    let trust = Follower::new("test", world.issuer.anchor());
+    let trust = Follower::new("test", AnchorKeys::fixed(world.issuer.anchor()));
     let forger = Issuer::new("test", key(9));
     let (_, forged) = forger.genesis("account", key(2), NOW).unwrap();
     assert_eq!(trust.apply(&forged[0], NOW), Err(VerifyError::Signature));
@@ -1103,7 +1127,7 @@ fn simulate(
     seed: u64,
     eager: bool,
 ) -> Result<(), String> {
-    let trust = Follower::new("test", world.issuer.anchor());
+    let trust = Follower::new("test", AnchorKeys::fixed(world.issuer.anchor()));
     let (mut root, mut stream) = world.issuer.genesis("account", key(2), NOW).unwrap();
     // Stream index of each credential's revocation, and of the epoch floor
     // that refuses every credential, once appended.
@@ -1272,11 +1296,11 @@ fn a_close_resolves_every_wait_with_its_cause_and_is_final() {
 fn a_refused_account_reads_as_refused_until_its_retained_record_applies() {
     let issuer = Issuer::new("test", key(1));
     let global = Issuer::new("test", key(5));
-    let mut frontier = EnvironmentFrontier::genesis("test", issuer.anchor());
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(issuer.anchor()));
     let first = issuer
         .environment_keyring(&mut frontier, &issuer.anchor(), NOW)
         .unwrap();
-    let trust = Follower::new("test", issuer.anchor());
+    let trust = Follower::new("test", AnchorKeys::fixed(issuer.anchor()));
     assert_eq!(trust.apply(&first, NOW), Ok(Applied::Changed));
     trust.resume();
     // Key B is not yet an environment key, so its account genesis refuses.
@@ -1387,7 +1411,7 @@ fn a_removed_allowance_signer_refuses_cached_admission() {
     let world = world();
     let trust = follower(&world);
     let second = Issuer::new("test", key(9));
-    let mut frontier = EnvironmentFrontier::genesis("test", world.issuer.anchor());
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(world.issuer.anchor()));
     let both = [world.issuer.anchor()[0], second.anchor()[0]];
     let record = world
         .issuer
@@ -1454,4 +1478,360 @@ fn a_removed_allowance_signer_refuses_cached_admission() {
     );
     assert!(control.check(&trust, NOW).is_ok());
     assert!(verify::verify(&control.encode(), &trust, NOW).is_ok());
+}
+
+/// One environment keyring naming `keys`, signed by `signer` alone.
+fn environment_keyring_by(signer: &Issuer, keys: &[BlockId]) -> Vec<u8> {
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(signer.anchor()));
+    signer
+        .environment_keyring(&mut frontier, keys, NOW)
+        .unwrap()
+}
+
+#[test]
+fn anchor_rotation_authenticates_new_keys_and_retires_old_after_overlap() {
+    let world = world();
+    let old = &world.issuer;
+    let new = Issuer::new("test", key(5));
+    let by_old = environment_keyring_by(old, &old.anchor());
+    let by_new = environment_keyring_by(&new, &new.anchor());
+    let (owner, anchor) = tokio::sync::watch::channel(AnchorKeys::new(old.anchor()));
+    let trust = Follower::new("test", anchor.clone());
+    let cold = Follower::new("test", anchor.clone());
+    for record in &world.genesis {
+        assert_eq!(cold.apply(record, NOW), Ok(Applied::Changed));
+    }
+    cold.resume();
+    cold.serve("account");
+    let capability = world.signer.mint(vec![], key(100), &cold, NOW).unwrap();
+    assert!(trust.apply(&by_new, NOW).is_err());
+    assert_eq!(trust.environment_initialized(), Ok(false));
+    for record in &world.genesis {
+        assert_eq!(trust.apply(record, NOW), Ok(Applied::Changed));
+    }
+    trust.resume();
+    trust.serve("account");
+
+    owner.send_modify(|keys| *keys = keys.rotate(new.anchor(), NOW, 100));
+    // The same follower, never rebuilt, reads the swapped snapshot.
+    assert_eq!(trust.apply(&by_new, NOW), Ok(Applied::Changed));
+    // A proven environment uses its signed frontier, not the cold anchor.
+    let proven = trust.snapshot("account", NOW).unwrap();
+    assert_eq!(proven.environment_keys_valid_until, None);
+    assert_eq!(
+        &*proven.environment_keys("test", u64::MAX).unwrap(),
+        new.anchor()
+    );
+    // A cold follower serves the anchor: the old key only inside its window.
+    let keys = cold.environment_keys("test", NOW + 99).unwrap();
+    assert!(keys.contains(&new.anchor()[0]) && keys.contains(&old.anchor()[0]));
+    assert_eq!(
+        Follower::new("test", anchor.clone()).apply(&by_old, NOW + 99),
+        Ok(Applied::Changed)
+    );
+    // An exported guest snapshot must retire at the same original deadline,
+    // including after serialization and without another owner publication.
+    let exported = cold.snapshot("account", NOW).unwrap();
+    let encoded = serde_json::to_vec(&exported).unwrap();
+    let exported: crate::trust::Snapshot = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(exported.environment_keys_valid_until, Some(NOW + 100));
+    let mut omitted = serde_json::to_value(&exported).unwrap();
+    omitted
+        .as_object_mut()
+        .unwrap()
+        .remove("environment_keys_valid_until");
+    assert!(serde_json::from_value::<crate::trust::Snapshot>(omitted).is_err());
+    assert!(capability.check(&exported, NOW + 99).is_ok());
+    assert_eq!(
+        capability.check(&exported, NOW + 100),
+        Err(VerifyError::Unavailable),
+        "exported anchor overlap must end at the owner's deadline"
+    );
+    assert_eq!(
+        verify::verify(&capability.encode(), &exported, NOW + 100).err(),
+        Some(VerifyError::Unavailable)
+    );
+    // Retirement follows the check's own time: no record or floor advance.
+    assert_eq!(
+        &*cold.environment_keys("test", NOW + 100).unwrap(),
+        new.anchor()
+    );
+    assert_eq!(
+        Follower::new("test", anchor.clone()).apply(&by_old, NOW + 100),
+        Err(VerifyError::Signature)
+    );
+    // Refreshing after retirement omits the old key and has no stale deadline.
+    let refreshed = cold.snapshot("account", NOW + 100).unwrap();
+    assert_eq!(refreshed.environment_keys_valid_until, None);
+    assert_eq!(
+        &*refreshed.environment_keys("test", u64::MAX).unwrap(),
+        new.anchor()
+    );
+    assert_eq!(
+        capability.check(&refreshed, NOW + 100),
+        Err(VerifyError::Trust)
+    );
+    // Rotating back makes the key current again, with no window.
+    owner.send_modify(|keys| *keys = keys.rotate(old.anchor(), NOW + 200, 0));
+    assert_eq!(
+        Follower::new("test", anchor).apply(&by_old, NOW + 200),
+        Ok(Applied::Changed)
+    );
+}
+
+#[test]
+fn a_member_anchored_after_rotation_replays_history_predating_its_anchor() {
+    let old = Issuer::new("test", key(1));
+    let new = Issuer::new("test", key(5));
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(old.anchor()));
+    let first = old
+        .environment_keyring(&mut frontier, &old.anchor(), NOW)
+        .unwrap();
+    let rotation = old
+        .environment_keyring(&mut frontier, &new.anchor(), NOW)
+        .unwrap();
+    // The reloaded key file names only the new key, which signed nothing yet.
+    let reloaded = AnchorKeys::new(new.anchor());
+    let restored =
+        EnvironmentFrontier::resume("test", reloaded.clone(), &[&first, &rotation], NOW + 1)
+            .unwrap();
+    assert_eq!(restored.frontier(), frontier.frontier());
+    let trust = Follower::new("test", AnchorKeys::fixed(new.anchor()));
+    assert!(trust.apply(&first, NOW).is_err());
+    assert_eq!(trust.apply(&rotation, NOW), Ok(Applied::Changed));
+    let next = new
+        .environment_keyring(&mut frontier, &new.anchor(), NOW + 1)
+        .unwrap();
+    assert_eq!(trust.apply(&next, NOW + 1), Ok(Applied::Changed));
+    // Control: history the anchor never authenticates stays refused.
+    assert!(EnvironmentFrontier::resume("test", reloaded, &[&first], NOW + 1).is_err());
+}
+
+#[test]
+fn an_unsigned_restatement_of_anchor_keys_cannot_block_later_rotations() {
+    let old = Issuer::new("test", key(1));
+    let new = Issuer::new("test", key(5));
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(old.anchor()));
+    old.environment_keyring(&mut frontier, &old.anchor(), NOW)
+        .unwrap();
+    let rotation = old
+        .environment_keyring(&mut frontier, &new.anchor(), NOW)
+        .unwrap();
+    let next = new
+        .environment_keyring(&mut frontier, &new.anchor(), NOW + 1)
+        .unwrap();
+    // Anyone can name the public anchor key at the last sequence.
+    let TrustRecordKind::Environment(mut forged) = decode(&rotation).unwrap().record else {
+        panic!("not an environment keyring");
+    };
+    forged.keyring.sequence = u64::MAX;
+    forged.signature = vec![0; 64];
+    let forged = TrustRecordProto::from(TrustRecord {
+        record: TrustRecordKind::Environment(forged),
+    })
+    .encode_to_vec();
+    let trust = Follower::new("test", AnchorKeys::fixed(new.anchor()));
+    assert_eq!(trust.apply(&forged, NOW), Ok(Applied::Changed));
+    assert_eq!(trust.environment_initialized(), Ok(false));
+    // The unproven position blocks nothing: an anchor-signed keyring proves one.
+    assert_eq!(trust.apply(&next, NOW + 1), Ok(Applied::Changed));
+    assert_eq!(trust.environment_initialized(), Ok(true));
+    // Control: against a proven position the forgery is refused outright.
+    assert!(trust.apply(&forged, NOW + 1).is_err());
+}
+
+/// Rotations alternating between {A current, B retiring} and {B current,
+/// A retiring}: every snapshot holds both keys, a mixed read holds one.
+fn alternate(keys: &AnchorKeys, a: BlockId, b: BlockId) -> AnchorKeys {
+    let next = if keys.current() == [a] { b } else { a };
+    keys.rotate(vec![next], NOW, u64::MAX)
+}
+
+#[test]
+fn one_authentication_reads_exactly_one_anchor_snapshot() {
+    let (a, b) = (
+        key(10).verifying_key().to_bytes(),
+        key(11).verifying_key().to_bytes(),
+    );
+    let record = environment_keyring_by(&Issuer::new("test", key(12)), &[a, b]);
+    let start = AnchorKeys::new(vec![a]).rotate(vec![b], NOW, u64::MAX);
+    let (owner, anchor) = tokio::sync::watch::channel(start);
+    let owner = Arc::new(owner);
+    let rotate = |owner: &Arc<tokio::sync::watch::Sender<AnchorKeys>>| {
+        let owner = Arc::clone(owner);
+        Box::new(move || owner.send_modify(|keys| *keys = alternate(keys, a, b)))
+            as Box<dyn FnOnce()>
+    };
+    // Authentication uses its captured snapshot; a changed publication
+    // prevents that proof from installing obsolete trust.
+    let trust = Follower::new("test", anchor.clone());
+    VERIFYING_ENVIRONMENT.with(|slot| *slot.borrow_mut() = Some(rotate(&owner)));
+    assert_eq!(trust.apply(&record, NOW), Err(VerifyError::Unavailable));
+    VERIFYING_ENVIRONMENT.with(|slot| assert!(slot.borrow().is_none()));
+
+    // Negative control: the same interleaving against a reader that borrows
+    // twice combines two snapshots, loses a key, and would refuse.
+    let mixed = |anchor: &tokio::sync::watch::Receiver<AnchorKeys>| {
+        let first = anchor.borrow().clone();
+        environment_verifying();
+        let second = anchor.borrow().clone();
+        let valid = second.at(NOW);
+        first
+            .current()
+            .iter()
+            .chain(valid.iter().filter(|key| !second.current().contains(key)))
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    VERIFYING_ENVIRONMENT.with(|slot| *slot.borrow_mut() = Some(rotate(&owner)));
+    let keys = mixed(&anchor);
+    assert!(!(keys.contains(&a) && keys.contains(&b)), "{keys:?}");
+
+    // Concurrent publication: every authentication still sees both keys.
+    let publisher = {
+        let owner = Arc::clone(&owner);
+        std::thread::spawn(move || {
+            for _ in 0..1_000 {
+                owner.send_modify(|keys| *keys = alternate(keys, a, b));
+            }
+        })
+    };
+    for _ in 0..1_000 {
+        let trust = Follower::new("test", anchor.clone());
+        assert!(matches!(
+            trust.apply(&record, NOW),
+            Ok(Applied::Changed) | Err(VerifyError::Unavailable)
+        ));
+    }
+    publisher.join().unwrap();
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+    /// A valid proof against its starting snapshot loses publication when
+    /// that owner changes; an invalid proof retains its signature refusal.
+    /// The public follower must never admit a mixture of both snapshots.
+    #[test]
+    fn authentication_matches_its_snapshot(
+        rotations in proptest::collection::vec((1u8..8, 0u64..60), 0..6),
+        during in (1u8..8, 0u64..60),
+        named in 1u8..8,
+        signer in 0usize..3,
+        at in 0u64..120,
+    ) {
+        let pool: Vec<SigningKey> = (20..23).map(key).collect();
+        let subset = |mask: u8| -> Vec<BlockId> {
+            pool.iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(_, key)| key.verifying_key().to_bytes())
+                .collect()
+        };
+        let mut snapshot = AnchorKeys::new(subset(1));
+        for (index, (mask, overlap)) in rotations.iter().enumerate() {
+            snapshot = snapshot.rotate(subset(*mask), NOW + index as u64 * 10, *overlap);
+        }
+        let named = subset(named);
+        let record = environment_keyring_by(&Issuer::new("test", pool[signer].clone()), &named);
+        let now = NOW + at;
+        let valid = snapshot.at(now);
+        let expected = named.iter().all(|key| valid.contains(key))
+            || valid.contains(&pool[signer].verifying_key().to_bytes());
+
+        let (owner, anchor) = tokio::sync::watch::channel(snapshot);
+        let trust = Follower::new("test", anchor);
+        let replacement = subset(during.0);
+        VERIFYING_ENVIRONMENT.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                owner.send_modify(|keys| *keys = keys.rotate(replacement, NOW + 60, during.1));
+            }));
+        });
+        let result = trust.apply(&record, now);
+        VERIFYING_ENVIRONMENT.with(|slot| slot.borrow_mut().take());
+        proptest::prop_assert_eq!(result, if expected { Err(VerifyError::Unavailable) } else { Err(VerifyError::Signature) });
+    }
+}
+
+#[test]
+fn an_account_keyring_publishes_only_under_the_keys_that_authenticated_it() {
+    let a = Issuer::new("test", key(20));
+    let b = Issuer::new("test", key(21));
+    // Names only A, signed by B: unproven while the anchor is {A}.
+    let restated = environment_keyring_by(&b, &a.anchor());
+    let (_root, genesis) = b.genesis("account", key(22), NOW).unwrap();
+    let expanded = |anchor: &AnchorKeys| anchor.rotate([a.anchor(), b.anchor()].concat(), NOW, 0);
+    let follower = || {
+        let (owner, anchor) = tokio::sync::watch::channel(AnchorKeys::new(a.anchor()));
+        let trust = Arc::new(Follower::new("test", anchor));
+        assert_eq!(trust.apply(&restated, NOW), Ok(Applied::Changed));
+        assert_eq!(trust.environment_initialized(), Ok(false));
+        owner.send_modify(|keys| *keys = expanded(keys));
+        (owner, trust)
+    };
+    // Control: with no interleaving, the expanded anchor authenticates B.
+    let (_owner, trust) = follower();
+    assert_eq!(trust.apply(&genesis[0], NOW), Ok(Applied::Changed));
+
+    let (_owner, trust) = follower();
+    let verifying = Arc::clone(&trust);
+    let replay = restated.clone();
+    VERIFYING_KEYRING.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || {
+            // The same record now proves a position whose only key is A.
+            assert_eq!(verifying.apply(&replay, NOW), Ok(Applied::Changed));
+            assert_eq!(verifying.environment_initialized(), Ok(true));
+        }));
+    });
+    assert_eq!(trust.apply(&genesis[0], NOW), Err(VerifyError::Unavailable));
+    VERIFYING_KEYRING.with(|slot| assert!(slot.borrow().is_none()));
+    // B is no longer trusted: the root it signed never installs.
+    assert!(trust.apply(&genesis[0], NOW).is_err());
+    assert!(trust.snapshot("account", NOW).is_err());
+}
+
+#[test]
+fn environment_publication_cannot_replace_a_newly_proven_position() {
+    let a = Issuer::new("test", key(20));
+    let b = Issuer::new("test", key(21));
+    let restated = environment_keyring_by(&b, &a.anchor());
+    let broad = environment_keyring_by(
+        &Issuer::new("test", key(22)),
+        &[a.anchor(), b.anchor()].concat(),
+    );
+    let (owner, anchor) = tokio::sync::watch::channel(AnchorKeys::new(a.anchor()));
+    let trust = Arc::new(Follower::new("test", anchor));
+    assert_eq!(trust.apply(&restated, NOW), Ok(Applied::Changed));
+    assert_eq!(trust.environment_initialized(), Ok(false));
+    owner.send_replace(AnchorKeys::new([a.anchor(), b.anchor()].concat()));
+    let verifying = trust.clone();
+    VERIFYING_ENVIRONMENT.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || {
+            assert!(verifying.environment.try_write().is_ok());
+            assert_eq!(verifying.apply(&restated, NOW), Ok(Applied::Changed));
+            assert_eq!(verifying.environment_initialized(), Ok(true));
+        }));
+    });
+    assert_eq!(trust.apply(&broad, NOW), Err(VerifyError::Unavailable));
+    let current = trust.environment.read().unwrap();
+    assert!(current.proven);
+    assert_eq!(&*current.keys, a.anchor());
+    drop(current);
+    let (_, rejected) = b.genesis("excluded", key(23), NOW).unwrap();
+    assert!(trust.apply(&rejected[0], NOW).is_err());
+}
+
+#[test]
+fn environment_resume_uses_the_live_anchor_overlap_and_trusted_time() {
+    let old = Issuer::new("test", key(30));
+    let new = Issuer::new("test", key(31));
+    let record = environment_keyring_by(&old, &old.anchor());
+    let anchor = AnchorKeys::new(old.anchor()).rotate(new.anchor(), NOW, 100);
+    let live = Follower::new("test", AnchorSource::Fixed(anchor.clone()));
+    assert_eq!(live.apply(&record, NOW + 99), Ok(Applied::Changed));
+    let resumed =
+        EnvironmentFrontier::resume("test", anchor.clone(), &[&record], NOW + 99).unwrap();
+    assert_eq!(resumed.keys(), old.anchor());
+    assert!(EnvironmentFrontier::resume("test", anchor.clone(), &[&record], NOW + 100).is_err());
+    assert!(EnvironmentFrontier::resume("test", anchor, &[&record], NOW - 1).is_err());
 }

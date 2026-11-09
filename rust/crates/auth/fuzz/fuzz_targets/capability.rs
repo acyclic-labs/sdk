@@ -116,7 +116,7 @@ fuzz_target!(|bytes: &[u8]| {
                     PolicyDecision::Allow,
                     acyclic_auth::authority::Scope::Exact
                 ),
-                Err(Deny::NonCanonicalResource)
+                Err(Deny::Malformed)
             );
             request.target = Target::Resource {
                 action: "fs/read",
@@ -130,7 +130,7 @@ fuzz_target!(|bytes: &[u8]| {
                     PolicyDecision::Allow,
                     acyclic_auth::authority::Scope::Exact
                 ),
-                Err(Deny::NonCanonicalAudience)
+                Err(Deny::Malformed)
             );
         }
         let wire = SocketHostRuleProto {

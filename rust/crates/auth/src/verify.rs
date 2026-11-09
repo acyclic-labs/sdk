@@ -145,8 +145,9 @@ pub enum RevocationCheck<'a> {
 /// Read-only authenticated trust snapshot. Implementations must fail closed on
 /// missing/stale state; metering and network refresh belong outside these hooks.
 pub trait Trust {
-    /// Still-trusted environment issuers, including historical Birth signers.
-    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError>;
+    /// Environment issuers still trusted at `now`, including historical Birth
+    /// signers. A key retired by rotation stops here once its overlap ends.
+    fn environment_keys(&self, environment: &str, now: u64) -> Result<Keys<'_>, VerifyError>;
     /// Authenticated current account keyring, anchored in environment trust.
     fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError>;
     /// Check key/block revocations; errors are denials, never soft failures.
@@ -154,8 +155,8 @@ pub trait Trust {
 }
 
 impl<T: Trust + ?Sized> Trust for std::sync::Arc<T> {
-    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
-        (**self).environment_keys(environment)
+    fn environment_keys(&self, environment: &str, now: u64) -> Result<Keys<'_>, VerifyError> {
+        (**self).environment_keys(environment, now)
     }
     fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError> {
         (**self).account(account)
@@ -247,6 +248,7 @@ fn verify_proof(
 fn allowances(
     blocks: &[Block],
     trust: &(impl Trust + ?Sized),
+    now: u64,
     signers: &mut Vec<BlockId>,
 ) -> Result<(), VerifyError> {
     let birth = &blocks
@@ -266,7 +268,7 @@ fn allowances(
         }
         let keys = match &mut keys {
             Some(keys) => keys,
-            None => keys.insert(trust.environment_keys(&birth.environment)?),
+            None => keys.insert(trust.environment_keys(&birth.environment, now)?),
         };
         let signer = allowance_signer(signed, birth.account_id.as_str(), keys, &mut message)?;
         if !signers.contains(&signer) {
@@ -326,7 +328,7 @@ fn verify_certified(
     let roots = certification.authenticate(certificates, trust, now_unix_seconds)?;
     let environment = roots.environment;
     let issuers = roots.issuers.clone();
-    let mut seen = certification.signing_keys(certificates, trust)?;
+    let mut seen = certification.signing_keys(certificates, trust, now_unix_seconds)?;
     let mut message = Vec::new();
     let leaf = certificates
         .keys
@@ -365,7 +367,7 @@ fn verify_certified(
     // No expensive claims/subset conversion happens until every signature is valid.
     let blocks = admit_blocks(wire)?;
     let mut environment_issuers = vec![environment];
-    allowances(&blocks, trust, &mut environment_issuers)?;
+    allowances(&blocks, trust, now_unix_seconds, &mut environment_issuers)?;
     let mut verified = VerifiedCapability {
         blocks,
         signed: envelope.blocks,

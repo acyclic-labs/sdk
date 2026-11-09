@@ -25,7 +25,7 @@ impl Default for Snapshot {
     }
 }
 impl Trust for Snapshot {
-    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
+    fn environment_keys(&self, environment: &str, _now: u64) -> Result<Keys<'_>, VerifyError> {
         if self.available && environment == "test" {
             Ok((&self.environments).into())
         } else {

@@ -13,7 +13,7 @@ const state = (): TrustState => ({
   environment: "test", account: "account", minimumKeyEpoch: 1n,
   environmentKeys: [hex("8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c")],
   issuerKeys: [hex("8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394")],
-  revokedKeyIds: [], revokedBlockIds: [],
+  revokedKeyIds: [], revokedBlockIds: [], environmentKeysValidUntil: undefined,
 });
 
 test("WASM holders preserve signatures, lineage, effective limits and revocation", async () => {
@@ -51,6 +51,12 @@ test("WASM holders preserve signatures, lineage, effective limits and revocation
       expect(holder.grants().length).toBeGreaterThan(0);
       expect(holder.filters().map(clause => clause.subjectId)).toEqual(ids);
       expect(holder.filters().map(clause => clause.declaringBlock)).toEqual(ids.map((_, i) => i + 1));
+      const retiring = new TrustSnapshot({ ...state(), environmentKeysValidUntil: 101n });
+      try {
+        holder.check(retiring, 100n);
+        expect(() => holder.check(retiring, 101n)).toThrow();
+        expect(() => Capability.verify(root, retiring, 101n)).toThrow();
+      } finally { retiring.free(); }
       expect(holder.expiresAtUnixSeconds()).toBe(500n);
       expect(holder.notBeforeUnixSeconds()).toBe(1n);
       const encoded = holder.encode();
@@ -87,6 +93,7 @@ test("WASM clocks and epochs cannot wrap into valid uint64 values", () => {
   fc.assert(fc.property(fc.bigInt({ min: 1n, max: 1000n }), offset => {
     for (const invalid of [-offset, (1n << 64n) + offset]) {
       expect(() => new TrustSnapshot({ ...state(), minimumKeyEpoch: invalid })).toThrow();
+      expect(() => new TrustSnapshot({ ...state(), environmentKeysValidUntil: invalid })).toThrow();
       const trust = new TrustSnapshot(state());
       try { expect(() => Capability.verify(root, trust, invalid)).toThrow(); }
       finally { trust.free(); }

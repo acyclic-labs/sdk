@@ -43,7 +43,10 @@ pub enum ConnectError {
 }
 
 fn credential_error(error: CredentialError) -> Status {
-    let mut status = Status::unauthenticated("credential source unavailable or changed");
+    let mut status = match error.denial_cause() {
+        Some(cause) => cause.into(),
+        None => Status::unavailable("credential source unavailable or changed"),
+    };
     status.set_source(Arc::new(error));
     status
 }
