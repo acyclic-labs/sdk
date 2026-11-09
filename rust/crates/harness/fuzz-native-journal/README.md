@@ -159,7 +159,9 @@ branch classify every value as a local path; it must fail at
 
 Fresh and resumed child commands use one complete-vector assertion, including
 the native event-mode flags, Codex's cwd argument, inherited policy, resume
-reference and stdin marker. The retained `mutations/native_launch_command.patch`
+reference and stdin marker. Pi resumes both an identity alone and a distinct
+history file while retaining `--session-id`; option-like identities and files
+are refused. The retained `mutations/native_launch_command.patch`
 changes all three hosts' fixed event-mode arguments and the Codex cwd while
 preserving policy placement, resume suffixes and allocation counts. The former
 partial policy/suffix oracle accepts that defect; the complete-vector oracle

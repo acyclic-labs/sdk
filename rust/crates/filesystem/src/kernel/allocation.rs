@@ -11,6 +11,7 @@ use thiserror::Error;
 #[derive(Debug, Default)]
 pub struct AllocationLedger {
     state: LedgerState,
+    retirement_failed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -433,7 +434,7 @@ impl AllocationLedger {
         work: &mut WorkCounters,
         budget: WorkBudget,
     ) -> Result<u64, AllocationError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if self.retirement_failed || matches!(self.state, LedgerState::Suspended(_)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.claim_elements::<T>(count, work, budget))
@@ -445,7 +446,7 @@ impl AllocationLedger {
         work: &mut WorkCounters,
         budget: WorkBudget,
     ) -> Result<(), AllocationError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if self.retirement_failed || matches!(self.state, LedgerState::Suspended(_)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.claim_bytes(bytes, operations, work, budget))
@@ -457,7 +458,7 @@ impl AllocationLedger {
         work: &WorkCounters,
         budget: WorkBudget,
     ) -> Result<(), AllocationError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if self.retirement_failed || matches!(self.state, LedgerState::Suspended(_)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.reserve_allocation(bytes, work, budget))
@@ -472,7 +473,7 @@ impl AllocationLedger {
         bytes: u64,
         work: &mut WorkCounters,
     ) -> Result<(), AllocationError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if self.retirement_failed || matches!(self.state, LedgerState::Suspended(_)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.record_reserved_allocation(bytes, work))
@@ -486,7 +487,7 @@ impl AllocationLedger {
         bytes: u64,
         work: &mut WorkCounters,
     ) -> Result<(), AllocationError> {
-        if matches!(self.state, LedgerState::Suspended(_)) {
+        if self.retirement_failed || matches!(self.state, LedgerState::Suspended(_)) {
             return Err(AllocationError::ReleaseInvariant);
         }
         self.with_state(|state| state.record_owned_bytes(bytes, work))
@@ -539,6 +540,18 @@ impl AllocationLedger {
         })
     }
 
+    /// Destructors cannot return a cleanup failure. Preserve all remaining
+    /// charges on failure and fence further work on this ledger instead of
+    /// panicking over the operation's original error (or during withdrawal).
+    pub(crate) fn retire_scratch_to(&mut self, baseline: u64) {
+        if matches!(self.state, LedgerState::Suspended(_)) {
+            return;
+        }
+        if self.release_scratch_to(baseline).is_err() {
+            self.retirement_failed = true;
+        }
+    }
+
     /// Consumes an immutable read frame after its physical state is destroyed.
     /// A suspended ledger has handed scratch to another continuation and owns
     /// no scratch to release. Independently retained leases remain intact.
@@ -577,6 +590,9 @@ impl AllocationLedger {
     }
 
     pub(crate) fn ensure_active(&self) -> Result<(), crate::FsError> {
+        if self.retirement_failed {
+            return Err(WorkError::Overflow.into());
+        }
         if matches!(self.state, LedgerState::Suspended(_)) {
             return Err(crate::FsError::AccountingHandoffActive);
         }
@@ -594,6 +610,7 @@ impl AllocationLedger {
         };
         let owned = Self {
             state: LedgerState::Shared(std::sync::Arc::clone(state)),
+            retirement_failed: false,
         };
         self.state = match std::mem::take(&mut self.state) {
             LedgerState::Shared(state) => LedgerState::Suspended(state),
@@ -611,8 +628,8 @@ impl AllocationLedger {
         if !std::sync::Arc::ptr_eq(expected, actual) {
             return Err(crate::FsError::AccountingHandoffActive);
         }
-        self.state = owned.state;
-        Ok(())
+        *self = owned;
+        self.ensure_active()
     }
 
     pub(crate) fn retain(

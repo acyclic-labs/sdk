@@ -4,12 +4,12 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {readFile,realpath,stat,writeFile} from 'node:fs/promises';
-import {dirname,delimiter,isAbsolute,join,relative,sep,toNamespacedPath} from 'node:path';
+import {dirname,isAbsolute,join,relative,sep,toNamespacedPath} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {toolOutcome} from '../../../scripts/graphcoder-e2e/assertions.mjs';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
-import {nativeHost,nativeProvider,nativeProxy} from './native-host.mjs';
+import {nativeHostEnvironment,nativeProvider,nativeProxy} from './native-host.mjs';
 
 const completionRecovery='node --test plugin/tests/hosts/native-completion.test.mjs';
 function nativeFailure(host,code,message,cause) {
@@ -249,11 +249,12 @@ export function nativePackage(binary,packageRoot) {
 // plugin directory, open the root through the workspace API, then run the
 // actual host once against the caller's admitted provider.
 export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer,execute,packageStage}) {
- const native=await nativeHost(host,fixture.env);
+ const {env,hosts}=await nativeHostEnvironment([host],fixture.env);
+ const native=hosts[host];
  nativeProvider(native,fixture.live,fixture);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
- const {workspace}=fixture,root=dirname(workspace),env={...fixture.env};
+ const {workspace}=fixture,root=dirname(workspace);
  if(fixture.live&&!fixture.live.proxy) {
   // The caller provisions an exclusive authenticated profile outside guest
   // files. Pass its path to the original host; never read or copy credentials.
@@ -274,7 +275,6 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   assert.ok(endpoint.protocol==='http:'&&endpoint.hostname==='127.0.0.1',
    'step=admit mock endpoint; recovery=supply the original loopback fixture.url');
  }
- env.PATH=[dirname(native.entry),native.path,env.PATH].join(delimiter);
  let step='stage native package';
  const run=async(program,args,input,launchEnv=env)=>{
   // The long-lived workspace owner holds the one mount lease. Commands retain

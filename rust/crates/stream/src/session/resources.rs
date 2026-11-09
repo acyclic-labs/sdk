@@ -4,6 +4,10 @@ use acyclic_auth::contract::{
     GrantKind, Limits as Usage, Principal, RecordAttributes, ResourcePattern,
 };
 use acyclic_auth::verify::VerifiedCapability;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_native_runtime::InlineMutex as Mutex;
+#[cfg(target_arch = "wasm32")]
+use std::sync::Mutex;
 
 /// Immutable channel identity and the current verified credential. Only session
 /// admission can construct this value; resource providers cannot mint authority.
@@ -11,7 +15,7 @@ use acyclic_auth::verify::VerifiedCapability;
 pub struct ResourceAuthorization {
     authority: Arc<Authority>,
     pub(super) resource: Arc<ResourcePattern>,
-    capability: Arc<std::sync::Mutex<Arc<VerifiedCapability>>>,
+    capability: Arc<Mutex<Arc<VerifiedCapability>>>,
     pub(super) action: &'static str,
 }
 impl ResourceAuthorization {
@@ -26,7 +30,7 @@ impl ResourceAuthorization {
                 name: resource,
                 prefix: true,
             }),
-            capability: Arc::new(std::sync::Mutex::new(capability)),
+            capability: Arc::new(Mutex::new(capability)),
             action: crate::authorization::RESOURCE_FOLLOW_ACTION.as_str(),
         }
     }
