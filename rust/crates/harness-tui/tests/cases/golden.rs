@@ -2,6 +2,7 @@
 //! markdown at a wide and a narrow width, the code sample in every theme at
 //! every colour depth, and the resolved token table. Each span shows its
 //! style as `«colour,attributes»`, written only where the style changes.
+//! Trailing row whitespace and trailing blank rows are omitted.
 //!
 //! A mismatch prints the whole rendered snapshot. Set `UPDATE_GOLDEN=1` to
 //! write it to `tests/golden/` instead, then review the diff.
@@ -157,6 +158,20 @@ fn tokens(themes: &Themes) -> String {
     out
 }
 
+/// The writer and comparer share one whitespace-safe snapshot format.
+fn snapshot(rendered: &str) -> String {
+    let mut out = String::new();
+    for line in rendered.lines() {
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out.truncate(out.trim_end_matches('\n').len());
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
 #[test]
 fn transcript_rows_match_their_snapshots() {
     let directory = acyclic_test_support::crate_path!("tests/golden");
@@ -180,6 +195,7 @@ fn transcript_rows_match_their_snapshots() {
         ("tokens.txt", tokens(&themes)),
     ] {
         let path = directory.join(name);
+        let actual = snapshot(&actual);
         if update {
             std::fs::create_dir_all(&directory).unwrap();
             std::fs::write(&path, &actual).unwrap();

@@ -3,21 +3,21 @@
 «,b»  own as typed
 
 «#61afef,b»  # Title
-  
+
   Intro with «,b»bold«», «,i»itali
 «,i»  c«», «#7f848e,s»gone«» and «#e5c07b»code«».
-  
+
 «#61afef,b»  # Section
-  
+
 «#61afef,b»  ## Detail
 
 == lists at 24 columns
 «#7f848e»  1. «»first
 «#7f848e»  2. «»second
-«#7f848e»     • «»nested item that 
+«#7f848e»     • «»nested item that
   is long enough to wrap
    at a narrow width
-  
+
   [✓] done
   [ ] later
 
@@ -31,7 +31,7 @@
 «#7f848e»  │ «»    «#e5c07b»42
 «#7f848e»  │ «»}
 «#7f848e»  └─
-  
+
 «#7f848e»  ┌─ sh
 «#7f848e»  │ «»echo «#98c379»"$HOME"«» «#7f848e»# where
 «#7f848e»  └─
@@ -48,11 +48,11 @@
   See «#61afef,u»the docs«» («#61afef,u»https://
 «#61afef,u»  example.com/docs«») or «#61afef,u»h
 «#61afef,u»  ttps://example.com«».
-  
+
 «#7f848e»  │ «#7f848e,i»Quoted with a «#61afef,i,u»link«» (
 «#61afef,u»  https://example.com/q«»)
 «#7f848e,i»  .
-  
+
 «#7f848e»  ──────────────────────
 «#7f848e»  ──────────────────
 
@@ -60,10 +60,9 @@
   界面 «,b»宽字符«» 👩‍💻 é — mix
   ed-width text that wra
   ps
-  
+
 «#7f848e»  ┌──────┬─────┐
 «#7f848e»  │«» «,b»名前«» «#7f848e»│«» «,b»🦀«»  «#7f848e»│
 «#7f848e»  ├──────┼─────┤
 «#7f848e»  │«» 値   «#7f848e»│«» ✓   «#7f848e»│
 «#7f848e»  └──────┴─────┘
-

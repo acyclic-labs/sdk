@@ -6,7 +6,7 @@
 «#7f848e»  │ «»    «#e5c07b»42
 «#7f848e»  │ «»}
 «#7f848e»  └─
-  
+
 «#7f848e»  ┌─ sh
 «#7f848e»  │ «»echo «#98c379»"$HOME"«» «#7f848e»# where
 «#7f848e»  └─
@@ -19,7 +19,7 @@
 «@102»  │ «»    «@180»42
 «@102»  │ «»}
 «@102»  └─
-  
+
 «@102»  ┌─ sh
 «@102»  │ «»echo «@108»"$HOME"«» «@102»# where
 «@102»  └─
@@ -32,7 +32,7 @@
 «darkgray»  │ «»    «lightyellow»42
 «darkgray»  │ «»}
 «darkgray»  └─
-  
+
 «darkgray»  ┌─ sh
 «darkgray»  │ «»echo «lightgreen»"$HOME"«» «darkgray»# where
 «darkgray»  └─
@@ -45,7 +45,7 @@
 «default,d»  │ «»    «default»42
 «default,d»  │ «»}
 «default,d»  └─
-  
+
 «default,d»  ┌─ sh
 «default,d»  │ «»echo «default»"$HOME"«» «default,d»# where
 «default,d»  └─
@@ -58,7 +58,7 @@
 «#6e7781»  │ «»    «#9a6700»42
 «#6e7781»  │ «»}
 «#6e7781»  └─
-  
+
 «#6e7781»  ┌─ sh
 «#6e7781»  │ «»echo «#1a7f37»"$HOME"«» «#6e7781»# where
 «#6e7781»  └─
@@ -71,7 +71,7 @@
 «@243»  │ «»    «@94»42
 «@243»  │ «»}
 «@243»  └─
-  
+
 «@243»  ┌─ sh
 «@243»  │ «»echo «@29»"$HOME"«» «@243»# where
 «@243»  └─
@@ -84,7 +84,7 @@
 «darkgray»  │ «»    «yellow»42
 «darkgray»  │ «»}
 «darkgray»  └─
-  
+
 «darkgray»  ┌─ sh
 «darkgray»  │ «»echo «green»"$HOME"«» «darkgray»# where
 «darkgray»  └─
@@ -97,8 +97,7 @@
 «default,d»  │ «»    «default»42
 «default,d»  │ «»}
 «default,d»  └─
-  
+
 «default,d»  ┌─ sh
 «default,d»  │ «»echo «default»"$HOME"«» «default,d»# where
 «default,d»  └─
-
