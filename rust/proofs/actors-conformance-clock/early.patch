@@ -1,12 +1,13 @@
 diff --git a/rust/crates/actors/src/conformance.rs b/rust/crates/actors/src/conformance.rs
+index 0553d686c34..208c2824b92 100644
 --- a/rust/crates/actors/src/conformance.rs
 +++ b/rust/crates/actors/src/conformance.rs
-@@ -1383,7 +1383,7 @@
+@@ -1383,7 +1383,7 @@ pub(crate) async fn alarms<T: Backend + ?Sized>(target: &T, run: &str) -> Result
      let mut alarm = Fixture::create(target, run, "alarm").await?;
      alarm.send(&format!("set {ALARM_MS}")).await?;
      let deadline = alarm.committed_alarm(0).await?;
 -    alarm.expect_around(deadline, &[], &["a1"]).await?;
-+    alarm.expect(&["a1"]).await?;
++    alarm.expect_around(deadline, &["a1"], &["a1"]).await?;
      target.advance_to(deadline).await?;
      alarm.expect(&["a1"]).await?;
  

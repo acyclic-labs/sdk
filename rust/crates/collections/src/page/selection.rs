@@ -198,8 +198,8 @@ mod tests {
                 || "invalid",
             ).expect("ordered original keys") {
                 prop_assert_eq!(range.start, offset + consumed);
-                let remaining = keys.get(consumed..).expect("unconsumed original keys");
-                let first = remaining.first().expect("nonempty selected group");
+                let remaining = keys.get(consumed..).ok_or_else(|| TestCaseError::fail("group starts past original keys"))?;
+                let first = remaining.first().ok_or_else(|| TestCaseError::fail("selected group has no original key"))?;
                 let expected = remaining.iter().take_while(|key| *key == first).count();
                 prop_assert_eq!(range.len(), expected);
                 consumed += expected;
