@@ -13,6 +13,19 @@ fn shared_access_oracle_detects_a_corrupted_decision() -> Result<(), Box<dyn std
         folded: false,
         now: 100,
         native_name: None,
+        publications: [(2, 11, 0, None), (1, 11, 0, None), (2, 10, 0, None)]
+            .into_iter()
+            .chain((1..5).map(|binding| (2, 11, binding, None)))
+            .chain([(2, 11, 0, Some([9; 32])), (3, 12, 0, None)])
+            .map(
+                |(version, head, binding, data_generation)| input::Publication {
+                    version,
+                    head,
+                    binding,
+                    data_generation,
+                },
+            )
+            .collect(),
     };
     let bytes = serde_json::to_vec(&value)?;
     input::check(&bytes);
@@ -33,6 +46,11 @@ proptest! {
         path in prop::collection::vec(prop_oneof!["[^/\\\\]{0,8}", Just("..".into()), Just("ΟΣΑ".into())], 0..4),
         profile in any::<u8>(), folded in any::<bool>(), expiry in any::<Option<u16>>(),
         native_name in prop::option::of((any::<u8>(), prop::collection::vec(any::<u8>(), 0..32))),
+        publications in prop::collection::vec((
+            prop_oneof![Just(0), Just(1), Just(2), any::<u64>()],
+            prop_oneof![Just(0), Just(10), Just(11), any::<u64>()],
+            any::<u8>(), prop::option::of(any::<[u8; 32]>()),
+        ), 0..8),
     ) {
         let rules = patterns.into_iter().enumerate().map(|(i, (deny, path))|
             rule(&i.to_string(), if deny { Effect::Deny } else { Effect::Allow }, &Action::ALL, &path)).collect();
@@ -40,7 +58,9 @@ proptest! {
             actions: [Action::List, Action::Read].into_iter().collect(), resource: pattern(&ceiling),
         }], expiry.map(u64::from));
         let value = input::Input { policy: policy(rules), capability, principal: principal(),
-            path: path.join("/"), profile, folded, now: 100, native_name };
+            path: path.join("/"), profile, folded, now: 100, native_name,
+            publications: publications.into_iter().map(|(version, head, binding, data_generation)|
+                input::Publication { version, head, binding, data_generation }).collect() };
         let bytes = serde_json::to_vec(&value)?;
         prop_assert_eq!(&serde_json::from_slice::<input::Input>(&bytes)?, &value);
         input::check(&bytes);
