@@ -442,6 +442,8 @@ pub enum Wait {
     Until(Until),
     /// The turn finished; wait for more input.
     Input,
+    /// A settled turn's own committed UI write asks for a user response.
+    User(String),
     /// The agent's task is complete.
     Done(AgentOutcome),
 }
@@ -776,7 +778,12 @@ fn finalize_step(
     let phase = published(&state);
     // An awaited child answers its parent once it settles, in the commit
     // that publishes it so: the parent's wait wakes on exactly that record.
-    if state.awaited && matches!(phase, Phase::Idle | Phase::Done { .. }) {
+    if state.awaited
+        && matches!(
+            phase,
+            Phase::Idle | Phase::WaitingUser { .. } | Phase::Done { .. }
+        )
+    {
         state.awaited = false;
         if let Some(parent) = &state.parent {
             outs.push(Out::Send {
@@ -847,7 +854,9 @@ fn finalize_step(
 /// The phase a status publishes: an idle agent still holding input runs it
 /// next, so it publishes `Running`; `Idle` always means nothing is pending.
 fn published(state: &AgentState) -> Phase {
-    if state.phase == Phase::Idle && (!state.queued.is_empty() || state.overflow.is_some()) {
+    if matches!(state.phase, Phase::Idle | Phase::WaitingUser { .. })
+        && (!state.queued.is_empty() || state.overflow.is_some())
+    {
         Phase::Running
     } else {
         state.phase.clone()
@@ -857,7 +866,7 @@ fn published(state: &AgentState) -> Phase {
 fn control(state: &AgentState) -> Control {
     Control {
         mode: match &state.phase {
-            Phase::Idle => Mode::Idle,
+            Phase::Idle | Phase::WaitingUser { .. } => Mode::Idle,
             Phase::Running => Mode::Running,
             Phase::WaitingApproval { .. } | Phase::WaitingHost { .. } => Mode::Approval,
             Phase::Waiting { deadline_unix_ms } => Mode::Await(*deadline_unix_ms),
@@ -1047,6 +1056,7 @@ async fn run<T: TurnDriver + ?Sized>(
     // the step's commit is always buildable.
     if !turn.outs.iter().all(admissible)
         || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
+        || matches!(&turn.wait, Wait::User(path) if super::records::check_ui_path(path).is_err())
         || matches!(&turn.wait, Wait::Approval { binding: Some(binding), .. } if binding.validate().is_err())
     {
         turn = TurnStep {
@@ -1110,6 +1120,7 @@ async fn run<T: TurnDriver + ?Sized>(
             }
         }
         Wait::Input => (kernel::Wait::Input, None, None),
+        Wait::User(path) => (kernel::Wait::Input, Some(Phase::WaitingUser { path }), None),
         Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
     };
     let before = control(state);
@@ -1134,6 +1145,7 @@ async fn run<T: TurnDriver + ?Sized>(
         (Mode::Running, ..) => Phase::Running,
         (Mode::Approval, Some(waiting), _) => waiting,
         (Mode::Await(deadline_unix_ms), ..) => Phase::Waiting { deadline_unix_ms },
+        (Mode::Idle, Some(waiting @ Phase::WaitingUser { .. }), _) => waiting,
         (Mode::Done, _, Some(outcome)) => {
             state.drop_queue();
             if send {

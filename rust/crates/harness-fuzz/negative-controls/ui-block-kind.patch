@@ -1,0 +1,6 @@
+diff --git a/rust/crates/harness-client/src/ui/blocks.rs b/rust/crates/harness-client/src/ui/blocks.rs
+--- a/rust/crates/harness-client/src/ui/blocks.rs
++++ b/rust/crates/harness-client/src/ui/blocks.rs
+@@ -55,1 +55,1 @@
+-                    kind: kind.to_owned(),
++                    kind: "choose".to_owned(),

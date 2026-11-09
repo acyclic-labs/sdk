@@ -73,6 +73,7 @@ const FILES: &[(&str, &[u8])] = &[
     skill!("debugging"),
     skill!("fresh-context-review"),
     skill!("swarm-topology"),
+    skill!("ui"),
     skill!("verify-before-done"),
     skill!("writing-skills"),
     ("sys/context-backstop.md", CONTEXT_BACKSTOP.as_bytes()),

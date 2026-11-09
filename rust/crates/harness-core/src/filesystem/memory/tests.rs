@@ -10,6 +10,7 @@ mod content;
 mod projections;
 mod publication_cost;
 mod publication_evidence;
+mod ui;
 
 async fn run_admitted_file_case<F, Fut>(
     storage: &MemoryHarnessStorage,

@@ -806,6 +806,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             let phases = [Phase::Idle, Phase::Running,
+                Phase::WaitingUser { path: widest(crate::conversation::MAX_PATH_BYTES) },
                 Phase::WaitingApproval {
                     id: intent(),
                     binding: Some(crate::interaction::ApprovalBinding {

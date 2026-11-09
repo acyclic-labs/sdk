@@ -17,6 +17,7 @@ use acyclic_fs::{
 };
 use acyclic_stream::{BoxProviderFuture, OwnedBytes};
 use std::{borrow::Cow, sync::Arc};
+mod ui;
 
 /// Directory entries read per listing page.
 const PAGE: u32 = 256;
@@ -365,6 +366,13 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn waiting_user<'a>(
+        &'a self,
+        turn: OperationId,
+        journal: &'a dyn crate::executor::ExecutionJournal,
+    ) -> BoxProviderFuture<'a, Result<Option<String>>> {
+        Box::pin(self.ui_input(turn, journal))
+    }
     fn tool_results(&self, turn: OperationId) -> Option<String> {
         Some(format!(
             "{}{turn}",

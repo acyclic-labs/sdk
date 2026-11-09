@@ -36,8 +36,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 10 unifies child and deadline waits as one monotone condition.
 /// Version 11 adds admitted boundary steering and next-turn messages.
 /// Version 12 retains template capabilities only in their immutable source.
-/// Version 13 uses named MessagePack values after a four-byte big-endian version.
-pub const RECORD_VERSION: u32 = 13;
+/// Version 14 adds the waiting-user phase to named MessagePack values after a
+/// four-byte big-endian version.
+pub const RECORD_VERSION: u32 = 14;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -525,6 +526,11 @@ pub(super) fn interrupt_prefixes() -> Result<[Vec<u8>; 2], Error> {
 pub enum Phase {
     /// No queued input.
     Idle,
+    /// A settled turn authored an input fence in its private UI files.
+    WaitingUser {
+        /// Canonical path relative to the agent's `ui/` root.
+        path: String,
+    },
     /// A turn is executing.
     Running,
     /// Waiting for an approval response.
@@ -557,12 +563,23 @@ pub enum Phase {
 }
 
 impl Phase {
+    /// Lossless LATEST attention metadata shared by publishers and UI queries.
+    #[must_use]
+    pub const fn attention(&self) -> bool {
+        matches!(
+            self,
+            Self::WaitingApproval { .. }
+                | Self::WaitingHost { .. }
+                | Self::WaitingUser { .. }
+                | Self::Done { .. }
+        )
+    }
     /// Whether a turn is open: running, or waiting on an approval, its host,
     /// its children or a deadline. Idle and done agents hold none.
     #[must_use]
     pub const fn in_turn(&self) -> bool {
         match self {
-            Self::Idle | Self::Done { .. } => false,
+            Self::Idle | Self::WaitingUser { .. } | Self::Done { .. } => false,
             Self::Running
             | Self::WaitingApproval { .. }
             | Self::WaitingHost { .. }
@@ -591,15 +608,8 @@ impl StatusRecord {
     /// Encoded status plus Streams' opaque LATEST metadata. Attention transitions
     /// survive conflation; every publisher uses this same record constructor.
     pub fn append_record(&self) -> Result<acyclic_stream::AppendRecord, Error> {
-        acyclic_stream::AppendRecord::latest(
-            self.encode()?,
-            "status",
-            matches!(
-                self.phase,
-                Phase::WaitingApproval { .. } | Phase::WaitingHost { .. } | Phase::Done { .. }
-            ),
-        )
-        .map_err(Error::Stream)
+        acyclic_stream::AppendRecord::latest(self.encode()?, "status", self.phase.attention())
+            .map_err(Error::Stream)
     }
 }
 
@@ -657,6 +667,12 @@ pub(super) fn check_volumes<'a>(
         return Err(Error::Record("too many volumes"));
     }
     volumes.try_for_each(|binding| check_text(&binding.name))
+}
+
+/// A path within the private UI root, using the shared content-path contract.
+pub(super) fn check_ui_path(path: &str) -> Result<(), Error> {
+    crate::conversation::validate_content_path(path, &mut None)
+        .map_err(|_| Error::Record("invalid private ui/ path"))
 }
 
 /// A name: a binding, principal or host. Like a label, it admits no control
@@ -756,6 +772,7 @@ impl AgentRecord for StatusRecord {
         match &self.phase {
             Phase::Done { outcome } => check_outcome(outcome),
             Phase::WaitingHost { host } => check_text(host),
+            Phase::WaitingUser { path } => check_ui_path(path),
             Phase::WaitingApproval {
                 binding: Some(binding),
                 ..

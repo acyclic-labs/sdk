@@ -167,6 +167,16 @@ pub async fn expand_attachments(
 /// Settled turn outputs: conversation content, which every fork of the agent
 /// inherits with its conversation and reads by exact version.
 pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
+    /// A UI ask from this turn's original successful file publications. Hosts
+    /// inspect only this execution's receipts, never walk the private volume.
+    fn waiting_user<'a>(
+        &'a self,
+        turn: OperationId,
+        journal: &'a dyn ExecutionJournal,
+    ) -> BoxFuture<'a, crate::Result<Option<String>>> {
+        let _ = (turn, journal);
+        Box::pin(async { Ok(None) })
+    }
     /// The existing tool-output directory containing this turn's journal
     /// result payloads, when this host publishes them as readable files.
     fn tool_results(&self, turn: OperationId) -> Option<String> {
@@ -907,7 +917,15 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         reserved_children: 0,
                         checkpoint: None,
                         outs,
-                        wait: Wait::Input,
+                        wait: match open
+                            .outputs
+                            .waiting_user(turn, &*open.journal)
+                            .await
+                            .map_err(host_error)?
+                        {
+                            Some(path) => Wait::User(path),
+                            None => Wait::Input,
+                        },
                         drops: None,
                     }
                 }

@@ -9,10 +9,10 @@ publish.workspace = true
 description = "Bounded client state shared by native and WASM harness adapters"
 
 [features]
-agents = ["session", "dep:acyclic-harness-core", "dep:acyclic-actors", "dep:base64", "dep:blake3", "dep:serde", "dep:serde_json", "dep:thiserror"]
+agents = ["session", "dep:acyclic-harness-core", "dep:acyclic-actors", "dep:base64", "dep:blake3", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:pulldown-cmark"]
 grpc = ["agents", "acyclic-stream/grpc"]
 session = ["acyclic-stream/session", "dep:prost"]
-wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:acyclic-actors", "dep:base64", "dep:blake3", "dep:prost", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:tsify", "dep:wasm-bindgen"]
+wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:acyclic-actors", "dep:base64", "dep:blake3", "dep:prost", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:tsify", "dep:wasm-bindgen", "dep:pulldown-cmark"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
@@ -24,6 +24,7 @@ blake3 = { workspace = true, optional = true }
 bytes.workspace = true
 futures.workspace = true
 prost = { workspace = true, optional = true }
+pulldown-cmark = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
