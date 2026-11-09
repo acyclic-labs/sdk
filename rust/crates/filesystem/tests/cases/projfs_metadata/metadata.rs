@@ -117,10 +117,13 @@ fn run_client(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write as _;
     client::run_with_release(
-        concat!(module_path!(), "::external_metadata_only_change_survives_remount")
-            .split_once("::")
-            .expect("metadata belongs to a test crate")
-            .1,
+        concat!(
+            module_path!(),
+            "::external_metadata_only_change_survives_remount"
+        )
+        .split_once("::")
+        .expect("metadata belongs to a test crate")
+        .1,
         mode,
         path,
         |mut release| {
