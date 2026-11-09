@@ -9,10 +9,6 @@ const cargoHome = resolve(process.env.CARGO_HOME ?? join(homedir(), ".cargo"));
 const windows = process.env.CARGO_BUILD_TARGET
   ? process.env.CARGO_BUILD_TARGET.includes("windows") : process.platform === "win32";
 
-if (process.env.RUSTFLAGS || process.env.CARGO_ENCODED_RUSTFLAGS) {
-  throw new Error("build-product owns Rust flags so its output stays reproducible");
-}
-
 const flags = [
   "--remap-path-prefix", `${root}=.`,
   "--remap-path-prefix", `${target}=/cargo/build-dir`,
@@ -30,6 +26,11 @@ if (process.env.CARGO_BUILD_TARGET) cargoArguments.push("--target", process.env.
 
 process.exitCode = await releaseBuild({
   id: "product",
+  validate() {
+    if (process.env.RUSTFLAGS || process.env.CARGO_ENCODED_RUSTFLAGS) {
+      throw new Error("build-product owns Rust flags so its output stays reproducible");
+    }
+  },
   command: process.env.CARGO ?? "cargo",
   args: cargoArguments,
   cwd: root,
