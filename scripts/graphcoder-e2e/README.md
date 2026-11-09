@@ -43,7 +43,7 @@ The terminal package is required for PTY cases and the complete helper suite;
 headless selections load only their own runtime dependencies.
 
 ```sh
-node scripts/graphcoder-e2e/helpers.mjs
+node scripts/node-tests.mjs --only scripts/graphcoder-e2e
 # Linux/Linux: real FUSE mount custody, including the process-only negative control.
 python3 -B scripts/graphcoder-e2e/mount.test.py
 node scripts/graphcoder-e2e/coverage.mjs
