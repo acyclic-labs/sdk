@@ -7,12 +7,12 @@ test "$#" = 1 && test "$1" = --isolated
 # A private user/mount namespace hides the actual FUSE device for every owner
 # and client. Keep only the ordinary devices Node and the native runtime use.
 saved=$(mktemp -d)
-trap 'umount "$saved"; rmdir "$saved"' EXIT
-mount --bind /dev "$saved"
-mount -t tmpfs -o mode=755 tmpfs /dev
+trap 'rmdir "$saved"' EXIT
+mount -t tmpfs -o mode=755 tmpfs "$saved"
 for name in null zero random urandom; do
-    touch "/dev/$name"
-    mount --bind "$saved/$name" "/dev/$name"
+    touch "$saved/$name"
+    mount --bind "/dev/$name" "$saved/$name"
 done
-ln -s /proc/self/fd /dev/fd
+ln -s /proc/self/fd "$saved/fd"
+mount --move "$saved" /dev
 node --test --test-concurrency=1 "$(dirname -- "$0")/headless-nofuse.test.mjs"

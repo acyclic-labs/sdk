@@ -38,6 +38,9 @@ test('installed headless roots share workspace open and capture without FUSE',as
    assert.equal(context.type,'acyclic.host_context');assert.equal(context.version,1);
    assert.equal(context.cwd,workspace);assert.equal(started.type,'native.started');assert.equal(started.task,context.task);
    assert.equal(readFileSync(join(workspace,'native-root.txt'),'utf8'),context.task);
+   const status=await checked('git',['status','--porcelain','--untracked-files=all'],{cwd:workspace,env});
+   assert.match(status,/native-root\.txt/,'the native checkout write must remain authored');
+   assert.doesNotMatch(status,/\.acyclic-sdk\/|\.volumes\//,'coordination metadata must stay outside native Git inventory');
   }
   // A failed shared admission must diagnose the original path on BOTH ends.
   const mounts=join(workspace,'.volumes/agents'),held=join(root,'held-agents');
