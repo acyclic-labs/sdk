@@ -236,7 +236,8 @@ async fn run(
         && (args.prompt.is_some()
             || args.endpoint.is_some()
             || args.host_workspace
-            || args.usage_jsonl.is_some())
+            || args.usage_jsonl.is_some()
+            || args.transcripts.is_some())
     {
         return Err("serve takes no prompt, endpoint, host workspace or usage export".into());
     }
@@ -471,8 +472,10 @@ async fn drive(
         .clone()
         .unwrap_or_else(|| OperationId::new().to_string());
     if interactive {
-        if args.usage_jsonl.is_some() {
-            return Err("--usage-jsonl requires -p or --input-format jsonl".into());
+        if args.usage_jsonl.is_some() || args.transcripts.is_some() {
+            return Err(
+                "--usage-jsonl and --transcripts require -p or --input-format jsonl".into(),
+            );
         }
         return phase(|| view::run(conversation, args.inline, args.resume)).await;
     }
@@ -498,25 +501,34 @@ async fn drive(
         });
         &mut local_output
     };
-    let result = if let Some(prompt) = &args.prompt
-        && projection.is_none()
-        && args.input_format == InputFormat::Text
-    {
-        phase(|| headless::prompt(&conversation, &operation, prompt, output)).await
+    let run = async {
+        if let Some(prompt) = &args.prompt
+            && projection.is_none()
+            && args.input_format == InputFormat::Text
+        {
+            phase(|| headless::prompt(&conversation, &operation, prompt, output)).await
+        } else {
+            phase(|| {
+                headless::jsonl(
+                    &conversation,
+                    &operation,
+                    output,
+                    projection,
+                    args.prompt.as_deref(),
+                    schema,
+                    args.output.clone(),
+                    args.input_format,
+                )
+            })
+            .await
+        }
+    };
+    let result = if let Some(directory) = &args.transcripts {
+        conversation
+            .with_transcripts(directory, &operation, run)
+            .await?
     } else {
-        phase(|| {
-            headless::jsonl(
-                &conversation,
-                &operation,
-                output,
-                projection,
-                args.prompt.as_deref(),
-                schema,
-                args.output.clone(),
-                args.input_format,
-            )
-        })
-        .await
+        run.await
     };
     if let Some(mut usage) = usage.take() {
         // A refused/failed run can still have committed admissions. Exporting

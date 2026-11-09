@@ -1,0 +1,168 @@
+//! A live tree export must retain each agent's own original journal bytes.
+use super::*;
+use acyclic_harness_client::{AgentCommand, AgentReply, ExecutionPosition};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use serde_json::Value;
+
+#[tokio::test]
+async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Result<()> {
+    use crate::model::{ModelContent, ModelEvent, ToolCall};
+    use crate::test_support::ScriptedEvent;
+
+    let provider = scripted([
+        ScriptedTurn::Text("root answer".into()),
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "child-error".into(),
+                "absent-tool".into(),
+                json!({}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({}),
+            }),
+        ]),
+        ScriptedTurn::Text("child answer after error".into()),
+        ScriptedTurn::Text("grandchild answer".into()),
+    ]);
+    let directory = tempfile::tempdir().map_err(crate::local::storage)?;
+    let project = volume(directory.path()).await?;
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let conversation = Conversation::open(connection.clone());
+    let root = connection.root().clone();
+    let output = directory.path().join("transcripts");
+    let run = async {
+        conversation.send("root-input", "root task").await?;
+        agents::settled(&harness, &root).await?;
+        let mut paths = vec![root.clone()];
+        for name in ["child", "grandchild"] {
+            let parent = paths.last().expect("root or child").clone();
+            let AgentReply::Spawned { agent: child, .. } = connection
+                .execute(&AgentCommand::Spawn {
+                    parent,
+                    id: crate::agent::IntentId::try_from(name).map_err(crate::local::storage)?,
+                    brief: ModelContent::Text(format!("{name} task")),
+                    role: "worker".into(),
+                })
+                .await?
+            else {
+                panic!("spawn did not return a child");
+            };
+            agents::settled(&harness, &child).await?;
+            paths.push(child);
+        }
+        Ok::<_, Error>(paths)
+    };
+    let paths = conversation
+        .with_transcripts(&output, "tree-export", run)
+        .await??;
+    assert_eq!(
+        std::fs::read_dir(&output)
+            .map_err(crate::local::storage)?
+            .count(),
+        3,
+        "every spawned agent needs a transcript"
+    );
+    for path in paths {
+        let selected = Conversation::open(connection.select(path.clone()).await?);
+        let bytes = std::fs::read(output.join(format!("{}.jsonl", path.id())))
+            .map_err(crate::local::storage)?;
+        let rows = serde_json::Deserializer::from_slice(&bytes)
+            .into_iter::<Value>()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(crate::local::storage)?;
+        let mut rows = rows.iter();
+        let mut position = ExecutionPosition::default();
+        let mut calls = 0;
+        let mut failed_tool = false;
+        loop {
+            let query = selected
+                .execution_page(position.input, position.after, false)
+                .await?;
+            position = query.continuation().map_err(crate::local::storage)?;
+            let Some(page) = query.page else {
+                break;
+            };
+            for record in page.items {
+                calls += usize::from(matches!(
+                    record.event,
+                    crate::executor::ExecutionEvent::ModelStarted { .. }
+                ));
+                failed_tool |= matches!(
+                    record.event,
+                    crate::executor::ExecutionEvent::ToolFailed { .. }
+                );
+                let row = rows.next().expect("every journal record exported");
+                assert_eq!(row["version"], 1);
+                assert_eq!(row["operation"], "tree-export");
+                assert_eq!(row["agent"], path.as_str());
+                assert_eq!(row["input"], query.input);
+                assert_eq!(row["kind"], "execution");
+                assert_eq!(
+                    row["record"],
+                    serde_json::to_value(&record).map_err(crate::local::storage)?
+                );
+                for (field, reference) in
+                    crate::executor::ExecutionPayloadField::fields(&record.event)
+                {
+                    let mut payload = Vec::new();
+                    loop {
+                        let row = rows.next().expect("every payload chunk exported");
+                        assert_eq!(row["kind"], "execution_payload");
+                        assert_eq!(row["agent"], path.as_str());
+                        assert_eq!(row["input"], query.input);
+                        assert_eq!(row["sequence"], record.sequence);
+                        assert_eq!(
+                            row["field"],
+                            serde_json::to_value(field).map_err(crate::local::storage)?
+                        );
+                        assert_eq!(row["offset"], payload.len() as u64);
+                        payload.extend(
+                            STANDARD
+                                .decode(row["data"].as_str().expect("base64 payload"))
+                                .map_err(crate::local::storage)?,
+                        );
+                        if payload.len() as u64 == reference.descriptor().byte_length() {
+                            break;
+                        }
+                    }
+                    let mut original = Vec::new();
+                    loop {
+                        let (bytes, length) = selected
+                            .execution_payload(
+                                query.input,
+                                record.sequence,
+                                field,
+                                original.len() as u64,
+                            )
+                            .await?;
+                        original.extend(bytes);
+                        if original.len() as u64 == length {
+                            break;
+                        }
+                    }
+                    assert_eq!(
+                        payload, original,
+                        "payload differs from its original journal"
+                    );
+                }
+            }
+        }
+        assert!(calls > 0, "agent's own model calls are absent");
+        if path.depth() == 1 {
+            assert!(failed_tool, "child's tool error is absent");
+        }
+        assert!(
+            rows.next().is_none(),
+            "inherited or duplicate calls exported"
+        );
+    }
+    assert_eq!(provider.request_count(), 4);
+    Ok(())
+}

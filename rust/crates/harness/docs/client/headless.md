@@ -4,6 +4,31 @@
 `--output-format jsonl` projects its original streams and execution journals.
 There is no separate execution history or headless server.
 
+For RL hosts and benchmarks, `--transcripts DIR` follows the selected agent and
+every descendant as they are created:
+
+```sh
+graphcoder --operation trial-17 --transcripts trial-17/transcripts \
+  --usage-jsonl trial-17/usage.jsonl exec 'Solve the task'
+```
+
+Create the parent of the usage file first. The transcript directory is created
+automatically and is reserved for agent files; place other outputs outside it.
+Each file is `DIR/<stable-agent-id>.jsonl`, including the root. IDs are the final
+component of the canonical `agent` path carried in every row. Files contain only
+that agent's own calls, starting at its adoption cut, and are replaced on replay.
+They are flushed as records arrive and drained to committed frontiers when the
+headless invocation ends, including when its task fails. A still-running child's
+later work is outside that invocation's export.
+
+Rows use the same version-one `execution` and `execution_payload` envelopes as
+root event output below. Invocation and result bytes are standard padded base64
+`data` chunks, joined by `agent`, `input`, `sequence`, `field` and `offset`;
+`file` retains their immutable length and digest. Tool failures remain original
+execution records. The existing authenticated journal reader and payload
+projection apply the same secret handling as root output. There is no global
+ordering across files. This option requires headless input (`exec`, `-p` or JSONL).
+
 ```sh
 graphcoder --operation review-17 --output-format jsonl \
   --event-cursor review-17.cursor.json exec 'Review the selected changes'

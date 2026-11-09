@@ -24,7 +24,7 @@ pub enum OutputFormat {
 pub struct Args {
     /// Own workspace files for native coding hosts, without a provider or agent loop.
     /// Emits a `workspace-owner-ready` JSONL event on stdout after request events are installed.
-    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "resume", "agent"])]
+    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "transcripts", "resume", "agent"])]
     pub host_workspace: bool,
     /// Explicit durable storage, opened only by this trusted harness owner.
     #[arg(long, requires = "host_workspace")]
@@ -52,6 +52,10 @@ pub struct Args {
     /// stdout and sends ordinary answers to stderr. Missing metrics stay null.
     #[arg(long, value_name = "PATH|-")]
     pub usage_jsonl: Option<PathBuf>,
+    /// Follow every agent's own journal to DIR/<stable-agent-id>.jsonl.
+    /// Uses the root event output's version-one execution and payload envelopes.
+    #[arg(long, value_name = "DIR")]
+    pub transcripts: Option<PathBuf>,
     /// Explicit number of retained diagnostic text records; no default credit.
     #[arg(long, requires = "diagnostic_record_bytes")]
     pub diagnostic_records: Option<usize>,
@@ -131,6 +135,16 @@ impl Args {
             || self.event_cursor.is_some()
             || self.output_schema.is_some()
             || self.output.is_some();
+        if self.transcripts.is_some()
+            && !matches!(
+                self.command,
+                None | Some(Command::Exec { .. } | Command::Doctor)
+            )
+        {
+            return Err(
+                "transcripts require an execution; recovery: graphcoder --transcripts DIR exec 'TASK'",
+            );
+        }
         // `doctor` takes a run's exact flags; its output flags are inert.
         if event_options
             && (self.host_workspace
@@ -174,6 +188,15 @@ impl Args {
             .iter()
             .filter_map(|path| path.as_deref())
             .filter(|path| path.as_os_str() != "-");
+        if self
+            .transcripts
+            .as_ref()
+            .is_some_and(|directory| files.clone().any(|path| path.starts_with(directory)))
+        {
+            return Err(
+                "transcript directory is reserved for agent files; recovery: place other outputs outside --transcripts DIR",
+            );
+        }
         if files
             .clone()
             .enumerate()
