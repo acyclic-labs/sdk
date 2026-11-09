@@ -8,9 +8,6 @@ use std::{future::Future, sync::Arc};
 pub(crate) mod imports;
 pub(crate) use imports::Document;
 mod budget;
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub mod codec_fuzz;
 #[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub mod effects;
