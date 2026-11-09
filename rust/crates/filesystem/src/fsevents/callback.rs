@@ -1,6 +1,9 @@
 use super::*;
 
 /// Borrowed framework-owned paths, valid only during their native callback.
+/// `Copy`: a batch is only shared borrows, so a handler may iterate it more
+/// than once without re-reading framework memory it does not own.
+#[derive(Clone, Copy)]
 pub(crate) struct EventBatch<'a> {
     pub(super) paths: &'a [*const c_char],
     pub(super) flags: &'a [u32],
