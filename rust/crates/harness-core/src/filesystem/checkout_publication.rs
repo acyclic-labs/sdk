@@ -164,7 +164,7 @@ impl CheckoutPublication {
         if completed(&journal, self.identity, from.id(), to.id())? {
             // Completion belongs to the journal, so post-ack host edits cannot
             // be overwritten by reconstructing and replaying another plan.
-            cleanup_directory(&self.directory, work)?;
+            cleanup_directory(&self.directory)?;
             return Ok(journal);
         }
         let guard_cause = std::sync::Mutex::new(None);
@@ -199,7 +199,7 @@ impl CheckoutPublication {
                 .take()
                 .unwrap_or_else(|| Error::from(source))
         })?;
-        cleanup_directory(&self.directory, work)?;
+        cleanup_directory(&self.directory)?;
         Ok(journal)
     }
 
@@ -216,7 +216,7 @@ impl CheckoutPublication {
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let (directory, _custody) =
             NativeDirectory(root).publication_directory_with_native_work(operation, &work)?;
-        cleanup_directory(&directory, &work)?;
+        cleanup_directory(&directory)?;
         state.remove_materialization_async(operation).await?;
         Ok(())
     }
@@ -264,41 +264,19 @@ fn completed(
     Ok(journal.phase == acyclic_fs::MaterializationPhase::Applied)
 }
 
-fn cleanup_directory(directory: &Path, work: &NativeMaterializationWork) -> Result<()> {
+fn cleanup_directory(directory: &Path) -> Result<()> {
     let parent = directory
         .parent()
         .ok_or_else(|| Error::Invalid("native staging directory has no parent".into()))?;
+    // Journals retain shared parent identities before creating their operation
+    // directory. Even an empty parent can therefore belong to a preparation.
+    // Only this operation's tree can be retired without invalidating a journal.
     match acyclic_native_runtime::remove_child_directory(parent, directory) {
-        Ok(()) => {}
-        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}
-        Err(cause) => return Err(acyclic_fs::NativeTreeMaterializationError::Io(cause).into()),
-    }
-    // These two ancestors are shared by publishers. A single native removal
-    // either removes an empty directory or preserves every other publisher's
-    // pending bytes. Never enumerate, recursively remove, or retry them.
-    let staging = parent
-        .parent()
-        .ok_or_else(|| Error::Invalid("native staging root has no parent".into()))?;
-    for directory in [parent, staging] {
-        let ancestor = directory
-            .parent()
-            .ok_or_else(|| Error::Invalid("native staging ancestor has no parent".into()))?;
-        let leaf = directory
-            .file_name()
-            .ok_or_else(|| Error::Invalid("native staging ancestor has no name".into()))?;
-        match work.remove_empty_directory(ancestor, Path::new(leaf)) {
-            Ok(()) => {}
-            Err(acyclic_fs::NativeTreeMaterializationError::Io(cause))
-                if cause.kind() == std::io::ErrorKind::DirectoryNotEmpty =>
-            {
-                return Ok(());
-            }
-            Err(acyclic_fs::NativeTreeMaterializationError::Io(cause))
-                if cause.kind() == std::io::ErrorKind::NotFound => {}
-            Err(cause) => return Err(cause.into()),
+        Err(cause) if cause.kind() != std::io::ErrorKind::NotFound => {
+            Err(acyclic_fs::NativeTreeMaterializationError::Io(cause).into())
         }
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 #[cfg(test)]

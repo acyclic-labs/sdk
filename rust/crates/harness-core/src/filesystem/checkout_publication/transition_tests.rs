@@ -222,6 +222,9 @@ impl Fixture {
             Some(staging.as_path()),
             "prepared journal changed its original staging namespace"
         );
+        let shared_parent = publication.directory().parent().unwrap();
+        let parent_identity = self.work.root_identity(shared_parent)?;
+        let staging_identity = self.work.root_identity(&staging)?;
         assert!(options.destination.exists());
         let pending = self.publication(OperationId::new())?;
         let pending_options = MaterializeOptions::native(pending.directory().join("target"));
@@ -275,16 +278,26 @@ impl Fixture {
             assert_eq!(std::fs::read_to_string(self.root.join(name))?, "host-owned");
         }
         assert!(!publication.directory().exists());
-        // Both another operation on this root and another root own real
-        // Prepared bytes. Optional ancestor cleanup must preserve both.
+        // Another operation on this root and another root own real Prepared
+        // bytes. Retiring this operation must preserve both.
         assert!(pending_options.destination.exists());
         assert!(other_options.destination.exists());
-        cleanup_directory(pending.directory(), &self.work)?;
+        cleanup_directory(pending.directory())?;
+        assert!(!pending.directory().exists());
         assert!(other_options.destination.exists());
-        cleanup_directory(other.directory(), &self.work)?;
-        assert!(
-            !staging.exists(),
-            "publication left shared staging ancestors behind"
+        cleanup_directory(other.directory())?;
+        assert!(!other.directory().exists());
+        // Empty ancestors can already be bound into another Preparing journal,
+        // before that operation creates its own directory. Keep their identities.
+        assert_eq!(
+            self.work.root_identity(shared_parent)?,
+            parent_identity,
+            "cleanup invalidated a shared preparation parent"
+        );
+        assert_eq!(
+            self.work.root_identity(&staging)?,
+            staging_identity,
+            "cleanup invalidated the shared staging root"
         );
         std::fs::write(self.root.join("note"), "edit after acknowledgement")?;
         self.publish(adapter, operation, &self.to).await?;

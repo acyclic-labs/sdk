@@ -210,10 +210,10 @@ impl LocalWorkspace {
                 }
                 WorkspaceMounting::Physical => {
                     workspace.path = workspace.physical_task_source(selected).await?;
+                    workspace.identity =
+                        acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
                 }
             }
-            workspace.identity =
-                acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
             workspace.mounts = workspace
                 .mounts_at_from(&workspace.path, Some(&self.mounts))
                 .await?;
