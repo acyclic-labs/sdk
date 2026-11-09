@@ -184,40 +184,43 @@ mod tests {
 
     #[test]
     fn startup_abort_releases_original_native_producers() -> io::Result<()> {
-        let pool = Pool::open(NonZeroUsize::new(2).unwrap())?;
-        std::thread::scope(|scope| {
-            // The omission control observes the missing terminal at its
-            // publication point. Its rescue releases the actual startup wait
-            // before scoped joins, even when that assertion unwinds.
-            struct Release<'a>(&'a Pool);
-            impl Drop for Release<'_> {
-                fn drop(&mut self) {
-                    self.0.release_startup(false);
+        for count in [1, 2] {
+            let pool = Pool::open(NonZeroUsize::new(count).unwrap())?;
+            std::thread::scope(|scope| {
+                // The omission control observes the missing terminal at its
+                // publication point. Its rescue releases the actual startup wait
+                // before scoped joins, even when that assertion unwinds.
+                struct Release<'a>(&'a Pool);
+                impl Drop for Release<'_> {
+                    fn drop(&mut self) {
+                        self.0.release_startup(false);
+                    }
                 }
-            }
-            let _release = Release(&pool);
-            let startup = Startup(&pool);
-            let (finished, completion) = mpsc::channel();
-            for index in 0..=pool.hubs.len() {
-                let pool = &pool;
-                let finished = finished.clone();
-                std::thread::Builder::new().spawn_scoped(scope, move || {
-                    pool.run(index);
-                    let _ = finished.send(());
-                })?;
-            }
-            drop(finished);
-            drop(startup);
-            assert_eq!(
-                *pool.startup.lock().unwrap_or_else(PoisonError::into_inner),
-                Some(false),
-                "startup refusal retained a producer without a start event"
-            );
-            for _ in 0..=pool.hubs.len() {
-                completion.recv().map_err(io::Error::other)?;
-            }
-            Ok(())
-        })
+                let _release = Release(&pool);
+                let startup = Startup(&pool);
+                let (finished, completion) = mpsc::channel();
+                for index in 0..=pool.hubs.len() {
+                    let pool = &pool;
+                    let finished = finished.clone();
+                    std::thread::Builder::new().spawn_scoped(scope, move || {
+                        pool.run(index);
+                        let _ = finished.send(());
+                    })?;
+                }
+                drop(finished);
+                drop(startup);
+                assert_eq!(
+                    *pool.startup.lock().unwrap_or_else(PoisonError::into_inner),
+                    Some(false),
+                    "startup refusal retained a producer without a start event"
+                );
+                for _ in 0..=pool.hubs.len() {
+                    completion.recv().map_err(io::Error::other)?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[cfg(unix)]
