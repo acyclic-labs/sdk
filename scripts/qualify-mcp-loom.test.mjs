@@ -2,12 +2,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { loomEnvironment, qualificationMain, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom, qualifyNativeExecutor, qualifyNativeSources } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualificationPlan, qualifyMcpLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("checker CLI publishes a terminal FAIL even when selection fails before compilation", () => {
+  const result = spawnSync(process.execPath, ["scripts/qualify-mcp-loom.mjs", "--missing-obligation"], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  const markers = result.stdout.split(/\r?\n/).filter(line => line.startsWith("MODEL_CHECK_RESULT "));
+  assert.equal(markers.length, 1);
+  const terminal = JSON.parse(markers[0].slice("MODEL_CHECK_RESULT ".length));
+  assert.equal(terminal.status, "FAIL");
+  assert.deepEqual(terminal.args, ["--missing-obligation"]);
+  assert.match(result.stderr, /unknown qualification argument/);
+});
 
 test("filesystem policy qualification requires real cache and authority models in the gate", () => {
   const suites = [["facade::policy_cache::loom_tests::", 2], ["distributed::head_payload_loom_tests::", 8]];
