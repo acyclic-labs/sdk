@@ -214,9 +214,7 @@ impl LocalWorkspace {
                         acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
                 }
             }
-            workspace.mounts = workspace
-                .mounts_at_from(&workspace.path, Some(&self.mounts))
-                .await?;
+            workspace.mounts = workspace.mounts_at(&workspace.path).await?;
             workspace.context_line = workspace.mounts.context_line();
             reconciliation::recover_pending(
                 &workspace,

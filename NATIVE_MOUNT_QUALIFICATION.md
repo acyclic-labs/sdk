@@ -68,10 +68,14 @@ Guarantees that differ from native mounting:
   Shell overflow is retained as `shell-<operation>.log` in the primary view,
   captured and committed with the command's other effects. A projected home
   retains the same output in that private volume instead.
-- Physical view directories remain after an agent is archived, below the
-  reserved `.volumes/agents` root, which checkout capture, the Git facade and Git
-  exclusions all omit. Their contents are ordinary files of the harness user:
-  the same user can change them, and the next capture records the change.
+- Archiving an agent removes its physical project directory through the
+  original volume binding. Its committed logical filesystem history,
+  conversation and captured shell output remain readable through the archived
+  agent. Uncaptured physical files are not retained. The root checkout and
+  session-shared volumes remain available to their owners. Live physical views
+  reside below the reserved `.volumes/agents` root, which checkout capture,
+  the Git facade and Git exclusions omit; other processes of the harness user
+  can change their ordinary files, and the next capture records those changes.
 - After a crash, edits not yet captured in a physical directory are reconciled
   at its next binding, as the checkout's are.
 - `--host-workspace` coordination for native coding hosts still requires

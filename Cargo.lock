@@ -1562,6 +1562,7 @@ dependencies = [
  "acyclic-differential",
  "proptest",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

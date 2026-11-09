@@ -166,12 +166,26 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
     let held_last = std::fs::File::open(root.join("b"))?;
     assert!(b.stop()?);
     let worker_retired = worker.upgrade().is_none();
+    // Retain main's original-handle control: after readers retire, the same
+    // kernel connection must refuse a call instead of waiting forever.
+    let unserved = worker_retired.then(|| {
+        rustix::fs::openat(
+            &held_last,
+            "file",
+            rustix::fs::OFlags::RDONLY,
+            rustix::fs::Mode::empty(),
+        )
+    });
     // Release the kernel borrower before reporting a failed control.
     drop(held_last);
     assert!(
         worker_retired,
         "shared root releases custody only after worker exit"
     );
+    let unserved = unserved
+        .ok_or("worker retired")?
+        .expect_err("a call on a connection nothing serves");
+    assert_eq!(unserved.raw_os_error(), libc::ENOTCONN);
     assert_eq!(
         views.retirement_thread.get(),
         Some(&physical),

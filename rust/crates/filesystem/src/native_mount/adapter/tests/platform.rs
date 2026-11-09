@@ -412,8 +412,9 @@ fn run_unix_mount_cross_process_worker() -> Result<(), Box<dyn std::error::Error
 #[test]
 fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn std::error::Error>>
 {
-    use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree};
-    use std::io::{BufReader, Write as _};
+    use acyclic_native_runtime::{ProcessCommand, ProcessPipeReader, ProcessStdio, ProcessTree};
+    use std::io::Write as _;
+    use tokio::io::BufReader;
 
     if std::env::var_os("ACYCLIC_FS_UNIX_CHILD_MOUNT").is_some() {
         return run_unix_mount_cross_process_worker();
@@ -439,16 +440,14 @@ fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn 
             std::io::ErrorKind::BrokenPipe,
             format!("step=retain mount {id} release pipe; recovery: rerun {worker} through its parent test"),
         ))?;
-        let output = child.take_stdout().ok_or_else(|| std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            format!("step=retain mount {id} readiness pipe; recovery: rerun {worker} through its parent test"),
-        ))?;
+        let output = ProcessPipeReader::take_stdout(&mut child)?;
         children.push((child, input, BufReader::new(output)));
     }
-    let validation = (|| -> Result<(), Box<dyn std::error::Error>> {
+    let validation = acyclic_native_runtime::coordination_runtime()?.block_on(async {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         for ((id, mount), (_, _, output)) in mounts.iter().zip(&mut children) {
-            // Read the original child's complete event; death closes the pipe.
-            acyclic_test_support::readiness::wait(output, "acyclic-unix-mount-ready").map_err(
+            // Both original producers share the same readiness deadline.
+            acyclic_test_support::readiness::wait_until(output, "acyclic-unix-mount-ready", deadline).await.map_err(
                 |error| std::io::Error::new(
                     error.kind(),
                     format!("step=await mount {id}; recovery: verify native mount prerequisites and rerun {worker}; cause: {error}"),
@@ -461,8 +460,8 @@ fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn 
             let other = if *id == "a" { "b" } else { "a" };
             assert!(!mount.join(format!("{other}.txt")).exists());
         }
-        Ok(())
-    })();
+        Ok::<_, Box<dyn std::error::Error>>(())
+    });
     // On refusal, drop all original process owners and contain their trees.
     validation?;
     for (_, input, _) in &mut children {
