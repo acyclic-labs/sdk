@@ -718,6 +718,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-mcp",
  "acyclic-native-runtime",
+ "acyclic-plugin",
  "acyclic-stream",
  "acyclic-test-support",
  "base64 0.22.1",

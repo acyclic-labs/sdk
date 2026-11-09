@@ -1,5 +1,4 @@
 //! Thin native-host workspace client. `GraphCoder` owns the shared workspace.
-mod input;
 mod install;
 #[cfg(test)]
 mod tests;
@@ -8,7 +7,7 @@ use acyclic_harness::{
     agent::AgentPath,
     local::{host_files, host_owner::HostAction},
 };
-use input::{Result, parse_task, read_json};
+use acyclic_plugin::input::{Result, parse_task, read_json};
 use serde_json::{Value, json};
 use std::{
     env, io,

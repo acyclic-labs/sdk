@@ -5,8 +5,7 @@
 mod actions;
 #[path = "native_input/commands.rs"]
 mod commands;
-#[path = "../../../../plugin/src/input.rs"]
-mod input;
+use acyclic_plugin::input;
 
 // Use the same OS pipe input as the native entry. Dropping the original
 // producer closes the write endpoint and completes read_to_end with EOF.
