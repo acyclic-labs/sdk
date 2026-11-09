@@ -287,7 +287,9 @@ impl StockExecution<'_> {
             messages,
             tools,
             sampling: self.sampling()?,
-            max_output_tokens: self.output_budget()?,
+            // Assembly preserves settings. Turn entry and fresh dispatch own
+            // provider admission with the original work, including its count.
+            max_output_tokens: self.output_tokens(),
         })
     }
 
@@ -317,7 +319,7 @@ impl StockExecution<'_> {
             || request.model != self.stock.model
             || request.tools != tools
             || request.compose_tools != self.code_composition(&tools)?
-            || request.max_output_tokens != self.output_budget()?
+            || request.max_output_tokens != self.output_tokens()
             || request.sampling != self.sampling()?
         {
             return Err(stock_boundary(
