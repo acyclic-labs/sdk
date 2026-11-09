@@ -261,9 +261,9 @@ impl View {
                 cut.tail().ok_or(Error::Pending)?,
                 false,
             ),
-            "children" => self.child_links(cut, 0),
+            "children" => self.child_links(cut, 0, true),
             path if path.starts_with("children/pages/") => {
-                self.child_links(cut, page_number(path, "children/pages/")?)
+                self.child_links(cut, page_number(path, "children/pages/")?, false)
             }
             _ => Err(Error::Invalid("unknown default file")),
         }
@@ -286,16 +286,22 @@ impl View {
         }
         Ok(text)
     }
-    fn child_links(&self, cut: &impl Cut, page: u32) -> Result<String> {
+    fn child_links(&self, cut: &impl Cut, page: u32, index: bool) -> Result<String> {
         let listing = cut.children(page).ok_or(Error::Pending)?;
         let mut text = "# Children\n\n".to_owned();
         for path in &listing.children {
             let child = AgentPath::try_from(path.as_str().to_owned())?;
-            text.push_str(&format!("- [{}](children/{}/)\n", child.id(), child.id()));
+            text.push_str(&format!(
+                "- [{}]({}{}/)\n",
+                child.id(),
+                if index { "children/" } else { "../" },
+                child.id()
+            ));
         }
         if listing.next.is_some() {
             text.push_str(&format!(
-                "\n[More children](children/pages/{}.md)\n",
+                "\n[More children]({}{}.md)\n",
+                if index { "children/pages/" } else { "" },
                 u64::from(page) + 1
             ));
         }

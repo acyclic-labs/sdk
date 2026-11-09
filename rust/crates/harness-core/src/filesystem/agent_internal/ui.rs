@@ -60,10 +60,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> AgentInter
         }
         let head = self.head().await?;
         for (path, file) in files {
-            let original = self
-                .host
-                .read_content(&file, &self.grant, file.descriptor().byte_length(), None)
-                .await?;
+            // The journal already owns authenticated reads of this private
+            // volume's pinned receipts; the internal file grant is write-only.
+            let original = journal.load(&file, None)?.await?;
             if !input_fence(&original) {
                 continue;
             }

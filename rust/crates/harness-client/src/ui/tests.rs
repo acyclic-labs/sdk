@@ -215,6 +215,28 @@ async fn ui_default_projection() -> TestResult {
         file: &lookup,
     };
     assert_eq!(view.nodes(&cut, &children, cursor, 2)?.nodes.len(), 2);
+    let page_path = UiPath::new("children/pages/1.md")?;
+    let page = view.project(&cut, &page_path)?;
+    let base = url::Url::parse("https://ui.invalid/children/pages/1.md")?;
+    let links = pulldown_cmark::Parser::new(&page)
+        .filter_map(|event| match event {
+            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link { dest_url, .. }) => {
+                Some(base.join(&dest_url))
+            }
+            _ => None,
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let nodes = view.nodes(&cut, &children, cursor, 2)?.nodes;
+    for (link, node) in links.iter().zip(&nodes) {
+        assert_eq!(link.path(), format!("/children/{}/", node.name));
+    }
+    let next = links.last().ok_or("continuation link")?;
+    let next = UiPath::new(next.path().trim_start_matches('/'))?;
+    assert!(
+        view.wants(&selected, &next, Some(5))?
+            .iter()
+            .any(|want| { matches!(want, crate::reader::Want::Listing { index: 2, .. }) })
+    );
     assert_eq!(view.affected(Affected::Status), &["index.md", "status.md"]);
     Ok(())
 }
@@ -231,7 +253,7 @@ fn ui_agent_override() -> TestResult {
     let mut calls = 0;
     let result = path.resolve(files.get(&path).map(String::as_str), || {
         calls += 1;
-        Ok("Default\n".into())
+        Ok("Default".into())
     })?;
     assert_eq!(result, "# My plan\n\nDefault\n\n[Plan](plan.md)\n");
     assert_eq!(calls, 1);

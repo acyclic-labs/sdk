@@ -15,6 +15,16 @@ async fn ui_agent_override_and_turn_receipts_ignore_old_asks() -> Result<()> {
     let files = AgentInternalFiles::new(storage.host.clone(), storage.volume.clone(), grant);
     let journal = storage.journal();
     let turn = OperationId::new();
+    journal
+        .append(
+            turn,
+            "start",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
     storage
         .stage(
             OperationId::new(),
@@ -41,6 +51,22 @@ async fn ui_agent_override_and_turn_receipts_ignore_old_asks() -> Result<()> {
     .map_err(|e| Error::Invalid(e.to_string()))?;
     let result = journal
         .stage(turn, "write-result", &bytes, "application/json", None)?
+        .await?;
+    let invocation = journal
+        .stage(turn, "write-invocation", b"{}", "application/json", None)?
+        .await?;
+    journal
+        .append(
+            turn,
+            "write-started",
+            &ExecutionEvent::ToolStarted {
+                step: 0,
+                call_id: "write-ui".into(),
+                invocation,
+                publication: None,
+            },
+            None,
+        )?
         .await?;
     journal
         .append(
