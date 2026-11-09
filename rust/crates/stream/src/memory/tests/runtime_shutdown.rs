@@ -1,33 +1,14 @@
 use super::*;
-use futures::TryFutureExt as _;
-use std::{
-    sync::{
-        Barrier,
-        atomic::{AtomicBool, Ordering},
-    },
-    task::{Context, Waker},
-};
+use futures::Stream as _;
+use std::task::{Context, Waker};
 
-struct Clock {
-    armed: AtomicBool,
-    started: Barrier,
-    release: Barrier,
-}
-impl UnixMillisClock for Clock {
-    fn now_unix_millis(&self) -> u64 {
-        if self.armed.swap(false, Ordering::SeqCst) {
-            self.started.wait();
-            self.release.wait();
-        }
-        42
-    }
-}
-
-fn append(provider: &MemoryStream) -> crate::AppendReceipt {
-    let AppendOutcome::Committed(receipt) =
+fn opened(checked: bool, progress: bool) -> (MemoryStream, crate::FollowStream) {
+    let provider = MemoryStream::default();
+    let path = StreamPath::new("retired-snapshot").unwrap();
+    let AppendOutcome::Committed(seed) =
         futures::executor::block_on(provider.append(AppendRequest {
-            path: StreamPath::new("watched").unwrap(),
-            records: vec![(Bytes::from_static(b"x")).into()],
+            path: path.clone(),
+            records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
             idempotency_key: crate::IdempotencyKey::unique(),
         }))
@@ -35,95 +16,137 @@ fn append(provider: &MemoryStream) -> crate::AppendReceipt {
     else {
         unreachable!()
     };
-    receipt
+    let mut request = crate::FollowRequest::new(path, u64::from(checked));
+    request.preceding = checked.then_some(seed.commit_id);
+    request.progress = progress;
+    let follow = futures::executor::block_on(provider.follow(request)).unwrap();
+    (provider, follow)
 }
 
-// Public-API reproduction from review949/runtime_shutdown_probe.rs, extended to
-// checked records and children and workers cancelled before/after their first poll.
 #[test]
-fn pending_stream_survives_its_polling_runtime() {
-    for (_children, checked) in [(false, false), (false, true)] {
-        for poll_worker in [false, true] {
-            let clock = Arc::new(Clock {
-                armed: AtomicBool::new(false),
-                started: Barrier::new(2),
-                release: Barrier::new(2),
-            });
-            let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
-            let seed = append(&provider);
-            let path = StreamPath::new("watched").unwrap();
-            let mut follow = {
-                let follow = if checked {
-                    futures::executor::block_on(
-                        provider
-                            .follow(crate::FollowRequest {
-                                bootstrap_head: false,
-                                until: None,
-                                when_absent: Default::default(),
-                                path: path,
-                                from: 1,
-                                preceding: Some(seed.commit_id),
-                                filter: crate::FollowFilter::default(),
-                                progress: false,
-                                at_least: Default::default(),
-                            })
-                            .map_ok(crate::records_only),
-                    )
-                } else {
-                    futures::executor::block_on(
-                        provider
-                            .follow(crate::FollowRequest::new(path, 0))
-                            .map_ok(crate::records_only),
-                    )
-                }
-                .unwrap();
-                follow
-                    .map(move |record| {
-                        record.map(|record| {
-                            assert_eq!(record.sequence, u64::from(checked));
-                            assert_eq!(record.value.as_slice(), b"x");
-                        })
-                    })
-                    .boxed()
-            };
-            clock.armed.store(true, Ordering::SeqCst);
-            let writer = std::thread::spawn({
-                let provider = provider.clone();
-                move || append(&provider)
-            });
-            clock.started.wait();
+fn retired_executor_refuses_new_public_follows_before_writer_release() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let handle = runtime.handle().clone();
+    drop(runtime);
+    let _entered = handle.enter();
+
+    for (checked, progress) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (provider, mut follow) = opened(checked, progress);
+        let held = futures::executor::block_on(provider.state.write());
+        let result =
+            std::pin::Pin::new(&mut follow).poll_next(&mut Context::from_waker(Waker::noop()));
+        drop(follow);
+        drop(held);
+        assert!(
+            matches!(
+                result,
+                std::task::Poll::Ready(Some(Err(StreamError::Unavailable)))
+            ),
+            "retired executor left a newly admitted public follow parked"
+        );
+        assert!(
+            provider.state.try_write().is_ok(),
+            "rejected worker retained its reservation"
+        );
+    }
+}
+
+#[test]
+fn executor_loss_ends_public_follows_before_a_retained_writer_releases() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Observer(AtomicUsize);
+    impl std::task::Wake for Observer {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    for (checked, progress) in [(false, false), (true, false), (false, true), (true, true)] {
+        // Ready reads need no executor or independently scheduled job.
+        let (ready_provider, mut ready) = opened(false, progress);
+        assert!(
+            matches!(
+                std::pin::Pin::new(&mut ready).poll_next(&mut Context::from_waker(Waker::noop())),
+                std::task::Poll::Ready(Some(Ok(_)))
+            ),
+            "ready snapshot required an executor"
+        );
+        drop(ready);
+        drop(ready_provider);
+
+        let (provider, mut follow) = opened(checked, progress);
+        let held = futures::executor::block_on(provider.state.write());
+        let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            std::pin::Pin::new(&mut follow).poll_next(&mut Context::from_waker(Waker::noop()))
+        }));
+        assert!(
+            matches!(
+                observed,
+                Ok(std::task::Poll::Ready(Some(Err(StreamError::Unavailable))))
+            ),
+            "snapshot without an executor did not refuse before scheduling"
+        );
+        drop(follow);
+        drop(held);
+        assert!(
+            provider.state.try_write().is_ok(),
+            "unscheduled read retained its reservation"
+        );
+
+        for queued in [false, true] {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .unwrap();
-            let unpolled = runtime.block_on(async {
-                let (pending, observed) =
-                    crate::snapshot::observe(crate::snapshot::Cut::Pending, || {
-                        follow
-                            .as_mut()
-                            .poll_next(&mut Context::from_waker(Waker::noop()))
+            let (provider, mut follow) = opened(checked, progress);
+            let held = runtime.block_on(provider.state.write());
+            let observer = Arc::new(Observer(AtomicUsize::new(0)));
+            let wake = Waker::from(Arc::clone(&observer));
+            let (pending, settled) = {
+                let _entered = runtime.enter();
+                crate::snapshot::observe(
+                    if queued {
+                        crate::snapshot::Cut::Pending
+                    } else {
+                        crate::snapshot::Cut::Created
+                    },
+                    || {
+                        std::pin::Pin::new(&mut follow)
+                            .poll_next(&mut Context::from_waker(&wake))
                             .is_pending()
-                    });
-                assert!(pending);
-                if poll_worker {
-                    observed
-                        .await
-                        .expect("snapshot worker ended before its lock wait");
-                    None
-                } else {
-                    Some(observed)
-                }
-            });
-            clock.release.wait();
-            writer.join().unwrap();
+                    },
+                )
+            };
+            assert!(pending);
+            runtime
+                .block_on(settled)
+                .expect("original worker retired before its observed cut");
             drop(runtime);
-            if let Some(mut unpolled) = unpolled {
-                assert!(
-                    unpolled.try_recv().is_err(),
-                    "unpolled worker published a lock wait"
-                );
-            }
-            assert_eq!(futures::executor::block_on(follow.next()), Some(Ok(())));
-            append(&provider);
+            assert!(
+                observer.0.load(Ordering::SeqCst) > 0,
+                "lost snapshot producer did not wake its public follow"
+            );
+            // Even an available replacement executor cannot supply the lost
+            // read while the original writer remains held.
+            let replacement = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let _entered = replacement.enter();
+            assert!(
+                matches!(
+                    std::pin::Pin::new(&mut follow)
+                        .poll_next(&mut Context::from_waker(Waker::noop())),
+                    std::task::Poll::Ready(Some(Err(StreamError::Unavailable)))
+                ),
+                "lost snapshot producer left its public follow parked"
+            );
+            drop(follow);
+            drop(held);
+            assert!(
+                provider.state.try_write().is_ok(),
+                "retired worker retained its reservation"
+            );
         }
     }
 }

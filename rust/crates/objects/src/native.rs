@@ -1,12 +1,12 @@
 //! Original-meter producers over the same engine paths as ordinary calls.
 use crate::{
-    Account, Blobs, ByteRange, Digest, Medium, MediumError, NativeObjectsCause, NativeObjectsError,
+    Account, ByteRange, Digest, Medium, MediumError, NativeObjectsCause, NativeObjectsError,
     Object, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt,
     Observation, Observed, Retained, RootId, native_future, native_input_meter,
 };
 use acyclic_native_runtime::{NativeOperationKind, NativeReadMeter, ReadAllocation};
-use acyclic_stream::OwnedBytes;
-use std::ops::Range;
+use acyclic_stream::{OwnedBytes, ProviderPlatform};
+use std::ops::{Deref, Range};
 use std::sync::{Arc, Mutex, PoisonError};
 
 type Meter = Arc<dyn NativeReadMeter>;
@@ -17,8 +17,8 @@ type Meter = Arc<dyn NativeReadMeter>;
 /// Temporary engine allocations remain charged for the call.
 /// Canonical payload bytes belong to the caller's logical-object accounting;
 /// medium envelopes, index keys and listings are neither source nor output bytes.
-pub(crate) struct Metered<M> {
-    inner: Arc<M>,
+pub(crate) struct Metered<'a, M> {
+    inner: &'a M,
     meter: Meter,
     held: Mutex<ReadAllocation>,
     refusal: Mutex<Option<std::io::Error>>,
@@ -26,8 +26,8 @@ pub(crate) struct Metered<M> {
     reserved: Mutex<u64>,
 }
 
-impl<M> Metered<M> {
-    fn new(inner: Arc<M>, meter: Meter) -> Self {
+impl<'a, M> Metered<'a, M> {
+    fn new(inner: &'a M, meter: Meter) -> Self {
         Self {
             held: Mutex::new(ReadAllocation::empty(&meter)),
             inner,
@@ -105,7 +105,7 @@ impl<M> Metered<M> {
 }
 
 #[async_trait::async_trait]
-impl<M: Medium> Medium for Metered<M> {
+impl<M: Medium> Medium for Metered<'_, M> {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         self.admit_write(false)?;
         self.inner.create(key, bytes).await
@@ -187,6 +187,35 @@ impl<M: Medium> Medium for Metered<M> {
         self.hold(usize::try_from(bytes).unwrap_or(usize::MAX))
     }
 
+    fn allocation_capacity(&self, admitted: usize, actual: usize) -> Result<(), MediumError> {
+        if admitted == actual {
+            return Ok(());
+        }
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut allocation = self.charge(held.split(admitted))?;
+        let result = allocation.reconcile_capacity(actual);
+        // A refused completed allocation still belongs to the original call
+        // until the engine has dropped its buffer.
+        let restored = held.absorb(&mut allocation);
+        drop(held);
+        self.charge(restored)?;
+        self.charge(result)
+    }
+
+    fn finish_object(&self, object: Object) -> Result<Object, MediumError> {
+        let bytes = object.head().references.capacity() * std::mem::size_of::<Digest>();
+        if bytes == 0 {
+            return Ok(object);
+        }
+        let allocation = self.charge(
+            self.held
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .split(bytes),
+        )?;
+        Ok(object.retain_metadata(allocation))
+    }
+
     fn finish_allocation(&self, bytes: Vec<u8>) -> Result<OwnedBytes, MediumError> {
         let mut allocation = self.charge(
             self.held
@@ -222,7 +251,7 @@ impl<M: Medium> Medium for Metered<M> {
     }
 }
 
-impl<M> Drop for Metered<M> {
+impl<M> Drop for Metered<'_, M> {
     /// Returns what the call's reservation did not spend.
     fn drop(&mut self) {
         let operations = *self
@@ -234,16 +263,6 @@ impl<M> Drop for Metered<M> {
                 .cancel_reserved_operations(NativeOperationKind::Write, operations);
         }
     }
-}
-
-/// `account` over the caller's meter.
-fn metered<M: Medium>(
-    account: &Account<M>,
-    meter: &Meter,
-) -> (Arc<Metered<M>>, Account<Metered<M>>) {
-    let medium = Arc::new(Metered::new(account.shared_medium(), Arc::clone(meter)));
-    let metered = account.over(Arc::clone(&medium));
-    (medium, metered)
 }
 
 /// Reserves the exact result vector a genuine batch returns.
@@ -266,86 +285,123 @@ fn results<T>(
 }
 
 fn checked<T, M>(
-    medium: &Metered<M>,
+    medium: &Metered<'_, M>,
     value: Result<T, crate::Error>,
 ) -> Result<T, NativeObjectsError> {
     medium.meter.check()?;
     value.map_err(|error| medium.cause(error))
 }
 
-pub(crate) fn retain<'a, M: Medium>(
-    account: &'a Account<M>,
+pub(crate) fn retain<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+    account: &'a Account<M, P>,
     request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, Retained>, NativeObjectsError> {
     native_input_meter(&meter, &request)?;
-    let (medium, account) = metered(account, &meter);
+    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
     native_future(&meter, async move {
+        let account = account.over(&medium);
         // The account borrows the root. Keep it in the original request so
         // its backing retires before the request's funding on every exit.
         let mut request = request;
         let result = account
-            .retain(&request.data.0, std::mem::take(&mut request.data.1))
+            .retain_inner(&request.data.0, std::mem::take(&mut request.data.1))
             .await;
         checked(&medium, result)
     })
 }
 
-pub(crate) fn get<'a, M: Medium>(
-    account: &'a Account<M>,
+pub(crate) fn contains<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+    account: &'a Account<M, P>,
+    request: ObjectsNativeRequest<Digest>,
+    meter: Meter,
+) -> Result<ObjectsNativeFuture<'a, bool>, NativeObjectsError> {
+    native_input_meter(&meter, &request)?;
+    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
+    native_future(&meter, async move {
+        let account = account.over(&medium);
+        // Consume head metadata while its original medium funding is live.
+        let present = match account.head_inner(request.data).await {
+            Ok(_) => Ok(true),
+            Err(error) if error.code == crate::wire::ErrorCode::NotFound => Ok(false),
+            Err(error) => Err(error),
+        };
+        drop(request);
+        checked(&medium, present)
+    })
+}
+
+pub(crate) fn get<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+    account: &'a Account<M, P>,
     request: ObjectsNativeRequest<(Digest, ByteRange, u64)>,
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, Object>, NativeObjectsError> {
     native_input_meter(&meter, &request)?;
-    let ((digest, range, maximum), custody) = request.split();
-    let (medium, account) = metered(account, &meter);
+    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
     native_future(&meter, async move {
-        let _custody = custody;
-        checked(&medium, account.get_inner(digest, range, maximum).await)
+        let account = account.over(&medium);
+        let result = account
+            .get_inner(request.data.0, request.data.1, request.data.2)
+            .await;
+        drop(request);
+        checked(&medium, result)
     })
 }
 
-pub(crate) fn get_batch<'a, M: Medium>(
-    account: &'a Account<M>,
+pub(crate) fn get_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+    account: &'a Account<M, P>,
     requests: ObjectsNativeRequest<Vec<(Digest, ByteRange, u64)>>,
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<Object>>, NativeObjectsError> {
     native_input_meter(&meter, &requests)?;
-    let (requests, custody) = requests.split();
-    let future_meter = Arc::clone(&meter);
-    let (medium, account) = metered(account, &meter);
+    let batch_meter = Arc::clone(&meter);
     native_future(&meter, async move {
-        let _custody = custody;
-        let (mut values, allocation) = results(requests.len(), &future_meter)?;
+        // An unpolled frame keeps the whole request. Once started, declare
+        // funding first so the iterator also retires before it on withdrawal.
+        let _custody;
+        let (requests, custody) = requests.split();
+        _custody = custody;
+        let meter = &batch_meter;
+        // Keep the physical vector before its credit on every exit, including
+        // withdrawal while the driver still holds incomplete members.
+        let mut results = results(requests.len(), meter)?;
         crate::batch::drive(
-            requests,
+            requests.into_iter(),
             crate::BATCH_WINDOW,
-            |bytes| ReadAllocation::new(&future_meter, bytes),
-            |(digest, range, maximum)| account.get_inner(digest, range, maximum),
-            |got| values.push(checked(&medium, got)),
+            |bytes| ReadAllocation::new(meter, bytes),
+            |(digest, range, maximum)| async move {
+                let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+                let account = account.over(&medium);
+                checked(&medium, account.get_inner(digest, range, maximum).await)
+            },
+            |got| results.0.push(got),
         )
         .await?;
-        ObjectsBatch::new(values, allocation)
+        ObjectsBatch::new(results.0, results.1)
     })
 }
 
-pub(crate) fn put<'a, M: Medium>(
-    account: &'a Account<M>,
+pub(crate) fn put<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+    account: &'a Account<M, P>,
     request: ObjectsNativeRequest<(crate::Sealed, Vec<Digest>)>,
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsPutReceipt>, NativeObjectsError> {
     native_input_meter(&meter, &request)?;
-    let ((body, references), custody) = request.split();
-    let (medium, account) = metered(account, &meter);
+    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
     native_future(&meter, async move {
-        let _custody = custody;
+        // Declare funding before the data it protects, and detach only after
+        // this original request has entered its admitted frame.
+        let _custody;
+        let ((body, references), custody) = request.split();
+        _custody = custody;
+        let account = account.over(&medium);
         checked(&medium, account.put_inner(body, references).await)
             .map(|put| ObjectsPutReceipt::new(put, None))
     })
 }
 
-pub(crate) fn put_batch<'a, M: Medium>(
-    account: &'a Account<M>,
+pub(crate) fn put_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+    account: &'a Account<M, P>,
     requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
@@ -353,27 +409,35 @@ pub(crate) fn put_batch<'a, M: Medium>(
 }
 
 /// [`put_batch`] with `window` members in flight.
-pub(crate) fn put_window<'a, M: Medium>(
-    account: &'a Account<M>,
+pub(crate) fn put_window<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+    account: &'a Account<M, P>,
     requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
     meter: Meter,
     window: usize,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
     native_input_meter(&meter, &requests)?;
-    let (requests, custody) = requests.split();
-    let future_meter = Arc::clone(&meter);
-    let (medium, account) = metered(account, &meter);
+    let batch_meter = Arc::clone(&meter);
     native_future(&meter, async move {
-        let _custody = custody;
-        let (mut values, allocation) = results(requests.len(), &future_meter)?;
+        // An unpolled frame keeps the whole request. Once started, declare
+        // funding first so the iterator also retires before it on withdrawal.
+        let _custody;
+        let (requests, custody) = requests.split();
+        _custody = custody;
+        let meter = &batch_meter;
+        let mut results = results(requests.len(), meter)?;
         crate::batch::drive(
-            requests,
+            requests.into_iter(),
             window,
-            |bytes| ReadAllocation::new(&future_meter, bytes),
-            |(body, references)| account.put_inner(body, references),
-            |put| values.push(checked(&medium, put).map(|put| ObjectsPutReceipt::new(put, None))),
+            |bytes| ReadAllocation::new(meter, bytes),
+            |(body, references)| async move {
+                let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+                let account = account.over(&medium);
+                checked(&medium, account.put_inner(body, references).await)
+                    .map(|put| ObjectsPutReceipt::new(put, None))
+            },
+            |put| results.0.push(put),
         )
         .await?;
-        ObjectsBatch::new(values, allocation)
+        ObjectsBatch::new(results.0, results.1)
     })
 }

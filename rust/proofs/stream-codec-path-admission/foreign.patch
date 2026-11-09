@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/codec_fuzz.rs b/rust/crates/stream/src/codec_fuzz.rs
+--- a/rust/crates/stream/src/codec_fuzz.rs
++++ b/rust/crates/stream/src/codec_fuzz.rs
+@@ -280,7 +280,7 @@
+ }
+ 
+ fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {
+-    let Ok(foreign) = crate::StreamPath::new("codec/other") else {
++    let Ok(foreign) = crate::StreamPath::new("/codec/other") else {
+         return false;
+     };
+     for mutation in &envelope.mutations {

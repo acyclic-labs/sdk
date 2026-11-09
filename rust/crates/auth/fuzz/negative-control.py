@@ -10,39 +10,55 @@ choice = sys.argv[1] if len(sys.argv) == 2 else "delimiter"
 if choice == "operation-admission":
     repository = root.parents[3]
     oracle = repository / "rust/crates/stream/src/session/authority_tests.rs"
-    digest = hashlib.sha256(oracle.read_bytes()).digest()
+    oracles = [oracle, repository / "rust/crates/stream/src/codec_fuzz.rs"]
+    digests = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     command = ["cargo", "nextest", "run", "--locked", "-p", "acyclic-stream", "--lib",
-               "-E", "test(=session::authority::tests::declared_method_credentials_match_session_admission)",
+               "--features", "test-support,local",
+               "-E", "test(=session::authority::tests::declared_method_credentials_match_session_admission) | test(=codec_fuzz::emitted_persistence_seeds_satisfy_shared_oracle)",
                "--profile", "ci", "--no-fail-fast", "--retries", "0"]
-    source = repository / "rust/crates/stream/src/authorization.rs"
-    original = source.read_bytes()
-    step = "admit the original signed method credentials"
+    mutations = [
+        ("authorization.rs", b"Read => FOLLOW, Follow;",
+         b"Read => rpc::StreamRpc::Read.authorization(), Exact;", "Read, removed None", False),
+        ("lib/token.rs", b'Read => "read", StreamMethod::Read.authorization().admitted,',
+         b'Read => "read", &[],', "Read, removed None", False),
+        ("lib/token.rs", b"_ => Err(crate::StreamError::InvalidArgument),",
+         b"_ => Ok(Self::Read),", "token operation decoding", False),
+        ("authorization.rs", b"Head => rpc::StreamRpc::Head.authorization(), Exact;",
+         b"Head => MethodAuth { admitted: &[FOLLOW_ACTION, Action::Streams(StreamsAction::Read)], ..rpc::StreamRpc::Head.authorization() }, Exact;",
+         "Session observations require exactly one declared action", True),
+        ("codec_fuzz.rs", b"let mut seeds = Vec::new();\n    for operation in crate::TokenOperation::ALL {",
+         b"let mut seeds = Vec::new();\n    for operation in &[] as &[crate::TokenOperation] {",
+         "token corpus omitted declared operation", False),
+    ]
+    step = "admit the original signed method and token credentials"
     try:
         subprocess.run(command, cwd=repository, check=True)
-        step = "detect lost Follow admission in public Read"
-        try:
-            check = b"Read => FOLLOW, Follow;"
-            replacement = b"Read => rpc::StreamRpc::Read.authorization(), Exact;"
-            if original.count(check) != 1:
-                raise RuntimeError("expected exactly one production mutation site")
-            source.write_bytes(original.replace(check, replacement))
-            result = subprocess.run(command, cwd=repository, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, text=True)
-            print(result.stdout, end="")
-            if (result.returncode == 0 or "panicked at " not in result.stdout
-                    or "Read, removed None" not in result.stdout):
-                raise RuntimeError("the original signed credential assertion did not detect lost Follow")
-        finally:
-            source.write_bytes(original)
-        step = "preserve the signed credential oracle and pass after restoring method admission"
-        if hashlib.sha256(oracle.read_bytes()).digest() != digest:
+        for name, check, replacement, assertion, compile_refusal in mutations:
+            source = repository / "rust/crates/stream/src" / name
+            original = source.read_bytes()
+            step = "detect planted token or method defect in " + name
+            try:
+                if original.count(check) != 1:
+                    raise RuntimeError("expected exactly one production mutation site")
+                source.write_bytes(original.replace(check, replacement))
+                result = subprocess.run(command, cwd=repository, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True)
+                print(result.stdout, end="")
+                diagnostic = "error[E0080]" if compile_refusal else "panicked at "
+                if (result.returncode == 0 or diagnostic not in result.stdout
+                        or assertion not in result.stdout):
+                    raise RuntimeError("the original admission, decoder or compile-time assertion did not detect the defect")
+            finally:
+                source.write_bytes(original)
+        step = "preserve the signed credential oracle and pass after restoring production admission"
+        if any(hashlib.sha256(path.read_bytes()).digest() != digest for path, digest in digests.items()):
             raise RuntimeError("signed credential oracle changed during the negative control")
         subprocess.run(command, cwd=repository, check=True)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"STEP {step} failed: {error}; recovery from the repository root: "
               "python3 rust/crates/auth/fuzz/negative-control.py operation-admission", file=sys.stderr)
         sys.exit(1)
-    print("Auth negative control: signed credentials detected lost Follow admission and passed restoration")
+    print("Auth negative control: admission and decoder oracles detected all defects and passed restoration")
     sys.exit(0)
 
 if choice == "authorization-action":

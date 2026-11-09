@@ -63,11 +63,6 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         .await
     }
 
-    async fn list_operations(&self) -> Result<Vec<OperationId>, Self::Error> {
-        self.transaction(|namespace| namespace.operation_records(MULTI_ROOT_PUBLICATION_FAMILY))
-            .await
-    }
-
     async fn compare_and_delete(
         &self,
         operation_id: OperationId,

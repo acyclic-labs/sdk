@@ -40,6 +40,21 @@ pub(crate) struct RetainedWeak<T> {
 }
 
 impl<T> RetainedArc<T> {
+    pub(crate) fn from_owned(
+        owned: crate::kernel::Owned<T>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        let mut retained = Retained::from_owned(owned, accounting)?;
+        let mut admitted = Self::admit(accounting)?;
+        admitted.allocation.absorb(&mut retained.allocation)?;
+        Ok(admitted.into_value(retained.value))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn standalone_live_bytes(&self) -> Option<u64> {
+        self.allocation.0.as_deref()?.standalone_live_bytes()
+    }
+
     pub(crate) fn new(
         value: T,
         accounting: &mut KernelAccounting<'_>,
@@ -127,12 +142,13 @@ mod tests {
         let mut accounting =
             KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
         let value = RetainedArc::new(73_u64, &mut accounting)?;
-        let ledger = match value.allocation.0.as_deref() {
-            Some(RetainedAllocation::Standalone { _lease }) => Arc::clone(&_lease.ledger),
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(RetainedAllocation::Native { .. }) => unreachable!("standalone accounting"),
-            None => unreachable!("funded retained value"),
-        };
+        let ledger = value
+            .allocation
+            .0
+            .as_deref()
+            .and_then(RetainedAllocation::standalone_ledger)
+            .cloned()
+            .expect("funded standalone value");
         let funded = ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

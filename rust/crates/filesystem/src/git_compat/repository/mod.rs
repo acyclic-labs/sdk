@@ -135,7 +135,8 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     async fn publish(&self, mut state: GitCompatState) -> Result<bool, GitCompatError<S::Error>> {
-        let expected = next_revision(&mut state.revision);
+        let expected =
+            next_revision(&mut state.revision).ok_or(GitCompatError::RevisionExhausted)?;
         validate_git_state(&state).map_err(|()| GitCompatError::InvalidState)?;
         self.store
             .compare_and_swap(self.workspace_id, expected, state)

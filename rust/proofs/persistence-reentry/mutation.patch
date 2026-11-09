@@ -1,0 +1,10 @@
+diff --git a/rust/crates/native-runtime/src/task.rs b/rust/crates/native-runtime/src/task.rs
+--- a/rust/crates/native-runtime/src/task.rs
++++ b/rust/crates/native-runtime/src/task.rs
+@@ -118,6 +118,2 @@
+         let this = self.get_mut();
+-        if PERSISTENCE_JOB.with(|job| job.borrow().is_some()) {
+-            // Detaching the observer cannot cancel an accepted physical job.
+-            this.0 = Err(std::io::ErrorKind::WouldBlock.into());
+-        }
+         match &mut this.0 {

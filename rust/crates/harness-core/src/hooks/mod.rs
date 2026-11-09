@@ -22,6 +22,9 @@ mod chain;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use chain::model as chain_model;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod codec_fuzz;
 mod input;
 mod request;
 pub use input::HookInput;

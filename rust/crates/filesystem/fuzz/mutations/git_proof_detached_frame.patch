@@ -1,0 +1,18 @@
+diff --git a/rust/crates/filesystem/src/git_compat/capture/proof.rs b/rust/crates/filesystem/src/git_compat/capture/proof.rs
+--- a/rust/crates/filesystem/src/git_compat/capture/proof.rs
++++ b/rust/crates/filesystem/src/git_compat/capture/proof.rs
+@@ -21,6 +21,14 @@
+         let mut accounting = work.accounting(cancellation);
+         let result: Result<Option<GitCaptureProof>, GitCaptureAuthenticationError<S::Error>> =
+             async {
++                let mut accounting = crate::kernel::KernelAccounting::standalone(
++                    accounting
++                        .remaining()
++                        .map_err(WorkspaceError::from)
++                        .map_err(GitCaptureError::from)?,
++                    cancellation,
++                );
++
+                 accounting
+                     .check()
+                     .map_err(WorkspaceError::from)

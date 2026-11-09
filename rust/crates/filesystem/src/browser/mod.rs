@@ -14,6 +14,14 @@
 mod indexed_db;
 #[cfg(target_arch = "wasm32")]
 pub use indexed_db::{IndexedDbObjectStore, IndexedDbOpenError};
+#[cfg(target_arch = "wasm32")]
+mod blob;
+#[cfg(target_arch = "wasm32")]
+pub use blob::{blob_bytes, blob_length, complete, promise};
+#[cfg(target_arch = "wasm32")]
+mod read;
+#[cfg(target_arch = "wasm32")]
+pub use read::{Reader, read_many, read_one};
 
 /// Browser authority initialization failures retain their original provider error.
 #[cfg(target_arch = "wasm32")]

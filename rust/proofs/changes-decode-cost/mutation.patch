@@ -1,0 +1,8 @@
+diff --git a/rust/crates/stream/src/changes.rs b/rust/crates/stream/src/changes.rs
+--- a/rust/crates/stream/src/changes.rs
++++ b/rust/crates/stream/src/changes.rs
+@@ -389,3 +389,3 @@
+ ) -> Result<wire::ChangeRecord, StreamError> {
+-    let mut entries = Vec::with_capacity(capacity);
++    let mut entries = Vec::new();
+     let context = parse_record(bytes, format, |key, operation, metadata| {

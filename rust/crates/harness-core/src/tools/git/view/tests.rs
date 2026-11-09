@@ -40,8 +40,13 @@ async fn registered_workspace(
         .value
         .workspace();
     WorkspaceGraph::new(store.clone())
-        .register_root(&workspace)
-        .await?;
+        .register_root(
+            &workspace,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     Ok(workspace)
 }
 

@@ -1,0 +1,15 @@
+diff --git a/rust/crates/stream/src/completion.rs b/rust/crates/stream/src/completion.rs
+--- a/rust/crates/stream/src/completion.rs
++++ b/rust/crates/stream/src/completion.rs
+@@ -71,7 +71,10 @@ impl<F: Future, H, A: Unpin, I> Future for Operation<F, H, A, I> {
+     type Output = ();
+ 
+     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+-        let value = std::task::ready!(self.future.as_mut().poll(cx));
++        let Poll::Ready(value) = self.future.as_mut().poll(cx) else {
++            self.producer.take();
++            return Poll::Ready(());
++        };
+         if let Some(producer) = self.producer.take() {
+             producer.publish(value);
+         }

@@ -513,15 +513,30 @@ fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn s
     source.create_file(&native_test_path("full/child"), metadata(), None, &work)?;
 
     let refusals = [
-        (source.rename(&directory, &file, true, &work), "ENOTDIR"),
-        (source.rename(&file, &directory, true, &work), "EISDIR"),
-        (source.rename(&directory, &full, true, &work), "ENOTEMPTY"),
-        (source.remove(&full, None, &work), "ENOTEMPTY"),
-        (source.rename(&file, &directory, false, &work), "EEXIST"),
-        (source.rename(&absent, &file, true, &work), "ENOENT"),
+        (
+            source.rename(&directory, &file, true, &work, None).err(),
+            "ENOTDIR",
+        ),
+        (
+            source.rename(&file, &directory, true, &work, None).err(),
+            "EISDIR",
+        ),
+        (
+            source.rename(&directory, &full, true, &work, None).err(),
+            "ENOTEMPTY",
+        ),
+        (source.remove(&full, None, &work).err(), "ENOTEMPTY"),
+        (
+            source.rename(&file, &directory, false, &work, None).err(),
+            "EEXIST",
+        ),
+        (
+            source.rename(&absent, &file, true, &work, None).err(),
+            "ENOENT",
+        ),
     ];
     for (refusal, expected) in refusals {
-        let error = refusal.err().ok_or("the operation succeeded")?;
+        let error = refusal.ok_or("the operation succeeded")?;
         let reported = match error.semantic_error() {
             MountSourceError::NotDirectory => "ENOTDIR",
             MountSourceError::IsDirectory => "EISDIR",

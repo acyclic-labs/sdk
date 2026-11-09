@@ -54,16 +54,6 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
             .map(Some)
     }
 
-    /// Lists durable publication operations for restart recovery.
-    pub async fn pending_operations(
-        &self,
-    ) -> Result<Vec<OperationId>, MultiRootPublicationError<S::Error, P::Error, A::Error>> {
-        self.store
-            .list_operations()
-            .await
-            .map_err(MultiRootPublicationError::Store)
-    }
-
     /// Validates, commits, and rolls forward one exact candidate.
     pub fn publish(
         &self,
@@ -706,7 +696,8 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         &self,
         mut journal: MultiRootPublication,
     ) -> Result<MultiRootPublication, MultiRootPublicationError<S::Error, P::Error, A::Error>> {
-        let expected = next_revision(&mut journal.revision);
+        let expected = next_revision(&mut journal.revision)
+            .ok_or(MultiRootPublicationError::RevisionExhausted)?;
         if self
             .store
             .compare_and_swap(

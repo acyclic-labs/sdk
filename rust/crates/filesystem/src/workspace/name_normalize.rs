@@ -1,12 +1,13 @@
 use super::*;
 
-pub(super) fn parse(
+pub(super) fn parse<T, P: FnMut(u8, u64, u64)>(
     name: &str,
     maximum_pending: u64,
     maximum_chunk: u64,
     accounting: &mut KernelAccounting<'_>,
-    probe: &mut impl FnMut(u8, u64, u64),
-) -> Result<WorkspaceName, WorkspaceError> {
+    probe: &mut P,
+    finish: impl FnOnce(&str, &mut KernelAccounting<'_>, &mut P) -> Result<T, WorkspaceError>,
+) -> Result<T, WorkspaceError> {
     // NFC's two TinyVec buffers and combining-mark sort scratch are admitted before iteration.
     let buffer = |count: u64, width: usize| -> Result<u64, WorkspaceError> {
         if count <= 4 {
@@ -68,7 +69,7 @@ pub(super) fn parse(
             return Err(WorkspaceNameError::InvalidCharacter.into());
         }
     }
-    WorkspaceName::retain(canonical, accounting, probe)
+    finish(canonical, accounting, probe)
 }
 
 pub(super) fn encode(

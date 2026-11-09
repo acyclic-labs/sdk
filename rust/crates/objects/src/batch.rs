@@ -29,6 +29,45 @@ impl Member for (Digest, ByteRange, u64) {
     }
 }
 
+struct Independent<R>(R);
+
+impl<R> Member for Independent<R> {
+    fn publishes(&self) -> Option<Digest> {
+        None
+    }
+
+    fn needs(&self) -> &[Digest] {
+        &[]
+    }
+}
+
+/// Drives independent reads through the same ordered, bounded provider driver.
+///
+/// Requests remain borrowed and are never copied into a second request vector.
+/// Each member covers its complete read, including metadata and materialization;
+/// a pending member does not prevent other members in the window from advancing.
+/// `admit` funds the driver's control storage before allocation and retains that
+/// funding until every member and ordered result slot has retired.
+pub async fn independent<'a, R, T, G, E, Fut>(
+    requests: &'a [R],
+    window: usize,
+    admit: impl FnOnce(usize) -> Result<G, E>,
+    start: impl Fn(&'a R) -> Fut,
+    each: impl FnMut(T),
+) -> Result<(), E>
+where
+    Fut: Future<Output = T>,
+{
+    drive(
+        requests.iter().map(Independent),
+        window,
+        admit,
+        |Independent(request)| start(request),
+        each,
+    )
+    .await
+}
+
 /// A started member that publishes, at slot `index % window`.
 struct Slot {
     index: usize,
@@ -57,7 +96,7 @@ where
 /// once whatever its length; `admit` is charged every byte of it before any
 /// is allocated, and holds the charge until that state is freed.
 pub(crate) async fn drive<R, T, G, E, Fut>(
-    requests: Vec<R>,
+    requests: impl ExactSizeIterator<Item = R>,
     window: usize,
     admit: impl FnOnce(usize) -> Result<G, E>,
     start: impl Fn(R) -> Fut,
@@ -68,6 +107,9 @@ where
     Fut: Future<Output = T>,
 {
     let window = window.clamp(1, requests.len().max(1));
+    // Declared first so the slot vector and every pending member retire before
+    // their funding, including when this future is withdrawn.
+    let _grant;
     let slots = Mutex::new(Vec::<Option<Slot>>::new());
     let published = tokio::sync::Notify::new();
     // A member starts only once the one `window` places earlier completed,
@@ -109,7 +151,7 @@ where
     };
     let member_bytes =
         returned(&member) + std::mem::size_of::<T>() + NODE + std::mem::size_of::<Option<Slot>>();
-    let _grant = admit(window.checked_mul(member_bytes).unwrap_or(usize::MAX))?;
+    _grant = admit(window.checked_mul(member_bytes).unwrap_or(usize::MAX))?;
     let mut started = 0;
     let mut outcomes = stream::iter(requests)
         .map(|request| {

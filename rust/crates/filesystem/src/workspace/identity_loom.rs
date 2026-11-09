@@ -93,7 +93,13 @@ fn model<const OLD: bool, const CHECK_EFFECTS: bool>(
         }
         // Immutable fixture storage lives through join; actual leaf/resource
         // locks, cancellation and the byte witnesses use the crate's shim.
-        let name = WorkspaceName(Arc::new(("x".into(), KernelOwnedAllocation::Standalone)));
+        let name = WorkspaceName::new(
+            "x",
+            &crate::WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .unwrap()
+        .value;
         let actual = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
         let worker_work = work.clone();
         let worker_cancel = caller_cancel.clone();
@@ -168,7 +174,13 @@ fn unwind_model<const OMIT: bool>() {
             .unwrap()
             .native_volume_work(limit)
             .unwrap();
-        let name = WorkspaceName(Arc::new(("x".into(), KernelOwnedAllocation::Standalone)));
+        let name = WorkspaceName::new(
+            "x",
+            &crate::WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .unwrap()
+        .value;
         let actual = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
         let worker_work = work.clone();
         let worker_cancel = cancellation.clone();

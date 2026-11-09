@@ -1,0 +1,10 @@
+--- a/rust/crates/stream/src/memory/commit_index.rs
++++ b/rust/crates/stream/src/memory/commit_index.rs
+@@ -96,7 +96,6 @@
+         let (selected, _) = radix::select(self.commit_cursor(), id.as_bytes(), None, &mut observe)?;
+         match selected.link {
+             Some(RetainedIndexLink::Leaf(index)) => {
+-                observe(32)?;
+                 Ok(self
+                     .replay_entry(index)
+                     .envelope()

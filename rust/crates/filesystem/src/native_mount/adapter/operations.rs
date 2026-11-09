@@ -734,8 +734,9 @@ where
         destination: &MountPath,
         replace: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
-        CheckoutMountSource::rename(self, source, destination, replace, work)
+        bindings: Option<&mut dyn MountRenameBindings>,
+    ) -> Result<crate::native_mount::ViewStamp, MountSourceError> {
+        CheckoutMountSource::rename(self, source, destination, replace, work, bindings)
     }
 
     fn hard_link(

@@ -170,17 +170,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         let cancellation = CancellationToken::new();
         let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
-        let left = read_record_metadata_to_file_root_with_accounting(
-            workspace,
-            left,
+        let left = crate::kernel::read_file_metadata_with_accounting(
+            workspace.fs.objects(),
+            left.metadata,
+            DecodeLimits::for_volume(workspace.config),
             &mut accounting,
             &cancellation,
         )
         .await
         .map_err(WorkspaceError::engine)?;
-        let right = read_record_metadata_to_file_root_with_accounting(
-            workspace,
-            right,
+        let right = crate::kernel::read_file_metadata_with_accounting(
+            workspace.fs.objects(),
+            right.metadata,
+            DecodeLimits::for_volume(workspace.config),
             &mut accounting,
             &cancellation,
         )

@@ -17,6 +17,14 @@ fn contents<const N: usize>(
 #[test]
 fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
 -> Result<(), &'static str> {
+    prefix_generated_operations()?;
+    prefix_population_work()?;
+    prefix_physical_retirement()?;
+    prefix_drain_refusals()?;
+    Ok(())
+}
+
+fn prefix_generated_operations() -> Result<(), &'static str> {
     use proptest::test_runner::{Config, RngSeed, TestRunner};
     let mut runner = TestRunner::new(Config {
         cases: 128,
@@ -38,8 +46,21 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                         .map_err(TestCaseError::fail)?;
                     expected.entry(key).or_insert(value);
                     if !extract {
-                        if value % 7 == 0 {
-                            let removed = index.remove_if(key, |_| !miss);
+                        if value.is_multiple_of(7) {
+                            let live = work.live.get();
+                            let claims = work.claims;
+                            let items = work.items;
+                            work.cancelled = true;
+                            work.maximum_items = Some(0);
+                            work.maximum_claims = Some(0);
+                            let extracted = index.extract_if(key, |_| !miss);
+                            prop_assert_eq!(work.live.get(), live, "exact extraction retired original backing");
+                            prop_assert_eq!(work.claims, claims);
+                            prop_assert_eq!(work.items, items);
+                            work.cancelled = false;
+                            work.maximum_items = None;
+                            work.maximum_claims = None;
+                            let removed = extracted.and_then(|owner| owner.into_entries(|_| {}).next());
                             if miss {
                                 prop_assert!(removed.is_none());
                             } else {
@@ -63,7 +84,7 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                     if miss {
                         bytes[0] ^= 255;
                     }
-                    let prefix = bytes.get(..length).ok_or_else(|| TestCaseError::fail("missing generated prefix"))?;
+                    let prefix = bytes.get(..length).ok_or_else(|| TestCaseError::fail("generated prefix exceeds original bytes"))?;
                     let result = if length == 5 {
                         Ok(index.extract_through(key, |n| visits += n))
                     } else {
@@ -90,7 +111,8 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                         expected.retain(|key, _| !selected.contains_key(key));
                         prop_assert!(visits <= 17 * 4 + 3);
                         prop_assert_eq!(&contents(extracted.index(), &mut work).map_err(TestCaseError::fail)?, &selected);
-                        verify_detached_entries(extracted, &selected, value % 2 == 0, &mut work)?;
+                        verify_selected_drain(extracted, &selected, value, &mut work)?;
+                        prop_assert_eq!(contents(&index, &mut work).map_err(TestCaseError::fail)?, expected.clone());
                     }
                     prop_assert_eq!(contents(&index, &mut work).map_err(TestCaseError::fail)?, expected.clone());
                 }
@@ -103,16 +125,13 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
             eprintln!("{error}");
             "prefix extraction differs from complete original keys"
         })?;
-
     Ok(())
 }
 
-#[test]
-fn prefix_extraction_cost_is_independent_of_population() -> Result<(), &'static str> {
+fn prefix_population_work() -> Result<(), &'static str> {
     let mut indexed = [0; 2];
     let mut census = [0; 2];
-    for ((indexed_items, census_items), population) in
-        indexed.iter_mut().zip(&mut census).zip([1_u64, 100_000])
+    for ((indexed, census), population) in indexed.iter_mut().zip(&mut census).zip([1_u64, 100_000])
     {
         let mut work = Work::default();
         let mut index = FixedIndex::<usize, _, 9>::default();
@@ -128,8 +147,8 @@ fn prefix_extraction_cost_is_independent_of_population() -> Result<(), &'static 
         let claims = work.claims;
         let live = work.live.get();
         let selected = index
-            .extract_prefix(&[0], |items| *indexed_items += items)
-            .map_err(|_| "prefix extraction refused")?;
+            .extract_prefix(&[0], |items| *indexed += items)
+            .map_err(|_| "original prefix refused")?;
         assert_eq!(work.claims, claims);
         assert_eq!(work.live.get(), live);
         assert_eq!(contents(selected.index(), &mut work)?.len(), 1);
@@ -143,7 +162,7 @@ fn prefix_extraction_cost_is_independent_of_population() -> Result<(), &'static 
             ordered
                 .keys()
                 .filter(|key| {
-                    *census_items += 1;
+                    *census += 1;
                     key.starts_with(&[0])
                 })
                 .count(),
@@ -165,12 +184,10 @@ fn prefix_extraction_cost_is_independent_of_population() -> Result<(), &'static 
     assert_eq!(indexed[0], indexed[1]);
     assert!(census[1] > census[0]);
     println!("foreign=[1,100000] prefix_items={indexed:?} census_items={census:?}; selected=1");
-
     Ok(())
 }
 
-#[test]
-fn prefix_extraction_retains_physical_backing_until_retirement() -> Result<(), &'static str> {
+fn prefix_physical_retirement() -> Result<(), &'static str> {
     let mut work = Work {
         observe_retirement: true,
         ..Work::default()
@@ -187,7 +204,7 @@ fn prefix_extraction_retains_physical_backing_until_retirement() -> Result<(), &
             let before = acyclic_test_support::current_allocations().unwrap();
             let live = work.live.get();
             assert_eq!(
-                i64::try_from(live).expect("live credit fits allocator counter"),
+                i64::try_from(live).expect("live backing fits the physical counter"),
                 before.bytes_current
             );
             let detached = index.extract_prefix(&[127], |_| {}).unwrap();
@@ -255,6 +272,10 @@ fn prefix_extraction_retains_physical_backing_until_retirement() -> Result<(), &
     result?;
     assert_eq!(measured.bytes_current, 0);
     assert!(!work.early_refund.get());
+    Ok(())
+}
+
+fn prefix_drain_refusals() -> Result<(), &'static str> {
     let required = verify_admitted_drain(None)?;
     // Every original admission boundary, including immediately before a lower
     // child visit, must preserve the exact remaining values and their funding.
@@ -280,7 +301,7 @@ fn verify_admitted_drain(allowance: Option<u64>) -> Result<u64, &'static str> {
     work.maximum_items = allowance.map(|allowance| before + allowance);
     let mut entries = index
         .extract_prefix(&[], |_| {})
-        .map_err(|_| "empty prefix extraction refused")?
+        .map_err(|_| "empty prefix refused")?
         .into_entries(|_| {});
     let mut remaining = expected.iter();
     let mut refused = false;
@@ -332,7 +353,8 @@ fn verify_drain_shape<const N: usize>(work: &mut Work) -> Result<(), &'static st
     // input construction visits a key-width path per inserted key.
     for bit in (0..8 * N).rev() {
         let mut key = [0; N];
-        *key.get_mut(bit / 8).ok_or("missing branch byte")? = 0x80 >> (bit % 8);
+        *key.get_mut(bit / 8)
+            .ok_or("branch bit exceeds original key")? = 0x80 >> (bit % 8);
         index.get_or_try_insert_with(key, work, |_| Ok(bit + 1))?;
     }
     work.cancelled = true;
@@ -365,12 +387,12 @@ fn verify_drain_shape<const N: usize>(work: &mut Work) -> Result<(), &'static st
     Ok(())
 }
 
-fn verify_detached_entries(
+fn verify_selected_drain(
     extracted: ExtractedPrefix<usize, Allocation, 4>,
     selected: &BTreeMap<[u8; 4], usize>,
-    partial: bool,
+    value: usize,
     work: &mut Work,
-) -> Result<(), TestCaseError> {
+) -> TestCaseResult {
     let items = work.items;
     let claims = work.claims;
     let mut drain_items = 0;
@@ -379,7 +401,7 @@ fn verify_detached_entries(
     work.maximum_claims = Some(0);
     prop_assert!(extracted.index().first(work).is_err());
     let mut entries = extracted.into_entries(|n| drain_items += n);
-    if partial {
+    if value.is_multiple_of(2) {
         // Withdrawing a partial consumer must retire only
         // the unconsumed subtree, never its delivered leaf.
         let entry = entries.next();
@@ -400,6 +422,7 @@ fn verify_detached_entries(
         for entry in &mut entries {
             delivered.push(entry.into_parts());
         }
+        prop_assert!(entries.next().is_none());
         prop_assert!(entries.next().is_none());
         drop(entries);
         prop_assert_eq!(

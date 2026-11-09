@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/local/persistence_cut.rs b/rust/crates/stream/src/local/persistence_cut.rs
+index 35ead858393..3452c23c786 100644
+--- a/rust/crates/stream/src/local/persistence_cut.rs
++++ b/rust/crates/stream/src/local/persistence_cut.rs
+@@ -84,7 +84,7 @@ impl LocalStream {
+                 .map_err(|_| StreamError::AlreadyExists)
+         });
+         let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
+-        match futures::future::select(unavailable, installation).await {
++        match futures::future::select(futures::future::pending::<StreamError>(), installation).await {
+             futures::future::Either::Left((error, _)) => Err(error),
+             futures::future::Either::Right((result, _)) => result,
+         }

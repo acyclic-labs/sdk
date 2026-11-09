@@ -188,8 +188,13 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
         .await?;
     }
     acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
+        .register_root(
+            main.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let repo = main.workspace().id();
     assert!(matches!(
         run(&fs, &store, &main, repo, &["commit", "-m", "base"])
@@ -727,8 +732,13 @@ async fn merge_child_with_alias(reserved: &[String]) -> Result<AliasMerge> {
     )
     .await?;
     acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
+        .register_root(
+            main.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let repo = main.workspace().id();
     let GitCommandOutput::Committed(base) = run_reserving(
         &fs,
@@ -884,8 +894,13 @@ async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()
     let (_temp, root, fs, store, main) = fixture_native(true).await?;
     let repository = main.workspace().id();
     acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
+        .register_root(
+            main.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let (_, child) = run(
         &fs,
         &store,
@@ -969,8 +984,13 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
     let (_temp, root, fs, store, main) = fixture().await?;
     let repo = main.workspace().id();
     acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
+        .register_root(
+            main.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     main.write(
         "/file.txt",
         bytes::Bytes::from_static(b"base\n").into(),
@@ -1234,8 +1254,13 @@ async fn user_owned_volumes_directory_is_committed_and_cleaned() -> Result<()> {
     let (_temp, _root, fs, store, main) = fixture().await?;
     let repo = main.workspace().id();
     acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
+        .register_root(
+            main.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let stop = CancellationToken::new();
     let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
     main.write(
@@ -1322,8 +1347,13 @@ async fn merge_continue_tracks_the_joined_generation_not_the_live_source() -> Re
     let (_temp, _root, fs, store, main) = fixture().await?;
     write_text(&main, "/base.txt", b"base\n").await?;
     acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
+        .register_root(
+            main.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let repo = main.workspace().id();
     run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
     let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
@@ -1376,8 +1406,13 @@ async fn merge_combines_edits_when_one_side_replaced_the_file() -> Result<()> {
         let (_temp, _root, fs, store, main) = fixture().await?;
         write_text(&main, "/notes.txt", b"one\ntwo\nthree\n").await?;
         acyclic_fs::WorkspaceGraph::new(store.clone())
-            .register_root(main.workspace())
-            .await?;
+            .register_root(
+                main.workspace(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
         let repo = main.workspace().id();
         run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
         let (_, topic) = run(&fs, &store, &main, repo, &["checkout", "-b", "topic"]).await?;
@@ -1428,8 +1463,13 @@ async fn merge_continue_reexamines_a_resolution_whose_conflicted_identity_is_gon
     let (_temp, _root, fs, store, main) = fixture().await?;
     write_text(&main, "/notes.txt", b"base\n").await?;
     acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
+        .register_root(
+            main.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let repo = main.workspace().id();
     run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
     let (_, topic) = run(&fs, &store, &main, repo, &["checkout", "-b", "topic"]).await?;
@@ -1483,8 +1523,13 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
         let (_temp, _root, fs, store, main) = fixture().await?;
         write_text(&main, "/base.txt", b"base\n").await?;
         acyclic_fs::WorkspaceGraph::new(store.clone())
-            .register_root(main.workspace())
-            .await?;
+            .register_root(
+                main.workspace(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
         let repo = main.workspace().id();
         run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
         let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
@@ -1586,8 +1631,13 @@ async fn agent_merge_takes_an_unmaterialized_host_file_base_from_the_fork_cut() 
     std::fs::write(root.join("notes.txt"), b"one\ntwo\nthree\n")?;
     write_text(&main, "/parent.txt", b"BASE\n").await?;
     acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
+        .register_root(
+            main.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let repo = main.workspace().id();
     let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
     let child = child.ok_or("missing child view")?;
@@ -1656,8 +1706,13 @@ three
         )
         .await?;
         acyclic_fs::WorkspaceGraph::new(store.clone())
-            .register_root(main.workspace())
-            .await?;
+            .register_root(
+                main.workspace(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
         let repo = main.workspace().id();
         let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
         let child = child.ok_or("missing child view")?;
@@ -1712,8 +1767,13 @@ async fn agent_discard_retires_only_the_parent_reference() -> Result<()> {
     let stop = CancellationToken::new();
     let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
     acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(main.workspace())
-        .await?;
+        .register_root(
+            main.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let repo = main.workspace().id();
     let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
     let child = child.ok_or("missing child view")?;
@@ -2063,7 +2123,14 @@ async fn raw_git_requires_the_grant_and_rejects_an_unrelated_registered_workspac
     };
     let (_temp, _root, fs, store, main) = fixture().await?;
     let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
-    graph.register_root(main.workspace()).await?;
+    graph
+        .register_root(
+            main.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let root = AuthorityRoot::new(
         "git-access",
         [91; 32],
@@ -2111,7 +2178,14 @@ async fn raw_git_requires_the_grant_and_rejects_an_unrelated_registered_workspac
     run(&fs, &store, &main, main.workspace().id(), &["status"]).await?;
 
     let foreign = acyclic_harness_core::filesystem::local_owner_workspace(&fs, "foreign").await?;
-    graph.register_root(&foreign).await?;
+    graph
+        .register_root(
+            &foreign,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     acyclic_fs::GitCompatRepository::new(main.workspace().id(), store.clone())
         .register_branch_workspace("foreign", foreign.id(), None, false)
         .await?;

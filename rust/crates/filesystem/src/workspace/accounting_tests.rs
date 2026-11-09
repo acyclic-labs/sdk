@@ -4,9 +4,9 @@ use crate::kernel::allocation::retained::Retained;
 use crate::{AuthorityStoreError, AuthorityWork, Fs, WorkCounters};
 use std::sync::Mutex;
 
-pub(super) struct Prefunded {
-    pub(super) budget: WorkBudget,
-    pub(super) held: Mutex<Option<(Retained<Vec<u8>>, u64)>>,
+pub(crate) struct Prefunded {
+    pub(crate) budget: WorkBudget,
+    pub(crate) held: Mutex<Option<(Retained<Vec<u8>>, u64)>>,
 }
 
 impl FsWork for &Prefunded {
@@ -659,10 +659,18 @@ pub(super) struct Observation {
     pub(super) completion: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
+pub(super) enum ReplayCustody {
+    Standalone(Arc<Prefunded>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(crate::NativeMaterializationWork),
+}
+
 #[derive(Default)]
 pub(super) struct ObservedAuthority {
     inner: crate::MemoryAuthorityStore,
     pub(super) observation: Mutex<Option<Observation>>,
+    pub(super) replay_minimum: Mutex<Option<u64>>,
+    pub(super) replay_custody: Mutex<Option<ReplayCustody>>,
 }
 
 impl AsyncAuthorityStore for ObservedAuthority {
@@ -676,6 +684,16 @@ impl AsyncAuthorityStore for ObservedAuthority {
 
     fn policy_owner(&self) -> crate::PolicyOwner {
         self.inner.policy_owner()
+    }
+
+    async fn fork_workspace<G: crate::AuthorityGuard>(
+        &self,
+        fork: crate::WorkspaceForkCommit,
+        permit: crate::PublicationPermit,
+        work: &mut AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<crate::WorkspaceForkOutcome, crate::AuthorityError<G::Error>> {
+        self.inner.fork_workspace(fork, permit, work, guard).await
     }
 
     async fn create_authority<G: crate::AuthorityGuard>(
@@ -754,6 +772,42 @@ impl AsyncAuthorityStore for ObservedAuthority {
         limit: crate::ReplayLimit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        if let Some(expected) = self.replay_custody.lock().unwrap().take() {
+            let shares = match expected {
+                ReplayCustody::Standalone(original) => {
+                    let held = original.held.lock().unwrap();
+                    let ledger = held
+                        .as_ref()
+                        .unwrap()
+                        .0
+                        .allocation
+                        .standalone_ledger()
+                        .unwrap();
+                    work.allocations.shares_retained_ledger(Arc::as_ptr(ledger))
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                ReplayCustody::Native(original) => work
+                    .original
+                    .is_some_and(|work| work.shares_ledger(&original)),
+            };
+            assert!(shares, "fork replaced the original accounting ledger");
+        }
+        let minimum = self.replay_minimum.lock().unwrap().take();
+        if let Some(minimum) = minimum {
+            let live = work
+                .accounting()
+                .standalone_parts()
+                .map(|parts| parts.0.live_bytes());
+            #[cfg(not(target_arch = "wasm32"))]
+            let live = work
+                .original
+                .map(|work| work.live_allocation_bytes())
+                .or(live);
+            assert!(
+                live.is_some_and(|live| live >= minimum),
+                "creation lost original workspace-name backing: {live:?} < {minimum}"
+            );
+        }
         self.inner.replay(authority, after, limit, work).await
     }
 

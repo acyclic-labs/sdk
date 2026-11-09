@@ -4,9 +4,9 @@ use crate::change::{
     Change, Subscription,
     sync::{Arc, Mutex},
 };
-use std::collections::{BTreeMap, btree_map::Entry};
 #[cfg(not(any(all(feature = "wasm", target_arch = "wasm32"), loom)))]
-use std::sync::{Arc, Mutex};
+use crate::query_sync::{Arc, SyncMutex as Mutex};
+use std::collections::{BTreeMap, btree_map::Entry};
 
 struct Registration<V> {
     value: V,

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/record_store.rs b/rust/crates/filesystem/src/record_store.rs
+--- a/rust/crates/filesystem/src/record_store.rs
++++ b/rust/crates/filesystem/src/record_store.rs
+@@ -85,7 +85,7 @@
+
+     fn update(&self, key: K, expected: u64, replacement: Option<V>) -> Result<bool, Poisoned> {
+         let (matched, retired) = self.locked(|records| match records.entry(key) {
+-            Entry::Occupied(mut entry) if entry.get().revision() == expected => {
++            Entry::Occupied(mut entry) => {
+                 let retired = match replacement {
+                     Some(value) => entry.insert(value),
+                     None => entry.remove(),

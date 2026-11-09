@@ -9,9 +9,10 @@ description = "Deterministic Rust-owned versioned SDK documentation data"
 
 [features]
 model-checking = []
-test-support = []
+test-support = ["acyclic-native-runtime/test-support"]
 
 [dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 sdk-file-identity = { path = "file-identity" }
 cargo_metadata = "=0.23.1"
 public-api = "=0.52.2"

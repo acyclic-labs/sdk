@@ -7,7 +7,12 @@ not external command output. Generated valid JSON and original typed AgentPath
 values must also be admitted; rejecting everything fails the oracle.
 
 The byte-bound property supplies valid JSON below, at and above the existing
-65,536-byte boundary. The former spaces-only example was invalid JSON at every
+65,536-byte hook-frame boundary. Workspace and package commands are EOF-delimited
+JSON, with no hook-frame limit. The workspace transport independently admits its
+request envelope; a nested completion is not a hook frame. The same pipe oracle
+also checks unbounded request decoding against the original JSON, including an
+actual serialized near-bound session completion with its claim and parent.
+The former spaces-only example was invalid JSON at every
 size and could not distinguish a removed bound check. The kept production guard
 mutation must fail the unchanged bound assertion. That subsumed example is
 deleted; real binary, OS pipe and lifecycle controls are separate.
@@ -39,6 +44,11 @@ have not occurred. It uses the existing executable selection and process owner.
 On Unix, stdin is an opened directory: Rust standard input deliberately maps a
 write-only descriptor's EBADF to EOF, which would test JSON truncation instead.
 Windows uses a write-only file's access-denied read error.
+The same binary test sends the production-serialized completion through
+`__workspace` and checks the original workspace-client refusal in an unowned
+workspace. This proves CLI admission and dispatch, not session settlement. Its
+second control reinstates the hook cap at that actual CLI call, which must fail
+the unchanged workspace-client assertion before restored source passes.
 Control `native_stdin_binary` omits actual stdin read-error propagation and must
 fail the unchanged cause assertion before exact-restored source passes:
 
@@ -49,3 +59,18 @@ python3 rust/crates/harness-fuzz/graphcoder-args-control.py native_stdin_binary
 This named integration test uses the Cargo-built binary in its original source
 snapshot. Relocated artifact selection, installed host loops, other lifecycle
 branches and platform acceptance require their own evidence.
+
+At source `acce6c4d25`, the four selected production mutations failed their
+unchanged assertions. Exact-restored Linux source replayed 389 retained inputs
+(116,884 bytes) in two seconds and passed the named binary test in 0.009 seconds.
+All 388 prior input hashes remain unchanged; `action-36` is the original
+65,698-byte completion emitted by the existing production serializer oracle.
+The corpus manifest retains the precise source and component qualification.
+
+Typed workspace and package requests decode directly from the original bytes.
+The pipe oracle compares that same reader with the owning `HostAction` decoder,
+including duplicate members in actions and nested claims. Retained serializer
+captures `duplicate-field` and `duplicate-claim` exercise this distinction.
+Control 8 restores intermediate `Value` normalization and must fail that byte
+admission oracle. The reader consumes each byte once; EOF or the original OS
+read error ends the wait, and no intermediate JSON tree is built by the caller.

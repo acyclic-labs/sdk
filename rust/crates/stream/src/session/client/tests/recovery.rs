@@ -46,12 +46,51 @@ async fn refused_endpoint_finishes_without_scheduling_a_retry() -> TestResult {
     futures::pin_mut!(request, backoff);
     match future::select(request, backoff).await {
         future::Either::Left((result, _)) => {
-            assert_eq!(result.unwrap_err().code(), StreamError::Unavailable.code())
+            let error = result.expect_err("a refused endpoint cannot return heads");
+            assert_eq!(error.code(), StreamError::Unavailable.code());
+            assert!(error.uncertain());
         }
         future::Either::Right((event, _)) => panic!(
             "a definite refused endpoint must finish without backoff: {:?}",
             event?
         ),
+    }
+
+    // A definite peer status after Welcome must retain the same classification
+    // through the response stream, rather than reopening the live interest.
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", 1).await?;
+    let fixture = Fixture::open(provider, "node").await?;
+    let transport = fixture.client()?;
+    let client = transport.session_client()?;
+    let mut records = client
+        .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+        .map_ok(crate::records_only)
+        .await?;
+    let connections = client.connections();
+    let opened = connections.changed(0).await?;
+    let mut refusal = Status::unavailable("refused");
+    refusal.metadata_mut().insert(
+        "acyclic-unserved-reason",
+        tonic::metadata::MetadataValue::from_static("original-reason"),
+    );
+    fixture.controls.send(Err(refusal.clone()))?;
+    let terminal = records.next();
+    let reconnected = connections.changed(opened);
+    futures::pin_mut!(terminal, reconnected);
+    match future::select(terminal, reconnected).await {
+        future::Either::Left((result, _)) => {
+            let Some(Err(error @ StreamError::Refused(_))) = result else {
+                panic!("the original peer refusal must terminate its interest: {result:?}");
+            };
+            assert!(error.uncertain());
+            let encoded = crate::wire_codec::error_status(&error);
+            assert_eq!(encoded.code(), refusal.code());
+            assert_eq!(encoded.message(), refusal.message());
+            assert_eq!(encoded.details(), refusal.details());
+            assert_eq!(encoded.metadata().as_ref(), refusal.metadata().as_ref());
+        }
+        future::Either::Right(_) => panic!("a definite peer failure reopened the live interest"),
     }
     Ok(())
 }

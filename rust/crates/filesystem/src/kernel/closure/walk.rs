@@ -535,9 +535,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             return Ok(());
         }
         let bytes = self.read_object(metadata_id, false).await?;
-        self.examine(1)?;
-        let metadata = decode_file_metadata(&bytes.0.bytes, self.limits.decode, &mut |_| {
-            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        let (metadata, _guard) = self.meter.decode_steps(|observe| {
+            decode_file_metadata(&bytes.0.bytes, self.limits.decode, &mut |step| {
+                observe(step)
+            })
         })?;
         drop(bytes);
         if let MetadataField::Value(attributes) = metadata.named_attributes {

@@ -1,5 +1,7 @@
 use super::*;
-use crate::replicated::{AppendIf, CommandJournal, JournalEntry, JournalFrame, JournalPage};
+use crate::replicated::{
+    AppendIf, CommandJournal, JournalEntry, JournalFrame, JournalNotifications, JournalPage,
+};
 pub(super) struct PgJournal {
     pub(super) client: Client,
     pub(super) publish: Statement,
@@ -57,7 +59,9 @@ impl CommandJournal for PgJournal {
             at_millis,
         })
     }
+}
 
+impl JournalNotifications for PgJournal {
     fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>> {
         let head = self.head;
         let mut wakes = self.wakes.clone();

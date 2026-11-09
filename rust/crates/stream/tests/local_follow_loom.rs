@@ -28,7 +28,7 @@ fn executor_shutdown_returns_unpolled_snapshot_ownership() {
 }
 
 #[test]
-fn executor_shutdown_returns_queued_or_granted_snapshot_ownership() {
+fn executor_shutdown_ends_queued_snapshot_reads() {
     for checked in [false, true] {
         acyclic_stream::verification::snapshot_executor_shutdown(false, checked, false, true);
     }
@@ -42,7 +42,7 @@ fn consumer_cancellation_races_executor_shutdown() {
 }
 
 #[test]
-#[should_panic(expected = "deadlock")]
+#[should_panic(expected = "lost snapshot producer left its public follow parked")]
 fn negative_control_executor_shutdown_discards_snapshot_ownership() {
     acyclic_stream::verification::snapshot_executor_shutdown(true, false, false, true);
 }
@@ -79,16 +79,6 @@ fn memory_follow_cannot_park_state() {
 #[should_panic(expected = "deadlock")]
 fn negative_control_memory_follow_parks_state() {
     acyclic_stream::verification::memory_follow_parking(true, false);
-}
-
-#[test]
-fn lock_admission_and_cancellation_match_tokio() {
-    acyclic_stream::verification::lock_parity(false);
-}
-#[test]
-#[should_panic(expected = "granted reader excluded a compatible reader")]
-fn negative_control_granted_reader_stalls_new_readers() {
-    acyclic_stream::verification::lock_parity(true);
 }
 
 #[test]

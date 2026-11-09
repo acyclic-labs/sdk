@@ -1,3 +1,4 @@
+use super::super::RENAME_NOREPLACE;
 use super::*;
 use crate::native_mount::fuse::invalidation::{KernelCacheNotifier, shared_invalidation_pass};
 use std::cell::RefCell;
@@ -24,6 +25,9 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
     enum Creation {
         ExistingFile,
         ExistingDirectory,
+        RenamedFile,
+        RenamedDirectory,
+        ReplacedFile,
         Lookup,
         File,
         Directory,
@@ -34,6 +38,9 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
     for creation in [
         Creation::ExistingFile,
         Creation::ExistingDirectory,
+        Creation::RenamedFile,
+        Creation::RenamedDirectory,
+        Creation::ReplacedFile,
         Creation::Lookup,
         Creation::File,
         Creation::Directory,
@@ -42,11 +49,18 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         Creation::HardLink,
     ] {
         let (source, around) = shared_sources(posix_config())?;
-        let path = name("held");
-        let directory = matches!(creation, Creation::ExistingDirectory | Creation::Directory);
+        let mut path = name("held");
+        let directory = matches!(
+            creation,
+            Creation::ExistingDirectory | Creation::RenamedDirectory | Creation::Directory
+        );
         let existing = matches!(
             creation,
-            Creation::ExistingFile | Creation::ExistingDirectory
+            Creation::ExistingFile
+                | Creation::ExistingDirectory
+                | Creation::RenamedFile
+                | Creation::RenamedDirectory
+                | Creation::ReplacedFile
         );
         if existing || creation == Creation::HardLink {
             crate::native_mount::adapter::boundary(around.cancellation(), |work| {
@@ -60,6 +74,11 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
                     };
                     around.create_file(&path, FileMetadata::default(), None, work)
                 }
+            })?;
+        }
+        if creation == Creation::ReplacedFile {
+            crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+                around.create_file(&name("renamed"), FileMetadata::default(), None, work)
             })?;
         }
         let source = Arc::new(source);
@@ -141,6 +160,33 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
                 }
             })
             .map_err(|(cause, _)| cause)?;
+        if matches!(
+            creation,
+            Creation::RenamedFile | Creation::RenamedDirectory | Creation::ReplacedFile
+        ) {
+            core.request(|work| {
+                let destination =
+                    projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("renamed"), work)?;
+                assert_eq!(
+                    destination.attr.ino.0 != 0,
+                    creation == Creation::ReplacedFile
+                );
+                projection.rename_name(
+                    ROOT_INODE,
+                    std::ffi::OsStr::new("held"),
+                    ROOT_INODE,
+                    std::ffi::OsStr::new("renamed"),
+                    if creation == Creation::ReplacedFile {
+                        0
+                    } else {
+                        RENAME_NOREPLACE
+                    },
+                    work,
+                )
+            })
+            .map_err(|(cause, _)| cause)?;
+            path = name("renamed");
+        }
         if directory {
             crate::native_mount::adapter::boundary(around.cancellation(), |work| {
                 around.create_file(
@@ -181,7 +227,7 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         );
 
         crate::native_mount::adapter::boundary(around.cancellation(), |work| {
-            around.rename(&path, &name("moved"), false, work)
+            around.rename(&path, &name("moved"), false, work, None)
         })?;
         shared_invalidation_pass(&core, &notifications);
         assert!(
@@ -191,12 +237,149 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
                 .invalidation
                 .denied
         );
+        assert!(notifications.entries.borrow().iter().any(|(parent, name)| {
+            *parent == ROOT_INODE
+                && name.as_slice() == path.components().last().expect("named binding").as_slice()
+        }));
+    }
+    Ok(())
+}
+
+#[test]
+fn rename_completion_preserves_only_current_bindings() -> Result<(), Box<dyn std::error::Error>> {
+    for (replace_after_preparation, replace_directory) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let (source, around) = shared_sources(posix_config())?;
+        let work = fuse_fixture_work();
+        let before = name("before");
+        let after = name("after");
+        source.create_directory(&before, FileMetadata::default(), &work)?;
+        let stale_parent = before.child(b"stale".to_vec());
+        let stale_path = if replace_directory {
+            source.create_directory(&stale_parent, FileMetadata::default(), &work)?;
+            stale_parent.child(b"child".to_vec())
+        } else {
+            stale_parent.clone()
+        };
+        source.create_file(&stale_path, FileMetadata::default(), None, &work)?;
+        source.create_file(
+            &before.child(b"retained".to_vec()),
+            FileMetadata::default(),
+            None,
+            &work,
+        )?;
+        source.create_file(&name("replacement"), FileMetadata::default(), None, &work)?;
+        let source = Arc::new(source);
+        let core = projection_core(
+            source.clone(),
+            FINITE_HANDLER_POLICY,
+            &crate::CancellationToken::new(),
+        )?;
+        let observer: Arc<dyn ViewObserver> = core.clone();
+        source.observe_view(Arc::downgrade(&observer))?;
+        let projection = crate::native_mount::fuse::FuseProjection { core: core.clone() };
+        let (directory, stale, retained) = core
+            .request(|work| {
+                let directory = projection
+                    .lookup_entry(ROOT_INODE, std::ffi::OsStr::new("before"), work)?
+                    .attr
+                    .ino
+                    .0;
+                let stale = projection
+                    .lookup_entry(directory, std::ffi::OsStr::new("stale"), work)?
+                    .attr
+                    .ino
+                    .0;
+                let stale = if replace_directory {
+                    projection
+                        .lookup_entry(stale, std::ffi::OsStr::new("child"), work)?
+                        .attr
+                        .ino
+                        .0
+                } else {
+                    stale
+                };
+                let retained = projection
+                    .lookup_entry(directory, std::ffi::OsStr::new("retained"), work)?
+                    .attr
+                    .ino
+                    .0;
+                Ok((directory, stale, retained))
+            })
+            .map_err(|(cause, _)| cause)?;
+        let mut prepared = if replace_after_preparation {
+            Some(
+                core.state()
+                    .map_err(NativeMountError::from)?
+                    .prepare_rename_prefix(&before, &after, &after, ROOT_INODE, &work)?,
+            )
+        } else {
+            None
+        };
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+            if replace_directory {
+                around.remove(&stale_path, None, work)?;
+                around.remove(&stale_parent, None, work)?;
+            }
+            around.rename(&name("replacement"), &stale_parent, true, work, None)
+        })?;
+        core.request(|work| {
+            if let Some(mut prepared) = prepared.take() {
+                // The same production plan must remain sound if another view
+                // changes a child after preparation but before source adoption.
+                let stamp = source.rename(&before, &after, false, work, Some(&mut prepared))?;
+                let mut state = core.state()?;
+                prepared.install(&mut state, stamp);
+                Ok(())
+            } else {
+                projection.rename_name(
+                    ROOT_INODE,
+                    std::ffi::OsStr::new("before"),
+                    ROOT_INODE,
+                    std::ffi::OsStr::new("after"),
+                    RENAME_NOREPLACE,
+                    work,
+                )
+            }
+        })
+        .map_err(|(cause, _)| cause)?;
+        let notifications = Notifications::default();
+        shared_invalidation_pass(&core, &notifications);
         assert!(
             notifications
                 .entries
                 .borrow()
                 .iter()
-                .any(|(parent, name)| { *parent == ROOT_INODE && name == b"held" })
+                .any(|(parent, name)| *parent == directory && name == b"stale"),
+            "rename certified a replaced descendant"
+        );
+        assert!(
+            !notifications
+                .entries
+                .borrow()
+                .iter()
+                .any(|(parent, name)| *parent == directory && name == b"retained"),
+            "rename detached its unchanged descendant"
+        );
+        let state = core.state().map_err(NativeMountError::from)?;
+        assert!(!state.invalidation.denied);
+        let stale_entry = state.by_inode.get(&stale).ok_or("retained stale inode")?;
+        assert!(
+            stale_entry
+                .bindings
+                .iter()
+                .all(|binding| binding.kernel.is_none())
+        );
+        let retained_entry = state
+            .by_inode
+            .get(&retained)
+            .ok_or("retained current inode")?;
+        assert!(
+            retained_entry
+                .bindings
+                .iter()
+                .any(|binding| binding.kernel.is_some())
         );
     }
     Ok(())

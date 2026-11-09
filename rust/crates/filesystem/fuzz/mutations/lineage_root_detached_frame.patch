@@ -1,0 +1,14 @@
+diff --git a/rust/crates/filesystem/src/lineage/mod.rs b/rust/crates/filesystem/src/lineage/mod.rs
+--- a/rust/crates/filesystem/src/lineage/mod.rs
++++ b/rust/crates/filesystem/src/lineage/mod.rs
+@@ -145,6 +145,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
+     ) -> W::Output<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+         let mut accounting = work.accounting(cancellation);
+         let result = async {
++            let mut accounting = crate::kernel::KernelAccounting::standalone(
++                accounting.remaining().map_err(WorkspaceError::from)?,
++                cancellation,
++            );
+             accounting.check().map_err(WorkspaceError::from)?;
+             if let Some(existing) = self
+                 .store

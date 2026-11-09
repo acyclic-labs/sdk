@@ -7,7 +7,6 @@ use acyclic_fs::{
 };
 use acyclic_stream::OwnedBytes;
 use futures::future::join_all;
-use js_sys::Uint8Array;
 use thiserror::Error;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -71,33 +70,26 @@ impl OpfsAcceleratedObjectStore {
         })
     }
 
-    fn key(object_id: ObjectId) -> String {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut key = String::with_capacity(66);
-        key.push(char::from(b'0' + object_id.kind.canonical_tag()));
-        key.push(':');
-        for byte in object_id.digest.as_bytes() {
-            key.push(char::from(
-                *HEX.get(usize::from(byte >> 4)).unwrap_or(&b'0'),
-            ));
-            key.push(char::from(
-                *HEX.get(usize::from(byte & 0x0f)).unwrap_or(&b'0'),
-            ));
-        }
-        key
-    }
-
-    async fn file_handle(
-        &self,
+    fn with_key<T>(
         object_id: ObjectId,
-    ) -> Result<FileSystemFileHandle, ObjectStoreError> {
-        JsFuture::from(self.directory.get_file_handle(&Self::key(object_id)))
-            .await
-            .map_err(|error| missing_or_rejected(&error))?
-            .dyn_into::<FileSystemFileHandle>()
-            .map_err(|_| ObjectStoreError::Corrupt)
+        operation: impl FnOnce(&str) -> T,
+    ) -> Result<T, ObjectStoreError> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut key = [b'0'; 66];
+        key[0] = b'0' + object_id.kind.canonical_tag();
+        key[1] = b':';
+        for (byte, pair) in object_id
+            .digest
+            .as_bytes()
+            .iter()
+            .zip(key[2..].chunks_exact_mut(2))
+        {
+            pair[0] = HEX[usize::from(byte >> 4)];
+            pair[1] = HEX[usize::from(byte & 15)];
+        }
+        let key = std::str::from_utf8(&key).map_err(|_| ObjectStoreError::Corrupt)?;
+        Ok(operation(key))
     }
-
     async fn write(
         &self,
         object_id: ObjectId,
@@ -109,10 +101,9 @@ impl OpfsAcceleratedObjectStore {
             .map_err(|_| ObjectStoreError::Cancelled)?;
         let options = FileSystemGetFileOptions::new();
         options.set_create(true);
-        let handle = JsFuture::from(
-            self.directory
-                .get_file_handle_with_options(&Self::key(object_id), &options),
-        )
+        let handle = JsFuture::from(Self::with_key(object_id, |key| {
+            self.directory.get_file_handle_with_options(key, &options)
+        })?)
         .await
         .map_err(|error| rejected(&error))?
         .dyn_into::<FileSystemFileHandle>()
@@ -145,112 +136,65 @@ impl OpfsAcceleratedObjectStore {
             .check()
             .map_err(|_| ObjectStoreError::Cancelled)
     }
-
-    async fn prepare_read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<(Blob, u64)> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let key_bytes = 66;
-        let work = WorkCounters {
-            object_probes: 1,
-            backend_read_operations: 2,
-            allocation_operations: 1,
-            peak_allocation_bytes: key_bytes,
-            ..WorkCounters::default()
-        };
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        let handle = self
-            .file_handle(object_id)
-            .await
-            .map_err(|error| ObjectFailure::new(error, work))?;
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
-        let file = JsFuture::from(handle.get_file())
-            .await
-            .map_err(|error| ObjectFailure::new(rejected(&error), work))?
-            .dyn_into::<web_sys::File>()
-            .map_err(|_| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
-        let blob: Blob = file.unchecked_into();
-        let length = exact_file_size(blob.size())
-            .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
-        let maximum = maximum_bytes.min(self.maximum_object_bytes);
-        if length > maximum {
-            return Err(ObjectFailure::new(
-                ObjectStoreError::TooLarge {
-                    observed: length,
-                    maximum,
-                },
-                work,
-            ));
-        }
-        Ok(acyclic_fs::OperationReceipt {
-            value: (blob, length),
-            work,
-        })
-    }
-
-    async fn materialize_read(
-        object_id: ObjectId,
-        blob: Blob,
-        length: u64,
-        work: WorkCounters,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
-        let buffer = JsFuture::from(blob.array_buffer())
-            .await
-            .map_err(|error| ObjectFailure::new(rejected(&error), work))?;
-        let bytes = OwnedBytes::from(Uint8Array::new(&buffer).to_vec());
-        if u64::try_from(bytes.len()).ok() != Some(length)
-            || object_digest(&bytes) != object_id.digest
-        {
-            return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
-        }
-        Ok(acyclic_fs::OperationReceipt {
-            value: ObjectRead {
-                bytes,
-                retention: ObjectReadRetention::Owned {
-                    logical_bytes: length,
-                },
-            },
-            work,
-        })
-    }
-
-    async fn read_exact(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        let prepared = self
-            .prepare_read(object_id, maximum_bytes, budget, cancellation)
-            .await?;
-        let (blob, length) = prepared.value;
-        let work = prepared
-            .work
-            .checked_add(
-                materialize_work(length)
-                    .map_err(|error| ObjectFailure::new(error.into(), prepared.work))?,
-            )
-            .map_err(|error| ObjectFailure::new(error.into(), prepared.work))?;
-        work.verify(budget)
-            .map_err(|error| ObjectFailure::new(error.into(), prepared.work))?;
-        Self::materialize_read(object_id, blob, length, work, cancellation).await
-    }
 }
 
+impl acyclic_fs::browser::Reader for OpfsAcceleratedObjectStore {
+    async fn read(
+        &self,
+        request: &ObjectReadRequest,
+        accounting: &std::cell::RefCell<acyclic_fs::kernel::allocation::KernelAccounting<'_>>,
+        cancellation: &CancellationToken,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        accounting
+            .borrow_mut()
+            .charge(WorkCounters {
+                object_probes: 1,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(acyclic_fs::ObjectStoreError::from)?;
+        let handle = acyclic_fs::browser::promise(
+            || Self::with_key(request.object_id, |key| self.directory.get_file_handle(key)),
+            accounting,
+            cancellation,
+        )
+        .await?
+        .map_err(|error| missing_or_rejected(&error))?
+        .dyn_into::<FileSystemFileHandle>()
+        .map_err(|_| ObjectStoreError::Corrupt)?;
+        let file = acyclic_fs::browser::promise(|| Ok(handle.get_file()), accounting, cancellation)
+            .await?
+            .map_err(|error| rejected(&error))?
+            .dyn_into::<web_sys::File>()
+            .map_err(|_| ObjectStoreError::Corrupt)?;
+        let blob: Blob = file.unchecked_into();
+        let length = acyclic_fs::browser::blob_length(&blob)?;
+        let maximum = request.maximum_bytes.min(self.maximum_object_bytes);
+        if length > maximum {
+            return Err(ObjectStoreError::TooLarge {
+                observed: length,
+                maximum,
+            });
+        }
+        let bytes =
+            acyclic_fs::browser::blob_bytes(&blob, length, accounting, cancellation).await?;
+        accounting
+            .borrow_mut()
+            .charge(WorkCounters {
+                bytes_hashed: length,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(acyclic_fs::ObjectStoreError::from)?;
+        if object_digest(&bytes) != request.object_id.digest {
+            return Err(ObjectStoreError::Corrupt);
+        }
+        Ok(ObjectRead {
+            bytes,
+            retention: ObjectReadRetention::Owned {
+                logical_bytes: length,
+            },
+        })
+    }
+}
 fn fold_unit_results(
     mut total: WorkCounters,
     results: Vec<ObjectResult<()>>,
@@ -318,21 +262,6 @@ fn join_frames_bytes<F: Future>(_future: &F, count: usize) -> Result<u64, acycli
     allocation_bytes::<futures::future::MaybeDone<F>>(count)
 }
 
-fn materialize_work(length: u64) -> Result<WorkCounters, acyclic_fs::WorkError> {
-    let copied = length
-        .checked_mul(2)
-        .ok_or(acyclic_fs::WorkError::Overflow)?;
-    Ok(WorkCounters {
-        backend_read_operations: 1,
-        object_bytes_read: length,
-        bytes_hashed: length,
-        bytes_copied: copied,
-        allocation_operations: 2 * u64::from(length != 0),
-        peak_allocation_bytes: copied,
-        ..WorkCounters::default()
-    })
-}
-
 fn put_work(bytes: &OwnedBytes) -> WorkCounters {
     let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     WorkCounters {
@@ -376,18 +305,6 @@ fn is_not_found(error: &JsValue) -> bool {
     error
         .dyn_ref::<web_sys::DomException>()
         .is_some_and(|error| error.name() == "NotFoundError")
-}
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the checks above bound length to a non-negative integer no larger than u32::MAX"
-)]
-fn exact_file_size(length: f64) -> Option<u64> {
-    if !length.is_finite() || length < 0.0 || length.fract() != 0.0 || length > f64::from(u32::MAX)
-    {
-        return None;
-    }
-    Some(u64::from(length as u32))
 }
 fn js_message(error: &JsValue) -> String {
     error

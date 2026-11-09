@@ -1,6 +1,7 @@
 //! Native stdin and selected-task admission, before any workspace operation.
 use acyclic_harness::agent::AgentPath;
-use serde_json::{Value, json};
+use serde::de::DeserializeOwned;
+use serde_json::json;
 use std::io::{self, Read as _};
 
 /// Admission result retaining the original parser or operating-system error.
@@ -31,13 +32,17 @@ pub fn parse_native_task(value: &std::ffi::OsStr) -> Result<AgentPath> {
 ///
 /// # Errors
 /// Preserves read and JSON errors, and refuses oversized hook frames.
-pub fn read_json(input: impl io::Read, maximum: Option<u64>) -> Result<Value> {
+pub fn read_json<T: DeserializeOwned>(
+    input: impl io::Read,
+    maximum: Option<u64>,
+) -> Result<T> {
     let mut bytes = Vec::new();
-    input
-        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))
-        .read_to_end(&mut bytes)?;
+    let mut input = input.take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)));
+    input.read_to_end(&mut bytes)?;
     if maximum.is_some_and(|bound| bytes.len() as u64 > bound) {
-        return Err("native hook exceeds shared command file bound".into());
+        return Err(
+            "step=admit native hook: input exceeds its frame bound; recovery=acyclic --help".into(),
+        );
     }
     Ok(serde_json::from_slice(&bytes)?)
 }

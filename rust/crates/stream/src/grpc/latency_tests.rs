@@ -1,5 +1,6 @@
 use super::tests::TestResult;
 use super::*;
+use crate::AppendRequest;
 use futures::TryFutureExt as _;
 
 #[tokio::test]

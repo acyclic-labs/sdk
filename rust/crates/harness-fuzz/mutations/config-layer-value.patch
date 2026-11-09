@@ -1,11 +1,11 @@
---- a/rust/crates/harness-core/src/config/evaluate.rs
-+++ b/rust/crates/harness-core/src/config/evaluate.rs
-@@ -119,7 +119,7 @@
-     let mut chain = Vec::new();
-     for layer in crate::layers::held(layers) {
+--- a/rust/crates/harness-core/src/config/evaluate/composition.rs
++++ b/rust/crates/harness-core/src/config/evaluate/composition.rs
+@@ -181,7 +181,7 @@
+     for (index, layer) in crate::layers::held_indexed(layers) {
          let Some(source) = layer.bytes else { continue };
--        let evaluated = evaluate(path, source, tree, &value, Surface::Compose).await?;
-+        let evaluated = evaluate(path, source, tree, &Value::Null, Surface::Compose).await?;
-         chain.push(Link {
-             layer: layer.name.to_owned(),
-             generation: layer.generation.to_owned(),
+         let prepared = prepared::prepare_inner(path, source, tree).await?;
+-        let decision = prepared.evaluate(&value, Surface::Compose)?;
++        let decision = prepared.evaluate(&Value::Null, Surface::Compose)?;
+         if let Some(evidence) = evidence.as_deref_mut() {
+             evidence.identity.update(&decision.identity());
+             evidence.modules.push(ModuleCut {

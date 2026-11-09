@@ -1,0 +1,10 @@
+--- a/rust/crates/filesystem/src/staged_objects/read.rs
++++ b/rust/crates/filesystem/src/staged_objects/read.rs
+@@ -114,6 +114,7 @@
+         let mut durable = if misses == 0 {
+             None
+         } else {
++            let _ = R::read_many(&self.inner, &durable_requests.value, &mut scope).await?;
+             let (reads, allocation) =
+                 R::read_many(&self.inner, &durable_requests.value, &mut scope).await?;
+             // Keep the provider's physical vector funded through its iterator,

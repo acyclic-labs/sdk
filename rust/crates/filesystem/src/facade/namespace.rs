@@ -99,9 +99,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let Some(record) = lookup.record else {
             return Ok(None);
         };
-        let metadata = read_record_metadata_to_file_root_with_accounting(
-            &self.volume,
-            record,
+        let metadata = crate::kernel::read_file_metadata_with_accounting(
+            self.volume.fs.objects(),
+            record.metadata,
+            DecodeLimits::for_volume(self.volume.config),
             accounting,
             cancellation,
         )

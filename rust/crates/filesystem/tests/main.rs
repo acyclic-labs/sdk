@@ -119,13 +119,6 @@ mod public_conformance;
 #[path = "../src/sync.rs"]
 mod sync;
 
-#[cfg(all(
-    not(loom),
-    target_arch = "wasm32",
-    feature = "memory",
-    feature = "browser"
-))]
-mod browser_commit;
 #[cfg(all(not(loom), feature = "memory", feature = "distributed"))]
 mod fs_concurrency_bench;
 #[cfg(all(not(loom), feature = "memory", feature = "native-mount"))]

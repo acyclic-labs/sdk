@@ -92,6 +92,25 @@ These finite MemoryStream publications cover the persisted codec and Store
 transition path; physical restart, membership and runtime scheduling remain
 separate obligations.
 
+The existing `stream_persistence` target also checks typed change projection
+through `FollowFilter::project` after actual append, record and batch ingress.
+It compares selected entries with the canonical full decoder, preserves context,
+attributes and publication identity, and checks idempotence. Three-entry v1,
+v2 and opaque writer outputs exercise partial selection and whole-record
+authority. Refresh only those additions with
+`cargo run --locked --example capture -- --only-stream-projection --extend-goldens`.
+The retained production mutation and scoped replay command are documented in
+[`projection-fuzz`](../proofs/projection-fuzz/README.md).
+The [whole-record](../proofs/projection-cost/README.md) and
+[partial-copy](../proofs/partial-projection-cost/README.md) controls challenge
+the same property through the current shared decoder. The kept
+`negative-controls/change_projection_authority.patch` changes the original
+entry predicate from every clause to any clause. Apply it and run the selected
+property command in `projection-fuzz`; the disjoint lower-prefix request and
+upper-suffix authority must refuse, since different entries cannot collectively
+satisfy their conjunction. Reverse the patch before the positive run. Compiler
+or patch-anchor failures are not successful negative controls.
+
 The existing `stream_persistence` target also checks typed refusal before a
 fixed header is complete. Its corpus contains actual retained-fact encoder
 output captured by `acyclic_stream::codec_fuzz::seeds`; the persisted-version
@@ -1224,3 +1243,29 @@ service rejection. `negative-controls/stream_native_refusal.patch` removes
 that original diagnostic from the shared native conversion; the same control
 must reject it. This Rust component control does not establish Node ABI or
 platform qualification.
+
+`mutations/objects-conflated-observations.patch` restores the physical operation
+recorder's conflation of version observations with ranged reads. The existing
+repeat-put property must reject it. Fresh-put and usage checks share that same
+recorder and public Objects engine: returned byte lengths are measured separately
+from call counts, without claiming decoded bytes, allocated backing or backend
+copies. The default volatile MemoryMedium fixture does not establish disk
+durability. The same recorder also wraps the real LocalMedium, forwarding its
+allocation custody, conditional observations, recovery and durability methods.
+The existing fresh-put/usage property runs against both providers and counts
+listed keys. The local shared conformance and reopen property covers the wrapped
+provider; the existing local commit property still counts its actual barriers.
+`mutations/objects-recorder-skipped-flush.patch` suppresses forwarding a flush;
+the local commit property must reject it. These controls do not establish another
+provider's costs, decoded bytes or constant-time usage.
+
+Token operation text seeds in `stream_persistence/token-*` were captured from
+`TokenOperation::as_str()` via the real `token-operations` example and the compiled
+TypeScript exporter at source `a473ef01e45218efa1e78e6595404ab17b9c3b4f` on
+2026-11-04. Their original byte lengths and SHA-256 values are retained in
+`corpus/token-operation-sources.tsv`. The same writer is now part of
+`acyclic_stream::codec_fuzz::seeds`; no token spellings are authored in the corpus.
+The shared oracle checks exact vocabulary admission for arbitrary UTF-8 before
+attempting persisted binary decoding. The selected signed-credential control in
+`rust/crates/auth/fuzz/negative-control.py operation-admission` also executes this
+same fuzz oracle, with a retained production mutation admitting unknown tokens.

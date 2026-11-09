@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/browser/indexed_db/objects.rs b/rust/crates/filesystem/src/browser/indexed_db/objects.rs
+--- a/rust/crates/filesystem/src/browser/indexed_db/objects.rs
++++ b/rust/crates/filesystem/src/browser/indexed_db/objects.rs
+@@ -187,7 +187,7 @@
+         for write in writes {
+             let (id, _, bytes) = write.parts();
+             let length = bytes.len() as u64;
+-            let authenticate = write.sealed().is_none();
++            let authenticate = true;
+             self.bound(length, self.maximum_object_bytes)?;
+             work::charge(
+                 io,

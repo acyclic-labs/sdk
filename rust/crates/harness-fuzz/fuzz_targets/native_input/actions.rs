@@ -54,8 +54,37 @@ fn action(action: &HostAction) {
     }
 }
 
+fn typed_request(bytes: &[u8]) -> Option<HostAction> {
+    match (
+        super::read_pipe::<HostAction>(bytes, None),
+        serde_json::from_slice::<HostAction>(bytes),
+    ) {
+        (Ok(actual), Ok(original)) => {
+            assert_eq!(
+                serde_json::to_value(&actual).unwrap(),
+                serde_json::to_value(original).unwrap(),
+                "typed native input must retain the original writer's fields"
+            );
+            Some(actual)
+        }
+        (Err(_), Err(_)) => None,
+        _ => panic!("typed native input must preserve original byte admission"),
+    }
+}
+
+fn duplicate_member(value: &Value, field: &str) -> Vec<u8> {
+    let mut bytes = serde_json::to_vec(value).unwrap();
+    assert_eq!(bytes.pop(), Some(b'}'));
+    bytes.push(b',');
+    bytes.extend(serde_json::to_vec(field).unwrap());
+    bytes.push(b':');
+    bytes.extend(serde_json::to_vec(&value[field]).unwrap());
+    bytes.push(b'}');
+    bytes
+}
+
 pub(super) fn check(bytes: &[u8]) {
-    if let Ok(value) = serde_json::from_slice::<HostAction>(bytes) {
+    if let Some(value) = typed_request(bytes) {
         action(&value);
     }
     if let Ok(value) = serde_json::from_slice::<SessionAction>(bytes) {
@@ -78,6 +107,30 @@ pub(super) fn check(bytes: &[u8]) {
     WRITERS.call_once(|| {
         let task = AgentPath::root(&AgentId::from_bytes([13; 16]));
         let operation = OperationId::from_bytes([19; 16]);
+        let completion = HostAction::Session {
+            parent: task.clone(),
+            reference: "near-bound-completion".into(),
+            next: false,
+            action: SessionAction::Complete {
+                claim: TurnClaim {
+                    agent: task.clone(),
+                    operation,
+                    turn: 1,
+                },
+                outcome: Outcome::Succeeded(TurnOutput::new("x".repeat(65_336), Value::Null, 1)),
+            },
+        };
+        let encoded = serde_json::to_vec(&completion).unwrap();
+        assert!(
+            encoded.len() > 65_536,
+            "workspace envelope crosses the hook frame bound"
+        );
+        let admitted =
+            typed_request(&encoded).expect("workspace envelope must retain its complete JSON");
+        assert_eq!(
+            serde_json::to_value(admitted).unwrap(),
+            serde_json::to_value(&completion).unwrap()
+        );
         let mut sessions = vec![
             SessionAction::Spawn {
                 prompt: "caller input".into(),
@@ -159,9 +212,40 @@ pub(super) fn check(bytes: &[u8]) {
                 });
             }
         }
+        actions.push(completion);
         let capture = std::env::var_os("ACYCLIC_FUZZ_CORPUS").map(std::path::PathBuf::from);
+        let mut captured_claim = false;
         for (index, original) in actions.into_iter().enumerate() {
             action(&original);
+            let value = serde_json::to_value(&original).unwrap();
+            for field in value.as_object().unwrap().keys() {
+                let bytes = duplicate_member(&value, field);
+                let _ = typed_request(&bytes);
+                if index == 0
+                    && field == "kind"
+                    && let Some(directory) = &capture
+                {
+                    std::fs::write(directory.join("duplicate-field"), bytes).unwrap();
+                }
+            }
+            if let Some(claim) = value.get("action").and_then(|action| action.get("claim")) {
+                let claim_bytes = serde_json::to_vec(claim).unwrap();
+                let original_bytes = serde_json::to_vec(&value).unwrap();
+                let start = original_bytes
+                    .windows(claim_bytes.len())
+                    .position(|bytes| bytes == claim_bytes)
+                    .unwrap();
+                for field in claim.as_object().unwrap().keys() {
+                    let mut bytes = original_bytes[..start].to_vec();
+                    bytes.extend(duplicate_member(claim, field));
+                    bytes.extend_from_slice(&original_bytes[start + claim_bytes.len()..]);
+                    let _ = typed_request(&bytes);
+                    if !captured_claim && let Some(directory) = &capture {
+                        std::fs::write(directory.join("duplicate-claim"), bytes).unwrap();
+                        captured_claim = true;
+                    }
+                }
+            }
             if let HostAction::Session { next: false, .. } = &original {
                 let mut omitted = serde_json::to_value(&original).unwrap();
                 omitted.as_object_mut().unwrap().remove("next");

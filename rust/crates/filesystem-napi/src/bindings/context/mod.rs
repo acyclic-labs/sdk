@@ -33,11 +33,11 @@ impl NativeWorkspaceGraph {
         &self,
         workspace: &NativeWorkspace,
     ) -> Result<NativeWorkspaceLineageRecord> {
-        self.inner
-            .register_root(&workspace.inner)
-            .await
-            .map(native_workspace_lineage_record)
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner,
+            register_root(&workspace.inner)
+        ))
+        .map(native_workspace_lineage_record)
     }
 
     #[napi]
@@ -47,15 +47,15 @@ impl NativeWorkspaceGraph {
         destination: String,
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspace> {
-        self.inner
-            .fork(
+        sdk_value!(unbounded_future!(
+            self.inner,
+            fork(
                 &parent.inner,
                 destination,
-                native_idempotency_key(idempotency_key)?,
+                native_idempotency_key(idempotency_key)?
             )
-            .await
-            .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
+        ))
+        .map(|inner| NativeWorkspace { inner })
     }
 
     #[napi]
@@ -64,14 +64,14 @@ impl NativeWorkspaceGraph {
         child_workspace_id: Buffer,
         parent_workspace_id: Buffer,
     ) -> Result<NativeWorkspaceLineageRecord> {
-        self.inner
-            .authorize_join(
+        sdk_value!(unbounded_future!(
+            self.inner,
+            authorize_join(
                 WorkspaceId::from_bytes(fixed_16(&child_workspace_id)?),
                 WorkspaceId::from_bytes(fixed_16(&parent_workspace_id)?),
             )
-            .await
-            .map(native_workspace_lineage_record)
-            .map_err(napi_error)
+        ))
+        .map(native_workspace_lineage_record)
     }
 
     #[napi]
@@ -82,16 +82,17 @@ impl NativeWorkspaceGraph {
     ) -> Result<Vec<NativeWorkspaceLineageRecord>> {
         let maximum = maximum.into_inner();
 
-        self.inner
-            .ancestors(WorkspaceId::from_bytes(fixed_16(&workspace_id)?), maximum)
-            .await
-            .map(|records| {
-                records
-                    .into_iter()
-                    .map(native_workspace_lineage_record)
-                    .collect()
-            })
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner,
+            ancestors(WorkspaceId::from_bytes(fixed_16(&workspace_id)?), maximum)
+        ))
+        .map(|records| {
+            records
+                .iter()
+                .cloned()
+                .map(native_workspace_lineage_record)
+                .collect()
+        })
     }
 }
 

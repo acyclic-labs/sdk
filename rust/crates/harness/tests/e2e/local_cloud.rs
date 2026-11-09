@@ -198,6 +198,9 @@ async fn traces_are_provider_independent_and_detect_divergence() -> TestResult {
 
 #[tokio::test]
 async fn killed_turn_resumes_from_a_loopback_journal() -> TestResult {
+    if acyclic_harness::test_support::environment(resume::CHILD).is_some() {
+        return resume::child().await;
+    }
     let loopback = loopback(Arc::new(MemoryStream::default())).await?;
     resume::kill_and_resume(&loopback.remote, loopback.client.clone()).await?;
     // Negative control: without a journaled prefix there is nothing to resume.

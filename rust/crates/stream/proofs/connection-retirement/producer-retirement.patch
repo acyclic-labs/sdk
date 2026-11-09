@@ -1,0 +1,14 @@
+diff --git a/rust/crates/stream/src/session/client/pool.rs b/rust/crates/stream/src/session/client/pool.rs
+--- a/rust/crates/stream/src/session/client/pool.rs
++++ b/rust/crates/stream/src/session/client/pool.rs
+@@ -17,9 +17,7 @@ mod route_searches;
+ // Only the original dispatcher produces handshakes. Client and observation
+ // clones must not keep that producer alive after its task is cancelled.
+ impl Drop for Pool {
+-    fn drop(&mut self) {
+-        self.connections.close(StreamError::Unavailable);
+-    }
++    fn drop(&mut self) {}
+ }
+ 
+ impl Pool {

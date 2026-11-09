@@ -1,0 +1,18 @@
+--- a/rust/crates/filesystem/src/native_mount/fuse/lookup.rs
++++ b/rust/crates/filesystem/src/native_mount/fuse/lookup.rs
+@@ -351,7 +351,6 @@
+             new_parent,
+             work,
+         )?;
+-        let completion = work.reserve_work(Items.delta(1))?;
+         let renamed = self.source_write(work, || {
+             Ok(source.rename(
+                 &from.spelled,
+@@ -363,6 +362,7 @@
+         });
+         let mut state = self.core.state()?;
+         let stamp = renamed?;
++        let completion = work.reserve_work(Items.delta(1))?;
+         state.install_detached_handles(&mut detached);
+         install_names.install(&mut state, stamp);
+         state.accept_entry(new_parent, to.key(), completion);

@@ -1,6 +1,6 @@
 --- a/rust/crates/harness-core/src/config/evaluate.rs
 +++ b/rust/crates/harness-core/src/config/evaluate.rs
-@@ -213,10 +213,7 @@
+@@ -130,10 +130,7 @@
          serde_json::from_str::<serde::de::IgnoredAny>(text)
              .map_err(|error| format!("{path}: {error}"))?;
          return Ok(Module {
@@ -10,5 +10,5 @@
 -            ),
 +            script: format!("export default ({text})\n;"),
              imports: Vec::new(),
-             digest,
          });
+     }

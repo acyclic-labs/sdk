@@ -1,0 +1,112 @@
+diff --git b/rust/crates/objects/src/store/read.rs a/rust/crates/objects/src/store/read.rs
+index ace9adb4afb..20aecaaa6f7 100644
+--- b/rust/crates/objects/src/store/read.rs
++++ a/rust/crates/objects/src/store/read.rs
+@@ -61,61 +61,59 @@ impl Selection {
+ 
+ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
+     /// Appends the selected logical bytes of `digest` to `out`.
+-    async fn select(
+-        &self,
++    fn select<'a>(
++        &'a self,
+         digest: Digest,
+-        envelope: &Envelope,
++        envelope: &'a Envelope,
+         range: std::ops::Range<u64>,
+-        out: &mut Selection,
+-    ) -> Result<(), Error> {
+-        if range.is_empty() {
+-            return Ok(());
+-        }
+-        match envelope.kind {
+-            Kind::Blob => {
+-                let whole = range.start == 0 && range.end == envelope.length;
+-                // A whole read checks its bytes; a partial one first
+-                // proves a payload a crash could have torn complete.
+-                if !whole && self.medium.volatile() && !self.complete(&digest, envelope).await? {
+-                    return Err(ErrorCode::NotFound.into());
+-                }
+-                out.push(
+-                    self.read_payload(&digest, envelope, (!whole).then_some(range))
+-                        .await?,
+-                    &*self.medium,
+-                )?;
++        out: &'a mut Selection,
++    ) -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>> {
++        Box::pin(async move {
++            if range.is_empty() {
++                return Ok(());
+             }
+-            Kind::Manifest => {
+-                let manifest = self.manifest(&digest, envelope).await?;
+-                let mut offset = 0u64;
+-                for part in manifest.parts {
+-                    let end = offset.checked_add(part.length).ok_or_else(corrupt)?;
+-                    let start = range.start.max(offset);
+-                    let stop = range.end.min(end);
+-                    if start < stop {
+-                        let (_, child) = self
+-                            .stored_envelope(&part.digest)
+-                            .await?
+-                            .ok_or_else(corrupt)?;
+-                        if child.length != part.length {
+-                            return Err(corrupt());
+-                        }
+-                        Box::pin(self.select(
+-                            part.digest,
+-                            &child,
+-                            start - offset..stop - offset,
+-                            out,
+-                        ))
+-                        .await?;
++            match envelope.kind {
++                Kind::Blob => {
++                    let whole = range.start == 0 && range.end == envelope.length;
++                    // A whole read checks its bytes; a partial one first
++                    // proves a payload a crash could have torn complete.
++                    if !whole && self.medium.volatile() && !self.complete(&digest, envelope).await?
++                    {
++                        return Err(ErrorCode::NotFound.into());
+                     }
+-                    if end >= range.end {
+-                        break;
++                    out.push(
++                        self.read_payload(&digest, envelope, (!whole).then_some(range))
++                            .await?,
++                        &*self.medium,
++                    )?;
++                }
++                Kind::Manifest => {
++                    let manifest = self.manifest(&digest, envelope).await?;
++                    let mut offset = 0u64;
++                    for part in manifest.parts {
++                        let end = offset.checked_add(part.length).ok_or_else(corrupt)?;
++                        let start = range.start.max(offset);
++                        let stop = range.end.min(end);
++                        if start < stop {
++                            let (_, child) = self
++                                .stored_envelope(&part.digest)
++                                .await?
++                                .ok_or_else(corrupt)?;
++                            if child.length != part.length {
++                                return Err(corrupt());
++                            }
++                            self.select(part.digest, &child, start - offset..stop - offset, out)
++                                .await?;
++                        }
++                        if end >= range.end {
++                            break;
++                        }
++                        offset = end;
+                     }
+-                    offset = end;
+                 }
+             }
+-        }
+-        Ok(())
++            Ok(())
++        })
+     }
+ 
+     pub(crate) async fn get_inner(

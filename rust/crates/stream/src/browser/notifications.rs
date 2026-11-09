@@ -5,7 +5,6 @@ use wasm_bindgen::closure::Closure;
 
 pub(super) struct Publications {
     channel: web_sys::BroadcastChannel,
-    pub(super) journal: crate::change::Change,
     pub(super) interests: crate::interest::Interests<Key>,
     pub(super) follows: crate::interest::Interests<
         StreamPath,
@@ -21,20 +20,17 @@ impl Publications {
             .map_err(backend)?;
         let target: Rc<RefCell<Weak<Inner>>> = Rc::new(RefCell::new(Weak::new()));
         let refresh = Rc::new(crate::interest::Refresh::new());
-        let journal = crate::change::Change::new();
-        let receiver = (Rc::clone(&target), Rc::clone(&refresh), journal.clone());
+        let receiver = (Rc::clone(&target), Rc::clone(&refresh));
         let receive = Closure::new(move |_: web_sys::MessageEvent| {
             #[cfg(test)]
             if let Some(inner) = receiver.0.borrow().upgrade() {
                 inner.messages.set(inner.messages.get() + 1);
             }
-            let _ = receiver.2.notify();
             let _ = wake(&receiver.0, &receiver.1, true);
         });
         channel.set_onmessage(Some(receive.as_ref().unchecked_ref()));
         Ok(Self {
             channel,
-            journal,
             interests: crate::interest::Interests::new(),
             follows: crate::interest::Interests::new(),
             target,
@@ -63,14 +59,10 @@ impl Publications {
             .filter_map(|path| self.follows.get(&path).ok().flatten())
             .collect::<Vec<_>>();
         for index in indices {
-            index
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .invalidate();
+            crate::follow_index::FollowIndex::invalidate(&index);
         }
     }
     pub(super) fn publish(&self) -> Result<(), StreamError> {
-        self.journal.notify()?;
         self.wake(false)?;
         self.channel
             .post_message(&JsValue::UNDEFINED)
@@ -102,16 +94,14 @@ fn wake(
                 Ok(Some(force)) => force,
                 Ok(None) => break,
                 Err(_) => {
+                    inner.revisions.close();
                     let _ = inner.publications.interests.notify_all();
                     inner.publications.invalidate_follows();
                     break;
                 }
             };
             let provider = BrowserStream { inner };
-            if provider.refresh_publication(force).await.is_err() {
-                let _ = provider.inner.publications.interests.notify_all();
-                provider.inner.publications.invalidate_follows();
-            }
+            let _ = provider.refresh_publication(force).await;
         }
     });
     Ok(())

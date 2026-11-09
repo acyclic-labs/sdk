@@ -70,7 +70,7 @@ impl CommitPublication {
     fn publish(
         self,
         state: &mut State,
-        probe: &mut impl FnMut(),
+        probe: &mut impl FnMut(u64),
         key: IdempotencyKey,
         digest: [u8; 32],
         time: u64,
@@ -133,14 +133,17 @@ impl MemoryStream {
                 (bodies.len() * std::mem::size_of::<Record>()) as u64,
             ))?;
         }
-        let mut records =
-            crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
+        let records = crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = &self.work {
-            for record in &mut records {
-                record.headers = work.record(record.headers.bind_native(&work.meter))?;
+        let records = {
+            let mut records = records;
+            if let Some(work) = &self.work {
+                for record in &mut records {
+                    record.headers = work.record(record.headers.bind_native(&work.meter))?;
+                }
             }
-        }
+            records
+        };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.record_examination(
@@ -248,6 +251,7 @@ impl MemoryStream {
                         .as_ref()
                         .map_or_else(KeyTree::default, |source| source.keys().cap(fork.forked_at)),
                     source,
+                    #[cfg(any(test, feature = "local"))]
                     tail: fork.forked_at,
                     _allocation: self.allocate(std::mem::size_of::<History>())?,
                 }))
@@ -504,8 +508,7 @@ impl MemoryStream {
             }
         };
         check_deadline()?;
-        let mut probes =
-            self.reserve_replay_probes(u64::from(state.replay_height(state.replay_root)))?;
+        let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
         let (mut conflicts, output_claim) = self.vector(request.conditions.len())?;
         for condition in &request.conditions {
             if let Some(conflict) = self.condition_conflict(state, condition)? {
@@ -521,7 +524,7 @@ impl MemoryStream {
                 admit_replay(state, self.limits)?;
                 retain(
                     state,
-                    &mut || self.record_replay_probe(&mut probes),
+                    &mut |items| self.record_replay_probe(&mut probes, items),
                     None,
                     Some(request.idempotency_key.clone()),
                     digest,
@@ -595,7 +598,7 @@ impl MemoryStream {
                 let retained = self.install_retained(state, retained)?;
                 let (outcome, allocation) = publication.publish(
                     state,
-                    &mut || self.record_replay_probe(&mut probes),
+                    &mut |items| self.record_replay_probe(&mut probes, items),
                     request.idempotency_key.clone(),
                     digest,
                     time,
@@ -891,11 +894,7 @@ fn install_namespace(
             if let Some(signals) = state.signals.get(&path)? {
                 let tail = state.paths.get(&path).map_or(0, |path| path.tail);
                 signals.changed.send_replace(tail);
-                signals
-                    .follows
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .created(tail);
+                crate::follow_index::FollowIndex::created(&signals.follows, tail);
             }
         }
         if matches!(fact, CommittedMutation::Fork(_)) {
@@ -912,11 +911,7 @@ fn install_namespace(
                 if let Some(signals) = state.signals.get(&path)? {
                     let tail = stream.tail;
                     signals.changed.send_replace(tail);
-                    signals
-                        .follows
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .created(tail);
+                    crate::follow_index::FollowIndex::created(&signals.follows, tail);
                 }
             }
         }
@@ -932,11 +927,7 @@ fn install_namespace(
         let notify = true;
         if notify && let Some(signals) = state.signals.get(path)? {
             signals.changed.send_replace(tail);
-            signals
-                .follows
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .publish(fact_records(fact), tail);
+            crate::follow_index::FollowIndex::publish(&signals.follows, fact_records(fact), tail);
         }
         state.record_count += fact_records(fact).len();
         state.payload_bytes += fact_records(fact)

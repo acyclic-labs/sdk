@@ -89,11 +89,8 @@ impl Cancelled<'_> {
         let mut allocation = None;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(native) = native_allocation {
-            allocation = Some(
-                crate::kernel::allocation::retained::RetainedAllocation::Native {
-                    _allocation: native,
-                },
-            );
+            allocation =
+                Some(crate::kernel::allocation::retained::RetainedAllocation::native(native));
         }
         if let Some(meter) = &mut self.meter {
             let peak = meter

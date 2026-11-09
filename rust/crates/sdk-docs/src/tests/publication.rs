@@ -43,7 +43,10 @@ fn equal_publication_preserves_files_and_still_rejects_external_corruption() {
         output.join("sdk-docs-versions.v1.json"),
     ];
     // Keep the original files open so an unlink cannot recycle their identity.
-    let originals: Vec<_> = paths.iter().map(|path| File::open(path).unwrap()).collect();
+    let originals: Vec<_> = paths
+        .iter()
+        .map(|path| std::fs::File::open(path).unwrap())
+        .collect();
     let stamps: Vec<_> = paths
         .iter()
         .map(|path| sdk_file_identity::stamp(path).unwrap())

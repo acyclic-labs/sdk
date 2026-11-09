@@ -281,13 +281,23 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
     assert!(copied <= small * 5, "copy work: {small} -> {copied}");
     let examined = meter.examined.load(Ordering::SeqCst);
     assert!(examined > 256);
-    // Per append: a logarithmic replay walk, plus one insertion into the
+    // Per append: request-width replay lookup/insertion and retained commit
+    // identity insertion, plus one insertion into the
     // sealed-batch range index, which compares whole 8-byte keys at each of
     // its logarithmically many levels (its published insertion bound).
     let depth = u64::from(257_u16.ilog2());
     let ranges = (depth + 4) * (4 * 8 + 8);
     assert!(
-        examined <= 256 * (6 * depth + 2 + ranges),
+        examined
+            <= 256
+                * (BinaryKey(&[0; 8])
+                    .lookup_examinations()
+                    .ok_or(StreamError::Capacity)?
+                    + BinaryKey(&[0; 8])
+                        .insertion_examinations()
+                        .ok_or(StreamError::Capacity)?
+                    + COMMIT_INDEX_PROBES
+                    + ranges),
         "examined {examined}"
     );
     let retry = AppendRequest {
@@ -310,7 +320,12 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
         AppendOutcome::Committed(receipt) if receipt.start == 0 && receipt.end == 1)
     );
     assert!(retry_meter.examined.load(Ordering::SeqCst) > 0);
-    assert!(retry_meter.examined.load(Ordering::SeqCst) <= 4 * u64::from(257_u16.ilog2()));
+    assert!(
+        retry_meter.examined.load(Ordering::SeqCst)
+            <= BinaryKey(&[0; 8])
+                .lookup_examinations()
+                .ok_or(StreamError::Capacity)?
+    );
     assert_eq!(provider.tail(path("replay/growth")?).await?, 256);
     let insertion = Arc::new(Meter::default());
     let conflict = provider
@@ -363,27 +378,35 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
     let mut pending = Vec::new();
     for index in 0..16 {
         let mut request = request.clone();
-        request.idempotency_key =
-            IdempotencyKey::new(OwnedBytes::from(format!("prepared/{index}")))?;
+        request.idempotency_key = IdempotencyKey::new(OwnedBytes::from(vec![0; index + 32]))?;
         let key = request.idempotency_key.clone();
         let (mut issued, guard) = provider
             .native_prepare_commit(request, 64, meter.original())
             .await??
             .into_parts();
-        drop(issued.take_recovery_future());
-        pending.push((key, issued, guard));
+        let recovery = issued
+            .take_recovery_future()
+            .ok_or(StreamError::Unavailable)?;
+        pending.push((key, issued, guard, recovery));
     }
-    // Together with the two seed entries this reaches an exact growth boundary.
-    for index in 0..62 {
+    // Span every data bit and shorter terminator of the pending identity, and
+    // cross the original retained inventory's growth boundary before settlement.
+    for index in 0..318 {
         provider
             .native_append(
                 AppendRequest {
                     path: path("other")?,
                     records: vec![(OwnedBytes::from_static(b"other")).into()],
                     if_tail: Some(index),
-                    idempotency_key: IdempotencyKey::new(OwnedBytes::from(format!(
-                        "other/{index}"
-                    )))?,
+                    idempotency_key: IdempotencyKey::new(OwnedBytes::from(match index {
+                        0..=255 => {
+                            let mut key = vec![0; 32];
+                            key[index as usize / 8] = 0x80 >> (index % 8);
+                            key
+                        }
+                        256..=286 => vec![0; index as usize - 255],
+                        _ => format!("other/{index}").into_bytes(),
+                    }))?,
                 },
                 meter.original(),
             )
@@ -399,7 +422,7 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
     assert!(meter.original().examine(withheld + 1, 0).is_err());
     meter.deny_allocation.store(true, Ordering::SeqCst);
     meter.cancelled.store(true, Ordering::SeqCst);
-    for (index, (key, issued, _guard)) in pending.into_iter().enumerate() {
+    for (index, (key, issued, _guard, recovery)) in pending.into_iter().enumerate() {
         let output = issued
             .finish((OwnedBytes::from_static(b"body")).into())
             .await??;
@@ -408,6 +431,8 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
             index == 0
         );
         let cached = provider.inspect_idempotency(key).await?;
+        let recovered = recovery.await??;
+        assert_eq!(recovered.value().is_some(), index == 0);
         if index == 0 {
             let IdempotencyOutcome::Commit(envelope) =
                 cached.ok_or(StreamError::Unavailable)?.outcome

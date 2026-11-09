@@ -14,7 +14,12 @@ async fn subtree_and_success_keys_survive_journal_and_snapshot_recovery()
             ..LocalStreamLimits::default()
         };
         let provider = LocalStream::open(directory.path(), limits).await?;
-        conformance::verify(&acyclic_stream::conformance::Fixture::new(provider.clone())).await?;
+        conformance::verify_subtree_fork(&provider).await?;
+        conformance::verify_stale_tail_condition(
+            &provider,
+            StreamPath::new("conformance/tree/a/events")?,
+        )
+        .await?;
         let key = IdempotencyKey::new(b"tree-adopt".to_vec())?;
         let observation = provider.inspect_idempotency(key.clone()).await?.unwrap();
         drop(provider);

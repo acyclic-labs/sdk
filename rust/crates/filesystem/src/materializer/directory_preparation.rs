@@ -5,7 +5,8 @@ async fn persist_preparation(
     store: &crate::LocalCoreStateStore,
     mut journal: MaterializationJournal,
 ) -> Result<MaterializationJournal, NativeWorkspacePublicationError> {
-    let expected = next_revision(&mut journal.revision);
+    let expected = next_revision(&mut journal.revision)
+        .ok_or(NativeWorkspacePublicationError::RevisionExhausted)?;
     let (stored, journal) = store
         .compare_and_swap(journal.plan.operation_id, expected, journal)
         .await?;

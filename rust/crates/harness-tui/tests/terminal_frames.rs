@@ -493,6 +493,140 @@ fn with_real_terminal(
     run(&mut output)
 }
 
+const PROSE: &str = "prose with `inline code`, wrapped words and tool output lines that differ on every transcript row of the page";
+
+fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
+    use acyclic_harness_tui::ratatui::{
+        style::{Color, Style, Stylize},
+        text::Span,
+    };
+    move |frame| {
+        let height = usize::from(frame.area().height);
+        let lines: Vec<Line<'_>> = (offset..offset + height)
+            .map(|row| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{row:>6} "),
+                        Style::default().fg(Color::Rgb(120, 120, 140)),
+                    ),
+                    Span::raw("Streaming ").bold(),
+                    Span::styled("markdown", Style::default().fg(Color::Rgb(200, 120, 60))),
+                    // Distinct text per row, as when paging through a transcript.
+                    Span::raw(format!(
+                        " {}",
+                        PROSE.get(row % 25..row % 25 + 80).unwrap_or_default()
+                    )),
+                ])
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), frame.area());
+        frame.set_cursor_position((2, frame.area().height - 1));
+    }
+}
+
+/// Full-page repaint and region scrolling share one native terminal owner.
+/// The old per-command path must fail the same submission oracle.
+#[test]
+fn real_terminal_frame_cost() -> io::Result<()> {
+    use std::fmt::Write as _;
+
+    #[cfg(windows)]
+    if std::env::var_os("ACYCLIC_TERMINAL_REGION_REPORT").is_none() {
+        // Ordinary test processes have no console. The existing host owns the
+        // ConPTY and re-enters this exact test with its original report path.
+        let hosted = || -> io::Result<()> {
+            let owner = tempfile::tempdir()?;
+            let scripts = owner.path().join("scripts");
+            std::fs::create_dir(&scripts)?;
+            let script = scripts.join("test-terminal-signals.ps1");
+            std::fs::write(
+                &script,
+                include_str!("../../../../scripts/test-terminal-signals.ps1"),
+            )?;
+            let status = std::process::Command::new("pwsh")
+                .args(["-NoProfile", "-File"])
+                .arg(script)
+                .arg("-Binary")
+                .arg(std::env::current_exe()?)
+                .arg("-FrameRegions")
+                .status()?;
+            if !status.success() {
+                return Err(io::Error::other(format!("ConPTY host exited: {status}")));
+            }
+            Ok(())
+        };
+        return hosted().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --features tui --test terminal_frames -E 'test(=real_terminal_frame_cost)'"
+                ),
+            )
+        });
+    }
+
+    const FRAMES: usize = 2;
+    let mut report = String::new();
+    with_real_terminal(|output| {
+        for size in [Size::new(120, 40), Size::new(240, 70)] {
+            let viewport = TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(0, 0, size.width, size.height)),
+            };
+            for per_command in [true, false] {
+                let calls = Rc::default();
+                let bytes = Rc::default();
+                let device = Calls(&mut *output, Rc::clone(&calls), Rc::clone(&bytes));
+                let mut old = None;
+                let mut new = None;
+                if per_command {
+                    let mut terminal =
+                        Terminal::with_options(CrosstermBackend::new(device), viewport.clone())?;
+                    terminal.draw(scrolled(0))?;
+                    old = Some(terminal);
+                } else {
+                    let mut terminal = FrameTerminal::new(device, size)?;
+                    terminal.draw(size, scrolled(0))?;
+                    new = Some(terminal);
+                }
+                calls.set(0);
+                let before = device_io();
+                for offset in 1..=FRAMES {
+                    if let Some(terminal) = old.as_mut() {
+                        terminal.draw(scrolled(offset * usize::from(size.height)))?;
+                    }
+                    if let Some(terminal) = new.as_mut() {
+                        terminal.draw(size, scrolled(offset * usize::from(size.height)))?;
+                    }
+                }
+                let writes = device_io().writes - before.writes;
+                if per_command {
+                    let calls = calls.get();
+                    assert!(
+                        std::panic::catch_unwind(|| {
+                            regions::one_native_submission(calls, writes, FRAMES, false);
+                        })
+                        .is_err(),
+                        "the old per-command path must fail the native submission oracle"
+                    );
+                } else {
+                    regions::one_native_submission(calls.get(), writes, FRAMES, false);
+                }
+                writeln!(
+                report,
+                "{} {}x{} per_command={per_command} frames={FRAMES} submissions={} writes={writes}",
+                std::env::consts::OS,
+                size.width,
+                size.height,
+                calls.get()
+            )
+            .unwrap();
+            }
+        }
+        regions::native_region_cost(output, &mut report)?;
+        regions::publish_report(&report)
+    })
+}
+
 /// A frame far beyond any realistic screen (16 MiB) reaches the real console:
 /// bounded calls each finish within their own deadline. One unbounded call
 /// of 4 MiB measured 110 ms against the 100 ms deadline and timed out.

@@ -458,9 +458,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
     ) -> W::Output<Option<OwnedSourceChunk>, FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
-            let metadata = read_record_metadata_to_file_root_with_accounting(
-                &self.volume,
-                self.record,
+            let metadata = crate::kernel::read_file_metadata_with_accounting(
+                self.volume.fs.objects(),
+                self.record.metadata,
+                DecodeLimits::for_volume(self.volume.config),
                 &mut accounting,
                 cancellation,
             )
@@ -506,9 +507,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(AttributeListing, KernelOwnedAllocation), FsError> {
-        let metadata = read_record_metadata_to_file_root_with_accounting(
-            &self.volume,
-            self.record,
+        let metadata = crate::kernel::read_file_metadata_with_accounting(
+            self.volume.fs.objects(),
+            self.record.metadata,
+            DecodeLimits::for_volume(self.volume.config),
             accounting,
             cancellation,
         )
@@ -534,9 +536,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
     ) -> W::Output<FileMetadata, FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
-            let metadata = read_record_metadata_to_file_root_with_accounting(
-                &self.volume,
-                self.record,
+            let metadata = crate::kernel::read_file_metadata_with_accounting(
+                self.volume.fs.objects(),
+                self.record.metadata,
+                DecodeLimits::for_volume(self.volume.config),
                 &mut accounting,
                 cancellation,
             )

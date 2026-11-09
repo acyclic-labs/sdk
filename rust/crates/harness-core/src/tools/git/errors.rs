@@ -20,9 +20,9 @@ pub(crate) fn compat_error<S: super::CommandStore>(error: GitCompatError<S::Stor
             Error::Unsupported(format!("{command}: {reason}"))
         }
         GitCompatError::Store(error) => S::error(error),
-        GitCompatError::InvalidState | GitCompatError::MissingResultGeneration => {
-            Error::Storage(error.to_string())
-        }
+        GitCompatError::InvalidState
+        | GitCompatError::RevisionExhausted
+        | GitCompatError::MissingResultGeneration => Error::Storage(error.to_string()),
         GitCompatError::WorkspaceMismatch
         | GitCompatError::UnbornHead
         | GitCompatError::NothingToCommit

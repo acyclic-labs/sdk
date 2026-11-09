@@ -134,9 +134,10 @@ impl<
                         Some(LazyLookup::Source { .. }) => Err(LazyWorkspaceError::UnsupportedNode),
                         Some(
                             LazyLookup::Shadow { record, .. } | LazyLookup::Authored { record, .. },
-                        ) => crate::facade::read_record_metadata_to_file_root_with_accounting(
-                            &self.workspace.volume,
-                            *record,
+                        ) => crate::kernel::read_file_metadata_with_accounting(
+                            self.workspace.volume.fs.objects(),
+                            record.metadata,
+                            crate::kernel::DecodeLimits::for_volume(self.workspace.volume.config),
                             ctx,
                             cancellation(ctx),
                         )

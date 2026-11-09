@@ -278,7 +278,7 @@ mod tests {
                 },
                 || "invalid",
             );
-            if keys.first() == keys.get(1) {
+            if matches!(keys, [first, second, ..] if first == second) {
                 assert_eq!(result, Err("admission"));
             } else {
                 assert_eq!(result, Ok(Some(0..1)));

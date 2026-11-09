@@ -369,31 +369,35 @@ fn parse<'a>(
 
 /// Decodes a canonical change value into its entries with full keys.
 pub fn decode_changes(bytes: &[u8]) -> Result<wire::ChangeRecord, StreamError> {
-    decode_record(bytes, Some(FORMAT), 0)
+    decode_record(bytes, Some(FORMAT), 0, |_| true)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn decode(
     bytes: &[u8],
     headers: &RecordHeaders,
 ) -> Result<wire::ChangeRecord, StreamError> {
-    let format = validated_format(bytes, headers)?;
+    let admitted = AdmittedRecord::new(bytes, headers)?;
     // Only a fully validated typed index establishes the body's entry count.
-    let capacity = format.map_or(0, |_| headers.keys().len());
-    decode_record(bytes, format, capacity)
+    let capacity = admitted.format.map_or(0, |_| headers.keys().len());
+    admitted.decode(capacity, |_| true)
 }
 
 fn decode_record(
     bytes: &[u8],
     format: Option<&[u8]>,
     capacity: usize,
+    keep: impl Fn(&[u8]) -> bool,
 ) -> Result<wire::ChangeRecord, StreamError> {
     let mut entries = Vec::with_capacity(capacity);
     let context = parse_record(bytes, format, |key, operation, metadata| {
-        entries.push(wire::ChangeEntry {
-            key: bytes::Bytes::copy_from_slice(key),
-            operation: operation.into(),
-            metadata: bytes::Bytes::copy_from_slice(metadata),
-        });
+        if keep(key) {
+            entries.push(wire::ChangeEntry {
+                key: bytes::Bytes::copy_from_slice(key),
+                operation: operation.into(),
+                metadata: bytes::Bytes::copy_from_slice(metadata),
+            });
+        }
         Ok(())
     })?;
     Ok(wire::ChangeRecord {
@@ -405,36 +409,51 @@ fn decode_record(
 /// Rejects a change value whose keys differ from its in-memory headers, and
 /// any record claiming a change format outside the supported readers.
 pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), StreamError> {
-    validated_format(bytes, headers).map(|_| ())
+    AdmittedRecord::new(bytes, headers).map(|_| ())
 }
 
-// Keep the admitted marker borrowed through reader selection. Decoding still
-// validates the complete value and index before allocating any decoded entries.
-pub(crate) fn validated_format<'a>(
-    bytes: &[u8],
-    headers: &'a RecordHeaders,
-) -> Result<Option<&'a [u8]>, StreamError> {
-    let format = reader_format(headers)?;
-    if format.is_none() {
-        return Ok(None);
-    }
-    if bytes.len().saturating_add(headers.payload_bytes()) > crate::MAX_RECORD_BYTES {
-        return Err(StreamError::LimitExceeded);
-    }
-    let mut expected = headers.keys().iter();
-    parse_record(bytes, format, |key, _, _| {
-        if expected
-            .next()
-            .is_none_or(|expected| expected.as_ref() != key)
-        {
-            return Err(StreamError::InvalidArgument);
+/// Complete admission binds the exact immutable body, index and reader. The
+/// original parser can then materialize selected entries without revalidation.
+pub(crate) struct AdmittedRecord<'a> {
+    bytes: &'a [u8],
+    format: Option<&'a [u8]>,
+}
+
+impl<'a> AdmittedRecord<'a> {
+    pub(crate) fn new(bytes: &'a [u8], headers: &'a RecordHeaders) -> Result<Self, StreamError> {
+        let format = reader_format(headers)?;
+        if format.is_some() {
+            if bytes.len().saturating_add(headers.payload_bytes()) > crate::MAX_RECORD_BYTES {
+                return Err(StreamError::LimitExceeded);
+            }
+            let mut expected = headers.keys().iter();
+            parse_record(bytes, format, |key, _, _| {
+                if expected
+                    .next()
+                    .is_none_or(|expected| expected.as_ref() != key)
+                {
+                    return Err(StreamError::InvalidArgument);
+                }
+                Ok(())
+            })?;
+            if expected.next().is_some() {
+                return Err(StreamError::InvalidArgument);
+            }
         }
-        Ok(())
-    })?;
-    if expected.next().is_some() {
-        return Err(StreamError::InvalidArgument);
+        Ok(Self { bytes, format })
     }
-    Ok(format)
+
+    pub(crate) fn is_changes(&self) -> bool {
+        self.format.is_some()
+    }
+
+    fn decode(
+        &self,
+        capacity: usize,
+        keep: impl Fn(&[u8]) -> bool,
+    ) -> Result<wire::ChangeRecord, StreamError> {
+        decode_record(self.bytes, self.format, capacity, keep)
+    }
 }
 
 /// Headers for a record arriving from any wire or persisted form. A change
@@ -518,25 +537,36 @@ impl AppendRecord {
         Ok(Self { value, headers })
     }
 
-    /// The same list restricted to the entries `keep` accepts, or `None` when
-    /// it keeps none. The predicate borrows the original headers. Keeping every
-    /// entry transfers the original owners; partial projection re-encodes.
-    pub(crate) fn retain_changes(
+    /// Validates once before selecting entries from the admitted index. Whole
+    /// records transfer their original owners; only selected entries are copied
+    /// for partial projection. Opaque records use their original header policy.
+    pub(crate) fn project(
         self,
-        mut keep: impl FnMut(&[u8], &RecordHeaders) -> bool,
+        unrestricted: bool,
+        opaque: impl FnOnce(&RecordHeaders) -> bool,
+        keep: impl Fn(&[u8], &RecordHeaders) -> bool,
     ) -> Result<Option<Self>, StreamError> {
-        let mut changes = decode(&self.value, &self.headers)?;
-        let before = changes.entries.len();
-        changes
-            .entries
-            .retain(|entry| keep(&entry.key, &self.headers));
-        if changes.entries.len() == before {
+        let admitted = AdmittedRecord::new(&self.value, &self.headers)?;
+        if !admitted.is_changes() {
+            return Ok((unrestricted || opaque(&self.headers)).then_some(self));
+        }
+        let count = if unrestricted {
+            self.headers.keys().len()
+        } else {
+            self.headers
+                .keys()
+                .iter()
+                .filter(|key| keep(key, &self.headers))
+                .count()
+        };
+        if count == self.headers.keys().len() {
             return Ok(Some(self));
         }
-        if changes.entries.is_empty() {
+        if count == 0 {
             return Ok(None);
         }
-        if !compact(&self.headers) {
+        let changes = admitted.decode(count, |key| keep(key, &self.headers))?;
+        if admitted.format != Some(FORMAT) {
             use prost::Message;
             let headers = RecordHeaders::new(
                 changes

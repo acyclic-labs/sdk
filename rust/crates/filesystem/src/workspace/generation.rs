@@ -186,36 +186,41 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         cancellation: &CancellationToken,
     ) -> W::Output<(Vec<GenerationId>, crate::AuthorityAllocation), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
+        let result = self.parents_accounted(&mut accounting).await;
+        work.finish(result, &accounting)
+    }
+
+    pub(crate) async fn parents_accounted(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(Vec<GenerationId>, crate::AuthorityAllocation), WorkspaceError> {
+        let cancellation = accounting.cancellation();
+        let mut scope = accounting.allocation_scope()?;
         let result = async {
-            let mut scope = accounting.allocation_scope()?;
-            let result = async {
-                let volume = &self.workspace.volume;
-                let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
-                    volume.fs.objects(),
-                    self.id.object_id(),
-                    volume.config,
-                    &mut scope,
-                    cancellation,
-                )
-                .await?;
-                let bytes = crate::foundation::usize_to_u64(
-                    root.parents.capacity() * size_of::<GenerationId>(),
-                );
-                let root = crate::kernel::Owned::new(root, allocation, bytes);
-                if root.value.volume_id != volume.id {
-                    return Err(WorkspaceError::ForeignGeneration);
-                }
-                let allocation = workspace_allocation(root.allocation, &scope)?;
-                Ok((root.value.parents, allocation))
+            let volume = &self.workspace.volume;
+            let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
+                volume.fs.objects(),
+                self.id.object_id(),
+                volume.config,
+                &mut scope,
+                cancellation,
+            )
+            .await?;
+            let bytes = crate::foundation::usize_to_u64(
+                root.parents.capacity() * size_of::<GenerationId>(),
+            );
+            let root = crate::kernel::Owned::new(root, allocation, bytes);
+            if root.value.volume_id != volume.id {
+                return Err(WorkspaceError::ForeignGeneration);
             }
-            .await;
-            if result.is_ok() {
-                scope.keep();
-            }
-            result
+            let allocation = workspace_allocation(root.allocation, &scope)?;
+            Ok((root.value.parents, allocation))
         }
         .await;
-        work.finish(result, &accounting)
+        if result.is_ok() {
+            scope.keep();
+        }
+        result
     }
 
     /// Reads one complete regular file from this exact generation.

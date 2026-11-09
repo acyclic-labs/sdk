@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/access/trie.rs b/rust/crates/filesystem/src/access/trie.rs
+--- a/rust/crates/filesystem/src/access/trie.rs
++++ b/rust/crates/filesystem/src/access/trie.rs
+@@ -687,7 +687,7 @@
+     }
+ 
+     pub(crate) fn valid_at(&self, now: u64) -> bool {
+-        now >= self.valid_from && self.valid_until.is_none_or(|expiry| now < expiry)
++        self.valid_until.is_none_or(|expiry| now < expiry)
+     }
+ 
+     fn state_at(&self, state: usize, now: u64) -> Option<&State> {

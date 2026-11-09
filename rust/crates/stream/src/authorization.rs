@@ -25,6 +25,18 @@ const FOLLOW: MethodAuth<()> = MethodAuth {
 pub(crate) const FOLLOW_ACTION: Action = Action::Streams(StreamsAction::Follow);
 pub(crate) const RESOURCE_FOLLOW_ACTION: Action = Action::Fs(FsAction::List);
 
+// A Session observation stores one action in its retained authorization. A
+// contract adding another action must change that representation at compile time.
+pub(crate) const HEAD_ACTION: Action = observation_action(StreamMethod::Head);
+pub(crate) const CHILDREN_ACTION: Action = observation_action(StreamMethod::ChildrenPage);
+
+const fn observation_action(method: StreamMethod) -> Action {
+    match method.authorization().admitted {
+        [action] => *action,
+        _ => panic!("Session observations require exactly one declared action"),
+    }
+}
+
 const RESOURCE_FOLLOW: MethodAuth<()> = MethodAuth {
     method: (),
     route: "/acyclic.stream.v1.StreamSessionService/Session",

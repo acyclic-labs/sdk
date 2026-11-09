@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/facade/fork.rs
++++ b/rust/crates/filesystem/src/facade/fork.rs
+@@ -207,6 +207,8 @@
+         E: From<FsError> + From<WorkspaceError> + Send,
+     {
+         let cancellation = accounting.cancellation();
++        let mut detached = KernelAccounting::standalone(accounting.remaining()?, cancellation);
++        let accounting = &mut detached;
+         let destination_id = self.workspace_id_for_name(&destination, accounting)?;
+         let volume_id = destination_id.volume_id();
+         let config = source.workspace.volume.config;

@@ -6,47 +6,24 @@ fn qualify_marker(
     headers: &RecordHeaders,
     filter: &FollowFilter,
     expected: Result<bool, StreamError>,
+    probes: usize,
     value: &[u8],
     decoded: &wire::ChangeRecord,
 ) {
-    // Original two-pass classification, independent of the shared lookup.
-    let mut before = 0;
-    let unknown = headers
-        .attributes()
-        .iter()
-        .inspect(|_| before += 1)
-        .any(|attribute| {
-            attribute.name == ATTRIBUTE && !READER_FORMATS.contains(&attribute.value.as_ref())
-        });
-    let original = if unknown {
-        Err(StreamError::InvalidArgument)
-    } else {
-        Ok(headers
-            .attributes()
-            .iter()
-            .inspect(|_| before += 1)
-            .any(|attribute| {
-                attribute.name == ATTRIBUTE && READER_FORMATS.contains(&attribute.value.as_ref())
-            }))
-    };
-    assert_eq!(original, expected);
     take_marker_probes();
     assert_eq!(
         reader_format(headers).map(|format| format.is_some()),
-        original
+        expected
     );
     let after = take_marker_probes();
-    assert!(after <= before);
-    if expected.is_ok() && !headers.attributes().is_empty() {
-        assert!(
-            after < before,
-            "the original repeated lookup exceeds this bound"
-        );
-    }
+    assert_eq!(
+        after, probes,
+        "reserved marker classification repeated an attribute probe"
+    );
     assert_eq!(filter.matches(headers), expected == Ok(true));
     assert_eq!(take_marker_probes(), after);
     assert_eq!(FollowFilter::default().matches(headers), expected.is_ok());
-    take_marker_probes();
+    assert_eq!(take_marker_probes(), after);
     assert_eq!(validate(value, headers), expected.clone().map(|_| ()));
     assert_eq!(take_marker_probes(), after);
     assert_eq!(
@@ -54,18 +31,6 @@ fn qualify_marker(
         expected.clone().map(|_| decoded.clone())
     );
     assert_eq!(take_marker_probes(), after);
-
-    // The former validation and decode paths selected the reader by looking
-    // up the same immutable marker again (twice more during typed decoding).
-    if expected == Ok(true) {
-        let _ = reader_format(headers).unwrap();
-        let _ = compact(headers);
-        assert_eq!(take_marker_probes(), 2 * after);
-        let _ = reader_format(headers).unwrap();
-        let _ = compact(headers);
-        let _ = compact(headers);
-        assert_eq!(take_marker_probes(), 3 * after);
-    }
 
     assert_eq!(decode(&[], headers), Err(StreamError::InvalidArgument));
     assert_eq!(take_marker_probes(), after);
@@ -99,11 +64,6 @@ fn qualify_marker(
         }
     );
     assert_eq!(take_marker_probes(), after);
-    eprintln!(
-        "marker {:?}, {} attributes: {before} -> {after} name probes",
-        expected,
-        headers.attributes().len()
-    );
 }
 
 #[test]
@@ -191,7 +151,12 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
             } else {
                 (old.value.as_ref(), &retained_value)
             };
-            qualify_marker(&headers, &filter, expected.clone(), body, decoded);
+            let probes = if value.is_some() && prefix == "z" {
+                1
+            } else {
+                headers.attributes().len()
+            };
+            qualify_marker(&headers, &filter, expected.clone(), probes, body, decoded);
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let observed = std::sync::Arc::new(crate::test_meter::Meter::default());
@@ -206,7 +171,7 @@ fn retained_and_unknown_change_versions_keep_identity_and_one_marker_pass()
                 observed
                     .deny_codec
                     .store(true, std::sync::atomic::Ordering::SeqCst);
-                qualify_marker(&prepared, &filter, expected.clone(), body, decoded);
+                qualify_marker(&prepared, &filter, expected.clone(), probes, body, decoded);
                 drop(prepared);
                 observed.assert_refunded();
             }

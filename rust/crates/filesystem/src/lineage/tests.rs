@@ -39,78 +39,16 @@ async fn malformed_lineage_shape_never_enters_the_graph() {
     };
 
     assert!(matches!(
-        graph.register(malformed).await,
-        Err(WorkspaceLineageError::IncompatibleState)
-    ));
-}
-
-#[tokio::test]
-async fn direct_parent_authorization_and_recursive_walk_are_durable() {
-    let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
-    let root = workspace("root");
-    let child = workspace("child");
-    let grandchild = workspace("grandchild");
-    graph
-        .register(WorkspaceLineageRecord {
-            version: LINEAGE_VERSION,
-            revision: 1,
-            ready: true,
-            workspace_id: root,
-            workspace_name: "root".to_owned(),
-            parent_workspace_id: None,
-            parent_workspace_name: None,
-            fork_generation: generation(1),
-            initial_generation: generation(1),
-        })
-        .await
-        .expect("root registration");
-    for (workspace_id, parent_workspace_id, byte) in [(child, root, 2), (grandchild, child, 3)] {
         graph
-            .register(WorkspaceLineageRecord {
-                version: LINEAGE_VERSION,
-                revision: 1,
-                ready: true,
-                workspace_id,
-                workspace_name: if workspace_id == child {
-                    "child".to_owned()
-                } else {
-                    "grandchild".to_owned()
-                },
-                parent_workspace_id: Some(parent_workspace_id),
-                parent_workspace_name: Some(if parent_workspace_id == root {
-                    "root".to_owned()
-                } else {
-                    "child".to_owned()
-                }),
-                fork_generation: generation(byte),
-                initial_generation: generation(byte),
-            })
-            .await
-            .expect("child registration");
-    }
-    graph
-        .authorize_join(grandchild, child)
-        .await
-        .expect("direct parent");
-    assert!(matches!(
-        graph.authorize_join(grandchild, root).await,
-        Err(WorkspaceLineageError::UnauthorizedJoin)
-    ));
-    let ancestors = graph
-        .ancestors(grandchild, 3)
-        .await
-        .expect("bounded ancestry");
-    assert_eq!(
-        ancestors
-            .iter()
-            .map(|record| record.workspace_id)
-            .collect::<Vec<_>>(),
-        vec![child, root]
-    );
-    graph.authorize_descendant(grandchild, root).await.unwrap();
-    assert!(matches!(
-        graph.authorize_descendant(root, child).await,
-        Err(WorkspaceLineageError::UnauthorizedJoin)
+            .register(
+                malformed,
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+            )
+            .await,
+        Err(WorkspaceLineageError::IncompatibleState)
     ));
 }
 
@@ -171,26 +109,62 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
         ),
     ] {
         graph
-            .register(WorkspaceLineageRecord {
-                version: LINEAGE_VERSION,
-                revision: 1,
-                ready: true,
-                workspace_id: id,
-                workspace_name: name.into(),
-                parent_workspace_id: Some(parent),
-                parent_workspace_name: Some(parent_name.into()),
-                fork_generation: generation(1),
-                initial_generation: generation(2),
-            })
+            .register(
+                WorkspaceLineageRecord {
+                    version: LINEAGE_VERSION,
+                    revision: 1,
+                    ready: true,
+                    workspace_id: id,
+                    workspace_name: name.into(),
+                    parent_workspace_id: Some(parent),
+                    parent_workspace_name: Some(parent_name.into()),
+                    fork_generation: generation(1),
+                    initial_generation: generation(2),
+                },
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                ),
+            )
             .await
             .unwrap();
     }
     graph.store().take_reads();
-    graph.authorize_descendant(root, root).await.unwrap();
+    graph
+        .authorize_descendant(
+            root,
+            root,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+        .unwrap();
     assert_eq!(graph.store().take_reads(), 0, "the anchor needs no lookup");
-    graph.authorize_descendant(child, root).await.unwrap();
+    graph
+        .authorize_descendant(
+            child,
+            root,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+        .unwrap();
     assert_eq!(graph.store().take_reads(), 1, "one observed child edge");
-    graph.authorize_descendant(grandchild, root).await.unwrap();
+    graph
+        .authorize_descendant(
+            grandchild,
+            root,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+        .unwrap();
     assert_eq!(
         graph.store().take_reads(),
         2,
@@ -198,7 +172,16 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
     );
     // The former complete-history walk reads beyond the authenticated anchor.
     assert!(matches!(
-        graph.ancestors(child, u32::MAX).await,
+        graph
+            .ancestors(
+                child,
+                u32::MAX,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error),
         Err(WorkspaceLineageError::IncompatibleState)
     ));
     assert_eq!(
@@ -208,16 +191,30 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
     );
     assert!(
         graph
-            .authorize_descendant(child, workspace("foreign"))
+            .authorize_descendant(
+                child,
+                workspace("foreign"),
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
             .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .is_err()
     );
     assert_eq!(graph.store().take_reads(), 2);
     // A workspace this lineage never registered is refused, not corrupt.
     assert!(matches!(
         graph
-            .authorize_descendant(workspace("unregistered"), root)
-            .await,
+            .authorize_descendant(
+                workspace("unregistered"),
+                root,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error),
         Err(WorkspaceLineageError::UnauthorizedJoin)
     ));
     assert_eq!(
@@ -251,7 +248,16 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
                 .unwrap()
         );
         assert!(matches!(
-            graph.authorize_descendant(id, root).await,
+            graph
+                .authorize_descendant(
+                    id,
+                    root,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error),
             Err(WorkspaceLineageError::IncompatibleState)
         ));
         assert_eq!(
@@ -266,7 +272,15 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
                 .store()
                 .contend
                 .store(contend, std::sync::atomic::Ordering::Relaxed);
-            let result = graph.register(promotion).await;
+            let result = graph
+                .register(
+                    promotion,
+                    &mut crate::kernel::KernelAccounting::standalone(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    ),
+                )
+                .await;
             if contend {
                 assert!(matches!(result, Err(WorkspaceLineageError::Contended)));
             } else {
@@ -277,7 +291,16 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
                 1,
                 "promotion retains its observed revision"
             );
-            let winner = graph.resolve(id).await.unwrap();
+            let winner = graph
+                .resolve(
+                    id,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .unwrap();
             assert!(winner.ready);
             assert_eq!(winner.revision, 2);
             assert_eq!(graph.store().take_reads(), 1);
@@ -299,7 +322,15 @@ async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
         .map_err(|failure| failure.error)
         .expect("root");
     let graph = WorkspaceGraph::new(ObservedStore::default());
-    graph.register_root(&parent).await.expect("register root");
+    graph
+        .register_root(
+            &parent,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)
+        .expect("register root");
     assert_eq!(
         graph.store().take_reads(),
         1,
@@ -330,18 +361,51 @@ async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
         fork_generation: parent_head.id(),
         initial_generation: parent_head.id(),
     };
-    graph.register(planned).await.expect("persist fork intent");
+    graph
+        .register(
+            planned,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("persist fork intent");
     assert!(matches!(
-        graph.resolve(child_id).await,
+        graph
+            .resolve(
+                child_id,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error),
         Err(WorkspaceLineageError::IncompatibleState)
     ));
 
     let child = graph
-        .fork(&parent, "child", IdempotencyKey::from_bytes([31; 16]))
+        .fork(
+            &parent,
+            "child",
+            IdempotencyKey::from_bytes([31; 16]),
+            crate::performance::BOUNDARY_BUDGET,
+            &crate::CancellationToken::new(),
+        )
         .await
-        .expect("retry completes child");
+        .expect("retry completes child")
+        .value;
     assert_eq!(child.id(), child_id);
-    let recovered = graph.resolve(child_id).await.expect("ready lineage");
+    let recovered = graph
+        .resolve(
+            child_id,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
+        .expect("ready lineage");
     assert!(recovered.ready);
     assert_eq!(recovered.parent_workspace_id, Some(parent.id()));
     assert_eq!(

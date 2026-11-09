@@ -1,0 +1,21 @@
+diff --git a/rust/crates/filesystem/src/demand/reservations.rs b/rust/crates/filesystem/src/demand/reservations.rs
+index d93159b88d4..8d395cbebb4 100644
+--- a/rust/crates/filesystem/src/demand/reservations.rs
++++ b/rust/crates/filesystem/src/demand/reservations.rs
+@@ -48,14 +48,9 @@ impl DemandWork {
+         reserved: WorkCounters,
+         actual: WorkCounters,
+     ) -> Result<(), DemandError> {
+-        // Reconciliation may spend free copy credit pruning retired owners.
+-        // Keep this completion's credit held until that work has finished.
+-        let reconciled = self.reconcile_cancellation_registry();
+         let refunded = self.refund(reserved);
+-        let recorded = self.record_reconciled(actual);
+-        reconciled
+-            .map_err(DemandError::from)
+-            .and(refunded)
++        let recorded = self.record(actual);
++        refunded
+             .and(recorded)
+             .and(
+                 actual

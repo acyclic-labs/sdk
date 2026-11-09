@@ -19,6 +19,9 @@ pub use compiled_prefix::{
 mod recent;
 pub use recent::RecentIndex;
 
+pub mod radix;
+use radix::{BranchBit as Bit, RadixCursor};
+
 mod prefix;
 pub use prefix::{ExtractedEntries, ExtractedPrefix, PrefixTooLong};
 
@@ -140,29 +143,68 @@ impl<V, A, const N: usize> Default for FixedIndex<V, A, N> {
     }
 }
 
-// Byte and intra-byte coordinates avoid truncating keys wider than 256 bits.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct Bit {
-    byte: usize,
-    offset: u32,
-}
-
 fn high<K: AsRef<[u8]> + ?Sized>(key: &K, bit: Bit) -> bool {
-    key.as_ref()
-        .get(bit.byte)
-        .unwrap_or_else(|| unreachable!("a branch coordinate comes from this key width"))
-        & (0x80 >> bit.offset)
-        != 0
+    bit.high(key)
 }
 
 fn difference<const N: usize>(a: &[u8; N], b: &[u8; N]) -> Option<Bit> {
-    a.iter().zip(b).enumerate().find_map(|(byte, (a, b))| {
-        let xor = a ^ b;
-        (xor != 0).then(|| Bit {
-            byte,
-            offset: xor.leading_zeros(),
-        })
-    })
+    Bit::difference(a, b)
+}
+
+impl<V, A, const N: usize> RadixCursor for &Link<V, A, N> {
+    fn is_empty(&self) -> bool {
+        self.is_none()
+    }
+
+    fn branch_bit(&self) -> Option<Bit> {
+        match self.as_ref()?.kind.as_ref() {
+            Kind::Branch { bit, .. } => Some(*bit),
+            Kind::Leaf { .. } => None,
+        }
+    }
+
+    fn child(self, high: bool) -> Self {
+        match self.as_ref().map(|node| node.kind.as_ref()) {
+            Some(Kind::Branch {
+                low, high: upper, ..
+            }) => {
+                if high {
+                    upper
+                } else {
+                    low
+                }
+            }
+            _ => unreachable!("descent selects an existing branch"),
+        }
+    }
+}
+
+impl<V, A, const N: usize> RadixCursor for &mut Link<V, A, N> {
+    fn is_empty(&self) -> bool {
+        self.is_none()
+    }
+
+    fn branch_bit(&self) -> Option<Bit> {
+        match self.as_ref()?.kind.as_ref() {
+            Kind::Branch { bit, .. } => Some(*bit),
+            Kind::Leaf { .. } => None,
+        }
+    }
+
+    fn child(self, high: bool) -> Self {
+        match self.as_mut().map(|node| node.kind.as_mut()) {
+            Some(Kind::Branch {
+                low, high: upper, ..
+            }) => {
+                if high {
+                    upper
+                } else {
+                    low
+                }
+            }
+            _ => unreachable!("descent selects an existing branch"),
+        }
+    }
 }
 
 // An unlinked admission can be retired through the original accounting
@@ -213,10 +255,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         let width = u64::try_from(N).ok()?;
         Some(IndexInsertionBound {
             allocation_bytes: node_bytes.checked_mul(2)?.checked_mul(insertions)?,
-            examined_items: width
-                .checked_mul(17)?
-                .checked_add(2)?
-                .checked_mul(insertions)?,
+            examined_items: radix::insertion_examinations(width)?.checked_mul(insertions)?,
         })
     }
 
@@ -227,27 +266,19 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
     ) -> Result<Option<&V>, W::Error> {
         accounting.validate()?;
-        let mut cursor = self.root.as_ref();
-        while let Some(node) = cursor {
-            accounting.examine(1)?;
-            match node.kind.as_ref() {
-                Kind::Leaf {
-                    key: observed,
-                    value,
-                } => {
-                    accounting.examine(N as u64)?;
-                    return Ok((*observed == key).then_some(value));
-                }
-                Kind::Branch {
-                    bit,
-                    low,
-                    high: upper,
-                } => {
-                    cursor = if high(&key, *bit) { upper } else { low }.as_ref();
-                }
+        let (selected, _) =
+            radix::select(&self.root, &key, None, |items| accounting.examine(items))?;
+        match selected.as_ref().map(|node| node.kind.as_ref()) {
+            Some(Kind::Leaf {
+                key: observed,
+                value,
+            }) => {
+                accounting.examine(N as u64)?;
+                Ok((*observed == key).then_some(value))
             }
+            None => Ok(None),
+            _ => unreachable!("selection returns a leaf"),
         }
-        Ok(None)
     }
 
     /// Borrows the first unsigned-byte-ordered entry without allocation.
@@ -309,27 +340,18 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         key: [u8; N],
         mut visit: impl FnMut(u64) -> Result<(), E>,
     ) -> Result<Option<&mut V>, E> {
-        let mut cursor = self.root.as_mut();
-        while let Some(node) = cursor {
-            visit(1)?;
-            match node.kind.as_mut() {
-                Kind::Leaf {
-                    key: observed,
-                    value,
-                } => {
-                    visit(N as u64)?;
-                    return Ok((*observed == key).then_some(value));
-                }
-                Kind::Branch {
-                    bit,
-                    low,
-                    high: upper,
-                } => {
-                    cursor = if high(&key, *bit) { upper } else { low }.as_mut();
-                }
+        let (selected, _) = radix::select(&mut self.root, &key, None, &mut visit)?;
+        match selected.as_mut().map(|node| node.kind.as_mut()) {
+            Some(Kind::Leaf {
+                key: observed,
+                value,
+            }) => {
+                visit(N as u64)?;
+                Ok((*observed == key).then_some(value))
             }
+            None => Ok(None),
+            _ => unreachable!("selection returns a leaf"),
         }
-        Ok(None)
     }
 
     /// Borrows the least key strictly greater than `after` without allocating.
@@ -471,27 +493,16 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
     ) -> Result<(Option<Option<Bit>>, u64), W::Error> {
         accounting.validate()?;
-        let mut cursor = self.root.as_ref();
-        let mut depth = 0;
-        while let Some(node) = cursor {
-            accounting.examine(1)?;
-            depth += 1;
-            match node.kind.as_ref() {
-                Kind::Leaf { key: observed, .. } => {
-                    let bytes = N as u64;
-                    accounting.examine(bytes)?;
-                    return Ok((Some(difference(&key, observed)), depth));
-                }
-                Kind::Branch {
-                    bit,
-                    low,
-                    high: upper,
-                } => {
-                    cursor = if high(&key, *bit) { upper } else { low }.as_ref();
-                }
+        let (selected, depth) =
+            radix::select(&self.root, &key, None, |items| accounting.examine(items))?;
+        match selected.as_ref().map(|node| node.kind.as_ref()) {
+            Some(Kind::Leaf { key: observed, .. }) => {
+                accounting.examine(N as u64)?;
+                Ok((Some(difference(&key, observed)), depth))
             }
+            None => Ok((None, depth)),
+            _ => unreachable!("selection returns a leaf"),
         }
-        Ok((None, depth))
     }
 
     fn insertion_link<W: IndexWork<Allocation = A>>(
@@ -500,45 +511,26 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         before: Bit,
         accounting: &mut W,
     ) -> Result<&mut Link<V, A, N>, W::Error> {
-        let mut cursor = &mut self.root;
-        loop {
-            accounting.charge_items(1)?;
-            let descend = matches!(cursor.as_ref().map(|node| node.kind.as_ref()),
-                Some(Kind::Branch { bit, .. }) if *bit < before);
-            if !descend {
-                return Ok(cursor);
-            }
-            match cursor.as_mut().map(|node| node.kind.as_mut()) {
-                Some(Kind::Branch {
-                    bit,
-                    low,
-                    high: upper,
-                }) => {
-                    cursor = if high(&key, *bit) { upper } else { low };
-                }
-                _ => unreachable!("descent selects an existing branch"),
-            }
-        }
+        let (selected, _) = radix::select(&mut self.root, &key, Some(before), |items| {
+            accounting.charge_items(items)
+        })?;
+        Ok(selected)
     }
 
     // The original search already matched the full key, or this link was just
     // constructed for it. No mutation intervenes before this private borrow.
     fn selected_value_mut(root: &mut Link<V, A, N>, key: [u8; N]) -> &mut V {
-        let mut cursor = root.as_mut();
-        while let Some(node) = cursor {
-            match node.kind.as_mut() {
-                Kind::Leaf { value, .. } => return value,
-                Kind::Branch {
-                    bit,
-                    low,
-                    high: upper,
-                } => {
-                    cursor = if high(&key, *bit) { upper } else { low }.as_mut();
-                }
-            }
+        let selected =
+            match radix::select(root, &key, None, |_| Ok::<_, std::convert::Infallible>(())) {
+                Ok((selected, _)) => selected,
+                Err(never) => match never {},
+            };
+        match selected.as_mut().map(|node| node.kind.as_mut()) {
+            Some(Kind::Leaf { value, .. }) => value,
+            _ => unreachable!("lookup follows a leaf already found or inserted"),
         }
-        unreachable!("lookup follows a leaf already found or inserted")
     }
+
     /// Extracts an exact owner after original admission, without allocating.
     /// Refusal leaves every original link and owner unchanged. Both traversals
     /// and the complete key comparison are charged before unlinking; at most
@@ -549,7 +541,8 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
     ) -> Result<Option<Entry<V, A, N>>, W::Error> {
         accounting.validate()?;
-        self.remove_with(key, |_| true, |items| accounting.examine(items))
+        self.extract_with(key, |_| true, |items| accounting.examine(items))
+            .map(|extracted| extracted.map(Self::into_entry))
     }
 
     /// Extracts an exact matching owner and its original node funding.
@@ -561,18 +554,40 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         key: [u8; N],
         matches: impl FnOnce(&V) -> bool,
     ) -> Option<Entry<V, A, N>> {
-        match self.remove_with(key, matches, |_| Ok::<(), std::convert::Infallible>(())) {
-            Ok(entry) => entry,
+        self.extract_if(key, matches).map(Self::into_entry)
+    }
+
+    /// Detaches one matching leaf and its redundant parent without destroying
+    /// any payload, backing or funding. Destroy or consume the returned owner
+    /// after leaving any lock its original funding may re-enter.
+    /// This allocation-free cleanup cannot refuse after cancellation. Two
+    /// traversals visit at most 16N branches, independent of population.
+    pub fn extract_if(
+        &mut self,
+        key: [u8; N],
+        matches: impl FnOnce(&V) -> bool,
+    ) -> Option<ExtractedPrefix<V, A, N>> {
+        match self.extract_with(key, matches, |_| Ok::<(), std::convert::Infallible>(())) {
+            Ok(extracted) => extracted,
             Err(impossible) => match impossible {},
         }
     }
 
-    fn remove_with<E>(
+    fn into_entry(extracted: ExtractedPrefix<V, A, N>) -> Entry<V, A, N> {
+        let mut extracted = extracted.into_index();
+        let retired = extracted
+            .root
+            .take()
+            .unwrap_or_else(|| unreachable!("verified registration"));
+        Entry::from_leaf(retired)
+    }
+
+    fn extract_with<E>(
         &mut self,
         key: [u8; N],
         matches: impl FnOnce(&V) -> bool,
         mut charge: impl FnMut(u64) -> Result<(), E>,
-    ) -> Result<Option<Entry<V, A, N>>, E> {
+    ) -> Result<Option<ExtractedPrefix<V, A, N>>, E> {
         let mut cursor = self.root.as_ref();
         let mut parent = None;
         let mut ancestors = 0;
@@ -608,14 +623,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         if ancestors != 0 {
             charge(ancestors)?;
         }
-        let mut extracted = self
-            .extract_at(parent, |bit| high(&key, bit), |_| {})
-            .into_index();
-        let retired = extracted
-            .root
-            .take()
-            .unwrap_or_else(|| unreachable!("verified registration"));
-        Ok(Some(Entry::from_leaf(retired)))
+        Ok(Some(self.extract_at(parent, |bit| high(&key, bit), |_| {})))
     }
 
     /// Retires one exact owner, destroying its value before its original token.

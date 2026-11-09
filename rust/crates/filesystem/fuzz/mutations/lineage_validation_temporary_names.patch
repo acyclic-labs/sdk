@@ -1,0 +1,17 @@
+--- a/rust/crates/filesystem/src/workspace/identity.rs
++++ b/rust/crates/filesystem/src/workspace/identity.rs
+@@ -28,13 +28,7 @@
+         name: &str,
+         accounting: &mut KernelAccounting<'_>,
+     ) -> Result<(), WorkspaceError> {
+-        Self::parse_with(
+-            name,
+-            accounting,
+-            char::is_ascii,
+-            &mut |_, _, _| {},
+-            |_, _, _| Ok(()),
+-        )
++        Self::with_accounting(name, accounting).map(|_| ())
+     }
+ 
+     fn with_probe(

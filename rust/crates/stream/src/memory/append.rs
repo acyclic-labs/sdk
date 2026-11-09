@@ -39,19 +39,18 @@ impl MemoryStream {
             .iter()
             .map(AppendRecord::payload_bytes)
             .sum::<usize>();
-        let digest = self.append_request_digest(&request)?;
-        if let Some(result) = self.replay_append(&state, &request.idempotency_key, digest)? {
+        let digest = self.append_request_digest(request)?;
+        if let Some(result) = self.replay_append(state, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned((result, Default::default())));
         }
-        let mut probes =
-            self.reserve_replay_probes(u64::from(state.replay_height(state.replay_root)))?;
+        let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
         let start = state.paths.get(&request.path).map_or(0, |path| path.tail);
         if request.if_tail.is_some_and(|expected| expected != start) {
             let result = AppendOutcome::TailConflict { actual_tail: start };
             return Ok(Decision::Returned((result, Default::default())));
         }
-        admit_replay(&state, self.limits)?;
-        reserve_append(&state, &request.path, &request.records, self.limits)?;
+        admit_replay(state, self.limits)?;
+        reserve_append(state, &request.path, &request.records, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -80,8 +79,8 @@ impl MemoryStream {
         let (mut facts, claim) = self.vector(1)?;
         self.absorb(&mut allocation, claim)?;
         facts.push(CommittedMutation::Append(fact));
-        let (mut histories, _histories) = self.histories(&state, &facts)?;
-        let (paths, _paths) = self.paths(&state, std::iter::once(&request.path))?;
+        let (mut histories, _histories) = self.histories(state, &facts)?;
+        let (paths, _paths) = self.paths(state, std::iter::once(&request.path))?;
         let retained = self.reserve_retained(state)?;
         let mut envelope = CommittedEnvelope {
             commit_id,
@@ -110,7 +109,7 @@ impl MemoryStream {
                 state.last_committed_at_micros = time;
                 retain(
                     state,
-                    &mut || self.record_replay_probe(&mut probes),
+                    &mut |items| self.record_replay_probe(&mut probes, items),
                     Some(envelope),
                     Some(request.idempotency_key.clone()),
                     digest,

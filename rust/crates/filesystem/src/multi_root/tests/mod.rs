@@ -236,10 +236,12 @@ async fn parent_claim_allows_only_one_unacknowledged_publication() {
     ));
     assert_eq!(
         coordinator
-            .pending_operations()
+            .store
+            .load(retained.candidate.plan.operation_id)
             .await
-            .expect("list retained publication"),
-        [retained.candidate.plan.operation_id]
+            .expect("load retained publication")
+            .as_ref(),
+        Some(&retained)
     );
     coordinator
         .acknowledge_applied(&retained)
@@ -377,10 +379,11 @@ async fn committed_publication_pauses_and_rolls_forward_on_retry()
     assert_eq!(second.published_roots.len(), 2);
     assert!(
         coordinator
-            .pending_operations()
+            .store
+            .load(second.candidate.plan.operation_id)
             .await
-            .expect("terminal records are reclaimed")
-            .is_empty()
+            .expect("terminal record is reclaimed")
+            .is_none()
     );
     Ok::<(), Box<dyn std::error::Error>>(())
 }
@@ -399,13 +402,13 @@ async fn journal_created_before_parent_claim_survives_claim_failure()
         coordinator.publish(candidate()).await,
         Err(MultiRootPublicationError::Store(_))
     ));
-    assert_eq!(coordinator.pending_operations().await?, [operation_id]);
+    assert!(coordinator.store.load(operation_id).await?.is_some());
 
     assert!(matches!(
         coordinator.publish(candidate()).await?,
         Publication::Applied(_)
     ));
-    assert!(coordinator.pending_operations().await?.is_empty());
+    assert!(coordinator.store.load(operation_id).await?.is_none());
     Ok(())
 }
 
@@ -425,12 +428,11 @@ async fn finalize_failure_retries_after_the_applied_decision()
         coordinator.publish(candidate()).await,
         Err(MultiRootPublicationError::Publisher(_))
     ));
-    let pending = coordinator.pending_operations().await?;
-    assert_eq!(pending, vec![operation_id]);
+    assert!(coordinator.store.load(operation_id).await?.is_some());
 
     let resumed = coordinator.resume(operation_id).await?;
     assert!(matches!(resumed, Some(Publication::Applied(_))));
-    assert!(coordinator.pending_operations().await?.is_empty());
+    assert!(coordinator.store.load(operation_id).await?.is_none());
     let finalized = coordinator
         .publisher
         .finalized

@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/replicated.rs b/rust/crates/stream/src/replicated.rs
+--- a/rust/crates/stream/src/replicated.rs
++++ b/rust/crates/stream/src/replicated.rs
+@@ -135,7 +135,6 @@ impl Drop for Attempt<'_> {
+         // Retire its original authority before another observer can use its cut.
+         if self.result.started {
+             *self.failed = true;
+-            self.revisions.close();
+         }
+     }
+ }

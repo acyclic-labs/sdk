@@ -1,0 +1,22 @@
+diff --git a/rust/crates/filesystem/src/kernel/metadata.rs b/rust/crates/filesystem/src/kernel/metadata.rs
+index 17c77380d54..490513c7fc7 100644
+--- a/rust/crates/filesystem/src/kernel/metadata.rs
++++ b/rust/crates/filesystem/src/kernel/metadata.rs
+@@ -283,10 +283,14 @@ pub(crate) fn read_file_metadata_with_accounting<'task, 'accounting, S: AsyncObj
+             cancellation,
+         )
+         .await?;
+-        super::decode_owned(&mut accounting, |observe| {
+-            decode_file_metadata(&read.bytes, limits, &mut |step| observe(step))
++        accounting.charge(WorkCounters {
++            items_examined: 1,
++            ..WorkCounters::UNCHARGED
++        })?;
++        decode_file_metadata(&read.bytes, limits, &mut |_| {
++            Ok::<_, CanonicalDecodeError>(())
+         })
+-        .map(|(metadata, _)| metadata)
++        .map_err(FsError::from)
+     }
+ }
+ 

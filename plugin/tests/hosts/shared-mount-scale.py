@@ -48,6 +48,26 @@ def exceeded(small, large):
             if large[name] - small[name] > limit * added]
 
 
+def record_mount_sample(host, population, boundary):
+    if sys.platform != 'linux':
+        return
+    try:
+        # Preserve the actual kernel records, including mount IDs and paths.
+        # The public count covers a namespace, whose other writers must remain
+        # visible when a resource assertion fails.
+        namespace = os.readlink('/proc/self/ns/mnt')
+        records = pathlib.Path('/proc/self/mountinfo').read_text(
+            encoding='utf-8', errors='surrogateescape')
+    except OSError as error:
+        raise RuntimeError(
+            'step=record native scale mount sample; recovery: python3 '
+            'plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER ' + host
+        ) from error
+    print(json.dumps({'host': host, 'live_sessions': population,
+                      'boundary': boundary, 'mount_namespace': namespace,
+                      'mountinfo': records}), flush=True)
+
+
 def main():
     binary, graphcoder = (str(pathlib.Path(p).resolve()) for p in sys.argv[1:3])
     host = sys.argv[3]
@@ -187,7 +207,9 @@ sys.exit(17)
                         assert (path / '.volumes/home/private.txt').read_text() == reference
                         paths.append(path)
                     assert_live()
+                    record_mount_sample(host, population, 'before resources')
                     sample = client({'kind': 'resources', 'task': task})
+                    record_mount_sample(host, population, 'after resources')
                     assert_live()
                     assert sample['views'] > population, sample
                     # Control: native views require a native mount, so a

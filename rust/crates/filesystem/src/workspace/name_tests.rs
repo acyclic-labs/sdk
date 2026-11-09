@@ -4,6 +4,129 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use std::cell::Cell;
 
+#[tokio::test]
+async fn creation_retains_complete_name_backing_on_original_accounting()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::workspace::accounting_tests::ObservedAuthority;
+
+    crate::initialize_test_native_io();
+    let authority = Arc::new(ObservedAuthority::default());
+    let fs = crate::Fs::new(
+        authority.clone(),
+        Arc::new(crate::MemoryObjectStore::default()),
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let header = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<String>())? as u64
+        + crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+            crate::kernel::RetainedAllocation,
+        >())? as u64;
+    // Exercise the public ordinary entry point: its caller frame is already
+    // gone when the name is returned. Every alias must keep the same backing.
+    let cancellation = CancellationToken::new();
+    let receipt = WorkspaceName::new("retained-name", &budget, &cancellation)?;
+    let name = receipt.value;
+    let live = name
+        .0
+        .standalone_live_bytes()
+        .ok_or("workspace name lost its original ordinary ledger")?;
+    assert_eq!(
+        live, receipt.work.peak_allocation_bytes,
+        "workspace name lost original backing credit"
+    );
+    let alias = name.clone();
+    drop(name);
+    assert_eq!(
+        alias.0.standalone_live_bytes(),
+        Some(live),
+        "workspace name alias lost original backing credit"
+    );
+    assert_eq!(alias.as_str(), "retained-name");
+    drop(alias);
+    for (input, canonical) in [
+        ("original-name", "original-name"),
+        ("cafe\u{301}", "caf\u{e9}"),
+    ] {
+        let cancellation = CancellationToken::new();
+        *authority.replay_minimum.lock().unwrap() = Some(canonical.len() as u64 + header);
+        let created = fs
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                input,
+                crate::VolumeInitialization::new(
+                    crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                    None,
+                ),
+                crate::OperationId::new(),
+                budget,
+                &cancellation,
+                None,
+            )
+            .await?;
+        assert_eq!(created.value.workspace().name().as_str(), canonical);
+        created.work.verify(budget)?;
+        assert!(authority.replay_minimum.lock().unwrap().is_none());
+    }
+
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    let name = "native-original-name";
+    *authority.replay_minimum.lock().unwrap() =
+        Some(original.live_allocation_bytes() + name.len() as u64 + header);
+    let created = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            name,
+            crate::VolumeInitialization::new(
+                crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                None,
+            ),
+            crate::OperationId::new(),
+            &original,
+            &cancellation,
+            None,
+        )
+        .await?;
+    assert_eq!(created.workspace().name().as_str(), name);
+    assert!(authority.replay_minimum.lock().unwrap().is_none());
+    original.receipt().verify(budget)?;
+
+    // The String may be admitted, but its shared header must be admitted too
+    // before any durable observation or publication is dispatched.
+    *authority.replay_minimum.lock().unwrap() = Some(0);
+    let failure = fs
+        .create_workspace(
+            "refused-name",
+            WorkBudget {
+                allocation_operations: 1,
+                ..budget
+            },
+            &cancellation,
+        )
+        .await
+        .err()
+        .ok_or("name header escaped its allocation allowance")?;
+    assert!(matches!(
+        failure.error,
+        WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+            counter: "allocation_operations",
+            ..
+        })
+    ));
+    assert_eq!(failure.work.backend_read_operations, 0);
+    assert!(authority.replay_minimum.lock().unwrap().is_some());
+
+    cancellation.cancel();
+    let failure = fs
+        .create_workspace("cancelled-name", budget, &cancellation)
+        .await
+        .err()
+        .ok_or("cancelled identity reached authority storage")?;
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+    assert!(authority.replay_minimum.lock().unwrap().is_some());
+    Ok(())
+}
+
 #[test]
 fn cancellation_after_encoding_precedes_length_errors_and_retention() {
     for (count, skip) in [(127, false), (128, false), (128, true)] {
@@ -207,11 +330,15 @@ proptest! {
     // visit/copy traces; compare against raw main as an admission guarantee.
     #[test]
     fn independent_parser_matches_outputs_errors_and_every_observed_phase(
-        text in prop::collection::vec(any::<char>(), 0..300).prop_map(|c| c.into_iter().collect::<String>()),
+        text in prop_oneof![
+            prop::collection::vec(any::<char>(), 0..300).prop_map(|c| c.into_iter().collect::<String>()),
+            "[a-zA-Z0-9_-]{1,255}",
+        ],
         items in 0_u64..1025, copies in 0_u64..1025,
         operations in 0_u64..5, peak in 0_u64..4097,
         mode in 0_u8..4, recheck in any::<bool>(), failure in 0_u8..6,
     ) {
+        name_fuzz::check_workspace_name(text.as_bytes());
         let quota = WorkBudget { items_examined: items, bytes_copied: copies,
             allocation_operations: operations, peak_allocation_bytes: peak,
             ..WorkBudget::UNBOUNDED };
@@ -237,11 +364,17 @@ proptest! {
 }
 
 fn control_bytes() -> u64 {
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let admission = crate::kernel::allocation::retained::RetainedArc::<String>::admit(
+        &mut KernelAccounting::native(&original, &cancellation),
+    )
+    .unwrap();
     let mut control = None;
-    let heap =
-        measure(|| control = Some(Arc::new((String::new(), KernelOwnedAllocation::Standalone))));
+    let heap = measure(|| control = Some(admission.into_value(String::new())));
     drop(control);
-    assert_eq!(heap.count_total, 1);
+    assert_eq!(heap.count_total, 2);
     heap.bytes_total
 }
 
@@ -267,9 +400,9 @@ fn physical_bound(length: usize, broken: bool) -> Result<(), &'static str> {
     drop(restore);
     let bytes = length as u64 + control;
     let expected = AllocationInfo {
-        count_total: 2,
-        count_current: 2,
-        count_max: 2,
+        count_total: 3,
+        count_current: 3,
+        count_max: 3,
         bytes_total: bytes,
         bytes_current: bytes as i64,
         bytes_max: bytes,
@@ -285,15 +418,23 @@ fn physical_bound(length: usize, broken: bool) -> Result<(), &'static str> {
             .checked_add(crate::WorkCounters {
                 items_examined: length as u64,
                 bytes_copied: length as u64,
-                allocation_operations: 2,
+                allocation_operations: 3,
                 peak_allocation_bytes: baseline + bytes,
                 ..crate::WorkCounters::UNCHARGED
             })
             .unwrap()
     );
-    let freed = measure(|| drop(value.take()));
+    let mut alias = None;
+    let before_clone = original.receipt();
+    let cloned = measure(|| alias = value.as_ref().cloned());
+    assert_eq!(cloned, AllocationInfo::default());
+    assert_eq!(original.receipt(), before_clone);
+    let first_drop = measure(|| drop(value.take()));
+    assert_eq!(first_drop, AllocationInfo::default());
+    assert_eq!(original.live_allocation_bytes(), baseline + bytes);
+    let freed = measure(|| drop(alias.take()));
     assert_eq!(freed.count_total, 0);
-    assert_eq!(freed.count_current, -2);
+    assert_eq!(freed.count_current, -3);
     assert_eq!(freed.bytes_current, -(bytes as i64));
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())

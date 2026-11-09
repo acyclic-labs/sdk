@@ -1,0 +1,9 @@
+diff --git a/rust/crates/stream/src/owned_bytes/mod.rs b/rust/crates/stream/src/owned_bytes/mod.rs
+--- a/rust/crates/stream/src/owned_bytes/mod.rs
++++ b/rust/crates/stream/src/owned_bytes/mod.rs
+@@ -381,4 +381,4 @@
+         let backing = OwnedBytesBacking {
+-            data: value.data.clone(),
++            data: Data::Plain(Bytes::new()),
+             capacity,
+         };

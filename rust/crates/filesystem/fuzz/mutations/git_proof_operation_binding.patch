@@ -1,0 +1,14 @@
+diff --git a/rust/crates/filesystem/src/git_compat/capture/proof.rs b/rust/crates/filesystem/src/git_compat/capture/proof.rs
+--- a/rust/crates/filesystem/src/git_compat/capture/proof.rs
++++ b/rust/crates/filesystem/src/git_compat/capture/proof.rs
+@@ -44,8 +44,8 @@
+                     .map_err(WorkspaceError::from)
+                     .map_err(GitCaptureError::from)?
+                     .map_err(|_| GitCaptureError::Conflict)?;
+-                if !child.name().as_str().starts_with("git-capture-")
+-                    || !child.name().as_str().as_bytes().ends_with(&suffix)
++                if false && (!child.name().as_str().starts_with("git-capture-")
++                    || !child.name().as_str().as_bytes().ends_with(&suffix))
+                 {
+                     return Err(GitCaptureError::Conflict.into());
+                 }

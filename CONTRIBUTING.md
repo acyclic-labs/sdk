@@ -73,6 +73,28 @@ bun run test    # type-check, then TypeScript and filesystem package tests
 cargo test --all-features --locked
 ```
 
+Live PostgreSQL and S3 controls have explicit nextest profiles. Ordinary nextest
+runs, including the `ci` profile, exclude these two capability modules. Complete
+storage qualification runs both profiles against real disposable services:
+
+```sh
+cargo nextest run --locked -p acyclic-stream --no-default-features --features postgres --profile postgres --no-tests=fail
+cargo nextest run --locked -p acyclic-objects --no-default-features --features s3 --profile s3 --no-tests=fail
+```
+
+Set `STORAGE_POSTGRES_URL` to a disposable PostgreSQL database. Verifying the SQL
+observation counts also requires server statement logs with `log_statement=all`
+and `%a` in `log_line_prefix`; the tests mark sessions with `publication-count-`
+application names. The tests do not read or verify those server logs themselves.
+
+For S3, supply `STORAGE_S3_BUCKET`, `STORAGE_S3_ENDPOINT`, `STORAGE_S3_REGION`,
+`STORAGE_S3_ACCESS_KEY` and `STORAGE_S3_SECRET_KEY` for a disposable bucket with
+conditional-write support. Set `STORAGE_S3_ALLOW_HTTP=1` only for an HTTP endpoint.
+The caller owns service startup, observed SQL counts and final service teardown.
+Selected controls fail if a required environment variable or service is missing;
+they are never ignored. Direct `cargo test` commands do not use nextest profiles
+and require the same services when selecting those modules.
+
 The product workspace shares its root `Cargo.lock` with compatible fuzzers,
 proofs and tools. Root commands include the SDK and the codec, Markdown and ts-rs
 fuzzers, the patched ts-rs derive crate and ID codec proofs, so changes to their
@@ -114,6 +136,31 @@ The producer uses the output path's parent for `guest.ts` and service metadata.
 Full TypeScript generation subsequently projects the metadata into
 `actors-service.ts`. Rust qualification generates these files before its workspace
 tests; drift checks only compare and never rewrite their inputs.
+
+The `full-cloud` nextest profile exercises live Filesystem and Actors handlers.
+Portable profiles leave these cases to this capability profile. List its cases with:
+
+```sh
+cargo nextest list --profile full-cloud --locked --all-features \
+  -p acyclic-fs -p acyclic-harness
+```
+
+On Linux, build the Cloud checkout's binaries with
+`node ops/local/e2e.mjs --build-only`. Run each listed case against a fresh
+topology with the qualification entry below. Set absolute paths for
+`CLOUD_SOURCE`, `CLOUD_BINARIES` and an existing `SDK_ARTIFACT_DIR` directory:
+
+```sh
+export CLOUD_SOURCE CLOUD_BINARIES SDK_ARTIFACT_DIR
+cargo nextest run --profile full-cloud --locked --all-features \
+  -p acyclic-fs -p acyclic-harness
+```
+
+The profile wraps every selected case with the shared local Cloud producer,
+retaining service results under a fresh directory for each case.
+The producer supplies `ACYCLIC_LOCAL_CLOUD`; selecting a case without its
+endpoints fails. Each case needs fresh service state: the lifecycle oracle
+migrates the deployment that the delivery oracle expects at its first revision.
 
 The `dev` and `test` profiles use LLVM, panic unwinding and line tables for
 backtraces. The independent `acyclic-fs-wire` and `acyclic-plugin-identity` crates

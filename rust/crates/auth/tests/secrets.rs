@@ -124,6 +124,49 @@ impl Provider {
             Call::List(request) => secrets::list_target(request),
             Call::Delete(request) => secrets::delete_target(request),
         };
+        // Check the actual production client's dispatch trace against its
+        // public descriptor, including the owning authorization declaration.
+        static DESCRIPTOR: std::sync::OnceLock<prost_reflect::DescriptorPool> =
+            std::sync::OnceLock::new();
+        let pool = DESCRIPTOR.get_or_init(|| {
+            prost_reflect::DescriptorPool::decode(acyclic_auth::FILE_DESCRIPTOR_SET)
+                .expect("public Auth descriptor")
+        });
+        let extension = pool
+            .get_extension_by_name("acyclic.validation.v1.http_routes")
+            .expect("public Auth HTTP operation declarations");
+        let options = pool
+            .get_file_by_name("auth/v1/auth.proto")
+            .expect("Auth file")
+            .options();
+        let routes = options.get_extension(&extension);
+        let admitted = routes
+            .as_list()
+            .expect("HTTP routes")
+            .iter()
+            .filter(|route| {
+                let route = route.as_message().expect("HTTP route");
+                route.get_field_by_name("method").expect("method").as_str() == Some("POST")
+                    && route.get_field_by_name("path").expect("path").as_str() == Some(path)
+                    && route
+                        .get_field_by_name("auth")
+                        .expect("auth")
+                        .as_list()
+                        .expect("route authorization")
+                        .iter()
+                        .any(|rule| {
+                            rule.as_message()
+                                .expect("authorization")
+                                .get_field_by_name("action")
+                                .expect("action")
+                                .as_list()
+                                .expect("actions")
+                                .iter()
+                                .any(|declared| declared.as_str() == Some(action))
+                        })
+            })
+            .count();
+        assert_eq!(admitted, 1, "missing or ambiguous descriptor for {path}");
         if !authorizes(&self.authority, action, &resource, PolicyDecision::Allow) {
             return response(403, PLANTED);
         }

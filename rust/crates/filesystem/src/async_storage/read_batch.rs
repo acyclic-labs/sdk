@@ -166,3 +166,9 @@ pub(crate) fn object_error(error: crate::FsError) -> crate::storage::ObjectStore
         error => O::Filesystem(Box::new(error)),
     }
 }
+
+impl From<crate::FsError> for crate::ObjectStoreError {
+    fn from(error: crate::FsError) -> Self {
+        object_error(error)
+    }
+}

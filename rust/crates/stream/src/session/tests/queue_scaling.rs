@@ -1,6 +1,5 @@
-//! Paired reproduction: one credited head behind thousands of stalled follows.
+//! Paired growth check: one credited head behind stalled follows.
 use super::*;
-use std::time::Instant;
 
 fn record(sequence: u64) -> Event {
     Event::Record(crate::Record {
@@ -59,10 +58,23 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
             pending_frames: count + 1,
             pending_bytes: crate::MAX_COMMAND_BYTES,
         };
+        // Reuse the original admitted credential; queue selection does not
+        // authenticate another account for every stalled channel.
         session.channels.clear();
         for index in 0..=count {
             let id = (index * 2 + 1) as u64;
-            let channel = properties::empty_session(true).channels.remove(&1).unwrap();
+            let binding = session
+                .authority
+                .bind(
+                    &session.slots,
+                    0,
+                    &crate::StreamPath::new("model").unwrap(),
+                    Default::default(),
+                    1,
+                )
+                .unwrap()
+                .0;
+            let channel = properties::empty_channel(true, binding);
             session.channels.insert(id, channel);
             session
                 .record(
@@ -80,9 +92,9 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
             .values()
             .flat_map(|c| c.pending.iter().map(|p| p.frame.wire().clone()))
             .collect();
-        let mut before_time = std::time::Duration::ZERO;
-        let mut after_time = std::time::Duration::ZERO;
-        for sequence in 0..64 {
+        // Exercise initial selection and selection after the same channel
+        // becomes ready again; repeated benchmark trials add no coverage.
+        for sequence in 0..2 {
             session.credit = wire::SessionWindow {
                 frames: 1,
                 bytes: crate::MAX_COMMAND_BYTES as u64,
@@ -98,20 +110,16 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                 .frame
                 .wire()
                 .clone();
-            let started = Instant::now();
             let (old, visits) = scanned_ready(&mut before, target, session.credit);
-            before_time += started.elapsed();
             assert_eq!(visits, count + 1);
             let head_visits = session.head_visits;
-            let started = Instant::now();
             session.refresh_source(target);
             let selected = session.ready().unwrap().unwrap().into_wire();
-            after_time += started.elapsed();
             assert_eq!(selected, old);
             before.push_back(old);
             assert_eq!(session.head_visits - head_visits, 1);
             assert_eq!(session.pending_frames, count);
-            if sequence != 63 {
+            if sequence == 0 {
                 session
                     .record(
                         wire::SessionChannel {
@@ -123,20 +131,24 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                     .unwrap();
             }
         }
-        eprintln!(
-            "stalled={count} trials=64 before={before_time:?} after={after_time:?} head_visits={}->1",
-            count + 1
-        );
     }
 }
 
 #[test]
 fn global_byte_credit_selects_fitting_heads_without_overtaking_a_channel() {
     let mut session = properties::empty_session(false);
-    let mut other = properties::empty_session(false)
-        .channels
-        .remove(&1)
-        .unwrap();
+    let binding = session
+        .authority
+        .bind(
+            &session.slots,
+            0,
+            &crate::StreamPath::new("model").unwrap(),
+            Default::default(),
+            1,
+        )
+        .unwrap()
+        .0;
+    let mut other = properties::empty_channel(false, binding);
     other.credit = wire::SessionWindow {
         bytes: 1_000_000,
         frames: 100,

@@ -1,0 +1,15 @@
+diff --git a/rust/crates/collections/src/lib.rs b/rust/crates/collections/src/lib.rs
+--- a/rust/crates/collections/src/lib.rs
++++ b/rust/crates/collections/src/lib.rs
+@@ -631,7 +631,10 @@
+         if ancestors != 0 {
+             charge(ancestors)?;
+         }
+-        Ok(Some(self.extract_at(parent, |bit| high(&key, bit), |_| {})))
++        let mut entries = self.extract_at(parent, |bit| high(&key, bit), |_| {}).into_index();
++        Ok(Some(entries
++            .extract_prefix(&[], |_| {})
++            .unwrap_or_else(|_| unreachable!("empty prefix fits every key"))))
+     }
+
+     /// Retires one exact owner, destroying its value before its original token.

@@ -109,14 +109,16 @@ impl Client {
     ) -> Result<crate::ChildrenPage, StreamError> {
         let reply = self
             .reply(
-                Kind::ChildrenPage(wire_codec::children_page_request_to_wire(request)),
+                Kind::ChildrenPage(wire_codec::children_page_request_to_wire(request.clone())),
                 credential,
                 wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
             )
             .await?;
-        wire_codec::children_page_from_response(
+        let page = wire_codec::children_page_from_response(
             wire::ChildrenPageResponse::decode(reply).map_err(|_| StreamError::InvalidResponse)?,
-        )
+        )?;
+        page.validate_for(&request)?;
+        Ok(page)
     }
 
     /// Observes named heads and children at one cut, on the shared credited session.

@@ -1,9 +1,7 @@
 /// One indefinitely retained snapshot entry.
 struct Retained {
     fact: RetainedFactRef,
-    replay_left: Option<usize>,
-    replay_right: Option<usize>,
-    replay_height: u8,
+    replay_branch: ReplayBranch,
     commit_branch: Option<CommitBranch>,
 }
 
@@ -26,7 +24,7 @@ struct RetainedFact {
 /// successor owner. Drop the weak reference before releasing its original
 /// allocation claim: a dead successor's Arc storage still belongs to the link.
 struct RetainedLink {
-    fact: retained_owner::RetainedFactWeak,
+    _fact: retained_owner::RetainedFactWeak,
     _allocation: Allocation,
 }
 

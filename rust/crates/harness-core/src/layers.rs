@@ -119,11 +119,21 @@ pub struct Layer<'a> {
 /// [`Rule::Compose`] folds them all.
 #[must_use]
 pub fn held<'a, 'b>(layers: &'b [Layer<'a>]) -> impl DoubleEndedIterator<Item = &'b Layer<'a>> {
+    held_indexed(layers).map(|(_, layer)| layer)
+}
+
+pub(crate) fn held_indexed<'a, 'b>(
+    layers: &'b [Layer<'a>],
+) -> impl DoubleEndedIterator<Item = (usize, &'b Layer<'a>)> {
     let above = layers
         .iter()
         .rposition(|layer| layer.bytes.is_some_and(is_off))
         .map_or(0, |off| off + 1);
-    layers[above..].iter().filter(|layer| layer.bytes.is_some())
+    layers
+        .iter()
+        .enumerate()
+        .skip(above)
+        .filter(|(_, layer)| layer.bytes.is_some())
 }
 
 #[cfg(test)]

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/objects/src/medium.rs b/rust/crates/objects/src/medium.rs
+--- a/rust/crates/objects/src/medium.rs
++++ b/rust/crates/objects/src/medium.rs
+@@ -24,7 +24,7 @@ pub enum MediumError {
+ /// A medium may borrow invocation-local state for the lifetime of its calls.
+ #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+ #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+-pub trait Medium: acyclic_stream::ProviderPlatform {
++pub trait Medium: acyclic_stream::ProviderPlatform + 'static {
+     /// Creates `key` with `bytes` unless it exists. `Ok(false)` leaves the existing
+     /// value untouched. A visible key always holds complete bytes.
+     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError>;

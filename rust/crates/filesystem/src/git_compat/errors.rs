@@ -3,6 +3,9 @@ use super::*;
 /// Git compatibility failure.
 #[derive(Debug, Error)]
 pub enum GitCompatError<E: std::error::Error + 'static> {
+    /// The record exhausted its unique write revisions; no replacement was published.
+    #[error("record revision is exhausted")]
+    RevisionExhausted,
     /// Durable adapter failed.
     #[error("Git compatibility store failed: {0}")]
     Store(E),

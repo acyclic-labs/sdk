@@ -186,7 +186,10 @@ async fn native_access_lazy_denied_mutations_do_not_promote_source()
         (&path, mounted(&["new"])),
         (&mounted(&["other"]), path.clone()),
     ] {
-        assert!(view.rename(source, &destination, false, &work).is_err());
+        assert!(
+            view.rename(source, &destination, false, &work, None)
+                .is_err()
+        );
     }
     assert!(
         view.authored.lookup(&path)?.is_none(),

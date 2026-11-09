@@ -49,6 +49,7 @@ for (const group of ["serial", "decoder", "frames"]) test(`${group} fuzz oracles
     ["frames.mjs", "failure.reason.startsWith(condition[failure.kind])", "true", "frames"],
     ["frames.mjs", 'visible.slice(visible.lastIndexOf("\\n") + 1)', 'visible.split("\\n")[0]', "frames"],
     ["frames.mjs", '.replace(/^✗ /, "")', "", "frames"],
+    ["frames.mjs", 'Filesystem query ended:', 'storage failure:', "frames"],
     ["frames.mjs", 'if (notice && failure.index >= status) continue;', "", "frames"],
     ["process-report.mjs", "this.#controlFailure ??= cause;", "void cause;", "report"],
     ["process-report.mjs", "    const request = this.#request;",

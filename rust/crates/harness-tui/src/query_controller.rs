@@ -47,6 +47,43 @@ impl<S> QueryController<S> {
         self.dirty |= self.source.as_ref().is_some_and(live);
     }
 
+    /// Scroll the admitted page even while its replacement is pending. Only a
+    /// second gesture at an existing boundary may select another source, and
+    /// only after the original read has settled. Returns whether it selected
+    /// a source; local scrolling never allocates or starts a read.
+    pub fn scroll<F>(
+        &mut self,
+        top: &mut usize,
+        rows: isize,
+        height: u16,
+        pending: Pin<&mut Option<F>>,
+        newest: impl FnOnce(&S) -> S,
+    ) -> bool {
+        if rows == 0 || height == 0 {
+            return false;
+        }
+        let Some(page) = self.page.as_mut() else {
+            return false;
+        };
+        if !page.page_boundary(top, rows, height) || pending.as_ref().get_ref().is_some() {
+            return false;
+        }
+        let next = if rows < 0 {
+            page.next.take()
+        } else if page.continued {
+            self.source.as_ref().map(newest)
+        } else {
+            None
+        };
+        if let Some(next) = next {
+            self.select(next, pending);
+            *top = 0;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Start only an unfilled or invalidated visible selection. Resize alone
     /// cannot restart a read or discard an admitted page. Zero credit waits
     /// for the caller's existing resize/input event.

@@ -23,7 +23,8 @@ impl LocalStream {
                         // as the store closes.
                         let handle = stream.handle.take();
                         let provider = stream.inner.provider.with_context(Arc::clone(&work));
-                        let result = async {
+                        let mut failed = stream.inner.failed.subscribe();
+                        let result = LocalInner::observe(&mut failed, async {
                             let _visibility = stream.inner.visibility.read().await;
                             stream.check_available()?;
                             let copied = work.record(request.try_clone_native(&work.meter))?;
@@ -66,6 +67,7 @@ impl LocalStream {
                                     &work.meter,
                                     std::mem::size_of_val(&worker),
                                 ))?;
+                            let mut failed = stream.inner.failed.subscribe();
                             let task = spawn(async move {
                                 let _allocation = allocation;
                                 worker.await
@@ -74,7 +76,10 @@ impl LocalStream {
                                 &work.meter,
                                 async move {
                                     let _handle = handle;
-                                    task.await.map_err(std::io::Error::other)?
+                                    match LocalInner::observe(&mut failed, task).await {
+                                        Ok(result) => result.map_err(std::io::Error::other)?,
+                                        Err(error) => Ok(Err(error)),
+                                    }
                                 },
                             ) {
                                 Ok(future) => future,
@@ -90,8 +95,9 @@ impl LocalStream {
                                 crate::PreparedNativeCommit::new(future, recovery, slot, maximum),
                                 None,
                             ))
-                        }
-                        .await;
+                        })
+                        .await
+                        .and_then(|result| result);
                         work.finish(result)
                     },
                     |result| crate::native::outcome(result, StreamError::code),
@@ -125,6 +131,7 @@ impl LocalStream {
         };
         *records.first_mut().ok_or(StreamError::InvalidArgument)? = body.clone();
         let publication = self.inner.publication.write().await;
+        self.check_available()?;
         let cursor = self
             .inner
             .journal
@@ -154,7 +161,7 @@ impl LocalStream {
             if replica.cursor == cursor && matches!(outcome, CommitOutcome::Committed(_)) {
                 self.require_accepted_with_reservation::<true>(true)?;
             }
-            Ok((outcome, execution.allocation))
+            Ok((outcome, execution._allocation))
         });
         let _retained = self.release_publication(publication);
         if result.is_ok() {

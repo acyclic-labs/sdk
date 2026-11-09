@@ -130,6 +130,22 @@ const BATCH_MAGIC: &[u8] = b"acyclic-retained-v1\0";
 const INCARNATION_MAGIC: &[u8] = b"acyclic-incarnation-v1\0";
 const EPOCH_MAGIC: &[u8] = b"acyclic-epoch-v1\0";
 
+/// Admission of the decoded vectors, before their allocator calls.
+pub(crate) trait DecodeAllocation {
+    fn admit(&self, bytes: usize) -> Result<(), Error>;
+    fn capacity(&self, admitted: usize, actual: usize) -> Result<(), Error>;
+}
+
+impl DecodeAllocation for () {
+    fn admit(&self, _bytes: usize) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn capacity(&self, _admitted: usize, _actual: usize) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
 impl Manifest {
     /// Total logical length of the parts.
     pub fn length(&self) -> Result<u64, Error> {
@@ -161,19 +177,24 @@ impl Manifest {
 
     /// Decodes exactly one canonical encoding.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        Self::decode_admitted(bytes, &())
+    }
+
+    pub(crate) fn decode_admitted(
+        bytes: &[u8],
+        allocation: &impl DecodeAllocation,
+    ) -> Result<Self, Error> {
         let mut reader = Reader(bytes);
         reader.header(MANIFEST_MAGIC)?;
-        let parts = (0..reader.u32()?)
-            .map(|_| {
-                Ok(Part {
-                    digest: reader.digest()?,
-                    length: reader.u64()?,
-                })
+        let count = reader.u32()? as usize;
+        let parts = reader.vector(count, 40, allocation, |reader| {
+            Ok(Part {
+                digest: reader.digest()?,
+                length: reader.u64()?,
             })
-            .collect::<Result<Vec<_>, Error>>()?;
-        let edges = (0..reader.u32()?)
-            .map(|_| reader.digest())
-            .collect::<Result<Vec<_>, Error>>()?;
+        })?;
+        let count = reader.u32()? as usize;
+        let edges = reader.vector(count, 32, allocation, |reader| reader.digest())?;
         reader.finish()?;
         Ok(Self { parts, edges })
     }
@@ -235,7 +256,15 @@ impl Envelope {
         bytes
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        Self::decode_admitted(bytes, &())
+    }
+
+    pub(crate) fn decode_admitted(
+        bytes: &[u8],
+        allocation: &impl DecodeAllocation,
+    ) -> Result<Self, Error> {
         let mut reader = Reader(bytes);
         reader.header(ENVELOPE_MAGIC)?;
         let kind = match reader.take(1)? {
@@ -245,9 +274,8 @@ impl Envelope {
         };
         let length = reader.u64()?;
         let stored = reader.u64()?;
-        let references = (0..reader.u32()?)
-            .map(|_| reader.digest())
-            .collect::<Result<Vec<_>, Error>>()?;
+        let count = reader.u32()? as usize;
+        let references = reader.vector(count, 32, allocation, |reader| reader.digest())?;
         let nonce = |reader: &mut Reader<'_>| -> Result<[u8; 16], Error> {
             reader.take(16)?.try_into().map_err(|_| corrupt())
         };
@@ -281,14 +309,23 @@ pub(crate) fn encode_batch(references: &[Digest]) -> Vec<u8> {
     bytes
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn decode_batch(bytes: &[u8]) -> Result<Vec<Digest>, Error> {
+    decode_batch_admitted(bytes, &())
+}
+
+pub(crate) fn decode_batch_admitted(
+    bytes: &[u8],
+    allocation: &impl DecodeAllocation,
+) -> Result<Vec<Digest>, Error> {
     let mut reader = Reader(bytes);
     reader.header(BATCH_MAGIC)?;
-    let bytes = reader.0;
-    if bytes.len() % 32 != 0 {
+    if reader.0.len() % 32 != 0 {
         return Err(corrupt());
     }
-    bytes.chunks_exact(32).map(Digest::from_slice).collect()
+    reader.vector(reader.0.len() / 32, 32, allocation, |reader| {
+        reader.digest()
+    })
 }
 
 pub(crate) fn encode_incarnation(incarnation: u128, run: u64) -> Vec<u8> {
@@ -326,6 +363,34 @@ pub(crate) fn decode_epoch(bytes: &[u8]) -> Result<u64, Error> {
 struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
+    fn vector<T>(
+        &mut self,
+        count: usize,
+        width: usize,
+        allocation: &impl DecodeAllocation,
+        mut decode: impl FnMut(&mut Reader<'_>) -> Result<T, Error>,
+    ) -> Result<Vec<T>, Error> {
+        // Validate the complete fixed-width body before admitting an allocation.
+        let bytes = self.take(count.checked_mul(width).ok_or_else(corrupt)?)?;
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let admitted = count
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(corrupt)?;
+        allocation.admit(admitted)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
+        allocation.capacity(admitted, values.capacity() * std::mem::size_of::<T>())?;
+        let mut reader = Reader(bytes);
+        for _ in 0..count {
+            values.push(decode(&mut reader)?);
+        }
+        Ok(values)
+    }
+
     // Domain first, then version, before any counts, allocations or body fields.
     fn header(&mut self, expected: &[u8]) -> Result<(), Error> {
         let domain_length = expected.len() - 2;

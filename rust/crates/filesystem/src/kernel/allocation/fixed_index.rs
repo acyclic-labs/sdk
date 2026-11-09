@@ -104,6 +104,14 @@ impl<V, const N: usize> FixedIndex<V, N> {
     pub(crate) fn retire_if(&mut self, key: [u8; N], matches: impl FnOnce(&V) -> bool) -> bool {
         self.0.retire_if(key, matches)
     }
+
+    pub(crate) fn extract_if(
+        &mut self,
+        key: [u8; N],
+        matches: impl FnOnce(&V) -> bool,
+    ) -> Option<acyclic_collections::ExtractedPrefix<V, RetainedAllocation, N>> {
+        self.0.extract_if(key, matches)
+    }
 }
 
 #[cfg(test)]

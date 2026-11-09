@@ -158,8 +158,11 @@ impl LocalWorkspace {
                 view.workspace(),
                 origin.snapshot.authored_generation,
                 original,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
             )
             .await
+            .map_err(|failure| failure.error)
             .map_err(storage)?;
         Ok(view)
     }

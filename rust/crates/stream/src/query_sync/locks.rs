@@ -248,6 +248,7 @@ pub struct RwLock<T> {
 }
 
 impl<T> RwLock<T> {
+    #[cfg(test)]
     pub(crate) fn stalled_reader_control(value: T) -> Self {
         Self {
             data: tokio::sync::RwLock::new(value),

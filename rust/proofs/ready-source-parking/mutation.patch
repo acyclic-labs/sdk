@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/runtime/sources.rs b/rust/crates/stream/src/runtime/sources.rs
+--- a/rust/crates/stream/src/runtime/sources.rs
++++ b/rust/crates/stream/src/runtime/sources.rs
+@@ -333,7 +333,7 @@
+         // A provider can publish while being polled, including through an old
+         // cancelled callback. Consume one hint and retain the parent under the
+         // same signal lock, without draining the other sources' publications.
+-        let (identity, buffered) = self.signal.take_and_listen(cx)?;
++        let (identity, buffered) = (self.signal.try_next()?, false);
+         if let Some(identity) = identity {
+             self.wake(identity);
+         }
