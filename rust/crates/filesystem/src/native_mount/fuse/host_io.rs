@@ -8,6 +8,51 @@ use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::AsFd;
 use std::sync::Arc;
 
+/// One kernel FUSE connection, named as fusectl names it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Connection(u64);
+
+impl Connection {
+    /// Reads the mount's device from cached attributes only: no reader runs
+    /// yet, so a synchronous getattr would wait on this very connection.
+    pub(super) fn of(mountpoint: &std::path::Path) -> io::Result<Self> {
+        let metadata = rustix::fs::statx(
+            rustix::fs::CWD,
+            mountpoint,
+            rustix::fs::AtFlags::STATX_DONT_SYNC,
+            rustix::fs::StatxFlags::empty(),
+        )?;
+        // The kernel's dev_t encoding, which fusectl prints.
+        Ok(Self(
+            (u64::from(metadata.stx_dev_major) << 20) | u64::from(metadata.stx_dev_minor),
+        ))
+    }
+
+    /// Fails every pending and later request on the connection. Calls into a
+    /// connection that nothing reads would otherwise wait forever, because
+    /// any retained device descriptor keeps the kernel from aborting it.
+    pub(super) fn abort(self) -> io::Result<()> {
+        const CONNECTIONS: &str = "/sys/fs/fuse/connections";
+        const FUSECTL_SUPER_MAGIC: i64 = 0x6573_5543;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .open(format!("{CONNECTIONS}/{}/abort", self.0))
+        {
+            Ok(mut control) => control.write_all(b"1"),
+            // On a mounted fusectl, an absent entry is a connection the
+            // kernel already destroyed with its mount.
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && rustix::fs::statfs(CONNECTIONS)
+                        .is_ok_and(|fs| i64::from(fs.f_type) == FUSECTL_SUPER_MAGIC) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
 pub(super) struct HostIo {
     pub(super) device: Arc<File>,
     wake: ProcessWake,

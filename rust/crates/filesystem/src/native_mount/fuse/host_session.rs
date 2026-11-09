@@ -1,6 +1,6 @@
 //! Physical host session over the common packet entry.
 
-use super::host_io::{HostIo, Received};
+use super::host_io::{Connection, HostIo, Received};
 use super::notification::{CacheNotifier, PacketSink};
 use super::packet::PacketRequest;
 use super::packet_buffers::{PacketBufferPool, PacketBuffers, maximum_write};
@@ -16,6 +16,10 @@ pub(super) struct HostSession {
     // through every worker's exit, then recover the typed cause from work.
     _cancellation: crate::Cancelled<'static>,
     io: Arc<HostIo>,
+    // Readers live only inside this session. Its drop aborts the connection,
+    // so no call can wait on a connection that nothing reads, whoever still
+    // holds the device.
+    connection: Option<Connection>,
     work: NativeMaterializationWork,
     owner_uid: u32,
     buffers: PacketBufferPool,
@@ -27,6 +31,7 @@ impl HostSession {
     pub(super) fn new(
         router: PacketRouter,
         device: Arc<std::fs::File>,
+        connection: Option<Connection>,
         work: &NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
         let workers =
@@ -43,6 +48,7 @@ impl HostSession {
             protocol: PacketSession::new(router, maximum_write, page_size)?,
             _cancellation: cancellation,
             io,
+            connection,
             work: work.clone(),
             owner_uid: nix::unistd::geteuid().as_raw(),
             buffers,
@@ -144,6 +150,12 @@ impl Drop for HostSession {
     fn drop(&mut self) {
         self.io.stop();
         self.protocol.close();
+        // Every reader has exited: `run` joins them before the session drops.
+        if let Some(connection) = self.connection
+            && let Err(error) = connection.abort()
+        {
+            tracing::error!(%error, "aborting an unserved FUSE connection failed");
+        }
     }
 }
 
