@@ -52,3 +52,6 @@ pub(crate) use revision::{revision_from, selection_for_follow};
 pub(crate) mod status;
 #[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) use status::{error_status, status};
+
+#[cfg(all(feature = "grpc", feature = "test-support"))]
+pub mod status_contract;

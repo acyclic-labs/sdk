@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::NativeStreamProviderExt as _;
 use futures::FutureExt as _;
 use std::{
     sync::atomic::{AtomicBool, Ordering},
@@ -134,7 +135,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                 ),
                 Box::pin(
                     stream
-                        .native_commit_guarded(request.clone(), None, meter.original(), || {
+                        .native_commit_with_guard(request.clone(), None, meter.original(), || {
                             std::future::ready(Ok::<_, StreamError>(()))
                         })
                         .map(observed),

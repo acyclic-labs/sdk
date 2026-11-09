@@ -27,7 +27,7 @@ use crate::{
     IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
 };
 #[cfg(test)]
-use crate::{AppendRequest, CommitOutcome, CommitRequest, ForkReceipt};
+use crate::{AppendRequest, CommitOutcome, CommitRequest};
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
 mod client;
@@ -36,7 +36,7 @@ mod credential_tests;
 #[cfg(test)]
 mod latency_tests;
 #[cfg(test)]
-use crate::{AppendRequest, CommitOutcome, CommitRequest, StreamPath};
+use crate::StreamPath;
 #[cfg(test)]
 mod receipt_tests;
 mod server;
