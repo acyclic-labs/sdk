@@ -165,7 +165,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     lookup = retried;
                 }
             }
-            lookup.0.work = accounting.spent();
             Ok::<_, FsError>(lookup)
         }
         .await;

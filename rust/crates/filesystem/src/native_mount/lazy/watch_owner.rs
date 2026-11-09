@@ -6,7 +6,7 @@ pub struct NativeMountSourceWatchOwner {
     pub(super) sink: Option<Arc<dyn SourceChangeSink>>,
     pub(super) startup_failure: Option<Arc<crate::source_watch::SourceWatchStartupFailure>>,
     pub(super) bytes: u64,
-    pub(super) custody: Option<std::sync::Arc<crate::native_mount::NativeMountAllocationCustody>>,
+    pub(super) custody: Option<crate::native_mount::NativeMountAllocationCustody>,
 }
 
 impl NativeMountSourceWatchOwner {

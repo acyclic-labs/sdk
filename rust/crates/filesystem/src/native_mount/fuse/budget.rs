@@ -5,7 +5,7 @@ use crate::{NativeMaterializationWork, WorkCounters, WorkError};
 
 pub(super) struct FuseOwned<T> {
     value: T,
-    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
+    custody: Option<NativeMountAllocationCustody>,
 }
 
 impl<T> FuseOwned<T> {

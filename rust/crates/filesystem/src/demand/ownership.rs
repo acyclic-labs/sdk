@@ -1,8 +1,8 @@
 #[cfg(feature = "native-watch")]
 use super::*;
 use crate::NativeMaterializationWork;
+use crate::sync::Arc;
 use crate::sync::atomic::{self as custody_atomics, AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
 #[path = "ownership_accounting.rs"]
 pub(super) mod accounting;
 
@@ -10,6 +10,10 @@ pub(super) mod accounting;
 #[cfg(loom)]
 #[path = "ownership_loom_tests.rs"]
 mod loom_tests;
+
+#[cfg(all(test, feature = "native-watch", not(loom)))]
+#[path = "ownership_backing_tests.rs"]
+mod backing_tests;
 
 #[cfg(feature = "native-watch")]
 #[derive(Debug, Default)]
@@ -19,7 +23,7 @@ pub(crate) enum SourcePayloadOwnership {
     Allocation {
         _allocation: crate::NativeAllocation,
     },
-    Registered(Arc<NativeMountAllocationCustody>, AtomicU64),
+    Registered(NativeMountAllocationCustody, AtomicU64),
 }
 #[cfg(feature = "native-watch")]
 impl SourcePayloadOwnership {
@@ -43,7 +47,7 @@ impl SourcePayloadOwnership {
         match self {
             Self::Borrowed => None,
             Self::Allocation { _allocation } => Some(_allocation.work()),
-            Self::Registered(custody, _) => custody.original.as_ref(),
+            Self::Registered(custody, _) => custody.0.original.as_ref(),
         }
     }
     pub(crate) fn retain<W: SourceDemandReadWork>(
@@ -84,6 +88,7 @@ impl SourcePayloadOwnership {
             Self::Registered(custody, retained) => {
                 work.admit(delta)?;
                 let original = custody
+                    .0
                     .original
                     .as_ref()
                     .ok_or(DemandError::InvalidRequest)?;
@@ -188,32 +193,73 @@ impl Drop for SourcePayloadOwnership {
 pub(super) const GAUGE_ALLOCATION_BYTES: u64 =
     std::mem::size_of::<([usize; 2], AtomicU64)>() as u64;
 
-/// Physical bytes retained by one native allocation owner.
+pub(super) const DIRTY_ALLOCATION_BYTES: u64 =
+    match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<AtomicBool>()) {
+        Ok(bytes) => bytes as u64,
+        Err(_) => panic!("mount dirty flag Arc layout overflow"),
+    };
+
+#[cfg(feature = "native-watch")]
+fn dirty_claimed_bytes() -> u64 {
+    #[cfg(all(test, not(loom)))]
+    if backing_tests::DIRTY_PAYLOAD_ONLY.get() {
+        return std::mem::size_of::<AtomicBool>() as u64;
+    }
+    DIRTY_ALLOCATION_BYTES
+}
+
+/// Keeps native allocation backing and its original accounting alive.
+#[derive(Clone, Debug)]
+#[repr(transparent)]
+pub struct NativeMountAllocationCustody(Arc<MountAllocationCustody>);
+
 #[derive(Debug)]
-pub struct NativeMountAllocationCustody {
+struct MountAllocationCustody {
     bytes: Option<Arc<AtomicU64>>,
     accounting_dirty: Arc<AtomicBool>,
     original: Option<NativeMaterializationWork>,
 }
 impl NativeMountAllocationCustody {
+    pub(crate) const ALLOCATION_BYTES: u64 = match crate::arc_layout::allocation_bytes(
+        std::alloc::Layout::new::<MountAllocationCustody>(),
+    ) {
+        Ok(bytes) => bytes as u64,
+        Err(_) => panic!("native mount custody Arc layout overflow"),
+    };
+
+    #[cfg(feature = "native-watch")]
+    fn claimed_bytes() -> u64 {
+        #[cfg(all(test, not(loom)))]
+        if backing_tests::PAYLOAD_ONLY.get() {
+            return std::mem::size_of::<MountAllocationCustody>() as u64;
+        }
+        Self::ALLOCATION_BYTES
+    }
+
+    pub(crate) fn same_backing(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub(super) fn retained_bytes(&self) -> u64 {
-        self.bytes
+        self.0
+            .bytes
             .as_ref()
             .map_or(0, |bytes| bytes.load(Ordering::Acquire))
     }
     #[cfg(any(test, feature = "native-watch"))]
     pub(super) fn accounts_for(&self, gauge: &Arc<AtomicU64>) -> bool {
-        self.bytes
+        self.0
+            .bytes
             .as_ref()
             .is_some_and(|bytes| Arc::ptr_eq(gauge, bytes))
     }
     #[cfg(feature = "native-watch")]
-    pub(crate) fn new<W: SourceDemandReadWork>(work: &mut W) -> Result<Arc<Self>, DemandError> {
+    pub(crate) fn new<W: SourceDemandReadWork>(work: &mut W) -> Result<Self, DemandError> {
         work.check()?;
         let original = work.native_source_work().map(|work| work.allocation_work());
         work.with_original_leaf(|work| {
             // Reject an unavailable owner footprint before allocating its gauge.
-            work.admit_allocation(std::mem::size_of::<Self>() as u64, 1)?;
+            work.admit_allocation(Self::claimed_bytes(), 1)?;
             // Like registry capacity and its dirty flag, this gauge is original
             // ledger metadata. It holds no invocation, resource or callbacks.
             let counter_bytes = GAUGE_ALLOCATION_BYTES;
@@ -246,17 +292,12 @@ impl NativeMountAllocationCustody {
                 |work| &mut work.roots.native_mount_admission_pending,
                 true,
                 |work| {
-                    let metadata = std::mem::size_of::<Self>() as u64;
+                    let metadata = Self::claimed_bytes();
                     let accounting_dirty = if let Some(dirty) = &work.roots.native_mount_dirty {
                         dirty.clone()
                     } else {
                         work.allocations
-                            .claim_bytes(
-                                std::mem::size_of::<AtomicBool>() as u64,
-                                1,
-                                &mut work.work,
-                                work.budget,
-                            )
+                            .claim_bytes(dirty_claimed_bytes(), 1, &mut work.work, work.budget)
                             .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
                         let dirty = Arc::new(AtomicBool::new(true));
                         work.roots.native_mount_dirty = Some(dirty.clone());
@@ -264,11 +305,11 @@ impl NativeMountAllocationCustody {
                     };
                     work.claim_allocation(metadata, 1, WorkCounters::UNCHARGED)?;
                     bytes.store(metadata, Ordering::Release);
-                    let custody = Arc::new(Self {
+                    let custody = Self(Arc::new(MountAllocationCustody {
                         bytes: Some(bytes),
                         accounting_dirty,
                         original,
-                    });
+                    }));
                     let slot = work
                         .roots
                         .native_mount_admissions
@@ -307,6 +348,7 @@ impl NativeMountAllocationCustody {
     #[cfg(feature = "native-watch")]
     pub(crate) fn retain(&self, bytes: u64, work: &mut DemandWork) -> Result<(), crate::WorkError> {
         let capture = self
+            .0
             .original
             .as_ref()
             .and_then(|work| work.capture_origin.as_ref())
@@ -337,7 +379,8 @@ impl NativeMountAllocationCustody {
         if let Some(capture) = capture {
             capture.transfer_retained_bytes(bytes)?;
         }
-        self.bytes
+        self.0
+            .bytes
             .as_ref()
             .ok_or(crate::WorkError::Overflow)?
             .fetch_add(bytes, Ordering::AcqRel);
@@ -347,22 +390,29 @@ impl NativeMountAllocationCustody {
     #[cfg(feature = "native-watch")]
     pub(crate) fn retire(&self, bytes: u64) -> Result<(), crate::WorkError> {
         accounting::retire_bytes::<true>(
-            &self.accounting_dirty,
-            self.bytes.as_ref().ok_or(crate::WorkError::Overflow)?,
+            &self.0.accounting_dirty,
+            self.0.bytes.as_ref().ok_or(crate::WorkError::Overflow)?,
             bytes,
-            std::mem::size_of::<Self>() as u64,
+            Self::ALLOCATION_BYTES,
         )?;
-        self.retire_resource(bytes)
+        self.0.retire_resource(bytes)
     }
     #[cfg(feature = "native-watch")]
     pub(crate) fn retire_deferred(&self, bytes: u64) {
         if let Err(error) = self.retire(bytes)
-            && let Some(original) = &self.original
+            && let Some(original) = &self.0.original
         {
             original.with_original_leaf(|work| {
                 work.record_native_io_failure(error.into());
             });
         }
+    }
+}
+impl MountAllocationCustody {
+    fn retained_bytes(&self) -> u64 {
+        self.bytes
+            .as_ref()
+            .map_or(0, |bytes| bytes.load(Ordering::Acquire))
     }
     fn retire_resource(&self, bytes: u64) -> Result<(), crate::WorkError> {
         if let Some(original) = &self.original
@@ -377,12 +427,14 @@ impl NativeMountAllocationCustody {
         Ok(())
     }
 }
-impl Drop for NativeMountAllocationCustody {
+impl Drop for MountAllocationCustody {
     fn drop(&mut self) {
         let _ = self.retire_resource(self.retained_bytes());
         // Release the custody's gauge reference before publishing cleanup. A
         // reconciler can now observe uniqueness without owning this destructor.
         accounting::retire(&self.accounting_dirty, || drop(self.bytes.take()));
+        #[cfg(all(test, loom, feature = "native-watch"))]
+        loom_tests::check_publisher_cut(self.original.as_ref());
     }
 }
 

@@ -5,6 +5,7 @@ use crate::cancellation::{CancellationWaitError, Cancelled};
 #[cfg(any(test, feature = "native-watch"))]
 use crate::kernel::allocation::AllocationLedger;
 use crate::kernel::{ProofDataCustody, allocation::LogicalVecCapacity};
+use crate::sync::Arc as MountArc;
 use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
 use std::sync::Arc;
 
@@ -50,15 +51,15 @@ pub(crate) struct Admissions {
     allocation_accounting: Option<Arc<NativeAllocationAccounting>>,
     paid_non_native: u64,
     pub(super) native_mount_admission_pending: bool,
-    pub(super) native_mount_dirty: Option<Arc<AtomicBool>>,
-    pub(super) native_mount_admissions: (Vec<(Arc<AtomicU64>, u64)>, LogicalVecCapacity),
+    pub(super) native_mount_dirty: Option<MountArc<AtomicBool>>,
+    pub(super) native_mount_admissions: (Vec<(MountArc<AtomicU64>, u64)>, LogicalVecCapacity),
     #[cfg(feature = "native-mount")]
     pub(crate) view_gates: crate::native_mount::ViewGateReadAdmissions,
 }
-fn mount_bytes(entry: &(Arc<AtomicU64>, u64)) -> u64 {
+fn mount_bytes(entry: &(MountArc<AtomicU64>, u64)) -> u64 {
     // The registry retains only this inert gauge. Upgrading custody here could
     // drop its last owner under the leaf and re-enter it through metadata Drop.
-    mount_accounting::retained(Arc::strong_count(&entry.0), &entry.0)
+    mount_accounting::retained(MountArc::strong_count(&entry.0), &entry.0)
 }
 impl Admissions {
     pub(super) fn live_bytes(&self, live: u64) -> u64 {
@@ -183,7 +184,7 @@ impl DemandWork {
         let Some((empty, retired_mount)) = mount_accounting::reconcile(
             dirty,
             &mut self.roots.native_mount_admissions.0,
-            |gauge| mount_accounting::retained(Arc::strong_count(gauge), gauge),
+            |gauge| mount_accounting::retained(MountArc::strong_count(gauge), gauge),
             |paid, actual| {
                 if actual < paid {
                     self.allocations
@@ -208,15 +209,20 @@ impl DemandWork {
         if retired_mount {
             self.prune_native_mount_admissions()?;
         }
+        let Some(dirty) = self.roots.native_mount_dirty.as_ref() else {
+            return Ok(());
+        };
         if empty && self.roots.native_mount_admission_pending {
             if let Some(dirty) = &self.roots.native_mount_dirty {
                 mount_accounting::publish(dirty);
             }
-        } else if empty {
+        } else if empty && mount_accounting::final_dirty_owner(MountArc::strong_count(dirty)) {
             drop(self.roots.native_mount_dirty.take());
             self.allocations
-                .release(std::mem::size_of::<AtomicBool>() as u64)
+                .release(super::ownership::DIRTY_ALLOCATION_BYTES)
                 .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
+        } else if empty {
+            mount_accounting::publish(dirty);
         }
         Ok(())
     }
@@ -234,7 +240,7 @@ impl DemandWork {
         let live = owners.iter().filter(|entry| entry.1 != 0).count();
         let moved = owners[..live].iter().filter(|entry| entry.1 == 0).count();
         let copied = WorkCounters {
-            bytes_copied: (moved * std::mem::size_of::<(Arc<AtomicU64>, u64)>()) as u64,
+            bytes_copied: (moved * std::mem::size_of::<(MountArc<AtomicU64>, u64)>()) as u64,
             ..WorkCounters::UNCHARGED
         };
         // Retirement is unconditional. Moving survivors requires the current

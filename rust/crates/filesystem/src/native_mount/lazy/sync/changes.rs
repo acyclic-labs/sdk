@@ -25,6 +25,10 @@ where
         );
         let published = self.publish_checkout(publication, context).await?;
         self.prune_detached()?;
+        if let Some(operation) = published.operation() {
+            self.retire_settled_publication(operation, published.generation(), accounting)
+                .await?;
+        }
         Ok(published)
     }
     pub(super) async fn complete_publication<F, Fut, E>(
@@ -48,11 +52,14 @@ where
             operation,
             published.generation(),
             selected_proof,
+            published.context,
             accounting,
         )
         .await?;
         self.finish_detached_publication(publication.work)?;
         self.clear_mount_removals()?;
+        self.retire_settled_publication(operation, published.generation(), accounting)
+            .await?;
         Ok(published)
     }
 
@@ -92,6 +99,36 @@ where
         proof: Option<SelectedImportProof>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<NativeSnapshotContext, MountSourceError> {
+        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
+        else {
+            return Err(MountSourceError::OriginalSnapshotUnavailable);
+        };
+        let (work, cancellation) = (*work, *cancellation);
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
+        let retained = adapter::await_with_cancellation(
+            self.authored.shared_checkout().lock(),
+            &mut carrier,
+            cancellation,
+            Some(self.authored.cancellation()),
+        )
+        .await?
+        .retained_publication_context(operation)?;
+        if let Some(context) = retained {
+            let settled = self
+                .lazy
+                .publication_companion_settled(operation, context, committed, accounting)
+                .await
+                .map_err(lazy_error)?;
+            match (context, proof) {
+                (NativeSnapshotContext::Lazy(_), None) => {}
+                (NativeSnapshotContext::Selected { input, .. }, Some(proof))
+                    if input == proof.input => {}
+                (NativeSnapshotContext::Selected { .. }, None)
+                    if settled && committed.is_some() => {}
+                _ => return Err(MountSourceError::Stale),
+            }
+            return Ok(context);
+        }
         if let (Some(generation), Some(SelectedImportProof { input, .. })) = (committed, proof) {
             let (snapshot, original_input) = self
                 .lazy
@@ -132,8 +169,15 @@ where
         operation: crate::OperationId,
         generation: crate::GenerationId,
         proof: Option<SelectedImportProof>,
+        context: NativeSnapshotContext,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<(), MountSourceError> {
+        // A retry may find the companion CAS completed before cancellation,
+        // while the exact original operation/evidence still awaits retirement.
+        self.lazy
+            .publication_companion_settled(operation, context, Some(generation), accounting)
+            .await
+            .map_err(lazy_error)?;
         if let Some(SelectedImportProof {
             destination,
             source,
@@ -153,14 +197,65 @@ where
                 )
                 .await
                 .map_err(lazy_error)?;
-        } else if !self
+        } else {
+            self.lazy
+                .finish_mount_removals(accounting)
+                .await
+                .map_err(lazy_error)?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::native_mount::lazy) async fn retire_settled_publication(
+        &self,
+        operation: crate::OperationId,
+        generation: crate::GenerationId,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), MountSourceError> {
+        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
+        else {
+            return Err(MountSourceError::OriginalSnapshotUnavailable);
+        };
+        let (work, cancellation) = (*work, *cancellation);
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
+        let context = {
+            let checkout = adapter::await_with_cancellation(
+                self.authored.shared_checkout().lock(),
+                &mut carrier,
+                cancellation,
+                Some(self.authored.cancellation()),
+            )
+            .await?;
+            let context = checkout.retained_publication_context(operation)?;
+            if context.is_none() && checkout.has_retained_operation() {
+                return Err(MountSourceError::OriginalSnapshotUnavailable);
+            }
+            context
+        };
+        let Some(context) = context else {
+            return Ok(());
+        };
+        if !self
             .lazy
-            .finish_mount_removals(accounting)
+            .publication_companion_settled(operation, context, Some(generation), accounting)
             .await
             .map_err(lazy_error)?
         {
             return Err(MountSourceError::Stale);
         }
+        let mut checkout = adapter::await_with_cancellation(
+            self.authored.shared_checkout().lock(),
+            &mut carrier,
+            cancellation,
+            Some(self.authored.cancellation()),
+        )
+        .await?;
+        if checkout.generation_id() != generation
+            || checkout.retained_publication_context(operation)? != Some(context)
+        {
+            return Err(MountSourceError::Stale);
+        }
+        checkout.clear_retained_operation(operation);
         Ok(())
     }
     pub(super) async fn publication_changes(

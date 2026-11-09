@@ -42,6 +42,7 @@ mod actions;
 mod adapter;
 #[cfg(windows)]
 mod cached_binding;
+pub(crate) use adapter::SharedCheckoutObservation;
 pub use adapter::{
     CheckoutMountSource, NativeSourceIoLease, SharedCheckout, SharedCheckoutGuard,
     SharedCheckoutState, initialize_native_mount_services,

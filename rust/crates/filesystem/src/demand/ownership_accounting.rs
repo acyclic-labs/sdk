@@ -8,6 +8,18 @@ pub(crate) fn retained(owners: usize, bytes: &AtomicU64) -> u64 {
         bytes.load(Ordering::Acquire)
     }
 }
+pub(crate) fn final_dirty_owner(owners: usize) -> bool {
+    #[cfg(all(test, loom))]
+    if super::loom_tests::RETIRE_DIRTY_EARLY.with(std::cell::Cell::get) {
+        return true;
+    }
+    if owners != 1 {
+        return false;
+    }
+    // Join the final publisher's Arc release before retiring flag backing.
+    fence(Ordering::Acquire);
+    true
+}
 pub(crate) fn publish(dirty: &AtomicBool) {
     // Every publisher must join the release sequence, even when already dirty;
     // a plain store could hide an earlier owner's retirement from the reader.

@@ -1,5 +1,66 @@
 use super::accounting;
 use crate::sync::atomic as custody_atomics;
+use std::cell::Cell;
+
+loom::thread_local! {
+    pub(super) static RETIRE_DIRTY_EARLY: Cell<bool> = Cell::new(false);
+    static CHECK_PUBLISHER: Cell<bool> = Cell::new(false);
+    static PUBLISHER_FUNDED: Cell<bool> = Cell::new(true);
+}
+
+#[cfg(feature = "native-watch")]
+pub(super) fn check_publisher_cut(original: Option<&crate::NativeMaterializationWork>) {
+    if CHECK_PUBLISHER.with(Cell::get) {
+        let original = original.unwrap();
+        PUBLISHER_FUNDED.with(|flag| {
+            flag.set(
+                original.live_allocation_bytes()
+                    >= crate::NativeMaterializationWork::accounting_state_bytes()
+                        + super::DIRTY_ALLOCATION_BYTES,
+            )
+        });
+    }
+}
+
+#[cfg(feature = "native-watch")]
+fn dirty_backing_lifetime(retire_early: bool) {
+    crate::initialize_test_native_io();
+    loom::model(move || {
+        let mut original = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .unwrap();
+        let baseline = original.live_allocation_bytes();
+        let custody = super::NativeMountAllocationCustody::new(&mut original).unwrap();
+        let publisher = loom::thread::spawn(move || {
+            CHECK_PUBLISHER.with(|flag| flag.set(true));
+            drop(custody);
+            CHECK_PUBLISHER.with(|flag| flag.set(false));
+            PUBLISHER_FUNDED.with(Cell::get)
+        });
+        RETIRE_DIRTY_EARLY.with(|flag| flag.set(retire_early));
+        original.charge(crate::WorkCounters::UNCHARGED).unwrap();
+        RETIRE_DIRTY_EARLY.with(|flag| flag.set(false));
+        let funded = publisher.join().unwrap();
+        original.charge(crate::WorkCounters::UNCHARGED).unwrap();
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert!(funded, "dirty flag backing retired before publisher");
+    });
+}
+
+#[cfg(feature = "native-watch")]
+#[test]
+fn dirty_flag_backing_survives_every_live_publisher() {
+    dirty_backing_lifetime(false);
+}
+
+#[cfg(feature = "native-watch")]
+#[test]
+#[should_panic(expected = "dirty flag backing retired before publisher")]
+fn retiring_dirty_flag_at_gauge_release_loses_backing() {
+    dirty_backing_lifetime(true);
+}
 
 fn gauge_publication(publish_before_release: bool, final_owner: bool) {
     use custody_atomics::{AtomicBool, AtomicU64, AtomicUsize, Ordering};

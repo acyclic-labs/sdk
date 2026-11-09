@@ -32,7 +32,7 @@ impl<'a> NativeDemandCarrier<'a> {
 
     pub(super) fn new_custody(
         &mut self,
-    ) -> Result<std::sync::Arc<super::NativeMountAllocationCustody>, MountSourceError> {
+    ) -> Result<super::NativeMountAllocationCustody, MountSourceError> {
         match self.original_native_work().cloned() {
             Some(mut work) => super::NativeMountAllocationCustody::new(&mut work),
             None => self.with_work(super::NativeMountAllocationCustody::new),

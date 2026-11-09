@@ -118,7 +118,7 @@ pub trait ViewObserver: Send + Sync {
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
 
     /// Known native allocation ownership for an SDK observer.
-    fn allocation_custody(&self) -> Option<Arc<NativeMountAllocationCustody>> {
+    fn allocation_custody(&self) -> Option<NativeMountAllocationCustody> {
         None
     }
 
@@ -190,7 +190,7 @@ pub(crate) struct ViewLedger {
     directories: RwLock<ChangePositions>,
     nodes: RwLock<ChangePositions>,
     observers: RankedMutex<Option<Arc<ObserverEntries>>, OBSERVERS>,
-    _custody: Option<Arc<NativeMountAllocationCustody>>,
+    _custody: Option<NativeMountAllocationCustody>,
 }
 
 impl ViewLedger {

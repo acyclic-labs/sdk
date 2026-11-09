@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 mod operation_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod policy_tests;
+#[cfg(not(target_arch = "wasm32"))]
+mod reservation_tests;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 
@@ -628,7 +630,7 @@ async fn replay_rejects_a_record_with_a_different_stream_sequence() -> TestResul
         )
         .await?;
     let mut spy = ReleaseSpy::new(stream);
-    spy.corrupt_observation = 11;
+    spy.corrupt_read_sequence = true;
     let result = StreamAuthorityStore::new(Arc::new(spy))
         .replay(
             reservation.authority_id,
@@ -812,7 +814,16 @@ async fn reservations_exclude_writers_and_recover_the_original_head() -> TestRes
     stream
         .commit(gate_commit(
             next,
-            [PUBLICATION_GATE_ACTIVE, &op.into_bytes()].concat().into(),
+            [
+                PUBLICATION_GATE_ACTIVE,
+                &op.into_bytes(),
+                &next.expected.epoch.get().to_le_bytes(),
+                &next.expected.sequence.get().to_le_bytes(),
+                next.expected.digest.as_bytes(),
+                &1_u64.to_le_bytes(),
+            ]
+            .concat()
+            .into(),
             stream_key(b"advance", &id.into_bytes())?,
         )?)
         .await?;
@@ -865,7 +876,7 @@ async fn release_lost_ack_retains_its_original_decision_and_rejects_forged_envel
             .await?,
         ReservationOutcome::Reserved(_)
     ));
-    for corrupt in 0..=10 {
+    for corrupt in (0..=11).chain([13]) {
         let mut spy = ReleaseSpy::new(stream.clone());
         spy.corrupt_observation = corrupt;
         let spy = Arc::new(spy);
@@ -941,6 +952,7 @@ pub(super) struct ReleaseSpy {
     cancel_inspect: Option<CancellationToken>,
     lose_ack: bool,
     corrupt_observation: u8,
+    corrupt_read_sequence: bool,
     before_commit: Vec<crate::GuardedAppend>,
     before_gate_release: Option<PublicationReservation>,
     before_lease_close: Option<StreamPath>,
@@ -962,6 +974,7 @@ impl ReleaseSpy {
             cancel_inspect: None,
             lose_ack: false,
             corrupt_observation: 0,
+            corrupt_read_sequence: false,
             before_commit: Vec::new(),
             before_gate_release: None,
             before_lease_close: None,
@@ -1091,6 +1104,14 @@ impl StreamProvider for ReleaseSpy {
                         }
                         9 => append.records.push(append.records[0].clone()),
                         10 => observation.request_digest = [0; 32],
+                        11 => {
+                            append.records[0].headers = acyclic_stream::RecordHeaders::new(
+                                vec![acyclic_stream::OwnedBytes::from_static(b"forged-key")],
+                                vec![],
+                            )?;
+                        }
+                        12 => append.records[0].committed_at_micros += 1,
+                        13 => append.records[0].origin = StreamPath::new("other/origin")?,
                         _ => {}
                     }
                 }
@@ -1157,7 +1178,7 @@ impl StreamProvider for ReleaseSpy {
             );
         }
         let records = self.inner.read(request).await?;
-        if self.corrupt_observation == 11 {
+        if self.corrupt_read_sequence {
             return Ok(records.map_cursor(|records| {
                 Box::pin(records.map(|record| {
                     record.map(|mut record| {

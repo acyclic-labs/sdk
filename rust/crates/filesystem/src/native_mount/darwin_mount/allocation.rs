@@ -1,10 +1,7 @@
 use super::*;
 use crate::demand::NativeMountAllocationCustody;
 
-pub(super) type RetainedFile = (
-    Arc<dyn MountOpenFile>,
-    Option<Arc<NativeMountAllocationCustody>>,
-);
+pub(super) type RetainedFile = (Arc<dyn MountOpenFile>, Option<NativeMountAllocationCustody>);
 
 pub(super) const READ_WORK: WorkCounters = WorkCounters {
     backend_read_operations: 1,

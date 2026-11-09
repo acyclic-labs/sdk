@@ -21,7 +21,7 @@ pub struct SharedCheckoutGuard<'a, A: 'static, O: 'static> {
     state: tokio::sync::RwLockWriteGuard<'a, SharedCheckoutState<A, O>>,
 }
 
-pub(super) struct SharedCheckoutObservation<'a, A: 'static, O: 'static> {
+pub(crate) struct SharedCheckoutObservation<'a, A: 'static, O: 'static> {
     _view: ViewReadLease,
     state: tokio::sync::RwLockReadGuard<'a, SharedCheckoutState<A, O>>,
 }
@@ -281,5 +281,11 @@ impl<A: 'static, O: 'static> Deref for SharedCheckoutState<A, O> {
 impl<A, O> DerefMut for SharedCheckoutState<A, O> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.checkout
+    }
+}
+
+impl<A: 'static, O: 'static> SharedCheckoutObservation<'_, A, O> {
+    pub(crate) fn retained_operation(&self) -> Option<OperationId> {
+        self.state.publication_operation
     }
 }

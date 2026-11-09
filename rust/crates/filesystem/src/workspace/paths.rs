@@ -94,16 +94,37 @@ pub(super) fn copy_workspace_label(
     identity: &WorkspaceName,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<crate::kernel::Owned<String>, WorkspaceError> {
-    let copied = copy_work(identity.as_str().len() as u64);
+    copy_owned_text("", identity.as_str(), accounting)
+}
+
+// Storage is admitted before allocating, and shared effect credit protects the
+// infallible fill against concurrent owners of the same copy allowance.
+fn copy_owned_text(
+    prefix: &str,
+    text: &str,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<crate::kernel::Owned<String>, WorkspaceError> {
+    let length = prefix
+        .len()
+        .checked_add(text.len())
+        .ok_or(crate::WorkError::Overflow)?;
+    let copied = copy_work(length as u64);
     accounting.admit(copied)?;
-    let mut label = crate::kernel::Owned::<Vec<u8>>::allocate(identity.as_str().len(), accounting)?;
-    accounting.admit(copied)?;
-    label.value.extend_from_slice(identity.as_str().as_bytes());
-    accounting.record_completed(copied)?;
+    let mut bytes = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
+    let result = accounting.perform(copied, || {
+        #[cfg(all(test, loom))]
+        model::completed(length as u64);
+        bytes.value.extend_from_slice(prefix.as_bytes());
+        bytes.value.extend_from_slice(text.as_bytes());
+    });
+    if let Err(error) = result {
+        bytes.retire(accounting)?;
+        return Err(error.into());
+    }
     Ok(crate::kernel::Owned::new(
-        String::from_utf8(label.value).map_err(WorkspaceError::engine)?,
-        label.allocation,
-        label.bytes,
+        String::from_utf8(bytes.value).map_err(WorkspaceError::engine)?,
+        bytes.allocation,
+        bytes.bytes,
     ))
 }
 
@@ -140,25 +161,7 @@ pub(super) fn restore_absolute_path(
     cancellation: &CancellationToken,
 ) -> Result<crate::kernel::Owned<String>, WorkspaceError> {
     cancellation.check()?;
-    let length = relative
-        .len()
-        .checked_add(1)
-        .ok_or(crate::WorkError::Overflow)?;
-    let copied = copy_work(length as u64);
-    accounting.admit(copied)?;
-    let mut path = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
-    path.value.push(b'/');
-    path.value.extend_from_slice(relative.as_bytes());
-    let path = crate::kernel::Owned::new(
-        String::from_utf8(path.value).map_err(WorkspaceError::engine)?,
-        path.allocation,
-        path.bytes,
-    );
-    if let Err(error) = accounting.record_completed(copied) {
-        path.retire(accounting)?;
-        return Err(error.into());
-    }
-    Ok(path)
+    copy_owned_text("/", relative, accounting)
 }
 
 pub(super) fn workspace_allocation(
@@ -178,3 +181,7 @@ pub(super) fn workspace_allocation(
         }
     }
 }
+
+#[cfg(all(test, loom))]
+#[path = "paths_loom.rs"]
+mod model;

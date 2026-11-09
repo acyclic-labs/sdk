@@ -195,6 +195,8 @@ where
                 .map_err(lazy_error)?;
             self.finish_detached_publication(original)?;
             self.clear_mount_removals()?;
+            self.retire_settled_publication(operation, generation, &mut accounting)
+                .await?;
         }
         Ok(Some(snapshot))
     }
@@ -212,26 +214,26 @@ where
             .original_native_work()
             .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
         let retained = {
-            let mut checkout = adapter::await_with_cancellation(
+            let checkout = adapter::await_with_cancellation(
                 self.authored.shared_checkout().lock(),
                 carrier,
                 cancellation,
                 Some(self.authored.cancellation()),
             )
             .await?;
-            checkout
-                .has_retained_operation()
-                .then(|| checkout.retained_operation_id())
+            checkout.retained_publication_context(operation)?
         };
-        if retained == Some(operation) {
-            let context = crate::lazy_workspace::NativeSnapshotContext::Selected {
-                cut: self
-                    .lazy
-                    .publication_cut(Some(operation), accounting)
-                    .await
-                    .map_err(lazy_error)?,
-                input,
-            };
+        if let Some(context) = retained {
+            if !matches!(context, crate::lazy_workspace::NativeSnapshotContext::Selected {
+                input: original_input, ..
+            } if original_input == input)
+            {
+                return Err(MountSourceError::Stale);
+            }
+            self.lazy
+                .publication_companion_settled(operation, context, Some(generation), accounting)
+                .await
+                .map_err(lazy_error)?;
             let mut acknowledged = None;
             self.authored
                 .shared_checkout()

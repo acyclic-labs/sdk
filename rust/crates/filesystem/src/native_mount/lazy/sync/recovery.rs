@@ -44,7 +44,10 @@ where
                 .then(|| checkout.retained_operation_id())
         };
         let operation = remembered.map(|(operation, _)| operation);
-        let committed = match operation.or(selected.map(|(_, _, operation)| operation)) {
+        let committed = match operation
+            .or(selected.map(|(_, _, operation)| operation))
+            .or(retained)
+        {
             Some(operation) => self
                 .lazy
                 .operation_generation(
@@ -125,12 +128,14 @@ where
                 return Err(MountSourceError::Indeterminate.into());
             }
         }
-        self.finish_publication(operation, generation, proof, accounting)
+        self.finish_publication(operation, generation, proof, context, accounting)
             .await?;
         if remembered == Some(operation) {
             self.finish_detached_publication(publication.work)?;
             self.clear_mount_removals()?;
         }
+        self.retire_settled_publication(operation, generation, accounting)
+            .await?;
         Ok(crate::NativePublicationSnapshot {
             context,
             operation: Some(operation),

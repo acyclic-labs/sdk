@@ -3,7 +3,8 @@ impl<A: 'static, O: 'static> SharedCheckoutState<A, O> {
         self.publication != MountPublication::Manual
     }
 
-    /// Rejects later mutation while one publication has an unresolved result.
+    /// Admits mutation or a new resolved-publication proof, not pinned data reads.
+    /// Retained identity and evidence must survive cancellation or an unknown ACK.
     pub fn ensure_publication_resolved(&self) -> Result<(), MountSourceError> {
         if self.publication_operation.is_some() {
             return Err(MountSourceError::Stale);
@@ -33,6 +34,21 @@ impl<A: 'static, O: 'static> SharedCheckoutState<A, O> {
                 Ok(())
             }
             Some(retained) if retained == operation_id => Ok(()),
+            Some(_) => Err(MountSourceError::Stale),
+        }
+    }
+
+    /// Reads the original context without minting or replacing operation custody.
+    pub(in crate::native_mount) fn retained_publication_context(
+        &self,
+        operation: OperationId,
+    ) -> Result<Option<crate::lazy_workspace::NativeSnapshotContext>, MountSourceError> {
+        match self.publication_operation {
+            None => Ok(None),
+            Some(retained) if retained == operation => Ok(self
+                .publication_evidence
+                .as_ref()
+                .map(|(context, _, _, _)| *context)),
             Some(_) => Err(MountSourceError::Stale),
         }
     }

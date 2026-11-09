@@ -4,12 +4,12 @@ use crate::demand::NativeMountAllocationCustody;
 #[derive(Clone)]
 pub(super) struct ObserverEntry {
     pub(super) observer: Weak<dyn ViewObserver>,
-    _custody: Option<Arc<NativeMountAllocationCustody>>,
+    _custody: Option<NativeMountAllocationCustody>,
 }
 
 pub(super) struct ObserverEntries {
     pub(super) entries: Vec<ObserverEntry>,
-    custody: Arc<NativeMountAllocationCustody>,
+    custody: NativeMountAllocationCustody,
 }
 
 impl ViewLedger {

@@ -19,7 +19,8 @@ fn read_and_invalidate(legacy_inspection: bool) {
         // A real retirement notification admits the reconciliation scan.
         custody.retire(1).unwrap();
         let expected_items = original.receipt().items_examined + 1;
-        let weak = Arc::downgrade(&custody);
+        let legacy = Arc::new(custody.clone());
+        let weak = Arc::downgrade(&legacy);
         // Custody is now the sole owner of resource metadata. Its destruction
         // really calls NativeAllocation::drop -> release -> original leaf.
         drop(resource);
@@ -54,7 +55,7 @@ fn read_and_invalidate(legacy_inspection: bool) {
         });
         let invalidation_work = original.clone();
         let invalidation = loom::thread::spawn(move || {
-            drop(ownership);
+            drop((ownership, legacy));
             invalidation_work.charge(WorkCounters::UNCHARGED).unwrap();
         });
         let (result, ready) = &*complete;
