@@ -67,6 +67,11 @@ pub enum ScriptedEvent {
         /// Diagnostic returned as a provider storage error.
         error: String,
     },
+    /// Provider exchange definitively failed after its own recovery ended.
+    Interrupted {
+        /// Diagnostic retained with the terminal model failure.
+        error: String,
+    },
     /// Remains pending until the consumer drops the stream.
     Pending {},
 }
@@ -441,6 +446,10 @@ impl ScriptedTurn {
                     match event {
                         ScriptedEvent::Event(event) => Ok(event),
                         ScriptedEvent::Error { error } => Err(Error::Storage(error)),
+                        ScriptedEvent::Interrupted { error } => Err(Error::ModelUnavailable {
+                            failure: crate::ModelTransportFailure::Interrupted,
+                            excerpt: error,
+                        }),
                         ScriptedEvent::Pending {} => std::future::pending().await,
                     }
                 }))

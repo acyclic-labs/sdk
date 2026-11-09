@@ -269,7 +269,7 @@ proptest::proptest! {
                 turns.extend([spawn_call("w", &[]), ScriptedTurn::Text("spawned".into())]);
             }
             turns.push(ScriptedTurn::Text("committed turn".into()));
-            turns.push(ScriptedTurn::Events(vec![ScriptedEvent::Error { error: "failure after work".into() }]));
+            turns.push(ScriptedTurn::Events(vec![ScriptedEvent::Interrupted { error: "failure after work".into() }]));
             let (agents, stream, root, _) = fixture(turns, failures).await?;
             deliver(&agents, &root, requested("start", &root)).await?;
             for _ in 0..failures {
@@ -282,7 +282,7 @@ proptest::proptest! {
             agents.drain(&live).await?;
             if fails_after_turn {
                 deliver(&agents, &live, requested("fail-after-work", &live)).await?;
-                assert!(matches!(agents.state(&live).await?.phase, Phase::Done { outcome: AgentOutcome::Failed { .. } }));
+                assert!(matches!(agents.state(&live).await?.phase, Phase::Done { outcome: AgentOutcome::Failed { message } } if message.contains("failure after work")));
             }
             assert!(!agents.state(&live).await?.released());
             let counted = Arc::new(Counted::new((*stream).clone()));
