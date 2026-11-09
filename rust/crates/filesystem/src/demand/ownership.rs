@@ -199,7 +199,9 @@ struct MountAllocationCustody {
 impl NativeMountAllocationCustody {
     #[cfg(feature = "native-watch")]
     pub(crate) const ALLOCATION_BYTES: u64 = const {
-        match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<MountAllocationCustody>()) {
+        match crate::arc_layout::allocation_bytes(
+            std::alloc::Layout::new::<MountAllocationCustody>(),
+        ) {
             Ok(bytes) => bytes as u64,
             Err(_) => panic!("native allocation custody Arc layout overflow"),
         }
@@ -274,7 +276,8 @@ impl NativeMountAllocationCustody {
         if !work.owns_native_allocation_accounting(&self.0.accounting) {
             return Err(crate::WorkError::Overflow);
         }
-        self.0.bytes
+        self.0
+            .bytes
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current.checked_add(bytes)
             })
@@ -289,7 +292,8 @@ impl NativeMountAllocationCustody {
     }
     #[cfg(feature = "native-watch")]
     pub(crate) fn retire(&self, bytes: u64) -> Result<(), crate::WorkError> {
-        self.0.bytes
+        self.0
+            .bytes
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current
                     .checked_sub(bytes)

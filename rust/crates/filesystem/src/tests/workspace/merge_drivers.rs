@@ -1184,10 +1184,10 @@ async fn merge_directory_text_admission() -> Result<(), Box<dyn Error>> {
             let proposal = unbounded!(staging, read(&conflict_path, 4096))?;
             assert_eq!(
                 &*proposal,
-                b"<<<<<<< ours\nours\n||||||| original\nbase\n=======\ntheirs\n            );
+                b"<<<<<<< ours\nours\n||||||| original\nbase\n=======\ntheirs\n>>>>>>> theirs\n"
+            );
         }
     }
->>>>>>> 05cbde9cd9d (Admit shared text merge storage and preserve serializer refusals)
     Ok(())
 }
 
