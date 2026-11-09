@@ -545,7 +545,9 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
         } => ErrorCode::Indeterminate,
         Machines::DeadlineSourceLost { machine: None, .. } => ErrorCode::Storage,
         Machines::Cancelled => ErrorCode::Cancelled,
-        Machines::Unavailable | Machines::Failed => ErrorCode::Storage,
+        Machines::Unavailable | Machines::Failed | Machines::ForkFailed { .. } => {
+            ErrorCode::Storage
+        }
     }
 }
 
