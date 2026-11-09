@@ -192,6 +192,7 @@ impl HostFixtureAuthority {
     }
 
     pub fn admission(&self) -> Result<JsValue, JsValue> {
+        let now = self.context.now_unix_millis().map_err(error)? / 1000;
         #[derive(serde::Serialize)]
         struct Admission<'a> {
             issuer: &'a str,
@@ -211,7 +212,7 @@ impl HostFixtureAuthority {
                 .root
                 .public_workload_trust()
                 .and_then(|trust| {
-                    trust.snapshot(self.root.id()).map_err(|error| {
+                    trust.snapshot(self.root.id(), now).map_err(|error| {
                         acyclic_harness_core::Error::Unauthorized(error.to_string())
                     })
                 })

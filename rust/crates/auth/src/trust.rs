@@ -1,9 +1,11 @@
 //! Public trust snapshots shared by native and WebAssembly capability holders.
 use crate::{crypto::BlockId, verify::*};
 use std::collections::HashSet;
+mod anchor;
 mod follower;
 pub mod issuance;
 mod issuer;
+pub use anchor::{AnchorKeys, AnchorSource};
 pub use follower::{
     Applied, EnvironmentFrontier, FenceCause, Follower, FollowerState, account_path,
     environment_path,
@@ -12,11 +14,17 @@ pub use issuer::{AccountRoot, Certification, Issuer, KeyringFrontier, verify_pos
 
 /// An authenticated owner-supplied trust snapshot, never derived from a token.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Snapshot {
     /// Environment whose public issuer keys were authenticated by the owner.
     pub environment: String,
     /// Current and historical environment issuers.
     pub environment_keys: Vec<BlockId>,
+    /// Exclusive deadline for this exported key set. Refresh from its owner
+    /// then; `None` means the key set has no scheduled retirement.
+    /// Deserialization requires this field: omission cannot erase a deadline.
+    #[serde(deserialize_with = "serde::Deserialize::deserialize")]
+    pub environment_keys_valid_until: Option<u64>,
     /// Account whose keyring supplied the remaining fields.
     pub account: String,
     /// Trusted account root issuers, never online leaves.
@@ -38,7 +46,13 @@ pub fn block_ids(bytes: &[u8]) -> Result<Vec<BlockId>, VerifyError> {
 }
 
 impl Trust for Snapshot {
-    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
+    fn environment_keys(&self, environment: &str, now: u64) -> Result<Keys<'_>, VerifyError> {
+        if self
+            .environment_keys_valid_until
+            .is_some_and(|until| now >= until)
+        {
+            return Err(VerifyError::Unavailable);
+        }
         if environment == self.environment && !self.environment_keys.is_empty() {
             Ok((&self.environment_keys).into())
         } else {

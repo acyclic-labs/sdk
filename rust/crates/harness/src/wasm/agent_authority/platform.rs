@@ -129,9 +129,10 @@ impl acyclic_auth::verify::Trust for PlatformTrust {
     fn environment_keys(
         &self,
         environment: &str,
+        now: u64,
     ) -> std::result::Result<acyclic_auth::verify::Keys<'_>, acyclic_auth::verify::VerifyError>
     {
-        acyclic_auth::verify::Trust::environment_keys(&self.snapshot, environment)
+        acyclic_auth::verify::Trust::environment_keys(&self.snapshot, environment, now)
     }
     fn account(
         &self,
@@ -374,7 +375,7 @@ export interface WasmAuthorityAdmission {
     audience: Authority;
     /** Sealed public evidence. Restricted append authority is rejected. */
     scope: Scope;
-    trust: { environment: string; environment_keys: number[][]; account: string;
+    trust: { environment: string; environment_keys: number[][]; environment_keys_valid_until: bigint | null; account: string;
         issuer_keys: number[][]; minimum_key_epoch: bigint;
         revoked_key_ids: string[]; revoked_block_ids: number[][] };
     /** Authenticated public verification key, never a signing key. */

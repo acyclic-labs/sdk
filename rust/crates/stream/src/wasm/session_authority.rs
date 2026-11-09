@@ -9,30 +9,6 @@ use acyclic_auth::{
 use futures::channel::oneshot;
 use std::sync::{Arc, Mutex};
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PublicTrust {
-    environment: String,
-    environment_keys: Vec<[u8; 32]>,
-    account: String,
-    issuer_keys: Vec<[u8; 32]>,
-    minimum_key_epoch: u64,
-    revoked_key_ids: std::collections::HashSet<String>,
-    revoked_block_ids: std::collections::HashSet<[u8; 32]>,
-}
-impl From<PublicTrust> for Snapshot {
-    fn from(value: PublicTrust) -> Self {
-        Self {
-            environment: value.environment,
-            environment_keys: value.environment_keys,
-            account: value.account,
-            issuer_keys: value.issuer_keys,
-            minimum_key_epoch: value.minimum_key_epoch,
-            revoked_key_ids: value.revoked_key_ids,
-            revoked_block_ids: value.revoked_block_ids,
-        }
-    }
-}
 /// The owner's current public trust and the sessions waiting for its next
 /// update. Dropping the owner resolves every wait as [`SourceClosed`].
 struct State {
@@ -152,7 +128,7 @@ impl WasmSessionAuthority {
 }
 fn parse(public_trust: &str) -> Result<Snapshot, JsValue> {
     check_command_size(public_trust.as_bytes())?;
-    let snapshot: PublicTrust =
+    let snapshot: Snapshot =
         serde_json::from_str(public_trust).map_err(|_| js_error(StreamError::InvalidArgument))?;
     if snapshot.environment.is_empty()
         || snapshot.account.is_empty()
@@ -161,7 +137,7 @@ fn parse(public_trust: &str) -> Result<Snapshot, JsValue> {
     {
         return Err(js_error(StreamError::InvalidArgument));
     }
-    Ok(snapshot.into())
+    Ok(snapshot)
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]

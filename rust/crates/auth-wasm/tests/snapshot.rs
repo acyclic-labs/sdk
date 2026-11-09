@@ -9,6 +9,7 @@ fn snapshot() -> Snapshot {
     Snapshot {
         environment: "test".into(),
         environment_keys: vec![signed::key(1).verifying_key().to_bytes()],
+        environment_keys_valid_until: None,
         account: "account".into(),
         issuer_keys: vec![signed::key(2).verifying_key().to_bytes()],
         minimum_key_epoch: 1,

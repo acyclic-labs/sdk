@@ -1,45 +1,40 @@
 //! Shared production trust-record oracle for corpus replay and fuzzing.
 use acyclic_auth::{
     contract::{RevocationPublication, TrustRecord, TrustRecordKind, TrustRecordProto},
-    crypto::BlockId,
-    trust::{Applied, FenceCause, Follower, FollowerState, Issuer, KeyringFrontier},
+    trust::{AnchorKeys, Applied, FenceCause, Follower, FollowerState, Issuer, KeyringFrontier},
     verify::{Trust as _, VerifyError},
 };
 use ed25519_dalek::SigningKey;
 use prost::Message as _;
-use std::sync::Arc;
 
 /// Re-anchoring a refused record must agree with fresh current-key admission.
 fn check_reanchor(bytes: &[u8]) -> Result<(), String> {
-    check_publication(bytes, Follower::reanchor)
-}
-
-fn check_publication(
-    bytes: &[u8],
-    publish: impl FnOnce(&Follower, Arc<[BlockId]>) -> Result<(), VerifyError>,
-) -> Result<(), String> {
     let keys = Issuer::new("test", SigningKey::from_bytes(&[1; 32])).anchor();
     let placeholder = Issuer::new("test", SigningKey::from_bytes(&[9; 32])).anchor();
-    let recovering = Follower::new("test", placeholder);
+    let (owner, watched) = tokio::sync::watch::channel(AnchorKeys::new(placeholder));
+    let recovering = Follower::new("test", watched);
     if let Err(cause) = recovering.apply_environment(bytes, 100) {
         if *recovering.state().borrow() != FollowerState::Fenced(FenceCause::Refused)
             || recovering.environment_refusal() != Some(cause)
-            || recovering.environment_keys("test").err() != Some(VerifyError::Unavailable)
+            || recovering.environment_keys("test", 100).err() != Some(VerifyError::Unavailable)
         {
             return Err(
                 "refused environment must retain its cause behind an unavailable fence".into(),
             );
         }
-        publish(&recovering, keys.clone().into()).map_err(|error| error.to_string())?;
-        let fresh = Follower::new("test", keys);
+        owner.send_replace(AnchorKeys::new(keys.clone()));
+        let fresh = Follower::new("test", AnchorKeys::fixed(keys));
         if recovering.apply_environment(bytes, 100) != fresh.apply_environment(bytes, 100) {
             return Err("reanchored frontier differs from a fresh current-anchor frontier".into());
         }
     } else {
         recovering.resume();
-        let accepted = recovering.environment_keys("test").unwrap().to_vec();
-        publish(&recovering, keys.into()).map_err(|error| error.to_string())?;
-        if *recovering.environment_keys("test").unwrap() != accepted {
+        let established = recovering
+            .environment_initialized()
+            .map_err(|error| error.to_string())?;
+        let accepted = recovering.environment_keys("test", 100).unwrap().to_vec();
+        owner.send_replace(AnchorKeys::new(keys));
+        if established && *recovering.environment_keys("test", 100).unwrap() != accepted {
             return Err("anchor publication replaced an authenticated signed frontier".into());
         }
     }
@@ -49,7 +44,8 @@ fn check_publication(
 pub fn check(bytes: &[u8]) {
     let issuer = Issuer::new("test", SigningKey::from_bytes(&[1; 32]));
     let anchor = issuer.anchor();
-    let follower = Follower::new("test", anchor.clone());
+    let (owner, watched) = tokio::sync::watch::channel(AnchorKeys::new(anchor.clone()));
+    let follower = Follower::new("test", watched);
     let (mut root, genesis) = issuer
         .genesis("account", SigningKey::from_bytes(&[2; 32]), 100)
         .unwrap();
@@ -58,6 +54,36 @@ pub fn check(bytes: &[u8]) {
     }
     follower.resume();
     follower.serve("account");
+    // Export through the original follower and canonical serde decoder. Input
+    // chooses overlap and time; no token supplies its own trusted anchor.
+    let overlap = u64::from(bytes.first().copied().unwrap_or_default()) + 1;
+    let replacement = Issuer::new("test", SigningKey::from_bytes(&[8; 32])).anchor();
+    owner.send_modify(|keys| *keys = keys.rotate(replacement, 100, overlap));
+    let exported = follower.snapshot("account", 100).unwrap();
+    let encoded = serde_json::to_vec(&exported).unwrap();
+    let exported: acyclic_auth::trust::Snapshot = serde_json::from_slice(&encoded).unwrap();
+    assert!(exported.environment_keys("test", 100 + overlap - 1).is_ok());
+    assert_eq!(
+        exported.environment_keys("test", 100 + overlap).err(),
+        Some(VerifyError::Unavailable),
+        "exported snapshot must retain anchor retirement"
+    );
+    let mut omitted = serde_json::to_value(&exported).unwrap();
+    omitted
+        .as_object_mut()
+        .unwrap()
+        .remove("environment_keys_valid_until");
+    assert!(serde_json::from_value::<acyclic_auth::trust::Snapshot>(omitted).is_err());
+    // Arbitrary serialized snapshots exercise the same deployed ingress, not
+    // a parallel format parser or hand-written wire fixture.
+    if let Ok(decoded) = serde_json::from_slice::<acyclic_auth::trust::Snapshot>(bytes) {
+        if let Some(until) = decoded.environment_keys_valid_until {
+            assert_eq!(
+                decoded.environment_keys(&decoded.environment, until).err(),
+                Some(VerifyError::Unavailable)
+            );
+        }
+    }
     let mut accepted = genesis.clone();
     let mut environment_changed = false;
     let mut served_floor = 1;
@@ -90,7 +116,7 @@ pub fn check(bytes: &[u8]) {
                     TrustRecord::try_from(TrustRecordProto::decode(record).unwrap()).unwrap();
                 // Exercise actual cross-scope admission on an independent
                 // follower: its refusal must not fence the live floor oracle.
-                let scoped = Follower::new("test", anchor.clone());
+                let scoped = Follower::new("test", AnchorKeys::fixed(anchor.clone()));
                 match &decoded.record {
                     TrustRecordKind::Environment(_) => assert!(
                         scoped.apply_account("account", record, 100).is_err(),
@@ -147,7 +173,7 @@ pub fn check(bytes: &[u8]) {
 
 #[cfg(test)]
 #[test]
-fn trust_record_corpus_and_dropped_publication_control() {
+fn trust_record_corpus() {
     let records: &[&[u8]] = &[
         include_bytes!("../../fuzz/corpus/trust_record/environment-rotation"),
         include_bytes!("../../fuzz/corpus/trust_record/environment-successor"),
@@ -155,15 +181,11 @@ fn trust_record_corpus_and_dropped_publication_control() {
         include_bytes!("../../fuzz/corpus/trust_record/foreign-checkpoint"),
         include_bytes!("../../fuzz/corpus/trust_record/foreign-keyring"),
         include_bytes!("../../fuzz/corpus/trust_record/selected-epoch"),
+        include_bytes!("../../fuzz/corpus/trust_record/snapshot-unbounded"),
+        include_bytes!("../../fuzz/corpus/trust_record/snapshot-retiring"),
         b"",
     ];
     for record in records {
         check(record);
     }
-    // The same oracle must reject an input adapter dropping the publication.
-    assert!(
-        check_publication(records[0], |_, _| Ok(()))
-            .unwrap_err()
-            .contains("frontier differs")
-    );
 }
