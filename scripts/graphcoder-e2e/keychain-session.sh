@@ -27,7 +27,10 @@ export XDG_DATA_HOME=$profile/data XDG_CONFIG_HOME=$profile/config XDG_CACHE_HOM
 export XDG_RUNTIME_DIR=$profile/runtime
 mkdir -m 700 "$XDG_RUNTIME_DIR"
 daemon=${E2E_KEYCHAIN_DAEMON:-gnome-keyring-daemon}
-"$daemon" --foreground --components=secrets --unlock </dev/null >"$profile/daemon.log" 2>&1 &
+# An empty unlock input only creates GNOME's volatile session collection.
+# A fixture-only password initializes the private persistent login collection
+# and its default alias; no provider credential is supplied here.
+printf '%s' acyclic-e2e-private-keychain | "$daemon" --foreground --components=secrets --unlock >"$profile/daemon.log" 2>&1 &
 daemon_pid=$!
 gdbus wait --session org.freedesktop.secrets &
 ready_pid=$!
@@ -43,4 +46,10 @@ if [[ $completed == "$daemon_pid" ]]; then
   exit 1
 fi
 ready_pid=
+alias=$(gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets --method org.freedesktop.Secret.Service.ReadAlias default)
+if [[ $alias == "(objectpath '/',)" ]]; then
+  echo 'Secret Service has no default credential collection; initialize/unlock a native keychain' >&2
+  cat "$profile/daemon.log" >&2
+  exit 1
+fi
 node scripts/graphcoder-e2e/run.mjs "$graphcoder" "$mock" doctor-all-missing doctor-ok pty-first-run
