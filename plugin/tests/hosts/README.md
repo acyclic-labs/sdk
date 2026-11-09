@@ -25,9 +25,18 @@ completion records before qualification.
 After joining the children, a producer-loss control observes a live child held
 on its original socket, submits its wait, then kills and joins the MCP server.
 The unanswered call must end in the shared client's original pipe/process-close
-error. A fresh MCP connection joins the held child after releasing its socket.
+error. Under the [native process ownership contract](../../README.md), the MCP
+server is the spawning owner: its death contains the held child. The original
+socket must close without release; a fresh MCP connection fences the orphaned
+turn and observes its cancelled result, never a successful answer.
 These are process and socket events, without a deadline; the original error
 is retained with the trace.
+
+The managed lifecycle, recursive and resume scenarios require the Linux native
+Codex sandbox leg. Each first proves a workspace write succeeds and a sibling
+write is denied. Their temporary root is under `/var/tmp`, outside the default
+`/tmp` and fixture `TMPDIR` write grants. Unavailable sandbox enforcement fails
+the capability assertion; none of these scenarios is silently skipped.
 
 The native pair collector uses the same pinned package, shipping plugin install,
 workspace owner and native permission path as the installed acceptance cases.

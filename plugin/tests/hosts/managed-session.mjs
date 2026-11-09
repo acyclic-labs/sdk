@@ -1,100 +1,278 @@
+// Model-free native sessions use the real sandbox and original recorded output.
 import assert from 'node:assert/strict';
-import {copyFileSync,mkdirSync,mkdtempSync,readFileSync,writeFileSync,chmodSync,existsSync,rmSync,readdirSync} from 'node:fs';
-import {join,resolve,delimiter} from 'node:path';
-import {pathToFileURL,fileURLToPath} from 'node:url';
-import {fixtureEnvironment,workspaceOwner,checked,start,coordination,barrier,ready,socketLine} from './native-fixture.mjs';
+import {once} from 'node:events';
+import {chmod,mkdir,readFile,writeFile,unlink} from 'node:fs/promises';
+import {existsSync,readFileSync,readSync,writeSync} from 'node:fs';
+import {createConnection,createServer} from 'node:net';
+import {delimiter,isAbsolute,join,relative,resolve,sep} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {McpClient} from '../../shared/mcp-client.mjs';
+import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
+import {environment,nativeEnvironment,scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
+import {commandCancellation,withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
+import {startWorkspaceOwner} from './workspace-owner.mjs';
+import {codexSandboxConfig,nativeHost} from './native-host.mjs';
 
-export async function managedSession(argv,clock=()=>performance.now()) {
- const [binaryArg,ownerArg,codexArg,scenario,...extra]=argv;
- const recovery='node plugin/tests/hosts/managed-session.mjs ACYCLIC GRAPHCODER CODEX lifecycle|recursive|resume';
- assert.ok(binaryArg&&ownerArg&&codexArg&&!extra.length&&['lifecycle','recursive','resume'].includes(scenario),`step=admit managed session; recovery=${recovery}`);
- const [binary,graphcoder,codex]=[binaryArg,ownerArg,codexArg].map(value=>resolve(value));
- const started=clock(),root=mkdtempSync(join(process.env.HOME,'.plugins-session-proof-'));
- const workspace=join(root,'workspace'),state=join(root,'state'),bins=join(root,'bin');
- for(const path of [workspace,state,bins])mkdirSync(path);
- const gate=await barrier(),gates=[];
- const completion=JSON.parse(readFileSync(new URL('fixtures/native-completion.json',import.meta.url),'utf8')).records.find(row=>row.host==='codex');
- const events=join(root,'native-events.jsonl');writeFileSync(events,completion.stdout);
- const env=fixtureEnvironment(root,{PATH:bins+delimiter+process.env.PATH,FIXTURE_CODEX:codex,FIXTURE_EVENTS:events,
-  FIXTURE_ACYCLIC:binary,FIXTURE_WORKSPACE:workspace,FIXTURE_OUTSIDE:join(state,'denied'),
-  FIXTURE_SUPPORT:new URL('./native-fixture.mjs',import.meta.url).href,FIXTURE_BARRIER:String(gate.port)});
- writeFileSync(join(workspace,'AGENTS.md'),'native instruction discovery fixture');
- const fake=join(bins,'codex');copyFileSync(new URL('./native-session-child.mjs',import.meta.url),fake);chmodSync(fake,0o755);
- let stopOwner,bridge,tool;
- const phase=name=>console.log('NATIVE_FIXTURE_PASS',name,(clock()-started)/1000);
- const ownerStart=async()=>{stopOwner=await workspaceOwner(graphcoder,workspace,state,root,env);phase('workspace-owner-ready');};
- const ownerStop=async()=>{const previous=stopOwner;stopOwner=undefined;if(previous){await previous();phase('workspace-owner-retired');}};
- const closeBridge=async()=>{const previous=bridge;bridge=undefined;tool=undefined;if(previous){previous.child.stdin.end();assert.equal((await previous.closed).code,0,previous.stderr);phase('bridge-retired');}};
- const startBridge=task=>{
-  const inherited=JSON.parse(readFileSync(join(workspace,'root-launch.json'),'utf8')).args;
-  bridge=start(binary,['__mcp','codex'],{cwd:workspace,env:{...env,ACYCLIC_HOST_ARGS:JSON.stringify(inherited),ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:task}});
-  tool=coordination(bridge,recovery);
- };
- const client=async action=>JSON.parse(await checked(binary,['__workspace'],{cwd:workspace,env},JSON.stringify(action)));
- const succeeded=async reference=>{
-  const result=await tool('wait',reference);
-  console.log('NATIVE_FIXTURE_TURN',JSON.stringify({reference,terminal:result,seconds:(clock()-started)/1000}));
-  assert.equal(result.reply.kind,'answered');assert.notEqual(result.reply.outcome.Succeeded,undefined);return result;
- };
- // Arm the original connection before dispatching the producer. Settlement
- // always wins with an error if the native process never reaches readiness.
- const spawnHeld=async(reference,prompt)=>{
-  const abort=new AbortController(),connection=gate.next(abort.signal);connection.catch(()=>{});
+const driver=fileURLToPath(import.meta.url);
+const recovery='node plugin/tests/hosts/managed-session.mjs ACYCLIC GRAPHCODER CODEX lifecycle|recursive|resume';
+const scope=new Processes();
+const cancellation=['host','effects','descendant'].includes(process.argv[2])?undefined:commandCancellation();
+const fail=detail=>new Error('step=managed native session: '+detail+'; recovery='+recovery);
+const options=()=>({cwd:process.cwd(),env:process.env});
+const tool=(client,name,reference,prompt)=>client.request(name,{reference,...(prompt===undefined?{}:{prompt})})
+ .then(result=>{
+  assert.ok(!result.isError,JSON.stringify(result));
+  const value=JSON.parse(result.content[0].text);
+  assert.ok(value&&typeof value==='object'&&!Array.isArray(value),'expected a coordination result object');
+  return value;
+ });
+function requireSucceeded(result){
+ if(result.reply.kind!=='answered'||result.reply.outcome.Succeeded===undefined)
+  assert.fail(JSON.stringify(result));
+}
+function connect(child){
+ return new McpClient(child,{name:'native-session-conformance',version:'1',recovery});
+}
+async function closeBridge(bridge){
+ bridge.input.end();
+ const result=await bridge.closed;
+ assert.equal(result.code,0,result.stderr);
+}
+async function holdForCancel(){
+ const gate=createConnection({host:'127.0.0.1',port:Number(process.env.FIXTURE_BARRIER)});
+ await once(gate,'connect');
+ gate.write(JSON.stringify({cwd:process.cwd()})+'\n');
+ // Only the original process-tree cancellation may retire this held child.
+ await Promise.race([once(gate,'data'),once(gate,'close')]);
+ throw fail('readiness owner closed or sent unexpected input');
+}
+
+async function effects(prompt){
+ const agents=await scope.run(process.env.FIXTURE_ACYCLIC,['agents'],options());
+ assert.equal(agents.code,0,JSON.stringify({step:'sandbox workspace discovery',
+  code:agents.code,signal:agents.signal,stdout:agents.stdout,stderr:agents.stderr}));
+ await writeFile('.volumes/home/native-private.txt',prompt);
+ await assert.rejects(writeFile(process.env.FIXTURE_OUTSIDE,'denied'),
+  error=>['EACCES','EPERM','EROFS'].includes(error.code));
+ assert.ok(!existsSync(process.env.FIXTURE_OUTSIDE),'sandbox allowed an outside write');
+ await writeFile(prompt+'.txt','native');
+}
+
+async function host(){
+ const args=process.argv.slice(3),workspace=process.env.FIXTURE_WORKSPACE;
+ if(process.cwd()===workspace){
+  const policy=['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',workspace];
+  assert.deepEqual(args,[...policy,'--config','features.multi_agent_v2=false','--config','agents.enabled=false']);
+  assert.equal(process.cwd(),process.env.ACYCLIC_WORKSPACE);
+  assert.equal(process.cwd(),workspace);
+  assert.deepEqual(JSON.parse(process.env.ACYCLIC_HOST_ARGS),policy);
+  await writeFile('root-launch.json',JSON.stringify({task:process.env.ACYCLIC_TASK,args:policy}));
+  return;
+ }
+ assert.deepEqual(args.slice(6,12),['--config','features.multi_agent_v2=false','--config','agents.enabled=false','exec','--json']);
+ assert.equal(args[args.indexOf('--sandbox')+1],'workspace-write');
+ assert.equal(args[args.indexOf('--ask-for-approval')+1],'never');
+ assert.equal(args[args.indexOf('--cd')+1],process.cwd());
+ const child=relative(join(workspace,'.volumes/agents'),process.cwd());
+ assert.ok(child&&child!=='..'&&!child.startsWith('..'+sep)&&!isAbsolute(child));
+ assert.equal(await readFile('AGENTS.md','utf8'),'native instruction discovery fixture');
+ // Read one byte directly. A blocked-input child must not drain the remainder
+ // into a language stream buffer before the original cancellation assertion.
+ const first=Buffer.alloc(1);
+ assert.equal(readSync(0,first,0,1,null),1,'native prompt closed before its first byte');
+ if(first.toString()==='B')await holdForCancel();
+ const prompt=first.toString()+readFileSync(0,'utf8');
+ assert.ok(['failed','cancelled','recursive','first','resumed'].includes(prompt));
+ await writeFile('native-launch.json',JSON.stringify({cwd:process.cwd(),args}));
+ const events=(await readFile(process.env.FIXTURE_EVENTS,'utf8')).match(/.*\n/g);
+ process.stdout.write(events[0]);
+ const base=[...JSON.parse(process.env.FIXTURE_CODEX_ARGS),...codexSandboxConfig,'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"',
+  '-c','sandbox_workspace_write.writable_roots='+JSON.stringify([args[args.indexOf('--add-dir')+1]]),'--'];
+ if(prompt==='resumed')assert.equal(await readFile('.volumes/home/native-private.txt','utf8'),'first');
+ const checked=await scope.run(process.env.FIXTURE_CODEX,[...base,process.execPath,driver,'effects',prompt],options());
+ assert.equal(checked.code,0,JSON.stringify({step:'native sandbox effects',
+  program:process.env.FIXTURE_CODEX,args:[...base,process.execPath,driver,'effects',prompt],
+  cwd:process.cwd(),code:checked.code,signal:checked.signal,stdout:checked.stdout,stderr:checked.stderr}));
+ if(prompt==='recursive'){
+  const nested=scope.start(process.env.FIXTURE_ACYCLIC,['__mcp','codex'],options());
   try{
-   const spawned=await tool('spawn',reference,prompt),waiter=tool('wait',reference);waiter.catch(()=>{});
-   const socket=await ready(connection,waiter,abort,recovery);gates.push(socket);
-   assert.deepEqual(JSON.parse(await socketLine(socket)),{cwd:spawned.cwd});
-   return {view:spawned.cwd,waiter};
-  }catch(error){abort.abort();throw error;}
+   const client=connect(nested.child);
+   await tool(client,'spawn','nested','first');
+   requireSucceeded(await tool(client,'wait','nested'));
+   const merged=await scope.run(process.env.FIXTURE_CODEX,[...base,process.env.FIXTURE_ACYCLIC,'fs','merge','agents/nested'],options());
+   assert.equal(merged.code,0,merged.stderr);
+   assert.equal(await readFile('first.txt','utf8'),'native');
+   assert.ok(!existsSync('.acyclic-sdk'),'nested custody was authored into the child project');
+  }finally{await closeBridge(nested);}
+ }
+ if(prompt==='cancelled'){
+  const descendant=scope.start(process.execPath,[driver,'descendant'],options());
+  const ready=new Spool(descendant.child.stdout,descendant.closed,
+   {key:event=>event?.type==='descendant-ready'?['ready']:[],unique:true});
+  descendant.input.end();
+  await ready.keyed('ready');
+  await writeFile('descendant.pid',String(descendant.child.pid));
+  await holdForCancel();
+ }
+ if(prompt==='failed'){process.exitCode=17;return;}
+ if(prompt==='resumed')assert.equal(args[args.indexOf('resume')+1],JSON.parse(events[0]).thread_id);
+ process.stdout.write(events.slice(1).join(''));
+}
+
+async function scenario(argv,clock){
+ const started=clock();
+ const [acyclic,graphcoder,codex,name,...extra]=argv;
+ assert.ok(acyclic&&graphcoder&&codex&&!extra.length&&['lifecycle','recursive','resume'].includes(name),recovery);
+ const native=await nativeHost('codex',{E2E_CODEX:resolve(codex)});
+ const capture=JSON.parse(await readFile(new URL('./fixtures/native-completion.json',import.meta.url),'utf8'))
+  .records.find(record=>record.host==='codex'&&record.mode==='installed'&&record.code===0);
+ assert.ok(capture,'restore the original native completion fixture');
+ const session=JSON.parse(capture.stdout.split('\n')[0]).thread_id;
+ const root=scratchDirectory('managed-native-session-',{E2E_SCRATCH_ROOT:'/var/tmp'});
+ const workspace=join(root,'workspace'),state=join(root,'state'),bin=join(root,'bin'),fixture=join(root,'native-events.jsonl');
+ await Promise.all([mkdir(workspace),mkdir(state),mkdir(bin),writeFile(fixture,capture.stdout)]);
+ const env=environment(root,{...nativeEnvironment(),PATH:bin+delimiter+process.env.PATH,
+  FIXTURE_NODE:process.execPath,FIXTURE_DRIVER:driver,FIXTURE_CODEX:native.program,
+  FIXTURE_CODEX_ARGS:JSON.stringify(native.args),FIXTURE_EVENTS:fixture,
+  FIXTURE_ACYCLIC:resolve(acyclic),FIXTURE_WORKSPACE:workspace,FIXTURE_OUTSIDE:join(state,'denied')});
+ await writeFile(join(workspace,'AGENTS.md'),'native instruction discovery fixture');
+ const launcher=join(bin,process.platform==='win32'?'codex.cmd':'codex');
+ await writeFile(launcher,process.platform==='win32'
+  ?'@"%FIXTURE_NODE%" "%FIXTURE_DRIVER%" host %*\r\n'
+  :'#!/bin/sh\nexec "$FIXTURE_NODE" "$FIXTURE_DRIVER" host "$@"\n');
+ if(process.platform!=='win32')await chmod(launcher,0o755);
+ const barrier=createServer(),gates=new Set();
+ let pendingReady,owner,bridge,client,parent;
+ barrier.on('error',error=>pendingReady?.(error));
+ barrier.listen(0,'127.0.0.1');await once(barrier,'listening');
+ env.FIXTURE_BARRIER=String(barrier.address().port);
+ const opts={cwd:workspace,env};
+ const announce=detail=>writeSync(2,'NATIVE_FIXTURE_PASS '+detail+' '+(clock()-started)/1000+'\n');
+ const startOwner=async()=>{owner=await startWorkspaceOwner({scope,binary:resolve(graphcoder),workspace,state,root,env});};
+ const stopOwner=async()=>{const previous=owner;owner=undefined;if(previous){previous.input.end();await previous.closed;}};
+ const startBridge=async()=>{
+  const args=JSON.parse(await readFile(join(workspace,'root-launch.json'),'utf8')).args;
+  bridge=scope.start(resolve(acyclic),['__mcp','codex'],{...opts,
+   env:{...env,ACYCLIC_HOST_ARGS:JSON.stringify(args),ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:parent}});
+  client=connect(bridge.child);
  };
+ const stopBridge=async()=>{const previous=bridge;bridge=undefined;if(previous)await closeBridge(previous);};
+ const call=(toolName,reference,prompt)=>tool(client,toolName,reference,prompt);
+ const request=async action=>{
+  const result=await scope.run(resolve(acyclic),['__workspace'],opts,JSON.stringify(action));
+  assert.equal(result.code,0,result.stdout+result.stderr);return JSON.parse(result.stdout);
+ };
+ function ready(){
+  const announcement=new Promise((yes,no)=>{
+   pendingReady=no;
+   barrier.once('connection',socket=>{
+    gates.add(socket);
+    const closed=new Promise((_,reject)=>socket.once('close',()=>reject(fail('native readiness connection closed'))));
+    const events=new Spool(socket,closed,{key:event=>event?.cwd?['ready']:[],unique:true});
+    events.keyed('ready').then(event=>{pendingReady=undefined;yes(event);},no);
+   });
+  });
+  // A refused spawn can retire the readiness owner before held() reaches its
+  // wait. Keep that original promise observable without an unhandled rejection.
+  announcement.catch(()=>{});return announcement;
+ }
+ async function held(reference,prompt){
+  const announcement=ready();
+  const spawned=await call('spawn',reference,prompt),waiter=call('wait',reference);
+  const event=await Promise.race([announcement,waiter.then(value=>{throw fail('child settled before readiness: '+JSON.stringify(value));})]);
+  assert.deepEqual(event,{cwd:spawned.cwd});return {spawned,waiter};
+ }
+ const merge=reference=>request({kind:'fs',task:parent,command:'merge agents/'+reference});
+ const authored=async file=>assert.equal(await readFile(join(workspace,file),'utf8'),'native');
  try{
-  const flags=['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',workspace,'exec','--json','--cd',workspace];
-  for(const tail of [['--help'],['resume','fixture-id','--help']])await checked(codex,[...flags,...tail],{cwd:workspace,env});
-  await ownerStart();await checked(binary,['host','codex','--','--sandbox','workspace-write','--ask-for-approval','never'],{cwd:workspace,env});
-  const parent=JSON.parse(readFileSync(join(workspace,'root-launch.json'),'utf8')).task;startBridge(parent);phase('root-launch');
-  if(scenario==='lifecycle'){
-   await tool('spawn','failed','failed');const failed=await tool('wait','failed');
-   assert.equal(failed.reply.kind,'answered');assert.ok(failed.reply.outcome.Failed);
-   assert.ok(!existsSync(join(workspace,'failed.txt')));
-   await client({kind:'fs',task:parent,command:'merge agents/failed'});assert.equal(readFileSync(join(workspace,'failed.txt'),'utf8'),'native');phase('failed-capture-merge');
-   const cancelled=await spawnHeld('cancelled','cancelled');phase('cancelled-native-ready');
-   const pid=readFileSync(join(cancelled.view,'descendant.pid'),'utf8');
-   const stopped=await tool('cancel','cancelled');await cancelled.waiter;
+  // Require the real sandbox; /var/tmp keeps the denied sibling outside
+  // Codex's default /tmp and TMPDIR write grants.
+  const probe=join(state,'sandbox-probe');
+  await writeFile(probe,'parent-writable');await unlink(probe);
+  const capability=await scope.run(native.program,[...native.args,...codexSandboxConfig,'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','--',
+   'sh','-c','set -eu; printf allowed > "$1"; if (printf denied > "$2") 2>/dev/null; then exit 41; fi; test ! -e "$2"',
+   'sandbox-capability',join(workspace,'sandbox-probe'),probe],opts);
+  assert.equal(capability.code,0,capability.stdout+capability.stderr);
+  await unlink(join(workspace,'sandbox-probe'));
+  announce('linux-native-sandbox-required');
+  const base=['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',workspace,'exec','--json','--cd',workspace];
+  for(const tail of [['--help'],['resume','fixture-id','--help']]){
+   const parsed=await scope.run(native.program,[...native.args,...base,...tail],opts);assert.equal(parsed.code,0,parsed.stdout+parsed.stderr);
+  }
+  await startOwner();
+  const launched=await scope.run(resolve(acyclic),['host','codex','--',
+   '--sandbox','workspace-write','--ask-for-approval','never'],opts);
+  assert.equal(launched.code,0,launched.stdout+launched.stderr);
+  parent=JSON.parse(await readFile(join(workspace,'root-launch.json'),'utf8')).task;
+  await startBridge();announce('root-launch');
+  if(name==='lifecycle'){
+   await call('spawn','failed','failed');const finished=await call('wait','failed');
+   assert.equal(finished.reply.kind,'answered');assert.ok(finished.reply.outcome.Failed,JSON.stringify(finished));
+   assert.match(finished.reply.outcome.Failed.message,/native host exited[^\n]*\b17\b/,JSON.stringify(finished));
+   assert.ok(!existsSync(join(workspace,'failed.txt')),'failed child write leaked before merge');
+   await merge('failed');await authored('failed.txt');announce('failed-capture-merge');
+   const cancelled=await held('cancelled','cancelled');
+   const pid=Number(await readFile(join(cancelled.spawned.cwd,'descendant.pid'),'utf8'));
+   const stopped=await call('cancel','cancelled');await cancelled.waiter;
    assert.equal(stopped.control,'interrupt');assert.ok(stopped.status.settled);
-   let stat;try{stat=readFileSync(`/proc/${pid}/stat`,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
-   assert.ok(stat===undefined||stat.split(' ')[2]==='Z','descendant still running after cancel');
-   assert.ok(!existsSync(join(workspace,'cancelled.txt')));
-   await client({kind:'fs',task:parent,command:'merge agents/cancelled'});assert.equal(readFileSync(join(workspace,'cancelled.txt'),'utf8'),'native');phase('cancelled-capture-merge');
-   const blocked=await spawnHeld('blocked-input','B'+'x'.repeat(32767));
-   const interrupted=await tool('cancel','blocked-input');await blocked.waiter;
-   assert.ok(interrupted.status.settled);assert.equal(interrupted.control,'interrupt');phase('blocked-input-cancel');
+   if(process.platform==='linux'){
+    const stat='/proc/'+pid+'/stat';assert.ok(!existsSync(stat)||readFileSync(stat,'utf8').split(' ')[2]==='Z','descendant still running after cancel');
+   }else assert.throws(()=>process.kill(pid,0),error=>error.code==='ESRCH','descendant still running after cancel');
+   assert.ok(!existsSync(join(workspace,'cancelled.txt')),'cancelled child write leaked before merge');
+   await merge('cancelled');await authored('cancelled.txt');announce('cancelled-capture-merge');
+   const blocked=await held('blocked-input','B'+'x'.repeat(32767));
+   const interrupted=await call('cancel','blocked-input');await blocked.waiter;
+   assert.ok(interrupted.status.settled);assert.equal(interrupted.control,'interrupt');announce('blocked-input-cancel');
   }
-  if(scenario==='recursive'){
-   await tool('spawn','recursive','recursive');await succeeded('recursive');
-   await client({kind:'fs',task:parent,command:'merge agents/recursive'});assert.equal(readFileSync(join(workspace,'recursive.txt'),'utf8'),'native');phase('recursive-native-session-merge');
+  if(name==='recursive'){
+   const recursive=await call('spawn','recursive','recursive');requireSucceeded(await call('wait','recursive'));
+   assert.ok(!existsSync(join(recursive.cwd,'.acyclic-sdk')),'coordination metadata entered project history');
+   await merge('recursive');await authored('recursive.txt');await authored('first.txt');announce('recursive-native-session-merge');
   }
-  if(scenario==='resume'){
-   await tool('spawn','retained','first');const original=await succeeded('retained');
-   await closeBridge();await ownerStop();await ownerStart();startBridge(parent);
-   await tool('resume','retained','resumed');const resumed=await succeeded('retained');
-   assert.notEqual(resumed.cwd,original.cwd);assert.ok(!existsSync(join(workspace,'resumed.txt')));
-   await client({kind:'fs',task:parent,command:'merge agents/retained'});assert.equal(readFileSync(join(workspace,'resumed.txt'),'utf8'),'native');phase('resume-recreated-view-merge');
-   assert.equal((await tool('archive','retained')).control,'archive');phase('retained-archived');
+  if(name==='resume'){
+   const original=await call('spawn','retained','first');requireSucceeded(await call('wait','retained'));
+   await stopBridge();await stopOwner();await startOwner();await startBridge();
+   const resumed=await call('resume','retained','resumed');requireSucceeded(await call('wait','retained'));
+   assert.notEqual(resumed.cwd,original.cwd,'retained view was not recreated');
+   assert.ok(!existsSync(join(workspace,'resumed.txt')),'resumed child write leaked before merge');
+   await merge('retained');await authored('resumed.txt');
+   const launch=JSON.parse(await readFile(join(workspace,'native-launch.json'),'utf8'));
+   assert.ok(launch.args.includes('resume')&&launch.args.includes(session));
+   assert.equal((await request({kind:'hook',host:'codex',event:'NativeSession',input:{task:resumed.task}})).id,session);
+   announce('resume-recreated-view-merge');assert.equal((await call('archive','retained')).control,'archive');
   }
-  await closeBridge();await ownerStop();
-  console.log(JSON.stringify({suite:'managed-native-session-'+scenario,native_agent_fixture:true,real_codex_workspace_write_sandbox:true,model_calls:0,cwd_and_discovery:true,outside_denied:true,seconds:(clock()-started)/1000}));
- }catch(error){
-  const agents=join(workspace,'.volumes/agents');
-  if(existsSync(agents))for(const view of readdirSync(agents)){
-   const file=join(agents,view,'.volumes/home/native-error.txt');if(existsSync(file))console.error('FIXTURE_NATIVE_ERROR',view,readFileSync(file,'utf8'));
-  }
-  throw error;
+  await stopBridge();await stopOwner();
+  console.log(JSON.stringify({suite:'managed-native-session-'+name,native_agent_fixture:true,
+   real_codex_workspace_write_sandbox:true,model_calls:0,cwd_and_discovery:true,outside_denied:true}));
  }finally{
-  try{for(const socket of gates)socket.destroy();await gate.close();}
-  finally{try{await closeBridge();}finally{await ownerStop();rmSync(root,{recursive:true,force:true});}}
+  pendingReady?.(fail('readiness owner retired'));
+  for(const gate of gates)gate.destroy();
+  await new Promise((yes,no)=>barrier.close(error=>error?no(error):yes()));
  }
 }
-if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){
+
+// The retained clock control calls the same owner and scenario as the CLI.
+// Only progress observations use this clock; readiness remains event-driven.
+export async function managedSession(argv,clock=()=>performance.now()){
+ try{
+  await withOwnedCase({processes:scope,signal:cancellation?.signal,run:async()=>{
+   const mode=argv[0];
+   if(mode==='host')await host();
+   else if(mode==='effects')await effects(argv[1]);
+   // Only process-tree retirement releases this probe. Closing its parent's
+   // stdin pipe must leave it alive so incomplete cancellation stays visible.
+   else if(mode==='descendant'){
+    const held=new Int32Array(new SharedArrayBuffer(4));
+    readFileSync(0); // Original parent closes stdin before accepting readiness.
+    writeSync(1,'{"type":"descendant-ready"}\n');
+    Atomics.wait(held,0,0);
+   }
+   else await scenario(argv,clock);
+  }});
+ }finally{cancellation?.dispose();}
+}
+
+if(process.argv[1]&&resolve(process.argv[1])===driver){
  try{await managedSession(process.argv.slice(2));}
- catch(error){console.error(`step=managed native session: ${error.stack}; recovery command: node ${fileURLToPath(import.meta.url)} ACYCLIC GRAPHCODER CODEX lifecycle|recursive|resume`);process.exitCode=1;}
+ catch(error){writeSync(2,fail(error.stack??error.message).message+'\n');process.exitCode=1;}
 }

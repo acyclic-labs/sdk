@@ -82,7 +82,8 @@ export async function concurrentSpawn(binaryArg,ownerArg,host,data){
  const diagnosticFile=join(root,'diagnostic.jsonl');writeFileSync(diagnosticFile,'');
  const frames=[];
  const note=(event,detail={})=>frames.push({event,...detail});
- const sockets=new Set(),turns=new Map(),lost=Promise.withResolvers(),failed=Promise.withResolvers();
+ const sockets=new Set(),turns=new Map(),lost=Promise.withResolvers(),retired=Promise.withResolvers(),failed=Promise.withResolvers();
+ let lostSocket,ownerKilled=false;
  // Each native turn keeps its original file open until its peer reaches the
  // same turn. A parked wait can precede the second spawn on the original pipe.
  const server=createServer(socket=>{
@@ -91,14 +92,16 @@ export async function concurrentSpawn(binaryArg,ownerArg,host,data){
   socket.on('data',bytes=>note('socket-frame',{peer,bytes:bytes.toString()}));
   socket.on('error',error=>note('socket-error',{peer,error:error.stack}));
   socket.on('end',()=>note('socket-end',{peer}));
-  socket.on('close',hadError=>note('socket-close',{peer,hadError}));
-  finished(socket,{cleanup:true}).catch(failed.resolve);
+  socket.on('close',hadError=>{note('socket-close',{peer,hadError});if(socket===lostSocket)retired.resolve();});
+  finished(socket,{cleanup:true}).catch(error=>{
+   if(!(ownerKilled&&socket===lostSocket&&error.code==='ECONNRESET'))failed.resolve(error);
+  });
   (async()=>{
    const prompt=await socketLine(socket);
    // No more input follows this prompt; retain EOF/error custody after the
    // line iterator returns, including while a peer or producer is parked.
    socket.resume();
-   if(prompt==='lost'){lost.resolve(socket);return;}
+   if(prompt==='lost'){lostSocket=socket;lost.resolve(socket);return;}
    const [side,turn]=prompt.split(':');assert.ok(['left','right'].includes(side));
    let pair=turns.get(turn);if(!pair){pair=new Map();turns.set(turn,pair);}
    assert.ok(!pair.has(side),'a native turn was duplicated');pair.set(side,socket);
@@ -134,22 +137,26 @@ export async function concurrentSpawn(binaryArg,ownerArg,host,data){
   // answer. The original pipe/process close must reject the outstanding call.
   const waiting=tool('wait','lost').then(value=>({value}),error=>({error}));
   const terminal=waiting.then(result=>{throw new Error(`step=observe held native child: ${JSON.stringify(result.value??result.error?.message)}; recovery=${recovery}`);});
-  const socket=await observe(Promise.race([lost.promise,terminal]));
+  await observe(Promise.race([lost.promise,terminal]));
+  ownerKilled=true;
   bridge.child.kill('SIGKILL');
   note('kill-producer');
   const result=await waiting;
   assert.match(result.error?.message??'',/native coordination (?:input|output|process) closed/);
   const closed=await bridge.closed;
   trace.lost_producer={exit:closed.code,signal:closed.signal,failure:result.error.message};
-  // Release the held child and observe its original settlement through a fresh
-  // connection, so the control leaves no live child behind.
-  socket.end('retired\n');
-  note('release-lost');
+  // plugin/README.md's native process ownership contract and ProcessCustody
+  // (native-runtime/src/process_tree/custody.rs): the spawning MCP server is
+  // the owner. Its death contains the held child without releasing the socket.
+  await observe(retired.promise);
+  note('lost-child-contained');
   const resumed=start(binary,['__mcp',host],{cwd:workspace,env:{...env,
    ACYCLIC_HOST_ARGS:JSON.stringify(parent.flags),ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:parent.task}});
   try{
    const settled=await observe(coordination(resumed,recovery)('wait','lost'));
-   assert.equal(settled.reply.kind,'answered');assert.ok(Object.hasOwn(settled.reply.outcome??{},'Succeeded'));
+   assert.equal(settled.status.settled,true);
+   assert.deepEqual(settled.results,[{outcome:'Cancelled'}]);
+   trace.lost_producer.recovered=settled;
    resumed.child.stdin.end();assert.equal((await resumed.closed).code,0,resumed.stderr);
   }finally{await resumed.stop();}
   await stopOwner();stopOwner=undefined;

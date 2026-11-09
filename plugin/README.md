@@ -151,6 +151,13 @@ Cancel stops and reaps the native child process tree before capturing partial
 writes. Resume re-launches the saved native session in the recreated view.
 Archive freezes the shared child reference permanently.
 
+The MCP server process owns the native children it spawns. Closing its input
+interrupts and reaps its running children; death of that process also contains
+them through the runtime's process custody. Losing this producer rejects its
+outstanding MCP calls. A fresh connection fences the dead owner's process trees
+and settles orphaned turns as cancelled before running queued inputs. The
+GraphCoder workspace owner retains coordination state, not those process trees.
+
 Capture happens at native turn/session boundaries and child process exit.
 Failed or cancelled native tools leave their filesystem state capturable;
 there is no per-tool pending-write ledger or pre/post hook pairing.
