@@ -1,5 +1,6 @@
-use super::*;
-use syn::{ItemEnum, ItemStruct, parse_quote};
+use crate::attr::{EnumAttr, Serde, StructAttr, VariantAttr};
+use quote::quote;
+use syn::{parse_quote, ItemEnum, ItemStruct};
 
 #[test]
 fn deserialization_metadata_preserves_serialization() -> syn::Result<()> {
