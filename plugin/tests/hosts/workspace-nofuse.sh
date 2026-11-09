@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1-}" != --container ]; then
-    source=$(cd -- "$(dirname -- "$0")/../../.." && pwd)
+    source=${E2E_DOCKER_SOURCE:-$(cd -- "$(dirname -- "$0")/../../.." && pwd)}
     # Stock Docker's minimal /dev has no FUSE device. No privileged flags,
     # device forwarding or namespace mount permissions are needed.
     exec docker run --rm \
@@ -21,5 +21,6 @@ fi
 test ! -e /dev/fuse
 printf 'NOFUSE_ENVIRONMENT sha=%s filesystem=%s fuse=absent\n' "$QUALIFICATION_SHA" "$(stat -f -c %T /tmp)"
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends nodejs git ca-certificates
+# The shared process-tree controller is a test-harness dependency.
+apt-get install -y -qq --no-install-recommends nodejs git ca-certificates python3
 node --test --test-concurrency=1 "$(dirname -- "$0")/workspace-nofuse.test.mjs"
