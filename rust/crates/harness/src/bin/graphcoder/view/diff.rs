@@ -51,7 +51,7 @@ fn render(fragment: &DiffFilePage, lines: &mut Vec<Line<'static>>) {
             DiffKind::Modified => "modified",
         };
         let detail = if let Some(bytes) = fragment.omitted_bytes {
-            format!("file too large to diff ({bytes} bytes)")
+            format!("content omitted ({bytes} bytes)")
         } else if fragment.binary {
             "binary file".to_owned()
         } else {

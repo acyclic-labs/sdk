@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/hosting/diff.rs
++++ b/rust/crates/harness/src/hosting/diff.rs
+@@ -171,7 +171,7 @@
+                     // The smallest retry must still contain the next scalar. A
+                     // byte midpoint can fall below a four-byte scalar even when
+                     // that scalar and its actual wire envelope fit the credit.
+-                    patch_bytes = (fragment.patch.len() / 2).max(scalar_bytes);
++                    patch_bytes = fragment.patch.len() / 2;
+                     continue;
+                 }
+                 Err(error) => return Err(credit_error(error)),

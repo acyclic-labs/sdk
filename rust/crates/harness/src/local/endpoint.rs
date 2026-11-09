@@ -36,7 +36,7 @@ fn exchange(error: impl std::fmt::Display) -> Error {
 }
 
 impl Connection {
-    /// A session `unavailable` names no cause: the in-process owner adds the
+    /// An `unavailable` reply names no cause: the in-process owner adds the
     /// one it retained, its stream's poison or else the Actors runtime failure
     /// that closed the session's lifetime.
     pub(super) fn stream_failure(&self, error: impl std::fmt::Display) -> Error {
@@ -58,16 +58,17 @@ impl Connection {
     /// # Errors
     /// The session's failure or the host's refusal.
     pub async fn execute(&self, command: &AgentCommand) -> Result<AgentReply> {
-        let result = exchanged(&self.controls, command).await.map_err(exchange)?;
-        match result {
-            Err(
-                error @ AgentExchangeError::Session(
-                    acyclic_stream::StreamError::Unavailable
-                    | acyclic_stream::StreamError::Refused(_),
-                ),
-            ) => Err(self.stream_failure(error)),
-            result => result
-                .map_err(|error| exchange(format_args!("{} command: {error}", command.kind()))),
+        exchanged(&self.controls, command)
+            .await
+            .map_err(exchange)?
+            .map_err(|error| self.command_failure(command, error))
+    }
+
+    fn command_failure(&self, command: &AgentCommand, error: AgentExchangeError) -> Error {
+        if error.code() == "unavailable" {
+            self.stream_failure(error)
+        } else {
+            exchange(format_args!("{} command: {error}", command.kind()))
         }
     }
 

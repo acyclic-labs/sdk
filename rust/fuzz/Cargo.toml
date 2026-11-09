@@ -24,6 +24,7 @@ report-port = ["dep:acyclic-native-runtime", "dep:serde_json", "dep:tokio"]
 grpc-codegen = ["dep:acyclic-grpc-observability", "dep:prettyplease", "dep:syn"]
 default = ["native"]
 agent = ["dep:acyclic-harness-core"]
+client-files = ["agent", "dep:acyclic-harness-client", "dep:serde_json"]
 experiments = ["agent", "dep:serde_json"]
 observation = ["dep:acyclic-observability", "dep:serde_json"]
 native = ["dep:acyclic-fs", "dep:acyclic-harness", "dep:prost", "dep:serde_json", "owner-record"]
@@ -39,6 +40,7 @@ syn = { version = "=3.0.9", features = ["full", "visit"], optional = true }
 acyclic-proto-build = { path = "../../compatibility", optional = true }
 acyclic-observability = { path = "../crates/observability", features = ["research"], optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
+acyclic-harness-client = { path = "../crates/harness-client", default-features = false, features = ["agents"], optional = true }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, optional = true }
 acyclic-harness = { path = "../crates/harness", default-features = false, features = ["filesystem-local", "native-execution", "grpc"], optional = true }
 libfuzzer-sys = "0.4"
@@ -170,6 +172,15 @@ bench = false
 name = "native_owner_record"
 required-features = ["owner-record"]
 path = "fuzz_targets/native_owner_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_files"
+required-features = ["client-files"]
+path = "fuzz_targets/client_files.rs"
+
 test = false
 doc = false
 bench = false

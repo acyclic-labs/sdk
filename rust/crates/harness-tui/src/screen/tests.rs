@@ -48,25 +48,22 @@ fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
                 std::hint::black_box(crate::Thinking::new(&input.theme, 0).line());
             }
             let areas = screen.render(frame, &input, &mut Viewport::default(), scroll, 0);
+            // A docked panel (2) keeps the tail and its activity visible.
             assert_eq!(
                 areas.animation,
-                hidden == 0 || hidden == 5,
+                matches!(hidden, 0 | 2 | 5),
                 "occluded activity must schedule no animation"
             );
         })
         .unwrap();
     assert_eq!(
         crate::thinking::WORK.with(|work| work.get()),
-        usize::from(hidden == 0 || hidden == 5),
+        usize::from(matches!(hidden, 0 | 2 | 5)),
         "hidden activity must construct no spans"
     );
     assert_eq!(
         ROW_WORK.with(|work| work.get()),
-        if hidden == 1 || hidden == 2 {
-            0
-        } else {
-            height
-        },
+        if hidden == 1 { 0 } else { height },
         "frame must touch only visible rows"
     );
 }

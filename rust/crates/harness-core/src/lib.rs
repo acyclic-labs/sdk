@@ -34,6 +34,7 @@ pub mod heap_layout {
 pub use heap_layout::HeapLayout;
 
 pub mod agent;
+pub mod client_files;
 #[doc(hidden)]
 pub mod command_request;
 #[doc(hidden)]

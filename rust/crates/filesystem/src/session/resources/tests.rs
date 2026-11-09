@@ -62,7 +62,7 @@ async fn subscribe(
         &credential(&resource),
         &resource,
     )?;
-    let changes = StreamPath::new(format!(".acyclic/fs/{}", hex::encode(volume.into_bytes())))?;
+    let changes = crate::session::changes_path(&fs, volume)?;
     let from = streams.tail(changes).await?;
     Ok(
         ChangeProvider::new(fs, streams)?.follow(ResourceFollowRequest {

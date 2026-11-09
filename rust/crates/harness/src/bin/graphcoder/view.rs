@@ -31,6 +31,7 @@ type Failure = Box<dyn std::error::Error>;
 use acyclic_harness::completion::Exit;
 mod diff;
 mod query;
+mod session;
 
 async fn usage(mut query: UsageQuery) -> (UsageQuery, acyclic_harness::Result<bool>) {
     let result = query.advance().await;
@@ -483,8 +484,12 @@ pub async fn run(
     inline: bool,
     resume: bool,
 ) -> Result<(), Failure> {
+    let mut ui = session::Session::open(&conversation).await?;
+    if !resume && ui.open_view().is_some() {
+        ui.select(&conversation, None).await?;
+    }
     let mut tty = Tty::open()?;
-    tty.negotiate(&Environment::capture())?;
+    let profile = tty.negotiate(&Environment::capture())?.clone();
     tty.setup(if inline {
         ScreenMode::Inline
     } else {
@@ -506,11 +511,28 @@ pub async fn run(
     let mut output_rows = Vec::new();
     let catalog = CommandCatalog::builtins()?;
     let mut input = PromptInput::default();
+    ui.config
+        .apply(&mut input, &profile)
+        .map_err(|errors| format!("UI configuration: {errors:?}"))?;
     // The open panel's title and rows; Esc closes it.
     let mut overlay: Option<(&'static str, Vec<Line<'static>>)> = None;
     let mut queries = QueryController::<query::Source>::default();
     let query_loading = [Line::raw("Loading…")];
     let mut query_future = std::pin::pin!(None);
+    if resume {
+        apply_open_view(
+            ui.open_view(),
+            &mut overlay,
+            &mut queries,
+            query_future.as_mut(),
+            &catalog,
+            &input,
+        )?;
+    }
+    let mut files_future = std::pin::pin!(session::follow(
+        Arc::clone(&conversation),
+        ui.snapshot.generation.clone()
+    ));
     let mut usage_future = std::pin::pin!(Some(usage(conversation.usage_query())));
     let mut usage_page = QueryPage::<()>::new(vec![Line::raw("Loading usage…")], None, false);
     let usage_unavailable = [Line::raw("Usage unavailable")];
@@ -552,7 +574,7 @@ pub async fn run(
         }
         let (areas, page) = {
             let status = Line::raw(view.status());
-            let screen = Screen {
+            let mut screen = Screen {
                 header: view.header(),
                 transcript: view.rows(size.width.saturating_sub(1)),
                 terminal: if busy { &output_rows[..] } else { &[] },
@@ -591,18 +613,23 @@ pub async fn run(
                 ..Screen::default()
             };
             let area = Rect::from((Position::ORIGIN, size));
-            let tail = screen.tail_scroll(area, &input);
-            let scroll = if overlay.is_some() || queries.source().is_some() {
-                overlay_top = overlay_top.min(tail);
-                overlay_top
-            } else {
-                tail.saturating_sub(back)
-            };
+            let scroll = screen.tail_scroll(area, &input).saturating_sub(back);
             let mut areas = screen.areas(area, &input);
+            let panel = overlay.is_some() || queries.source().is_some();
+            if panel {
+                overlay_top = overlay_top.min(areas.overlay_tail(screen.overlay.len()));
+                screen.overlay_scroll = overlay_top;
+            }
             terminal.draw(size, |frame| {
                 areas = screen.render(frame, &input, &mut viewport, scroll, now);
             })?;
-            (areas, usize::from(areas.transcript.height).max(1))
+            // Page keys scroll the open panel by its page, else the transcript.
+            let page = if panel {
+                areas.overlay_rows(0)
+            } else {
+                areas.transcript.height
+            };
+            (areas, usize::from(page).max(1))
         };
         // Only inner content cells can advance the query. Reserve the hint;
         // a collapsed panel waits for the existing resize/input event.
@@ -611,6 +638,20 @@ pub async fn run(
             query::load(Arc::clone(&conversation), rows, source.clone())
         });
         tokio::select! {
+            snapshot = &mut files_future => {
+                let snapshot = snapshot?;
+                let layout_changed = ui.snapshot.files.get("layout.json").and_then(Option::as_ref).map(|file| &file.file)
+                    != snapshot.files.get("layout.json").and_then(Option::as_ref).map(|file| &file.file);
+                ui.snapshot = snapshot;
+                ui.project()?;
+                ui.config.apply(&mut input, &profile).map_err(|errors| format!("UI configuration: {errors:?}"))?;
+                if layout_changed {
+                    apply_open_view(ui.open_view(), &mut overlay, &mut queries,
+                        query_future.as_mut(), &catalog, &input)?;
+                    overlay_top = 0;
+                }
+                files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));
+            }
             (query, result) = async {
                 match usage_future.as_mut().as_pin_mut() {
                     Some(query) => query.await,
@@ -668,6 +709,7 @@ pub async fn run(
                 output_rows.reverse();
             }
             batch = keys.next() => {
+                let mut selection_changed = false;
                 for event in batch.ok_or("terminal input ended")?? {
                     let effects = areas
                         .event(&mut input, event, &mut viewport, now, &mut |_| None)
@@ -714,19 +756,16 @@ pub async fn run(
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
                                         return view.exit();
                                     }
-                                    Ok(Some(CommandResolution::Select { query: CommandQuery::Shortcuts })) => {
-                                        queries.close(query_future.as_mut());
-                                        overlay = Some(("Help", View::help(&catalog, &input)));
-                                        overlay_top = 0;
-                                        continue;
-                                    }
-                                    Ok(Some(CommandResolution::Select { query: selected @ (CommandQuery::Diff | CommandQuery::History) })) => {
-                                        overlay = None;
-                                        queries.select(match selected {
-                                            CommandQuery::History => query::Source::History(None),
-                                            _ => query::Source::Diff(None),
-                                        }, query_future.as_mut());
-                                        overlay_top = 0;
+                                    Ok(Some(CommandResolution::Select { query: selected @ (CommandQuery::Shortcuts | CommandQuery::Diff | CommandQuery::History) })) => {
+                                        match ui.select(&conversation, Some(&selected)).await {
+                                            Ok(()) => {
+                                                selection_changed = true;
+                                                apply_open_view(ui.open_view(), &mut overlay, &mut queries,
+                                                    query_future.as_mut(), &catalog, &input)?;
+                                                overlay_top = 0;
+                                            }
+                                            Err(error) => view.notice = Some(error.to_string()),
+                                        }
                                         continue;
                                     }
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Feedback })) => {
@@ -779,11 +818,16 @@ pub async fn run(
                                 view.back = 0;
                                 view.pending_dirty = true;
                             }
-                            InputEffect::Host(Action::Escape) if overlay.is_some() => {
-                                overlay = None;
-                            }
-                            InputEffect::Host(Action::Escape) if queries.source().is_some() => {
-                                queries.close(query_future.as_mut());
+                            InputEffect::Host(Action::Escape) if overlay.is_some() || queries.source().is_some() => {
+                                match ui.select(&conversation, None).await {
+                                    Ok(()) => {
+                                        selection_changed = true;
+                                        apply_open_view(ui.open_view(), &mut overlay, &mut queries,
+                                            query_future.as_mut(), &catalog, &input)?;
+                                        overlay_top = 0;
+                                    }
+                                    Err(error) => view.notice = Some(error.to_string()),
+                                }
                             }
                             InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
                                 view.prompt = None;
@@ -831,6 +875,7 @@ pub async fn run(
                                 if let Some(row) = view.transcript.find(query, before)
                                     .or_else(|| view.transcript.find(query, view.transcript.len()))
                                 {
+                                    let page = usize::from(areas.transcript.height);
                                     view.back = view.transcript.len().saturating_sub(row + page);
                                     view.search = Some((query.to_owned(), row));
                                 }
@@ -838,6 +883,13 @@ pub async fn run(
                             _ => {}
                         }
                     }
+                }
+                if selection_changed {
+                    ui.config.apply(&mut input, &profile)
+                        .map_err(|errors| format!("UI configuration: {errors:?}"))?;
+                    // Retire the older in-flight projection before following
+                    // the cut that supplied this batch's conditional sources.
+                    files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));
                 }
                 input.refresh_completions();
             }
@@ -931,4 +983,26 @@ mod tests {
         }
         Ok(())
     }
+}
+
+fn apply_open_view<F>(
+    selected: Option<&str>,
+    overlay: &mut Option<(&'static str, Vec<Line<'static>>)>,
+    queries: &mut QueryController<query::Source>,
+    pending: std::pin::Pin<&mut Option<F>>,
+    catalog: &CommandCatalog,
+    input: &PromptInput,
+) -> Result<(), Failure> {
+    *overlay = None;
+    match selected {
+        None => queries.close(pending),
+        Some("diff") => queries.select(query::Source::Diff(None), pending),
+        Some("history") => queries.select(query::Source::History(None), pending),
+        Some("shortcuts") => {
+            queries.close(pending);
+            *overlay = Some(("Help", View::help(catalog, input)));
+        }
+        Some(other) => return Err(format!("session view {other:?} is unavailable").into()),
+    }
+    Ok(())
 }

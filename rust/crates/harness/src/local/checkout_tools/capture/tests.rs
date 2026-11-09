@@ -676,6 +676,13 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
     use std::os::unix::fs::PermissionsExt;
 
     let (directory, harness, tools) = fixture().await?;
+    let harness = Arc::new(harness);
+    let connection = harness.connect().await?;
+    let query = acyclic_harness_client::AgentCommand::Diff {
+        agent: connection.root().clone(),
+        page: acyclic_harness_client::AgentPageRequest::new(32, 64 * 1024, None)
+            .map_err(storage)?,
+    };
     let marker = directory.path().join("marker");
     let permissions = std::fs::metadata(&marker).map_err(storage)?.permissions();
     std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0)).map_err(storage)?;
@@ -707,6 +714,19 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
                 .map_err(storage)?
                 .value
                 .is_none()
+        );
+        // Optional display before-images cannot certify an exact empty diff.
+        // Exercise the served client query with its real session credential.
+        let uncertified = connection.exchange(&query).await.map_err(storage)?;
+        assert!(
+            matches!(
+                &uncertified,
+                Err(acyclic_harness_client::AgentExchangeError::Control(
+                    acyclic_harness_client::AgentControlFailure::Refused { code, reason }
+                )) if code == "agent_turn_error"
+                    && reason.contains("workspace diff requires a complete source baseline")
+            ),
+            "uncertified source was reported as an exact diff: {uncertified:?}"
         );
         // Both a pending phase-zero import and an incremental capture must
         // recover lost continuity even when the display source is unreadable.
@@ -770,12 +790,20 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
                 .as_ref(),
             b"before"
         );
+        assert!(matches!(
+            connection.execute(&query).await?,
+            acyclic_harness_client::AgentReply::Diff { items } if items.is_empty()
+        ));
         Ok(())
     }
     .await;
     std::fs::set_permissions(&marker, permissions).map_err(storage)?;
+    drop(connection);
     drop(tools);
-    harness.disconnect().await?;
+    Arc::try_unwrap(harness)
+        .map_err(|_| Error::Conflict("client retained the disconnected harness".into()))?
+        .disconnect()
+        .await?;
     outcome
 }
 

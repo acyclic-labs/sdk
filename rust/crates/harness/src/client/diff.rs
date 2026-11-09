@@ -26,7 +26,9 @@ pub struct DiffLimits {
     pub file_bytes: u64,
     /// Maximum retained unified patch bytes across the volume.
     pub render_bytes: usize,
-    /// Input bytes and diff steps, including compared line bytes and traceback.
+    /// Total input bytes and diff steps, including compared line bytes and traceback.
+    /// Paths with authenticated lengths remain visible as explicit omissions when
+    /// their comparison exceeds this allowance; unknown lengths refuse atomically.
     pub work: usize,
 }
 
@@ -138,7 +140,7 @@ impl DiffView {
             ));
         }
         let mut updates = Vec::new();
-        let mut work = limits.work;
+        let mut work = compute::Work::new(limits.work);
         let (mut count, mut rendered, mut added, mut removed) = (
             self.files.len(),
             self.render_bytes,
@@ -275,43 +277,56 @@ async fn path_diff(
     reader: &dyn ContentResidencyVerifier,
     limits: DiffLimits,
     maximum_render_bytes: usize,
-    work: &mut usize,
+    work: &mut compute::Work,
 ) -> Result<Option<FileDiff>> {
-    Ok(if change.matches_base {
+    if change.matches_base {
         if change.base.is_none() || change.current.is_none() {
             return Err(Error::Invalid("equal diff requires both endpoints".into()));
         }
-        None
-    } else if let Some(bytes) = change
-        .largest_file_bytes
-        .filter(|bytes| *bytes > limits.file_bytes)
-    {
-        let kind = match (&change.base, &change.current) {
-            (None, Some(_)) => DiffKind::Added,
-            (Some(_), None) => DiffKind::Removed,
-            (Some(_), Some(_)) => DiffKind::Modified,
-            (None, None) => {
-                return Err(Error::Invalid("absent diff has a file length".into()));
-            }
-        };
-        Some(FileDiff {
-            kind,
-            binary: false,
-            omitted_bytes: Some(bytes),
-            added: 0,
-            removed: 0,
-            hunks: Vec::new(),
-            patch: String::new(),
-        })
-    } else {
-        let before = read(&change.base, reader, limits.file_bytes, work).await?;
-        let after = read(&change.current, reader, limits.file_bytes, work).await?;
-        FileDiff::between_work(
-            before.as_deref(),
-            after.as_deref(),
-            maximum_render_bytes,
-            work,
-        )?
+        return Ok(None);
+    }
+    // The largest authenticated length bounds both reads. Do not turn a
+    // storage/read failure into an omitted comparison: admit its input first.
+    if let Some(bytes) = change.largest_file_bytes {
+        let endpoints = u64::from(change.base.is_some()) + u64::from(change.current.is_some());
+        if work.remaining == 0
+            || bytes > limits.file_bytes
+            || bytes
+                .checked_mul(endpoints)
+                .is_none_or(|input| input > work.remaining as u64)
+        {
+            return omitted(change, bytes).map(Some);
+        }
+    }
+    let before = read(&change.base, reader, limits.file_bytes, work).await?;
+    let after = read(&change.current, reader, limits.file_bytes, work).await?;
+    let result = FileDiff::between_work(
+        before.as_deref(),
+        after.as_deref(),
+        maximum_render_bytes,
+        work,
+    );
+    match (result, change.largest_file_bytes) {
+        (Err(_), Some(bytes)) if work.exhausted => omitted(change, bytes).map(Some),
+        (result, _) => result,
+    }
+}
+
+fn omitted(change: &DiffPath, bytes: u64) -> Result<FileDiff> {
+    let kind = match (&change.base, &change.current) {
+        (None, Some(_)) => DiffKind::Added,
+        (Some(_), None) => DiffKind::Removed,
+        (Some(_), Some(_)) => DiffKind::Modified,
+        (None, None) => return Err(Error::Invalid("absent diff has a file length".into())),
+    };
+    Ok(FileDiff {
+        kind,
+        binary: false,
+        omitted_bytes: Some(bytes),
+        added: 0,
+        removed: 0,
+        hunks: Vec::new(),
+        patch: String::new(),
     })
 }
 
@@ -365,14 +380,15 @@ async fn read(
     source: &Option<PinnedContextPath>,
     reader: &dyn ContentResidencyVerifier,
     maximum_bytes: u64,
-    work: &mut usize,
+    work: &mut compute::Work,
 ) -> Result<Option<acyclic_stream::OwnedBytes>> {
     match source {
         Some(source) => {
-            if *work == 0 {
+            if work.remaining == 0 {
                 return Err(compute::work_bound());
             }
-            let maximum_bytes = maximum_bytes.min(u64::try_from(*work).unwrap_or(u64::MAX));
+            let maximum_bytes =
+                maximum_bytes.min(u64::try_from(work.remaining).unwrap_or(u64::MAX));
             let (_, bytes) = source.read(reader, maximum_bytes).await?;
             compute::charge(work, bytes.len())?;
             Ok(Some(bytes))

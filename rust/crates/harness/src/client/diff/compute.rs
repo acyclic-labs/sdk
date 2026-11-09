@@ -5,8 +5,27 @@ pub(super) fn work_bound() -> Error {
     Error::Invalid("diff computation work bound exceeded".into())
 }
 
-pub(super) fn charge(work: &mut usize, units: usize) -> Result<()> {
-    *work = work.checked_sub(units).ok_or_else(work_bound)?;
+pub(super) struct Work {
+    pub(super) remaining: usize,
+    pub(super) exhausted: bool,
+}
+
+impl Work {
+    pub(super) const fn new(remaining: usize) -> Self {
+        Self {
+            remaining,
+            exhausted: false,
+        }
+    }
+}
+
+pub(super) fn charge(work: &mut Work, units: usize) -> Result<()> {
+    let Some(remaining) = work.remaining.checked_sub(units) else {
+        work.remaining = 0;
+        work.exhausted = true;
+        return Err(work_bound());
+    };
+    work.remaining = remaining;
     Ok(())
 }
 
@@ -17,7 +36,7 @@ enum Edit<'a> {
     Remove(&'a str),
 }
 
-fn lines<'a>(text: &'a str, work: &mut usize) -> Result<Vec<&'a str>> {
+fn lines<'a>(text: &'a str, work: &mut Work) -> Result<Vec<&'a str>> {
     let mut lines = Vec::new();
     for line in text.split_inclusive('\n') {
         charge(work, 1)?;
@@ -58,7 +77,7 @@ fn step(previous: &Frontier, index: usize, degree: usize, n: isize, m: isize) ->
     }
 }
 
-fn edits<'a>(old: &[&'a str], new: &[&'a str], work: &mut usize) -> Result<Vec<Edit<'a>>> {
+fn edits<'a>(old: &[&'a str], new: &[&'a str], work: &mut Work) -> Result<Vec<Edit<'a>>> {
     if old.is_empty() {
         charge(work, new.len())?;
         return Ok(new.iter().map(|line| Edit::Add(line)).collect());
@@ -133,7 +152,7 @@ fn traceback<'a>(
     trace: &[Frontier],
     old: &[&'a str],
     new: &[&'a str],
-    work: &mut usize,
+    work: &mut Work,
 ) -> Result<Vec<Edit<'a>>> {
     let mut result = Vec::new();
     let (mut x, mut y) = (old.len() as isize, new.len() as isize);
@@ -185,7 +204,7 @@ pub(super) fn text_diff(
     before: &str,
     after: &str,
     maximum: usize,
-    work: &mut usize,
+    work: &mut Work,
     result: &mut FileDiff,
 ) -> Result<()> {
     let old = lines(before, work)?;

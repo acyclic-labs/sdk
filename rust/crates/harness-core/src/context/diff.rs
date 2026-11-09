@@ -87,7 +87,7 @@ pub struct DiffFilePage {
     pub removed: u64,
     /// Binary files have no text patch.
     pub binary: bool,
-    /// Content omitted before reading under the query's file-byte allowance.
+    /// Largest endpoint length when content exceeds the read or computation allowance.
     pub omitted_bytes: Option<u64>,
     /// Whether this file's header was delivered on an earlier page.
     pub continued: bool,
