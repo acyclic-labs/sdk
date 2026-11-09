@@ -31,11 +31,15 @@ test-support = [
 ]
 default = ["grpc"]
 
+http-codec = ["dep:acyclic-protobuf-json", "dep:prost-reflect"]
+
 local = ["dep:rustix", "tokio/time", "tokio/macros"]
 grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros"]
 javascript = ["grpc", "dep:js-sys", "dep:wasm-bindgen-futures"]
 
 [dependencies]
+acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json", optional = true }
+prost-reflect = { workspace = true, optional = true }
 acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }

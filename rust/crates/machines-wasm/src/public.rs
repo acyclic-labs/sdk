@@ -118,7 +118,13 @@ pub(crate) fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
     value.serialize(&serializer).map_err(|e| err(e.to_string()))
 }
 pub(crate) fn provider_error(error: ProviderError) -> JsValue {
-    crate::js_error(provider_error_code(&error), error.to_string())
+    let value = crate::js_error(provider_error_code(&error), error.to_string());
+    if let ProviderError::ForkFailed { phase, results } = error.classification()
+        && let Ok(result) = to_js(&(phase, result_cut_out(*results)))
+    {
+        let _ = js_sys::Reflect::set(&value, &JsValue::from_str("forkResult"), &result);
+    }
+    value
 }
 
 fn provider_error_code(error: &ProviderError) -> &'static str {
@@ -140,6 +146,7 @@ fn provider_error_code(error: &ProviderError) -> &'static str {
         } => "indeterminate",
         ProviderError::DeadlineSourceLost { machine: None, .. } => "unavailable",
         ProviderError::Failed => "failed",
+        ProviderError::ForkFailed { .. } => "fork-failed",
         ProviderError::Cancelled => "cancelled",
     }
 }

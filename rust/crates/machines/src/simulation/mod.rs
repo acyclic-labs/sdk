@@ -16,22 +16,8 @@ enum MemoryIntent {
 
 struct Replay {
     digest: [u8; 32],
-    outcome: MutationOutcome,
+    outcome: Result<MutationOutcome, ProviderError>,
     results: Vec<MachineObservation>,
-}
-
-enum Completion {
-    Single(MutationOutcome),
-    Fork {
-        provenance: Provenance<ForkSource, ForkFidelity>,
-        machines: Vec<MachineObservation>,
-    },
-}
-
-impl From<MutationOutcome> for Completion {
-    fn from(value: MutationOutcome) -> Self {
-        Self::Single(value)
-    }
 }
 
 #[derive(Clone)]
@@ -70,6 +56,8 @@ struct MemoryState {
     checkpoints: BTreeMap<CheckpointId, CheckpointObservation>,
     events: BTreeMap<MachineId, tokio::sync::watch::Sender<Vec<MachineEvent>>>,
     replays: BTreeMap<OperationId, Replay>,
+    #[cfg(any(test, feature = "test-support"))]
+    fork_failure_after: Option<NonZeroU32>,
 }
 
 impl Default for MemoryState {
@@ -80,6 +68,8 @@ impl Default for MemoryState {
             checkpoints: BTreeMap::new(),
             events: BTreeMap::new(),
             replays: BTreeMap::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            fork_failure_after: None,
         }
     }
 }
@@ -116,6 +106,12 @@ impl Default for SimulatedMachines {
 }
 
 impl SimulatedMachines {
+    /// Injects one terminal failure immediately after the indicated child birth.
+    /// The real creation, result retention and parent accounting all run first.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn fail_fork_after(&self, children: NonZeroU32) {
+        self.state.lock().await.fork_failure_after = Some(children);
+    }
     /// Simulates a provider that qualifies images with exactly `capabilities`, for example without [`Capability::LiveFork`] to exercise a caller's fallback path.
     pub fn with_capabilities(capabilities: BTreeSet<Capability>) -> Self {
         Self {
@@ -218,58 +214,110 @@ impl SimulatedMachines {
         }
     }
 
-    async fn apply<F, C>(
+    async fn apply<F>(
         &self,
         key: IdempotencyKey,
         intent: MemoryIntent,
         action: F,
     ) -> Result<MutationOutcome, ProviderError>
     where
-        F: FnOnce(&mut MemoryState) -> Result<C, ProviderError>,
-        C: Into<Completion>,
+        F: FnOnce(&mut MemoryState) -> Result<MutationOutcome, ProviderError>,
     {
         let digest = intent_digest(&intent)?;
         let mut state = self.state.lock().await;
         let operation = Self::operation(key);
         if let Some(replay) = state.replays.get(&operation) {
             return if replay.digest == digest {
-                Ok(replay.outcome.clone())
+                replay.outcome.clone()
             } else {
                 Err(ProviderError::Conflict(
                     "idempotency key is bound to another intent".into(),
                 ))
             };
         }
-        let (outcome, results) = match action(&mut state)?.into() {
-            Completion::Single(outcome) => (outcome, Vec::new()),
-            Completion::Fork {
-                provenance,
-                machines,
-            } => {
-                let revision = std::num::NonZeroU64::new(state.now)
-                    .ok_or_else(|| ProviderError::Rejected("fork settlement revision is empty; recovery: restore the original operation".into()))?;
-                let results = crate::results::NativeResults::open(operation, revision, &machines)?
-                    .cursor()
-                    .cut;
-                (
-                    MutationOutcome::Forked {
-                        provenance,
-                        results,
-                    },
-                    machines,
-                )
-            }
-        };
+        // Install the result owner before admitting any child creation. Each
+        // birth records its observation under this same state lock.
         state.replays.insert(
             operation,
             Replay {
                 digest,
-                outcome: outcome.clone(),
-                results,
+                outcome: Err(ProviderError::OperationIndeterminate(operation)),
+                results: Vec::new(),
             },
         );
-        Ok(outcome)
+        let mut outcome = action(&mut state);
+        if outcome.is_err() {
+            if state
+                .replays
+                .get(&operation)
+                .is_some_and(|replay| !replay.results.is_empty())
+            {
+                outcome = Err(ProviderError::ForkFailed {
+                    phase: OperationPhase::Failed,
+                    results: result_cut(&state, operation)?,
+                });
+            } else {
+                state.replays.remove(&operation);
+                return outcome;
+            }
+        }
+        state
+            .replays
+            .get_mut(&operation)
+            .ok_or_else(|| ProviderError::Rejected("original result owner is missing".into()))?
+            .outcome = outcome.clone();
+        outcome
     }
+}
+
+fn result_cut(
+    state: &MemoryState,
+    operation: OperationId,
+) -> Result<crate::results::ResultCut, ProviderError> {
+    let replay = state
+        .replays
+        .get(&operation)
+        .ok_or_else(|| ProviderError::Rejected("original result owner is missing".into()))?;
+    let revision = std::num::NonZeroU64::new(state.now)
+        .ok_or_else(|| ProviderError::Rejected("fork settlement revision is empty".into()))?;
+    Ok(
+        crate::results::NativeResults::open(operation, revision, &replay.results)?
+            .cursor()
+            .cut,
+    )
+}
+
+/// One atomic birth: a child cannot exist without its retained result entry.
+fn create_child(
+    state: &mut MemoryState,
+    key: IdempotencyKey,
+    value: MachineObservation,
+    parent: Option<MachineId>,
+) -> Result<(), ProviderError> {
+    let operation = SimulatedMachines::operation(key);
+    let replay = state.replays.get_mut(&operation).ok_or_else(|| {
+        ProviderError::Rejected("child creation has no original result owner".into())
+    })?;
+    if let Some(parent) = parent {
+        state
+            .machines
+            .get_mut(&parent)
+            .ok_or_else(|| ProviderError::NotFound(parent.to_string()))?
+            .live_forks += 1;
+    }
+    replay.results.push(value.clone());
+    let id = value.id;
+    let now = value.created_at_unix_ms;
+    state.machines.insert(id, MachineRecord::new(value, parent));
+    event(state, id, EventFact::State(MachineState::Running), now)?;
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(after) = state.fork_failure_after {
+        state.fork_failure_after = NonZeroU32::new(after.get() - 1);
+        if state.fork_failure_after.is_none() {
+            return Err(ProviderError::Failed);
+        }
+    }
+    Ok(())
 }
 
 fn derived_digest(domain: &[u8], key: IdempotencyKey, index: u32) -> [u8; 32] {

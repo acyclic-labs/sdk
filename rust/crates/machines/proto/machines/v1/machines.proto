@@ -259,8 +259,11 @@ enum OperationStatus {
 message OperationState {
   OperationId operation = 1;
   OperationStatus status = 2;
-  // Original committed result, retained with terminal success. Later mutations
-  // of the resource cannot replace this operation's settled observations.
+  // Original committed result. Failed/cancelled forks also retain ForkedMachines
+  // with a cut covering exactly the children created, including an empty cut.
+  // Every child observation is recorded in its creation transaction before the
+  // next child is admitted. Recovery settles that prefix after a producer crash.
+  // Later mutations cannot replace this operation's settled observations.
   MutationOutcome outcome = 3;
 }
 enum MachineStatus {
@@ -320,11 +323,14 @@ message MachineAdmission {
   MachineContract contract = 3;
   Provenance provenance = 4;
 }
-// Constant-sized original admission; children are read only after settlement.
+// Constant-sized original admission; children are recorded at creation and read
+// after settlement, including a terminal failure's partial result cut.
 message MachineAdmissions {
   OperationId operation = 1;
   Provenance provenance = 3;
   uint64 count = 4;
+  // Original source contract, retained for fidelity checking after reply loss.
+  MachineContract contract = 5;
   reserved 2;
   reserved "machines";
 }

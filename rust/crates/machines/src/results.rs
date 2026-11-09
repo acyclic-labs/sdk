@@ -2,7 +2,9 @@
 //!
 //! The physical fork owner stages observations with [`record`]. It includes
 //! [`publication`] in its EXISTING terminal commit, alongside the operation's
-//! successful outcome. This module never commits, dispatches or watches a Machine.
+//! terminal outcome, including failure. Each observation must be recorded in the
+//! child's creation transaction, before admitting another child. Cleanup uses the
+//! same retained cut for success, failure and crash recovery.
 //! The source prefix is shared by Streams; settlement does not recopy its bytes.
 //! Native controllers instead retain their original partition revision and
 //! observations. [`NativeResults`] borrows that retained result without a second
@@ -29,7 +31,7 @@ pub enum Settlement {
     NativeController(NonZeroU64),
 }
 
-/// Immutable identity and extent retained with the original successful outcome.
+/// Immutable identity and extent retained with every original terminal outcome.
 /// Reopening must use the same authenticated owner, operation and cut after
 /// lost acknowledgment. Neither expiry nor this metadata proves physical death.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -105,7 +107,7 @@ pub struct NativeResults<'a, T> {
 }
 
 impl<'a, T> NativeResults<'a, T> {
-    /// Call only after verifying original terminal success and reading its
+    /// Call only after verifying original terminal settlement and reading its
     /// retained outcome/revision, never a later inspection or guest-supplied
     /// array. Accepts the original canonical protobuf observations directly.
     pub fn open(
@@ -170,8 +172,10 @@ struct Observation<T> {
     machine: T,
 }
 
-/// Encodes one ORIGINAL settled observation, in child-index order. Later
-/// inspections of that Machine must never replace this retained result.
+/// Encodes one ORIGINAL birth observation, in child-index order. Include it in
+/// the child's creation transaction before admitting the next child. Recovery
+/// settles this prefix even if creation stops before the requested extent.
+/// Later inspections must never replace this retained result.
 pub fn record(machine: &MachineObservation) -> Result<AppendRecord, ProviderError> {
     serde_json::to_vec(&Observation {
         version: Version::V1,
@@ -208,11 +212,13 @@ fn path(root: &StreamPath, operation: OperationId) -> Result<StreamPath, Provide
 /// prefix even if preparation later appends. No source head reread or checksum
 /// is needed. Staging itself, its admission and its funded custody belong to the
 /// original physical operation owner.
+/// The admitted source must exist even when `count` is zero, so a fork that
+/// fails before its first birth still publishes a verifiable empty cut.
 pub fn publication(
     root: &StreamPath,
     operation: OperationId,
     source: StreamPath,
-    count: NonZeroU64,
+    count: u64,
 ) -> Result<(CommitCondition, CommitMutation), ProviderError> {
     let destination = path(root, operation)?;
     if source == destination {
@@ -225,7 +231,7 @@ pub fn publication(
         CommitMutation::Fork {
             source,
             destination,
-            at_tail: count.get(),
+            at_tail: count,
             records: Vec::new(),
             exclude: Vec::new(),
         },
@@ -258,8 +264,7 @@ impl SettledResults {
         let origin = head
             .origin
             .ok_or_else(|| invalid("result publication has no original fork cut"))?;
-        if count == 0
-            || origin.inherited.commit_id != settlement
+        if origin.inherited.commit_id != settlement
             || origin.inherited.forked_at != count
             || head.tail < count
         {
@@ -323,6 +328,59 @@ impl SettledResults {
             machines,
             next,
         })
+    }
+}
+
+/// Destroys exactly the children in an original cut, with O(page credit) memory.
+/// This is the single cleanup path for successful, failed and recovered forks.
+/// Every destroy key is derived from the original operation and child index;
+/// interruption resumes safely by calling this again with the same cut. A
+/// failure is returned without hiding an uncertain destroy behind a new key.
+pub async fn cleanup(
+    provider: &dyn crate::MachinesProvider,
+    cut: ResultCut,
+    credit: NonZeroU32,
+) -> Result<(), ProviderError> {
+    let mut cursor = ResultCursor { cut, from: 0 };
+    loop {
+        let page = provider.read_results(cursor, credit).await?;
+        if page.cursor != cursor {
+            return Err(invalid("cleanup result cursor was substituted"));
+        }
+        let count = u64::try_from(page.machines.len())
+            .map_err(|_| invalid("cleanup page extent exceeds address space"))?;
+        let (allowed, _) = cursor.interval(cut, credit)?;
+        if count > allowed.end - allowed.start || count == 0 && cursor.from < cut.count {
+            return Err(invalid("cleanup result page violates its extent or credit"));
+        }
+        let end = cursor.from + count;
+        let next = (end < cut.count).then_some(ResultCursor {
+            from: end,
+            ..cursor
+        });
+        if page.next != next {
+            return Err(invalid("cleanup continuation was substituted"));
+        }
+        for (index, machine) in page.machines.into_iter().enumerate() {
+            use sha2::{Digest as _, Sha256};
+            let index = cursor.from
+                + u64::try_from(index)
+                    .map_err(|_| invalid("cleanup child index exceeds address space"))?;
+            let mut hash = Sha256::new();
+            hash.update(b"acyclic-machines-result-cleanup-v1");
+            hash.update(cut.operation.as_bytes());
+            hash.update(index.to_be_bytes());
+            let key = crate::IdempotencyKey::from_digest(hash.finalize().into());
+            if provider.destroy_machine(machine.id, key).await?
+                != crate::MutationOutcome::MachineDestroyed(machine.id)
+            {
+                return Err(invalid("cleanup destroy result was substituted"));
+            }
+        }
+        let Some(next) = next else {
+            return Ok(());
+        };
+        cursor = next;
     }
 }
 

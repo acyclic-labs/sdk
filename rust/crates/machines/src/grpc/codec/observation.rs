@@ -465,7 +465,17 @@ pub(in super::super) fn decode_operation_observation(
             ));
         }
     };
-    if phase != OperationPhase::Succeeded && value.outcome.is_some() {
+    if phase != OperationPhase::Succeeded
+        && value.outcome.is_some()
+        && !(matches!(phase, OperationPhase::Failed | OperationPhase::Cancelled)
+            && matches!(
+                value
+                    .outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.result.as_ref()),
+                Some(wire::mutation_outcome::Result::Forked(_))
+            ))
+    {
         return Err(ProviderError::Rejected(
             "non-successful operation contains a settled result".into(),
         ));

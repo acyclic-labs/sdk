@@ -75,6 +75,16 @@ pub(super) async fn wait<E: RpcEndpoint>(
     key: IdempotencyKey,
     operation: OperationId,
 ) -> Result<Option<wire::MutationOutcome>, ProviderError> {
+    let (phase, outcome) = wait_terminal(provider, key, operation).await?;
+    observed_outcome(key, phase).ok_or(ProviderError::Indeterminate(key))??;
+    Ok(outcome)
+}
+
+pub(super) async fn wait_terminal<E: RpcEndpoint>(
+    provider: &Provider<E>,
+    key: IdempotencyKey,
+    operation: OperationId,
+) -> Result<(OperationPhase, Option<wire::MutationOutcome>), ProviderError> {
     obs::operation!(@tracing::Level::DEBUG, "acyclic.machines.wait", observation, async {
         let mut stream = provider
             .client()
@@ -96,9 +106,8 @@ pub(super) async fn wait<E: RpcEndpoint>(
             let phase = decode_operation_observation(&value, operation)
                 .map_err(|_| ProviderError::Indeterminate(key))?
                 .phase;
-            if let Some(outcome) = observed_outcome(key, phase) {
-                outcome?;
-                return Ok(value.outcome);
+            if phase != OperationPhase::Pending {
+                return Ok((phase, value.outcome));
             }
         }
         Err(ProviderError::Indeterminate(key))
@@ -138,7 +147,11 @@ pub(super) fn decode_recovered(
         )
         .map(MutationOutcome::VolumeAttached),
         ResultKind::Checkpoint(value) => settled_checkpoint(value, outcome),
-        ResultKind::Forked(value) => settled_fork(&decode_fork_admissions(&value)?, outcome),
+        ResultKind::Forked(value) => settled_fork(
+            &decode_fork_admissions(&value)?,
+            OperationPhase::Succeeded,
+            outcome,
+        ),
         ResultKind::Suspend(value) => settled_change(
             outcome,
             MutationOutcome::Suspended(decode_machine(value.machine.as_ref())?),
@@ -223,27 +236,30 @@ pub(super) fn settled_checkpoint(
 }
 
 /// One original operation admission, independent of aggregate child bytes.
-pub(super) struct ForkAdmitted {
-    pub(super) operation: OperationId,
-    pub(super) provenance: Provenance<ForkSource, ForkFidelity>,
-    pub(super) count: u64,
+pub struct ForkAdmitted {
+    pub operation: OperationId,
+    pub provenance: Provenance<ForkSource, ForkFidelity>,
+    pub count: u64,
+    pub contract: MachineContract,
 }
 
-pub(super) fn decode_fork_admissions(
+/// Shared client/server admission check, including Edge's HTTP/JSON boundary.
+/// The source contract is required and its declared fidelity must match exactly.
+pub fn decode_fork_admissions(
     value: &wire::MachineAdmissions,
 ) -> Result<ForkAdmitted, ProviderError> {
     let operation = decode_operation(value.operation.as_ref())?;
     let provenance = decode_provenance(value.provenance.as_ref())?;
-    if value.count == 0
-        || matches!(provenance.source, ForkSource::Checkpoint(_))
-            && provenance.inherited != ForkFidelity::MemoryAndDisk
-    {
+    let contract = decode_contract(value.contract.as_ref())?;
+    check_fork_fidelity(&contract, provenance)?;
+    if value.count == 0 {
         return Err(ProviderError::Rejected("fork admission extent or provenance is invalid; recovery: recover the original operation".into()));
     }
     Ok(ForkAdmitted {
         operation,
         provenance,
         count: value.count,
+        contract,
     })
 }
 
@@ -295,13 +311,26 @@ pub(super) async fn settle_fork<E: RpcEndpoint>(
     if admitted.provenance.source != source || admitted.count != u64::from(count.get()) {
         return Err(ProviderError::Indeterminate(key));
     }
-    let outcome = wait(provider, key, admitted.operation).await?;
-    settled_fork(&admitted, outcome).map_err(|_| ProviderError::Indeterminate(key))
+    let (phase, outcome) = wait_terminal(provider, key, admitted.operation).await?;
+    fork_outcome(&admitted, phase, outcome, key)
+}
+
+pub(super) fn fork_outcome(
+    admitted: &ForkAdmitted,
+    phase: OperationPhase,
+    outcome: Option<wire::MutationOutcome>,
+    key: IdempotencyKey,
+) -> Result<MutationOutcome, ProviderError> {
+    match settled_fork(admitted, phase, outcome) {
+        value @ (Ok(_) | Err(ProviderError::ForkFailed { .. })) => value,
+        Err(_) => Err(ProviderError::Indeterminate(key)),
+    }
 }
 
 /// Settles a checked fork admission against its original terminal outcome.
 pub(super) fn settled_fork(
     admitted: &ForkAdmitted,
+    phase: OperationPhase,
     outcome: Option<wire::MutationOutcome>,
 ) -> Result<MutationOutcome, ProviderError> {
     let Some(wire::mutation_outcome::Result::Forked(value)) =
@@ -314,11 +343,23 @@ pub(super) fn settled_fork(
     let results = decode_result_cut(value.results.as_ref())?;
     if decode_provenance(value.provenance.as_ref())? != admitted.provenance
         || results.operation != admitted.operation
-        || results.count != admitted.count
+        || results.count > admitted.count
+        || phase == OperationPhase::Succeeded && results.count != admitted.count
     {
         return Err(ProviderError::Rejected(
             "fork settlement was substituted; recovery: recover the original operation".into(),
         ));
+    }
+    match phase {
+        OperationPhase::Succeeded => {}
+        OperationPhase::Failed | OperationPhase::Cancelled => {
+            return Err(ProviderError::ForkFailed { phase, results });
+        }
+        _ => {
+            return Err(ProviderError::Rejected(
+                "fork has no terminal settlement".into(),
+            ));
+        }
     }
     Ok(MutationOutcome::Forked {
         provenance: admitted.provenance,

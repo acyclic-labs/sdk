@@ -82,6 +82,7 @@ mod provider;
 mod recovery;
 use codec::*;
 use recovery::*;
+pub use recovery::{ForkAdmitted, decode_fork_admissions};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod credential_tests;

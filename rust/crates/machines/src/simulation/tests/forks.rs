@@ -1,6 +1,80 @@
 use super::*;
 
 #[tokio::test]
+async fn failed_fork_cuts_every_birth_and_cleanup_replays_after_recovery()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::results::{ResultCursor, cleanup};
+    // Both physical fork intents use the same birth retention and cleanup path.
+    for live in [false, true] {
+        for k in 1..4 {
+            let provider = SimulatedMachines::default();
+            let MutationOutcome::Created(parent) = provider.create(request(key(0x60))).await?
+            else {
+                unreachable!("original create");
+            };
+            let MutationOutcome::Checkpointed(checkpoint) =
+                provider.checkpoint(parent.id, key(0x61)).await?
+            else {
+                unreachable!("original checkpoint");
+            };
+            provider.fail_fork_after(NonZeroU32::new(k).unwrap()).await;
+            let count = NonZeroU32::new(4).unwrap();
+            let outcome = if live {
+                provider.fork_machine(parent.id, count, key(0x62)).await
+            } else {
+                provider.fork(checkpoint.id, count, key(0x62)).await
+            };
+            let Err(ProviderError::ForkFailed { phase, results }) = &outcome else {
+                let leaked = provider.list_machines(None, 16).await?.machines.len() - 1;
+                panic!("failed fork stranded {leaked} children without a cut: {outcome:?}");
+            };
+            assert_eq!(*phase, OperationPhase::Failed);
+            assert_eq!(results.count, u64::from(k));
+            assert_eq!(
+                provider.inspect_operation(results.operation).await?.phase,
+                *phase
+            );
+            // Lose the original result handle. The retained operation owns both
+            // the same failure and its immutable child observations.
+            let recovered = provider.clone().recover(key(0x62)).await;
+            assert_eq!(recovered, outcome);
+            let cursor = ResultCursor {
+                cut: *results,
+                from: 0,
+            };
+            let children = provider.read_results(cursor, count).await?.machines;
+            let expected = (0..k)
+                .map(|index| SimulatedMachines::machine(key(0x62), index))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                children.iter().map(|child| child.id).collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(
+                provider.list_machines(None, 16).await?.machines.len(),
+                usize::try_from(k)? + 1
+            );
+            cleanup(&provider, *results, NonZeroU32::MIN).await?;
+            // A cleanup reply can also be lost. Identical derived destroy keys
+            // recover the original destroys rather than dispatching new ones.
+            cleanup(&provider.clone(), *results, two()).await?;
+            for child in &children {
+                assert_eq!(
+                    provider.inspect_machine(child.id).await?.state,
+                    MachineState::Destroyed
+                );
+            }
+            assert_eq!(
+                provider.read_results(cursor, count).await?.machines,
+                children
+            );
+            provider.destroy_machine(parent.id, key(0x63)).await?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn settled_fork_pages_keep_original_custody_and_credit_after_recovery()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::results::{ResultCursor, Settlement};

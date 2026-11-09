@@ -732,16 +732,9 @@ async fn live_fork(
     {
         return Err("a fork source with live forks was not refused as LiveForks".into());
     }
-    for (suffix, child) in [(0x31, first), (0x32, second)] {
-        if provider
-            .destroy_machine(child.id, key(suffix)?)
-            .await
-            .map_err(|error| error.to_string())?
-            != MutationOutcome::MachineDestroyed(child.id)
-        {
-            return Err("live fork child join substituted its outcome".into());
-        }
-    }
+    crate::results::cleanup(provider, *results, NonZeroU32::MIN)
+        .await
+        .map_err(|error| error.to_string())?;
     if !machine
         .contract
         .capabilities
