@@ -4,6 +4,78 @@ use crate::kernel::allocation::retained::Retained;
 use crate::{AuthorityStoreError, AuthorityWork, Fs, WorkCounters};
 use std::sync::Mutex;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn file_batch_candidates_preserve_original_custody() -> Result<(), Box<dyn std::error::Error>>
+{
+    crate::initialize_test_native_io();
+    let cancellation = CancellationToken::new();
+    for folded in [false, true] {
+        for pending in [false, true] {
+            for create_only in [false, true] {
+                let fs = Fs::memory();
+                let mut config =
+                    crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
+                if folded {
+                    config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
+                }
+                let workspace = fs
+                    .create_workspace_with_config(
+                        "batch-custody",
+                        config,
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await?
+                    .value;
+                let original =
+                    crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                        .map_err(|(error, _)| error)?;
+                let foreign =
+                    crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                        .map_err(|(error, _)| error)?;
+                let mut transaction = workspace
+                    .begin_transaction(IdempotencyKey::new(), &original, &cancellation)
+                    .await?;
+                if pending {
+                    transaction
+                        .write(
+                            "/prior",
+                            acyclic_stream::OwnedBytes::from_static(b"keep"),
+                            &original,
+                            &cancellation,
+                        )
+                        .await?;
+                }
+                let before = transaction.checkout.root().file_table;
+                let original_before = original.receipt();
+                let foreign_before = foreign.receipt();
+                let files = [("/new", acyclic_stream::OwnedBytes::from_static(b"changed"))];
+                let result = if create_only {
+                    transaction
+                        .create_batch(&[], &files, &foreign, &cancellation)
+                        .await
+                } else {
+                    transaction
+                        .write_batch(&[], &files, &foreign, &cancellation)
+                        .await
+                };
+                assert!(matches!(
+                    result,
+                    Err(WorkspaceError::Filesystem(FsError::NativeKernel(
+                        crate::NativeTreeMaterializationError::InvalidLayout
+                    )))
+                ));
+                assert_eq!(transaction.checkout.root().file_table, before);
+                assert_eq!(transaction.checkout.has_pending_mutations(), pending);
+                assert_eq!(original.receipt(), original_before);
+                assert_eq!(foreign.receipt(), foreign_before);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) struct Prefunded {
     pub(crate) budget: WorkBudget,
     pub(crate) held: Mutex<Option<(Retained<Vec<u8>>, u64)>>,

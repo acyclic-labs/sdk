@@ -201,6 +201,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Self, FsError> {
+        if let Some(original) = accounting.native_work() {
+            self.validate_native_work(original)?;
+        }
         let custody = Self::checkout_custody(accounting, cancellation)?;
         let copied = WorkCounters {
             bytes_copied: crate::foundation::usize_to_u64(size_of::<Proof>()),
