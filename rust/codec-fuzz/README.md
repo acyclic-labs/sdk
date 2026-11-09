@@ -797,6 +797,13 @@ Removing canonical-byte rejection from the production decoder must make this
 oracle fail on `live-update-noncanonical`; omitting the oracle dispatch misses
 that mutation.
 
+Run `node rust/proofs/qualify.mjs actors-live-update-canonical` from the repository
+root to prove all three outcomes with the shared runner. The retained production
+mutation removes only canonical-byte rejection. The prior oracle misses it, the
+unchanged current oracle rejects it at its semantic assertion, and restored
+production passes the retained Actors corpus. The runner restores both source
+and oracle even when compilation or replay fails and records their phase hashes.
+
 The shared log-frame oracle also passes arbitrary caller bodies through both
 narrow and wide writers before parsing candidate frames. Every writer output
 must be admitted by the slice and finite-reader APIs. This catches reject-all
