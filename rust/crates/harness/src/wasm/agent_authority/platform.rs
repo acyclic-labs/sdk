@@ -1,9 +1,6 @@
 //! Thin adapter over the authenticated platform's invocation-owned capability.
 use super::*;
-use acyclic_auth::{
-    contract::CallerContext,
-    operation::{Context, Stopped},
-};
+use acyclic_auth::{contract::CallerContext, operation::Context};
 use acyclic_stream::BoxProviderFuture;
 use js_sys::{Function, Promise};
 use serde::de::DeserializeOwned;
@@ -39,57 +36,6 @@ struct Platform {
     trust_closed: Function,
     derive: Function,
     checkpoint: Function,
-}
-
-struct Clock {
-    owner: JsValue,
-    now: Function,
-    expires: Function,
-}
-
-impl acyclic_auth::operation::Clock for Clock {
-    fn now_unix_millis(&self) -> std::result::Result<u64, Stopped> {
-        self.now
-            .call0(&self.owner)
-            .ok()
-            .and_then(|value| from_js(value).ok())
-            .ok_or(Stopped::Cancelled)
-    }
-
-    fn expires_at(
-        &self,
-        deadline: u64,
-    ) -> std::result::Result<acyclic_auth::operation::StopFuture, Stopped> {
-        // Register eagerly on the original owner; cancellation owns exactly this
-        // registration, never the invocation or remote physical operation.
-        let registration = crate::wasm::cancel::Cancel::new().map_err(|_| Stopped::Cancelled)?;
-        let promise = self
-            .expires
-            .call2(
-                &self.owner,
-                &js_sys::BigInt::from(deadline),
-                &registration.signal,
-            )
-            .map_err(|_| Stopped::Cancelled)?
-            .dyn_into::<Promise>()
-            .map_err(|_| Stopped::Cancelled)?;
-        Ok(Box::pin(async move {
-            let _registration = registration;
-            stop(promise).await
-        }))
-    }
-}
-
-async fn stop(promise: Promise) -> Stopped {
-    match JsFuture::from(promise)
-        .await
-        .ok()
-        .and_then(|value| value.as_string())
-        .as_deref()
-    {
-        Some("deadline") => Stopped::Deadline,
-        _ => Stopped::Cancelled,
-    }
 }
 
 impl Platform {
@@ -301,24 +247,11 @@ pub(super) fn open(owner: JsValue) -> Result<WasmAgentAuthority, JsValue> {
     }
     let stopped = field("stopped")?.dyn_into::<Promise>()?;
     let clock = field("clock")?;
-    let context = if clock.is_undefined() {
-        // Event-only authority remains explicitly unqualified for child budgets.
-        Context::from_stopped(admission.deadline_unix_millis, stop(stopped))
-    } else {
-        let method = |name: &str| {
-            js_sys::Reflect::get(&clock, &JsValue::from_str(name))?.dyn_into::<Function>()
-        };
-        let clock = Clock {
-            now: method("nowUnixMilliseconds")?,
-            expires: method("expiresAt")?,
-            owner: clock,
-        };
-        Context::from_clock(
-            admission.deadline_unix_millis,
-            stop(stopped),
-            Arc::new(clock),
-        )
-    };
+    let context = acyclic_auth::operation::javascript::from_promise(
+        admission.deadline_unix_millis,
+        stopped,
+        (!clock.is_undefined()).then_some(clock),
+    )?;
     let platform = Arc::new(Platform {
         check: field("check")?.dyn_into()?,
         trust_changed: field("trustChanged")?.dyn_into()?,

@@ -1,5 +1,6 @@
 //! Lossless adapter for the public JavaScript CredentialProvider contract.
 use super::*;
+use crate::operation::javascript::Cancel;
 use js_sys::{Function, JsString, Reflect};
 use std::task::{Context, Poll};
 use wasm_bindgen::{JsCast, prelude::*};
@@ -70,14 +71,6 @@ pub fn provider(callback: Function) -> CredentialProvider {
 }
 
 struct Source(Function);
-struct Cancel(Option<AbortController>);
-impl Drop for Cancel {
-    fn drop(&mut self) {
-        if let Some(controller) = self.0.take() {
-            controller.abort();
-        }
-    }
-}
 
 impl CredentialSource for Source {
     fn resolve(&self) -> CredentialResolution<'_> {
