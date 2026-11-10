@@ -23,6 +23,8 @@ use acyclic_stream::{
 };
 use std::sync::Arc;
 
+#[path = "wired/input_wait.rs"]
+mod input_wait;
 #[path = "wired/preparation.rs"]
 mod preparation;
 #[path = "wired/settlement.rs"]

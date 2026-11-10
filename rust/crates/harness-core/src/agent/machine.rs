@@ -850,6 +850,19 @@ pub(super) fn failed_step(
     Ok(PreparedStep { step, checkpoint })
 }
 
+// A parked turn can ingest messages/notices at its next model boundary. Other
+// queued inputs retain their own turn and cannot release an input wait.
+fn wake_input(state: &AgentState) -> bool {
+    if control(state).input {
+        matches!(
+            state.queued.front().map(|input| &input.input),
+            Some(TurnInput::Message { .. } | TurnInput::Notice { .. })
+        )
+    } else {
+        !state.queued.is_empty()
+    }
+}
+
 fn finalize_step(
     mut state: AgentState,
     mut outs: Vec<Out>,
@@ -857,7 +870,26 @@ fn finalize_step(
     cursor: u64,
     child_wakes: Vec<ChildWake>,
 ) -> Result<Step, Error> {
-    let queued = !state.queued.is_empty() || state.overflow.is_some();
+    // Retire admitted boundary input before choosing the next actor alarm.
+    for out in &outs {
+        if let Out::Steered(through) = out {
+            state.steered_through = state.steered_through.max(*through);
+            state.queued.retain(|input| {
+                input.inbox >= *through
+                    || !matches!(
+                        input.input,
+                        TurnInput::Message { .. } | TurnInput::Notice { .. }
+                    )
+            });
+            if let Some(range) = &mut state.pending_notices {
+                range.start = range.start.max(*through);
+                if range.start >= range.end {
+                    state.pending_notices = None;
+                }
+            }
+        }
+    }
+    let queued = wake_input(&state) || (!control(&state).input && state.overflow.is_some());
     let approval_ready = approval_position(&state).is_some();
     let pending = state.archive_pending.len();
     let before = control(&state);
@@ -908,22 +940,6 @@ fn finalize_step(
     let mut sequence = state.conversation_tail;
     for out in &outs {
         match out {
-            Out::Steered(through) => {
-                state.steered_through = state.steered_through.max(*through);
-                state.queued.retain(|input| {
-                    input.inbox >= *through
-                        || !matches!(
-                            input.input,
-                            TurnInput::Message { .. } | TurnInput::Notice { .. }
-                        )
-                });
-                if let Some(range) = &mut state.pending_notices {
-                    range.start = range.start.max(*through);
-                    if range.start >= range.end {
-                        state.pending_notices = None;
-                    }
-                }
-            }
             Out::Conversation(_) => {
                 sequence = sequence
                     .checked_add(1)
@@ -936,6 +952,7 @@ fn finalize_step(
             Out::Roster(digest) => state.roster = Some(*digest),
             Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
+            | Out::Steered(_)
             | Out::Archive { .. }
             | Out::Spawn { .. }
             | Out::GoalCompleted { .. } => {}
@@ -1145,7 +1162,7 @@ async fn run<T: TurnDriver + ?Sized>(
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<(), Error> {
     let approval = approval_position(state);
-    let queued = !state.queued.is_empty();
+    let queued = wake_input(state);
     let approval_ready = approval.is_some();
     let before = control(state);
     let picked = kernel::pick(before, alarm_wake, queued, approval_ready);

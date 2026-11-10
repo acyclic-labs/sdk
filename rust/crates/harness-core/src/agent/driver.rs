@@ -1060,6 +1060,17 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         }
                         None => 0,
                     };
+                    // ModelStarted, rather than turn settlement, establishes
+                    // which replies this request already read. Publish that
+                    // frontier with the park so a subsequent input wait cannot
+                    // release itself on the same retained reply.
+                    let outs = open
+                        .journal
+                        .steering_snapshot(turn)
+                        .await
+                        .map_err(host_error)?
+                        .map(|snapshot| vec![Out::Steered(snapshot.through)])
+                        .unwrap_or_default();
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
                             inbox,
@@ -1070,7 +1081,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             notices: notices.clone(),
                         })?),
                         reserved_children,
-                        outs: Vec::new(),
+                        outs,
                         wait: Wait::Until(until),
                         drops: None,
                     });
