@@ -226,23 +226,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "buf.lock",
         "buf.gen.yaml",
         "rust/crates/proto-codegen",
-        "scripts/generate-proto.mjs",
-        "scripts/proto-codegen.mjs",
-        "scripts/native-family.mjs",
-        "scripts/build-native-family.mjs",
-        "scripts/assemble-native-family.mjs",
-        "scripts/archive-utils.mjs",
-        "scripts/contract-targets.mjs",
-        "scripts/filesystem-napi-types.mjs",
-        "scripts/build-wasm.mjs",
-        "scripts/generate.mjs",
-        "scripts/package-closure.mjs",
-        "scripts/generate-contracts.mjs",
-        "scripts/check-baselines.mjs",
-        "scripts/check-compatibility-digests.mjs",
-        "scripts/generated-bindings.mjs",
-        "scripts/ensure-bun.ps1",
-        "scripts/ensure-bun.sh",
+        "scripts",
     ] {
         roots.insert(path.to_owned());
     }
@@ -260,35 +244,12 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "STEP native-source-patches failed: {error}; recovery: correct package.json patchedDependencies and run bun scripts/generate.mjs {key}"
     ))?;
     for path in [
-        format!("scripts/build-{key}-native.mjs"),
-        format!("scripts/{key}-napi-types.mjs"),
-        format!("scripts/assemble-{key}-native-package.mjs"),
         format!("{package_path}/package.json"),
         format!("{package_path}/tsconfig.json"),
         format!("{package_path}/src"),
         format!("{package_path}/generated/proto"),
     ] {
         roots.insert(path);
-    }
-    // Both native families include the Actors dependency and its generated contracts.
-    for path in [
-        "scripts/actors-napi-types.mjs",
-        "scripts/generate-actors.mjs",
-        "scripts/generate-actors-authorization.mjs",
-        "scripts/generate-actors-routes.mjs",
-        "scripts/generate-actors-rpc-inventory.mjs",
-    ] {
-        roots.insert(path.to_owned());
-    }
-    if key == "stream" {
-        for path in [
-            "scripts/generate-stream-authorization.mjs",
-            "scripts/generate-stream-rpc-inventory.mjs",
-            "scripts/generate-stream-http-contract.mjs",
-            "scripts/generate-stream-token-operations.mjs",
-        ] {
-            roots.insert(path.to_owned());
-        }
     }
     Ok(
         json!({"schema":"acyclic.native-family.v1", "key":key, "rustPackageName":package.name.to_string(), "version":package.version.to_string(), "rustTarget":library.name, "manifestRelative":manifest, "packageRelative":format!("{package_path}/package.json"), "packageDirectory":package_path, "companionDirectory":napi.companion_directory, "wasmPackageName":napi.wasm_package, "wasm":{"artifact":wasm_library.name, "outName":napi.wasm_output_name, "targetDirectory":napi.wasm_target_directory, "features":napi.wasm_features, "noDefaultFeatures":napi.wasm_no_default_features}, "npmPackage":napi.npm_package, "targets":napi.targets, "features":napi.build_features, "buildScript":format!("scripts/build-{key}-native.mjs"), "sourceRoots":roots.into_iter().collect::<Vec<_>>() }),
