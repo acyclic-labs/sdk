@@ -327,20 +327,21 @@ impl StockExecution<'_> {
                     .any(|notice| notice.source == "tools" && notice.kind == "tools.changed")
             })
         });
-        let definitions_match = if historical {
-            self.stock
-                .tools
-                .fixed_definitions(self.stock.tool_scope.grants(), io)?
-                .iter()
-                .all(|fixed| {
-                    request
-                        .tools
-                        .binary_search_by(|retained| retained.name.cmp(&fixed.name))
-                        .is_ok_and(|index| request.tools[index] == *fixed)
-                })
-        } else {
-            request.tools == tools
-        };
+        let definitions_match = request.compose_tools
+            || if historical {
+                self.stock
+                    .tools
+                    .fixed_definitions(self.stock.tool_scope.grants(), io)?
+                    .iter()
+                    .all(|fixed| {
+                        request
+                            .tools
+                            .binary_search_by(|retained| retained.name.cmp(&fixed.name))
+                            .is_ok_and(|index| request.tools[index] == *fixed)
+                    })
+            } else {
+                request.tools == tools
+            };
         if request.summary != self.summary.is_some()
             || request.model != self.stock.model
             || (!request.compose_tools && !definitions_match)
