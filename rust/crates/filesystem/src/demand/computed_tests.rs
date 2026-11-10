@@ -476,7 +476,7 @@ fn computed_idle_cost_is_independent_of_agent_count() {
     }
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn computed_mounted_override_removal_preserves_the_original_data_decision() {
     for committed in [false, true] {
