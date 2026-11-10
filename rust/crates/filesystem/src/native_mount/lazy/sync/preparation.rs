@@ -52,7 +52,9 @@ where
             .await?;
         let mut paths = input.vec(removals.len())?;
         paths.extend(removals.into_iter().map(|(path, _)| path));
-        let operation = selected.map_or(fresh_operation, |(_, _, operation)| operation);
+        let operation = selected
+            .as_ref()
+            .map_or(fresh_operation, |(_, _, operation)| *operation);
         let mut effects = match selected {
             Some((destination, plan, _)) => Some(
                 self.lazy

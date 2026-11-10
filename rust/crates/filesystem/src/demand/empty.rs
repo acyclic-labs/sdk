@@ -6,7 +6,16 @@ use crate::kernel::{KernelAccounting, Owned, OwnedSourceChunk};
 #[derive(Clone, Copy, Default)]
 pub struct Empty;
 
+impl Empty {
+    /// Empty immutable source cut, with no allocation or captured state.
+    pub const fn reference(&self) -> SourceReference {
+        SourceReference::new(*b"acyclic:empty:v1", 0)
+    }
+}
 impl DemandSource for Empty {
+    fn identity(&self) -> [u8; 16] {
+        self.reference().identity
+    }
     fn watch<W: FsWork + Send>(
         &self,
         _: std::sync::Arc<dyn SourceChangeSink>,
@@ -20,11 +29,9 @@ impl DemandSource for Empty {
             .map(|()| Some(Box::new(EmptyWatch) as Box<dyn SourceWatch>));
         work.finish(result, &ctx)
     }
-    fn reference(&self) -> SourceReference {
-        SourceReference {
-            identity: *b"acyclic:empty:v1",
-            epoch: 0,
-        }
+    fn reference(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceReference, DemandError> {
+        ctx.check()?;
+        Ok(self.reference())
     }
 
     async fn lookup<W: FsWork + Send>(

@@ -15,13 +15,15 @@ impl LocalCoreStateStore {
             if current.as_ref().map_or(0, |state| state.revision) != expected {
                 return Ok(false);
             }
-            let prior_origin = current.as_ref().and_then(|state| state.fork_origin);
+            let prior_origin = current
+                .as_ref()
+                .and_then(|state| state.fork_origin.as_ref());
             if prior_origin.is_some() || replacement.fork_origin.is_some() {
                 work.charge(crate::WorkCounters {
                     items_examined: 1,
                     ..Default::default()
                 })?;
-                let Some(origin) = replacement.fork_origin else {
+                let Some(origin) = &replacement.fork_origin else {
                     return Ok(false);
                 };
                 if replacement.schema_version != crate::lazy_workspace::LAZY_STATE_SCHEMA

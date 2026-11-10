@@ -117,13 +117,13 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
 pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorkspaceState {
     let shadows = [3_u8; 32];
     serde_json::from_value(serde_json::json!({
-        "schema_version": 10,
+        "schema_version": 11,
         "revision": revision,
         "workspace_id": workspace_id,
         "parent_workspace_id": null,
         "fork_origin": null,
         "selected_import_roots": null,
-        "source": crate::demand::SourceReference { identity: [1; 16], epoch: 0 },
+        "source": crate::demand::SourceReference { components: acyclic_stream::OwnedBytes::new(),  identity: [1; 16], epoch: 0 },
         "overlay": LazyOverlayId::from_bytes([2; 32]),
         "shadows": shadows,
         "pending_remove": null,
@@ -449,7 +449,7 @@ pub(super) fn prepared_origin_fixture(parent: &LazyWorkspaceState) -> LazyWorksp
     let snapshot = crate::LazySnapshotRef::new(
         parent.workspace_id,
         crate::GenerationId::new(Digest::from_bytes([0xa2; 32])),
-        parent.source,
+        parent.source.clone(),
         parent.overlay,
         parent.shadows,
     );
@@ -461,7 +461,7 @@ pub(super) fn prepared_origin_fixture(parent: &LazyWorkspaceState) -> LazyWorksp
             config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
             phase: crate::LazyForkPhase::Prepared,
         }),
-        source: parent.source,
+        source: parent.source.clone(),
         overlay: parent.overlay,
         shadows: parent.shadows,
         ..lazy_state(WorkspaceId::from_bytes([0xa4; 16]), 1)

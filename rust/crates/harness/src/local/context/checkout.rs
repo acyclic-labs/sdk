@@ -150,7 +150,7 @@ impl LocalHarness {
         let mut found = Vec::new();
         for (index, path) in paths.iter().enumerate() {
             match view
-                .read_at_snapshot(cut, &format!("/{path}"), None, maximum, &mut accounting)
+                .read_at_snapshot(&cut, &format!("/{path}"), None, maximum, &mut accounting)
                 .await
             {
                 Ok((chunk, _)) => found.push((index, chunk.bytes.as_ref().to_vec())),
@@ -215,7 +215,7 @@ impl LocalHarness {
                 continue;
             }
             let (chunk, _allocation) = view
-                .read_at_snapshot(cut, &format!("/{path}"), None, remaining, &mut accounting)
+                .read_at_snapshot(&cut, &format!("/{path}"), None, remaining, &mut accounting)
                 .await?;
             remaining = remaining
                 .checked_sub(chunk.bytes.as_ref().len() as u64)
@@ -271,7 +271,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
             let Some(stat) = self
                 .directory
                 .view
-                .stat_at_snapshot(cut, &format!("/{path}"), &mut accounting)
+                .stat_at_snapshot(&cut, &format!("/{path}"), &mut accounting)
                 .await?
             else {
                 return Ok(None);

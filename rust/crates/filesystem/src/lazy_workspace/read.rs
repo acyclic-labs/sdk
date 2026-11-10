@@ -34,7 +34,6 @@ impl<
             .inspect_unauthored(
                 &mut checkout.value,
                 path,
-                None,
                 InspectBasis {
                     unobserved: true,
                     ..InspectBasis::default()
@@ -104,21 +103,19 @@ impl<
     /// Reads a regular file at an immutable cut and reports source participation.
     pub async fn read_at_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         path: &str,
         range: Option<crate::ByteRange>,
         maximum: u64,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(OwnedSourceChunk, bool), LazyWorkspaceError> {
-        let (lookup, used, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
+        let (lookup, used, guard) = self.lookup_at_snapshot(&cut, path, ctx).await?;
         let Some(lookup) = lookup else {
             crate::kernel::retire_allocation(guard, 0, ctx)?;
             return Err(LazyWorkspaceError::NotFound);
         };
         let source = matches!(lookup, LazyLookup::Source { .. });
-        let result = if source && cut.source != self.source.reference() {
-            Err(LazyWorkspaceError::StaleSource)
-        } else if lookup.stat().kind != SourceNodeKind::RegularFile {
+        let result = if lookup.stat().kind != SourceNodeKind::RegularFile {
             Err(LazyWorkspaceError::NotRegularFile)
         } else {
             self.read_resolved(&lookup, path, range, maximum, ctx)
@@ -132,12 +129,12 @@ impl<
     /// whose source alias has no entry in the authored namespace.
     pub async fn read_file_at_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         file_id: FileId,
         maximum: u64,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         let mut checkout = self
             .checkout(
                 crate::model::GenerationSelector::Exact(cut.authored_generation),
@@ -231,7 +228,7 @@ impl<
                     if let Some(range) = range {
                         self.source
                             .read_range(
-                                *source,
+                                source.clone(),
                                 &namespace.value,
                                 node.version,
                                 range.offset,
@@ -243,7 +240,7 @@ impl<
                     } else {
                         self.source
                             .read_link(
-                                *source,
+                                source.clone(),
                                 &namespace.value,
                                 node.version,
                                 maximum,

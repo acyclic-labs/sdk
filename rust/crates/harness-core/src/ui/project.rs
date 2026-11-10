@@ -1,8 +1,16 @@
 use super::{Error, Result, UiPath};
-use crate::reader::{Listing, Want};
-use crate::{AgentPath, AgentRecord, ConversationEntry, Phase, Reader, StatusRecord};
-use acyclic_harness_core::{conversation::FileRef, executor::TurnOutput};
+use crate::agent::{AgentPath, Phase, StatusRecord};
+use acyclic_stream::{StreamPath, demand::Want};
 use std::ops::Range;
+
+/// The borrowed page data needed by the projection, independent of cache ownership.
+#[derive(Clone, Copy)]
+pub struct Children<'a> {
+    /// One direct children page; never a flattened subtree.
+    pub children: &'a [StreamPath],
+    /// Whether another provider page exists.
+    pub more: bool,
+}
 
 /// Immutable provider cut. Implementations borrow cached/pinned values and do
 /// no IO; `Computed` can supply a server cut without changing the view.
@@ -14,53 +22,7 @@ pub trait Cut {
     /// One conversation entry's rendered text, from pinned file bytes.
     fn turn(&self, sequence: u64) -> Result<String>;
     /// Exactly one cached `children_page`, never a flattened subtree.
-    fn children(&self, page: u32) -> Option<&Listing>;
-}
-
-/// Reader-backed cut plus a lookup of immutable conversation file bytes. The
-/// lookup must use the full FileRef, including its generation, and never IO.
-pub struct ReaderCut<'a> {
-    /// Reader's sole cache, retained by the caller for this render.
-    pub reader: &'a Reader,
-    /// Selected agent.
-    pub agent: &'a AgentPath,
-    /// Already resident immutable output text; absence asks the caller to read it.
-    pub file: &'a dyn Fn(&FileRef) -> Option<String>,
-}
-impl Cut for ReaderCut<'_> {
-    fn status(&self) -> Result<StatusRecord> {
-        let stream = self.agent.status()?;
-        let tail = self.reader.cache().tail(&stream).ok_or(Error::Pending)?;
-        let bytes = tail
-            .checked_sub(1)
-            .and_then(|n| self.reader.cache().record(&stream, n))
-            .ok_or(Error::Pending)?;
-        Ok(StatusRecord::decode(bytes)?)
-    }
-    fn tail(&self) -> Option<u64> {
-        self.agent
-            .conversation()
-            .ok()
-            .and_then(|p| self.reader.cache().tail(&p))
-    }
-    fn turn(&self, sequence: u64) -> Result<String> {
-        let stream = self.agent.conversation()?;
-        let bytes = self
-            .reader
-            .cache()
-            .record(&stream, sequence)
-            .ok_or(Error::Pending)?;
-        let entry = ConversationEntry::decode(bytes)?;
-        let output = (self.file)(&entry.output).ok_or(Error::Pending)?;
-        let output: TurnOutput = serde_json::from_str(&output)?;
-        Ok(output.text)
-    }
-    fn children(&self, page: u32) -> Option<&Listing> {
-        self.agent
-            .children()
-            .ok()
-            .and_then(|p| self.reader.cache().listing(&p, page))
-    }
+    fn children(&self, page: u32) -> Option<Children<'_>>;
 }
 
 /// One directory entry; a child directory is an explicit navigation link.
@@ -94,6 +56,7 @@ pub enum Affected {
 
 /// Stateless default projection. Page size chunks work; it never limits history
 /// or child count. Construction has no per-agent store reads or background work.
+#[derive(Clone, Copy)]
 pub struct View {
     page_size: u32,
 }
@@ -216,7 +179,7 @@ impl View {
                 let end = offset.saturating_add(nodes.len());
                 let next = if end < listing.children.len() {
                     Some((u64::from(page) << 32) | end as u64)
-                } else if listing.next.is_some() {
+                } else if listing.more {
                     page.checked_add(1).map(|n| u64::from(n) << 32)
                 } else {
                     None
@@ -296,7 +259,7 @@ impl View {
     fn child_links(&self, cut: &impl Cut, page: u32, index: bool) -> Result<String> {
         let listing = cut.children(page).ok_or(Error::Pending)?;
         let mut text = "# Children\n\n".to_owned();
-        for path in &listing.children {
+        for path in listing.children {
             let child = AgentPath::try_from(path.as_str().to_owned())?;
             text.push_str(&format!(
                 "- [{}]({}{}/)\n",
@@ -305,7 +268,7 @@ impl View {
                 child.id()
             ));
         }
-        if listing.next.is_some() {
+        if listing.more {
             text.push_str(&format!(
                 "\n[More children]({}{}.md)\n",
                 if index { "children/pages/" } else { "" },

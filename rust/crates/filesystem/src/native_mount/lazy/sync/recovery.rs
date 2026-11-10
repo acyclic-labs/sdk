@@ -25,9 +25,11 @@ where
             .removals
             .lock()
             .map_err(|_| MountSourceError::Stale)?
-            .publication;
-        if let (Some((operation, proof)), Some((_, _, requested))) = (remembered, selected)
-            && (operation != requested || proof != selected_proof)
+            .publication
+            .clone();
+        if let (Some((operation, proof)), Some((_, _, requested))) =
+            (remembered.as_ref(), selected.as_ref())
+            && (operation != requested || proof != &selected_proof)
         {
             return Err(MountSourceError::Stale.into());
         }
@@ -43,9 +45,9 @@ where
                 .has_retained_operation()
                 .then(|| checkout.retained_operation_id())
         };
-        let operation = remembered.map(|(operation, _)| operation);
+        let operation = remembered.as_ref().map(|(operation, _)| *operation);
         let committed = match operation
-            .or(selected.map(|(_, _, operation)| operation))
+            .or(selected.as_ref().map(|(_, _, operation)| *operation))
             .or(retained)
         {
             Some(operation) => self
@@ -60,9 +62,13 @@ where
             None => None,
         };
         if let Some((operation, generation)) = committed {
-            let proof = remembered.and_then(|(_, proof)| proof).or(selected
-                .filter(|(_, _, requested)| *requested == operation)
-                .and(selected_proof));
+            let proof = remembered
+                .as_ref()
+                .and_then(|(_, proof)| proof.clone())
+                .or(selected
+                    .as_ref()
+                    .filter(|(_, _, requested)| *requested == operation)
+                    .and(selected_proof.clone()));
             return self
                 .recover_committed_publication(
                     publication,
@@ -72,7 +78,7 @@ where
                         generation,
                         proof,
                         retained,
-                        remembered.map(|(id, _)| id),
+                        remembered.as_ref().map(|(id, _)| *id),
                     ),
                 )
                 .await
@@ -115,20 +121,20 @@ where
         let (operation, generation, proof, retained, remembered) = committed;
 
         let context = self
-            .publication_context(operation, Some(generation), proof, accounting)
+            .publication_context(operation, Some(generation), proof.clone(), accounting)
             .await?;
         *publication.acknowledged = Some(crate::NativePublicationSnapshot {
-            context,
+            context: context.clone(),
             operation: Some(operation),
             generation,
         });
         if retained == Some(operation) {
-            let published = self.publish_checkout(publication, context).await?;
+            let published = self.publish_checkout(publication, context.clone()).await?;
             if published.operation() != Some(operation) || published.generation() != generation {
                 return Err(MountSourceError::Indeterminate.into());
             }
         }
-        self.finish_publication(operation, generation, proof, context, accounting)
+        self.finish_publication(operation, generation, proof, context.clone(), accounting)
             .await?;
         if remembered == Some(operation) {
             self.finish_detached_publication(publication.work)?;
@@ -137,7 +143,7 @@ where
         self.retire_settled_publication(operation, generation, accounting)
             .await?;
         Ok(crate::NativePublicationSnapshot {
-            context,
+            context: context.clone(),
             operation: Some(operation),
             generation,
         })
@@ -156,7 +162,7 @@ where
         let (operation, proof) = remembered;
 
         let context = self
-            .publication_context(operation, None, proof, accounting)
+            .publication_context(operation, None, proof.clone(), accounting)
             .await?;
         self.complete_publication(publication, (context, operation, proof), accounting)
             .await

@@ -332,7 +332,7 @@ impl NativeDemandSource {
         work: &mut CallbackWork,
     ) -> Result<SourceDirectoryPage, DemandError> {
         work.started_io(self.directory_page_work(maximum)?)?;
-        self.check(source, work)?;
+        self.check(&source, work)?;
         if self.excluded.excludes(directory) {
             return Err(DemandError::Absent);
         }
@@ -431,7 +431,7 @@ impl NativeDemandSource {
         };
         let mut lease = SourceDirectoryPublication {
             source: self.clone(),
-            reference: source,
+            reference: source.clone(),
             cursor,
             state: Some(state),
             restore,
@@ -442,11 +442,11 @@ impl NativeDemandSource {
         let state = lease.state.as_mut().ok_or(DemandError::StaleCursor)?;
         let entries = self.page_entries(state, maximum as usize, work)?;
         let next = state.has_next(entries.range.end).then(|| SourceCursor {
-            source,
+            source: source.clone(),
             token: lease.cursor.token,
             native: Some(lease.cursor.clone().erase()),
         });
-        self.check(source, work)?;
+        self.check(&source, work)?;
         if self.metadata(directory, work)?.as_ref().map(version) != Some(observed) {
             *lease
                 .cursor

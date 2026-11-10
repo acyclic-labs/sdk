@@ -409,6 +409,7 @@ mod source_bound_lost_ack {
             b"unread source",
         )?;
         let reference = SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity: [61; 16],
             epoch: 4,
         };
@@ -495,7 +496,7 @@ mod source_bound_lost_ack {
             .await?
             .value,
         );
-        assert_eq!(source.reference(), reference);
+        assert_eq!(source.as_ref().reference(), reference);
         let mut accounting = budget.accounting(&cancellation);
         let result = LazyWorkspace::attach(
             &reopened,

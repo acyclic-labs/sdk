@@ -1,9 +1,13 @@
 impl DemandSource for NativeDemandSource {
-    fn reference(&self) -> SourceReference {
-        SourceReference {
-            identity: self.inner.identity,
-            epoch: self.inner.epoch.load(Ordering::Acquire),
-        }
+    fn identity(&self) -> [u8; 16] {
+        self.inner.identity
+    }
+    fn reference(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
+        accounting.check()?;
+        Ok(self.reference())
     }
     fn watch<W: FsWork + Send>(
         &self,
@@ -45,7 +49,7 @@ impl DemandSource for NativeDemandSource {
                     allocation_operations: u64::from(path.depth() != 0),
                     ..WorkCounters::UNCHARGED
                 })?;
-                provider.check(source, context)?;
+                provider.check(&source, context)?;
                 provider.observe_parent(path, context)?;
                 let mut node = provider.metadata(path, context)?.as_ref().map(Self::node);
                 if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
@@ -53,7 +57,7 @@ impl DemandSource for NativeDemandSource {
                 {
                     node = provider.metadata(path, context)?.as_ref().map(Self::node);
                 }
-                provider.check(source, context)?;
+                provider.check(&source, context)?;
                 Ok(node)
             },
         )
@@ -143,7 +147,7 @@ impl DemandSource for NativeDemandSource {
             cancellation,
             Ok(WorkCounters::UNCHARGED),
             move |provider, path, context| {
-                provider.check(source, context)?;
+                provider.check(&source, context)?;
                 if provider.excluded.excludes(path) {
                     return Err(DemandError::Absent);
                 }
@@ -165,7 +169,7 @@ impl DemandSource for NativeDemandSource {
                 if provider.metadata(path, context)?.as_ref().map(version) != Some(expected) {
                     return Err(DemandError::StaleVersion);
                 }
-                provider.check(source, context)?;
+                provider.check(&source, context)?;
                 Ok(bytes)
             },
         )
@@ -202,6 +206,13 @@ pub(crate) fn callback_work(
 }
 
 impl NativeDemandSource {
+    /// Current native namespace and invalidation epoch; no backing is allocated.
+    pub fn reference(&self) -> SourceReference {
+        SourceReference::new(
+            self.inner.identity,
+            self.inner.epoch.load(Ordering::Acquire),
+        )
+    }
     fn link_bytes(
         &self,
         relative: &DemandPath,

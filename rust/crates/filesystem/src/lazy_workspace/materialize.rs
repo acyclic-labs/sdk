@@ -388,7 +388,7 @@ impl<
             .await?;
         let result = async {
             // A second live source binding is not a rename. Never admit directory hard links.
-            if let Some(node) = self.source_lookup(source, &old.value, ctx).await? {
+            if let Some(node) = self.source_lookup(&source, &old.value, ctx).await? {
                 if self.source_file_id(&node.file_identity, ctx)? == id {
                     return Err(crate::FsError::FileIdentityCollision.into());
                 }

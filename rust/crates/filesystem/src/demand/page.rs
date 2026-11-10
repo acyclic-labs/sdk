@@ -50,6 +50,17 @@ impl SourceDirectoryPage {
         Self::stateless(owned, next, version, accounting)
     }
 
+    pub(super) fn routed(
+        mut self,
+        source: &SourceReference,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<Self, DemandError> {
+        self.next = self
+            .next
+            .map(|cursor| cursor.routed(source, ctx))
+            .transpose()?;
+        Ok(self)
+    }
     /// Constructs a page without a producer transaction.
     pub fn stateless(
         mut entries: crate::kernel::Owned<Vec<SourceDirectoryEntry>>,

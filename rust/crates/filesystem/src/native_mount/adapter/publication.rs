@@ -48,7 +48,7 @@ impl<A: 'static, O: 'static> SharedCheckoutState<A, O> {
             Some(retained) if retained == operation => Ok(self
                 .publication_evidence
                 .as_ref()
-                .map(|(context, _, _, _)| *context)),
+                .map(|(context, _, _, _)| context.clone())),
             Some(_) => Err(MountSourceError::Stale),
         }
     }

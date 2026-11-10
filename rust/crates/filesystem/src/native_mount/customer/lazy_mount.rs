@@ -172,7 +172,7 @@ where
                 cause: E::from(cause),
                 accounting_failure: None,
                 source_acknowledged: true,
-                publication: Some(Box::new(publication)),
+                publication: Some(Box::new(publication.clone())),
             })?;
         Ok(publication)
     }

@@ -5,6 +5,7 @@ async fn native_root_admission_denies_owned_memory_before_native_io() -> TestRes
     acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
     let reference = SourceReference {
+        components: acyclic_stream::OwnedBytes::new(),
         identity: [32; 16],
         epoch: 1,
     };
@@ -22,7 +23,7 @@ async fn native_root_admission_denies_owned_memory_before_native_io() -> TestRes
             std::borrow::Cow::Owned(path),
             FilesystemProfile::Portable,
             VolumeLimits::default(),
-            Some(reference),
+            VolumeLimits::default(),
             None,
             budget,
             &cancellation,
@@ -45,7 +46,7 @@ async fn native_root_admission_denies_owned_memory_before_native_io() -> TestRes
         std::borrow::Cow::Owned(directory.path().to_path_buf()),
         FilesystemProfile::Portable,
         VolumeLimits::default(),
-        Some(reference),
+        Some(reference.clone()),
         None,
         FINITE_BUDGET,
         &cancellation,
@@ -69,6 +70,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     let before = work.live_allocation_bytes();
     let (caller_path, caller_guard) = work.path(&root, None)?;
     let reference = SourceReference {
+        components: acyclic_stream::OwnedBytes::new(),
         identity: [92; 16],
         epoch: 18,
     };
@@ -76,7 +78,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
         std::borrow::Cow::Borrowed(std::path::Path::new(&caller_path)),
         FilesystemProfile::Portable,
         VolumeLimits::default(),
-        Some(reference),
+        Some(reference.clone()),
         None,
         &work,
         work.cancellation(),
@@ -91,7 +93,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     let namespace = requested("")?;
     assert!(
         source
-            .lookup(reference, &namespace, &work, work.cancellation())
+            .lookup(reference.clone(), &namespace, &work, work.cancellation())
             .await?
             .is_some()
     );
@@ -100,13 +102,13 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     assert_eq!(advanced.epoch, reference.epoch + 1);
     assert!(matches!(
         source
-            .lookup(reference, &namespace, &work, work.cancellation())
+            .lookup(reference.clone(), &namespace, &work, work.cancellation())
             .await,
         Err(DemandError::StaleSource)
     ));
     assert!(
         source
-            .lookup(advanced, &namespace, &work, work.cancellation())
+            .lookup(advanced.clone(), &namespace, &work, work.cancellation())
             .await?
             .is_some()
     );
@@ -114,7 +116,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     std::fs::create_dir(&root)?;
     assert!(matches!(
         source
-            .lookup(advanced, &namespace, &work, work.cancellation())
+            .lookup(advanced.clone(), &namespace, &work, work.cancellation())
             .await,
         Err(DemandError::SourceUnavailable)
     ));

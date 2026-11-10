@@ -84,6 +84,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
     };
     let limits = crate::VolumeLimits::default();
     let source = SourceReference {
+        components: acyclic_stream::OwnedBytes::new(),
         identity: [2; 16],
         epoch: 3,
     };
@@ -101,7 +102,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
         let cut = LazySnapshotRef::new(
             WorkspaceId::from_bytes([1; 16]),
             generation,
-            source,
+            source.clone(),
             LazyOverlayId::from_bytes([8; 32]),
             LazyShadowId::from_bytes([9; 32]),
         );
@@ -116,7 +117,9 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
                 )?;
                 let phase = match phase_tag {
                     0 => LazyDirectoryPhase::Source(None),
-                    1 => LazyDirectoryPhase::Source(Some(SourceCursor::detached(source, 11))),
+                    1 => {
+                        LazyDirectoryPhase::Source(Some(SourceCursor::detached(source.clone(), 11)))
+                    }
                     2 => LazyDirectoryPhase::Authored(None),
                     _ => {
                         let encoding = crate::kernel::NameEncoding::native_for_profile(profile);

@@ -51,10 +51,14 @@ impl Provider {
 impl ViewProvider for Provider {
     type Snapshot = Bytes;
     type Record = u64;
+    fn identity(&self) -> [u8; 16] {
+        [7; 16]
+    }
     fn reference(&self) -> SourceReference {
         SourceReference {
             identity: [7; 16],
             epoch: self.epoch.load(Ordering::SeqCst),
+            components: acyclic_stream::OwnedBytes::new(),
         }
     }
     fn snapshot(
@@ -253,7 +257,7 @@ async fn computed_lazy_overlay_and_fork_use_one_demand_path() {
     let (root, _) = LazyWorkspace::attach(
         &fs,
         "computed-root",
-        source,
+        source.clone(),
         MemoryLazyWorkspaceStore::default(),
         crate::VolumeInitialization {
             config: VolumeConfig::portable(crate::Lifecycle::Ephemeral),
@@ -346,23 +350,35 @@ async fn computed_lazy_overlay_and_fork_use_one_demand_path() {
 async fn computed_exact_versions_ranges_and_routed_root_pages() {
     let provider = Provider::new();
     let view = computed(&provider);
-    let source = view.reference();
+    let source = reference(&view);
     let cancel = CancellationToken::new();
     let node = view
-        .lookup(source, &path("/index.md"), WorkBudget::UNBOUNDED, &cancel)
+        .lookup(
+            source.clone(),
+            &path("/index.md"),
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
         .await
         .unwrap()
         .value
         .unwrap();
     let page = view
-        .list_page(source, &path("/"), None, 1, WorkBudget::UNBOUNDED, &cancel)
+        .list_page(
+            source.clone(),
+            &path("/"),
+            None,
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
         .await
         .unwrap()
         .value;
     assert_eq!(page.entries[0].node, node);
     let file = view
         .open_file(
-            source,
+            source.clone(),
             &path("/index.md"),
             node.version,
             WorkBudget::UNBOUNDED,
@@ -375,7 +391,7 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
     assert_eq!(file.read_range(1, 2, ctx!()).unwrap().bytes.as_ref(), b"bc");
     assert!(matches!(
         view.read_range(
-            view.reference(),
+            reference(&view),
             &path("/index.md"),
             node.version,
             0,
@@ -396,7 +412,7 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
     );
     let first = routed
         .list_page(
-            routed.reference(),
+            reference(&routed),
             &path("/"),
             None,
             1,
@@ -410,7 +426,7 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
     assert_eq!(first.entries[0].name.as_bytes(), b"ui");
     let last = routed
         .list_page(
-            routed.reference(),
+            reference(&routed),
             &path("/"),
             first.next,
             1,
@@ -491,7 +507,7 @@ async fn computed_mounted_override_removal_preserves_the_original_data_decision(
         let (root, _) = LazyWorkspace::attach(
             &fs,
             "mounted-computed",
-            source,
+            source.clone(),
             MemoryLazyWorkspaceStore::default(),
             crate::VolumeInitialization {
                 config: VolumeConfig::portable(crate::Lifecycle::Ephemeral),
@@ -573,18 +589,30 @@ async fn computed_mounted_override_removal_preserves_the_original_data_decision(
 async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
     let provider = Provider::new();
     let view = computed(&provider);
-    let source = view.reference();
+    let source = reference(&view);
     let cancel = CancellationToken::new();
     let direct_file = view
-        .lookup(source, &path("/index.md"), WorkBudget::UNBOUNDED, &cancel)
+        .lookup(
+            source.clone(),
+            &path("/index.md"),
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
         .await
         .unwrap();
     let direct_root = view
-        .lookup(source, &path("/"), WorkBudget::UNBOUNDED, &cancel)
+        .lookup(source.clone(), &path("/"), WorkBudget::UNBOUNDED, &cancel)
         .await
         .unwrap();
     let direct_page = view
-        .list_page(source, &path("/"), None, 1, WorkBudget::UNBOUNDED, &cancel)
+        .list_page(
+            source.clone(),
+            &path("/"),
+            None,
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
         .await
         .unwrap();
     let routed = Routed::new(
@@ -593,10 +621,10 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
         view,
         crate::VolumeLimits::default(),
     );
-    let source = routed.reference();
+    let source = reference(&routed);
     let file = routed
         .lookup(
-            source,
+            source.clone(),
             &path("/ui/index.md"),
             WorkBudget::UNBOUNDED,
             &cancel,
@@ -607,7 +635,7 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
     assert_eq!(file.work.bytes_hashed, direct_file.work.bytes_hashed + 48);
     let page = routed
         .list_page(
-            source,
+            source.clone(),
             &path("/ui"),
             None,
             1,
@@ -621,11 +649,18 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
         direct_page.work.bytes_hashed + 48 * page.value.entries.len() as u64
     );
     let root = routed
-        .lookup(source, &path("/"), WorkBudget::UNBOUNDED, &cancel)
+        .lookup(source.clone(), &path("/"), WorkBudget::UNBOUNDED, &cancel)
         .await
         .unwrap();
     let root_page = routed
-        .list_page(source, &path("/"), None, 1, WorkBudget::UNBOUNDED, &cancel)
+        .list_page(
+            source.clone(),
+            &path("/"),
+            None,
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
         .await
         .unwrap();
     let root_hash = (b"acyclic:routed:directory:v1".len() + 32 + 32 + b"ui".len()) as u64;
@@ -649,13 +684,13 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
         };
         let error = if lookup {
             routed
-                .lookup(source, &path("/ui/index.md"), budget, &cancel)
+                .lookup(source.clone(), &path("/ui/index.md"), budget, &cancel)
                 .await
                 .unwrap_err()
                 .error
         } else {
             routed
-                .list_page(source, &path("/ui"), None, 1, budget, &cancel)
+                .list_page(source.clone(), &path("/ui"), None, 1, budget, &cancel)
                 .await
                 .unwrap_err()
                 .error
@@ -668,4 +703,14 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
             })
         ));
     }
+}
+
+fn reference<D: DemandSource>(source: &D) -> SourceReference {
+    let cancel = CancellationToken::new();
+    source
+        .reference(&mut KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        ))
+        .unwrap()
 }

@@ -253,8 +253,13 @@ pub trait DemandSource: Send + Sync {
     fn overlay(&self, _components: &[crate::kernel::LogicalName]) -> SourceOverlay {
         SourceOverlay::CopyOnWrite
     }
+    /// Stable namespace identity. This performs no IO and captures no cut.
+    fn identity(&self) -> [u8; 16];
     /// Current opaque source reference.
-    fn reference(&self) -> SourceReference;
+    fn reference(
+        &self,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError>;
 
     /// Resolve only the requested path. `None` is known absence.
     fn lookup<W: crate::facade::FsWork + Send>(

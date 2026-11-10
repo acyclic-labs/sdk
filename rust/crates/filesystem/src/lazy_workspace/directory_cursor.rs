@@ -3,7 +3,7 @@ use crate::kernel::{
     CanonicalDecodeError, CanonicalInvariant, Decoder, EncodeAllocationStep, EncodeWorkStep,
     Encoder, ReadAllocationStep,
 };
-const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v1\0";
+const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v2\0";
 #[cfg(feature = "test-support")]
 #[path = "directory_cursor_fuzz.rs"]
 /// On-demand checks of the funded directory continuation codec.
@@ -74,11 +74,12 @@ fn encode_fields(
 ) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
     let size = DOMAIN.len()
         + 2
-        + 109
+        + 85
+        + cursor.cut.source.encoded_len()
         + cursor.cut.authored_generation.object_id().encoded_len()
         + directory.len()
         + match &cursor.phase {
-            LazyDirectoryPhase::Source(Some(_)) => 32,
+            LazyDirectoryPhase::Source(Some(source)) => source.source.encoded_len() + 8,
             LazyDirectoryPhase::Authored(Some(name)) => 5 + name.as_bytes().len(),
             _ => 0,
         };
@@ -113,11 +114,10 @@ fn encode_fields(
             ..WorkCounters::UNCHARGED
         };
         observe(EncodeWorkStep::Admit(body))?;
-        let cut = cursor.cut;
+        let cut = &cursor.cut;
         encoder.fixed(&cut.workspace_id.into_bytes());
         encoder.object(cut.authored_generation.object_id());
-        encoder.fixed(&cut.source.identity);
-        encoder.u64(cut.source.epoch);
+        cut.source.encode(|part| encoder.fixed(part));
         encoder.fixed(&cut.overlay.into_bytes());
         encoder.fixed(&cut.shadows.into_bytes());
         encoder.bounded_bytes(directory.as_bytes())?;
@@ -125,8 +125,7 @@ fn encode_fields(
             LazyDirectoryPhase::Source(None) => encoder.u8(0),
             LazyDirectoryPhase::Source(Some(cursor)) => {
                 encoder.u8(1);
-                encoder.fixed(&cursor.source.identity);
-                encoder.u64(cursor.source.epoch);
+                cursor.source.encode(|part| encoder.fixed(part));
                 encoder.u64(cursor.token);
             }
             LazyDirectoryPhase::Authored(None) => encoder.u8(2),
@@ -147,26 +146,20 @@ fn decode_fields(
     limits: crate::VolumeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), crate::FsError>,
 ) -> Result<(LazySnapshotRef, String, LazyDirectoryPhase), crate::FsError> {
-    let maximum = DOMAIN.len() as u64
-        + 256
-        + u64::from(limits.maximum_path_bytes)
-        + u64::from(limits.maximum_component_bytes);
+    let maximum = bytes.len() as u64;
     let mut decoder = Decoder::new(bytes, DOMAIN, 1, maximum, observe)?;
     let workspace = WorkspaceId::from_bytes(decoder.fixed::<16, crate::FsError>(observe)?);
     let generation =
         crate::GenerationId::from_root(decoder.object(crate::ObjectKind::GenerationRoot, observe)?);
-    let source = SourceReference {
-        identity: decoder.fixed::<16, crate::FsError>(observe)?,
-        epoch: decoder.u64(observe)?,
-    };
+    let source = SourceReference::decode(&mut decoder, observe)?;
     let overlay = LazyOverlayId::from_bytes(decoder.fixed::<32, crate::FsError>(observe)?);
     let shadows = LazyShadowId::from_bytes(decoder.fixed::<32, crate::FsError>(observe)?);
     observe(ReadAllocationStep::BeforeHash(LazySnapshotRef::hash_bytes(
-        generation,
+        generation, &source,
     )))?;
-    let cut = LazySnapshotRef::new(workspace, generation, source, overlay, shadows);
+    let cut = LazySnapshotRef::new(workspace, generation, source.clone(), overlay, shadows);
     observe(ReadAllocationStep::Hashed(LazySnapshotRef::hash_bytes(
-        generation,
+        generation, &source,
     )))?;
     let directory = String::from_utf8(decoder.bounded_bytes(limits.maximum_path_bytes, observe)?)
         .map_err(|_| {
@@ -175,10 +168,7 @@ fn decode_fields(
     let phase = match decoder.u8(observe)? {
         0 => LazyDirectoryPhase::Source(None),
         1 => LazyDirectoryPhase::Source(Some(SourceCursor::detached(
-            SourceReference {
-                identity: decoder.fixed::<16, crate::FsError>(observe)?,
-                epoch: decoder.u64(observe)?,
-            },
+            SourceReference::decode(&mut decoder, observe)?,
             decoder.u64(observe)?,
         ))),
         2 => LazyDirectoryPhase::Authored(None),

@@ -21,6 +21,8 @@ pub trait ViewProvider: Send + Sync {
     type Snapshot: Send + Sync + 'static;
     /// Committed record delivered by the backing stream's follow.
     type Record: Send + Sync;
+    /// Stable namespace identity, without capturing a cut or doing IO.
+    fn identity(&self) -> [u8; 16];
     /// Stable provider identity and current stream position.
     fn reference(&self) -> SourceReference;
     /// Resolves the requested cut without enumerating unrelated records.
@@ -106,14 +108,13 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
         Self { view, provider }
     }
 
-    fn provider_source(&self, source: SourceReference) -> Result<SourceReference, DemandError> {
-        let current = self.reference();
-        if source.identity != current.identity {
+    fn provider_source(&self, source: &SourceReference) -> Result<SourceReference, DemandError> {
+        if source.identity != self.identity() {
             return Err(DemandError::StaleSource);
         }
         Ok(SourceReference {
-            identity: self.provider.reference().identity,
-            epoch: source.epoch,
+            identity: self.provider.identity(),
+            ..source.clone()
         })
     }
 
@@ -145,7 +146,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
             ..WorkCounters::UNCHARGED
         })?;
         hash.update(&self.view.identity());
-        hash.update(&self.provider.reference().identity);
+        hash.update(&self.provider.identity());
         hash.update(&cut.sequence.to_le_bytes());
         hash.update(&cut.generation);
         for name in names {
@@ -163,7 +164,9 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
         expected: SourceVersion,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(ViewCut, P::Snapshot), DemandError> {
-        let selected = self.provider.snapshot(self.provider_source(source)?, ctx)?;
+        let selected = self
+            .provider
+            .snapshot(self.provider_source(&source)?, ctx)?;
         if self.version(selected.0, path, ctx)? != expected {
             return Err(DemandError::StaleVersion);
         }
@@ -177,17 +180,20 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
     fn overlay(&self, _: &[crate::kernel::LogicalName]) -> SourceOverlay {
         SourceOverlay::Defaults
     }
-    fn reference(&self) -> SourceReference {
-        let source = self.provider.reference();
+    fn identity(&self) -> [u8; 16] {
         let mut hash = blake3::Hasher::new();
         hash.update(&self.view.identity());
-        hash.update(&source.identity);
+        hash.update(&self.provider.identity());
         let mut identity = [0; 16];
         identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-        SourceReference {
-            identity,
-            epoch: source.epoch,
-        }
+        identity
+    }
+    fn reference(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceReference, DemandError> {
+        ctx.check()?;
+        Ok(SourceReference {
+            identity: self.identity(),
+            ..self.provider.reference()
+        })
     }
 
     async fn lookup<W: FsWork + Send>(
@@ -202,7 +208,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
             ctx.check()?;
             let (cut, snapshot) = self
                 .provider
-                .snapshot(self.provider_source(source)?, &mut ctx)?;
+                .snapshot(self.provider_source(&source)?, &mut ctx)?;
             let mut node = self.view.lookup(cut, &snapshot, path, &mut ctx)?;
             if let Some(node) = &mut node {
                 node.version = self.version(cut, path, &mut ctx)?;
@@ -229,7 +235,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
             }
             let (cut, snapshot) = self
                 .provider
-                .snapshot(self.provider_source(source)?, &mut ctx)?;
+                .snapshot(self.provider_source(&source)?, &mut ctx)?;
             let version = self.version(cut, directory, &mut ctx)?;
             ctx.charge(WorkCounters {
                 bytes_hashed: 48,
@@ -243,6 +249,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
             let continuation = SourceReference {
                 identity,
                 epoch: source.epoch,
+                components: source.components.clone(),
             };
             if cursor
                 .as_ref()

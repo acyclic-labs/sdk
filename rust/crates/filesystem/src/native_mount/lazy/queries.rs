@@ -208,7 +208,6 @@ where
             .inspect_unauthored(
                 &mut checkout,
                 text,
-                None,
                 crate::lazy_workspace::InspectBasis {
                     state: Some(&state),
                     authored_absent: true,
@@ -251,7 +250,7 @@ where
     ) -> Result<(MountLookup, Option<MountContentPin>), MountSourceError> {
         let pin = match &lookup {
             LazyLookup::Source { node, source } if node.kind == SourceNodeKind::RegularFile => {
-                Some(source_content_pin(*source, node))
+                Some(source_content_pin(source.clone(), node))
             }
             _ => None,
         };

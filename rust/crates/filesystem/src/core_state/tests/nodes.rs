@@ -219,16 +219,16 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     let snapshot = crate::LazySnapshotRef::new(
         id,
         crate::GenerationId::new(Digest::from_bytes([0xb2; 32])),
-        state.source,
+        state.source.clone(),
         state.overlay,
         state.shadows,
     );
-    state.selected_import_roots = Some(
-        [(
-            snapshot,
+    state.selected_import_roots = Some(std::array::from_fn(|_| {
+        (
+            snapshot.clone(),
             crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
-        ); 3],
-    );
+        )
+    }));
     let cancellation = crate::CancellationToken::new();
     let work = crate::materializer::NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
