@@ -91,9 +91,9 @@ variants alone do not prove execution without FUSE or mount privileges.
 ### Stock Docker acceptance (R27)
 
 Build `graphcoder` and `harness-mock-model` on Linux, then supply a locally
-installed Node image with Git, Python 3 and a compatible glibc (for example
-`node:24-trixie`). The Python dependency belongs to the existing acceptance
-process supervisor; GraphCoder itself needs only the platform shell.
+installed Node image with Git and a compatible glibc (for example
+`node:24-trixie`). Node and Git support the acceptance fixtures; GraphCoder
+itself needs only the platform shell.
 
 ```sh
 docker pull node:24-trixie
