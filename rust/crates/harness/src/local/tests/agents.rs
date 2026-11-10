@@ -3239,6 +3239,34 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         records(&**agents.provider(), branch.conversation().map_err(agent)?).await?,
         source[..1]
     );
+    let selected_branch = Conversation::open(connection.select(branch.clone()).await?);
+    let inherited = ConversationEntry::decode(&source[0]).map_err(agent)?;
+    let shown = selected_branch.turn_at(0, &inherited).await?;
+    assert_eq!(shown.prompt.as_deref(), Some("first decision"));
+    assert_eq!(shown.answer, "at cut");
+    let future = ConversationEntry::decode(&source[1]).map_err(agent)?;
+    assert!(
+        selected_branch.turn_at(0, &future).await.is_err(),
+        "an exact record proof cannot authorize another turn's files"
+    );
+    assert!(
+        selected_branch.turn_at(1, &future).await.is_err(),
+        "a proof beyond the inherited prefix cannot authorize future source files"
+    );
+    assert!(
+        selected_branch.text(&future.output).await.is_err(),
+        "inheritance never grants the source private volume"
+    );
+    let page =
+        crate::local::sessions::page(&connection, crate::client::AgentPageRequest::default())
+            .await?;
+    assert_eq!(
+        page.items
+            .iter()
+            .find(|item| item.agent == branch)
+            .and_then(|item| item.title.as_deref()),
+        Some("first decision")
+    );
     let project = state
         .volumes
         .iter()

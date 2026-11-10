@@ -126,7 +126,8 @@ pub async fn page(connection: &Connection, page: AgentPageRequest) -> Result<Pag
                 let (bytes, _) = Conversation::read_at(
                     connection,
                     &item.agent,
-                    ReadTarget::File {
+                    ReadTarget::Conversation {
+                        sequence: 0,
                         file: *body.clone(),
                     },
                     0,

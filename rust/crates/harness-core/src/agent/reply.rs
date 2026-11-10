@@ -201,7 +201,7 @@ pub(super) async fn inbox_record<P: crate::store::JournalProvider + ?Sized>(
 }
 
 /// Committed conversation entry `sequence`.
-pub(super) async fn entry<P: crate::store::JournalProvider + ?Sized>(
+pub(crate) async fn entry<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     conversation: &StreamPath,
     sequence: u64,
