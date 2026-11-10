@@ -4,9 +4,10 @@ use super::{Connection, agent_conversation::Conversation, storage};
 use crate::{
     Error, OperationId, Result,
     agent::{AgentPath, IntentId, StatusRecord, TurnInput},
-    client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget},
+    client::{AgentCommand, AgentPageRequest, AgentReply},
     client_files::ClientFileChange,
 };
+use acyclic_harness_client::ReadTarget;
 
 /// One visible root-session row. Nothing in this projection is stored separately.
 #[derive(Clone, Debug, serde::Serialize)]
