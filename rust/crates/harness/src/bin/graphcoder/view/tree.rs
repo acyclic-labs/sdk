@@ -180,7 +180,7 @@ impl Sidebar {
             .reader_ref()
             .issues()
             .next()
-            .map(|(stream, issue)| format!("{stream}: {issue:?}"));
+            .map(|(stream, issue)| format!("{issue:?}: {stream}"));
     }
 
     fn retain_files(&mut self, visible: bool, bytes: u64) {
@@ -365,7 +365,7 @@ impl Sidebar {
     ) -> Option<Intent> {
         if shown
             && self.focused
-            && let (InputEvent::Paste(text) | InputEvent::CommittedText(text)) = event
+            && let InputEvent::Paste(text) | InputEvent::CommittedText(text) = event
             && let Some(search) = self.search.as_mut().filter(|search| search.editing)
         {
             search.text.push_str(&first_line(text));
