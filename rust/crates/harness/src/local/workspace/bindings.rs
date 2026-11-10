@@ -9,7 +9,7 @@ pub(super) struct Bindings {
     preparing: OperationClaims,
 }
 
-pub(super) struct Binding {
+pub(in crate::local) struct Binding {
     index: RetainedArc<Bindings>,
     pub(super) key: [u8; 32],
     // Physical views omit the home mount but retain the same source identity.
