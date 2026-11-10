@@ -301,8 +301,15 @@ where
                 "journal input cursor is past the committed tail",
             ));
         }
-        self.journal_from_input::<Q>(state, input, tail, adopted, after, wait, observed_children)
-            .await
+        self.journal_from_input::<Q>(
+            state,
+            input,
+            tail,
+            adopted,
+            after,
+            (wait, observed_children),
+        )
+        .await
     }
 
     /// Consume the selected input after its original inbox cut. Settlement
@@ -314,8 +321,7 @@ where
         mut tail: u64,
         adopted: u64,
         after: u64,
-        wait: bool,
-        observed_children: Option<u64>,
+        (wait, observed_children): (bool, Option<u64>),
     ) -> Result<OriginalInput<P, O>, Error> {
         use crate::agent::AgentRecord as _;
         use futures::TryStreamExt as _;
