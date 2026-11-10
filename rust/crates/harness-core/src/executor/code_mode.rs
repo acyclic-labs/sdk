@@ -10,6 +10,7 @@ pub(super) mod model;
 pub(crate) use interpreter::MEMORY_BYTES;
 
 struct Call {
+    module: bool,
     name: allocator::BridgeText,
     arguments: allocator::BridgeText,
     reply: oneshot::Sender<Option<acyclic_stream::OwnedBytes>>,
@@ -383,7 +384,11 @@ impl StockExecution<'_> {
                         };
                         let version = if ok {
                             crate::tool::files::result_version(
-                                call.name.value.strip_prefix("acyclic.").unwrap_or(""),
+                                if call.module {
+                                    call.name.value.strip_prefix("acyclic.").unwrap_or("")
+                                } else {
+                                    ""
+                                },
                                 &value,
                                 self.native_work(),
                             )?
@@ -517,7 +522,10 @@ impl StockExecution<'_> {
         hash.update(parent.call_id.as_bytes());
         hash.update(&ordinal.to_be_bytes());
         let call_id = hash.finalize().to_hex().to_string();
-        let canonical = call.name.value.strip_prefix("acyclic.");
+        let canonical = call
+            .module
+            .then(|| call.name.value.strip_prefix("acyclic."))
+            .flatten();
         let name = match canonical {
             Some(name) => match self.stock.tools.capability(name, self.io)? {
                 Some(tool) => with_history_io(self.io, |work| {

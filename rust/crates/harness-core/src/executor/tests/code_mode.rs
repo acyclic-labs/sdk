@@ -175,12 +175,8 @@ async fn custom_code_executor_preserves_other_native_declarations() -> Result<()
     let requests = model.requests();
     assert!(!requests[0].compose_tools);
     assert_eq!(requests[0].model_tools().count(), 2);
-    assert!(
-        !requests[0]
-            .messages
-            .iter()
-            .any(|message| message.content.notice_parts().is_some())
-    );
+    // Dynamic declarations use the shared source even with a custom code executor.
+    assert_eq!(tool_notice_table(&requests[0])[0]["name"], "example.echo");
     assert_eq!(result(&model)["code"], "export default 42");
     assert_eq!(echo.0.load(Ordering::SeqCst), 1);
     let mut forged = requests[0].clone();
@@ -1331,9 +1327,9 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
 #[tokio::test]
 async fn large_call_names_stream_without_losing_results_or_receipts() -> Result<()> {
     let length = 65_536 + 1;
-    let name = "x".repeat(length);
+    let name = format!("acyclic.{}", "x".repeat(length));
     let code = format!(
-        "await tools['x'.repeat({length})]({{value:41}}); export default (await tools['example.echo']({{value:42}})).value"
+        "await tools['acyclic.' + 'x'.repeat({length})]({{value:41}}); export default (await tools['example.echo']({{value:42}})).value"
     );
     let (mut executor, model, echo) = executor(&code, allowed()?, true)?;
     let mut tool = executor

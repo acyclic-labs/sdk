@@ -9,10 +9,10 @@
     const stable = promise => define(promise, 'constructor', {value: PromiseType});
     let pending = 0, wake;
     let closed = false;
-    const invoke = async (name, args) => {
+    const invoke = async (name, args, module = false) => {
         pending++;
         try {
-            const response = await stable(rpc(name, stringify(args)));
+            const response = await stable(rpc(name, stringify(args), module));
             if (name === null) return;
             const reply = parse(response);
             if (!reply.ok) {
@@ -39,7 +39,7 @@
     // The host still settles each invocation through its existing registry.
     Object.defineProperty(globalThis, '__acyclic', {configurable: true, value: (name, args) => {
         if (closed) throw new ErrorType('JavaScript calls are closed');
-        return invoke(`acyclic.${name}`, args);
+        return invoke(`acyclic.${name}`, args, true);
     }});
     Object.defineProperty(globalThis, 'console', {value: Object.freeze({
         log: (...values) => {

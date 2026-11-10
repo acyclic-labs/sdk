@@ -103,7 +103,9 @@ pub(super) async fn run(
             let rpc = Function::new(
                 ctx.clone(),
                 Async(
-                    move |name: Option<rquickjs::String<'_>>, arguments: rquickjs::String<'_>| {
+                    move |name: Option<rquickjs::String<'_>>,
+                          arguments: rquickjs::String<'_>,
+                          module: bool| {
                         let send = send.clone();
                         let input = name
                             .as_ref()
@@ -119,6 +121,7 @@ pub(super) async fn run(
                             let (reply, receive) = oneshot::channel();
                             let request = match name {
                                 Some(name) => Request::Tool(Call {
+                                    module,
                                     name,
                                     arguments,
                                     reply,
