@@ -53,7 +53,7 @@ impl Reply {
             ));
         }
         let payload = ReplyPayload {
-            ui: self.path.0,
+            ui: self.path.into(),
             generation: self.generation,
             answers: self.answers,
             text: self.text,

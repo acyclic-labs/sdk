@@ -29,6 +29,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Canonical relative path beneath the bound agent's private `ui/` root.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UiPath(String);
+impl From<UiPath> for String {
+    fn from(path: UiPath) -> Self {
+        path.0
+    }
+}
 impl UiPath {
     /// Accept root (`""`) or slash-separated names; refuse escape and aliases.
     pub fn new(path: impl Into<String>) -> Result<Self> {
