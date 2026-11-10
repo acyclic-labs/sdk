@@ -59,7 +59,7 @@ async fn materialization_phase_denial_preserves_the_callers_owned_namespace() {
                 .prepare_source_mutation(
                     &mut transaction,
                     "/file.txt",
-                    (reference, node),
+                    (reference.clone(), node),
                     6,
                     &mut namespace,
                     &mut ctx,

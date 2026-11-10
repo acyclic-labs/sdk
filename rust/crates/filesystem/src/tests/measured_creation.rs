@@ -277,7 +277,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
 ))]
 mod source_bound_lost_ack {
     use super::*;
-    use acyclic_fs::demand::{DemandSource, SourceReference, native::NativeDemandSource};
+    use acyclic_fs::demand::{SourceReference, native::NativeDemandSource};
     use acyclic_fs::facade::FsWork;
     use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
     use acyclic_fs::{

@@ -144,7 +144,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
                     }
                 };
                 let cursor = LazyDirectoryCursor {
-                    cut,
+                    cut: cut.clone(),
                     directory,
                     phase,
                     allocation,
