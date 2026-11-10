@@ -661,7 +661,7 @@ mod tests {
         }
         for input in turn_inputs() {
             ConversationEntry {
-                observed_through: 0,
+                observed_through: u64::MAX,
                 inbox: u64::MAX,
                 input,
                 output: file(),
@@ -716,6 +716,7 @@ mod tests {
                     committed_actions: true,
                     conversation_tail: u64::MAX,
                     steered_through: u64::MAX,
+                    steering_tail: u64::MAX,
                     pending_notices: Some(0..u64::MAX),
                     dropped_before: u64::MAX,
                     checkpoint: Some(u64::MAX),
