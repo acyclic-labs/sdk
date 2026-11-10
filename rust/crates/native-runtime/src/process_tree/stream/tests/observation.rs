@@ -226,6 +226,7 @@ async fn observe_capture(
     native_error: Option<i32>,
 ) -> io::Result<()> {
     let capture = child_tree()?.capture(
+        &crate::TaskSpawner::current(),
         if mode == "before-capture" {
             CaptureSchedule::Overflow
         } else {
@@ -238,8 +239,8 @@ async fn observe_capture(
     // The original callback runs on the native worker. Its panic must not
     // emit successful cleanup telemetry, even after physical cleanup.
     if mode == "callback-loss" {
-        match tokio::spawn(capture).await {
-            Err(error) => assert!(error.is_panic()),
+        match capture.await {
+            Err(error) => assert_eq!(error.kind(), io::ErrorKind::Other),
             Ok(_) => panic!("lost original callback returned normally"),
         }
     } else {

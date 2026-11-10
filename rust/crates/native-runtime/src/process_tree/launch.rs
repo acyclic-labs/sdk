@@ -114,7 +114,7 @@ trait Owner<H>: Send + 'static {
 struct Collect(TaskSpawner);
 
 impl<H: CaptureHandler> Owner<H> for Collect {
-    type Output = crate::TaskHandle<io::Result<CaptureOutcome<H>>>;
+    type Output = ProcessCapture<H>;
     fn tree(
         self,
         tree: ProcessTree,
@@ -123,12 +123,13 @@ impl<H: CaptureHandler> Owner<H> for Collect {
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> Self::Output {
-        self.0
-            .spawn(tree.capture(schedule, maximum, input, handler))
+        tree.capture(&self.0, schedule, maximum, input, handler)
     }
     #[cfg(feature = "test-support")]
     fn answered(self, outcome: CaptureOutcome<H>) -> Self::Output {
-        self.0.spawn(async move { Ok(outcome) })
+        ProcessCapture {
+            completion: self.0.spawn(async move { Ok(outcome) }),
+        }
     }
 }
 
@@ -159,7 +160,7 @@ impl CaptureRequest {
     pub async fn capture<H: CaptureHandler>(
         self,
         handler: H,
-    ) -> Result<crate::TaskHandle<io::Result<CaptureOutcome<H>>>, LaunchFailure<H>> {
+    ) -> Result<ProcessCapture<H>, LaunchFailure<H>> {
         self.launch(handler, Collect(TaskSpawner::current())).await
     }
 

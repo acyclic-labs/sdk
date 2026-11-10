@@ -52,7 +52,7 @@ mod launch;
 pub use launch::{CaptureRequest, CaptureStop, LaunchFailure};
 mod pump;
 mod stream;
-pub use stream::{ProcessCaptureStream, ProcessChunk};
+pub use stream::{ProcessCapture, ProcessCaptureStream, ProcessChunk};
 #[cfg(any(unix, windows))]
 mod stdio;
 #[cfg(any(unix, windows))]
@@ -1092,12 +1092,24 @@ impl ProcessTree {
     /// Captures bounded output like [`Self::wait_with_output`], holding no
     /// thread while the child runs: each turn runs on the blocking pool, and
     /// between turns the capture awaits one readiness wait on its pipes, its
-    /// exit and its next check. The returned future owns the tree until
-    /// cleanup finishes: dropping it early terminates the tree from the
-    /// dropping thread, so callers that may be cancelled spawn it. An `Err`
-    /// means a turn could not be submitted, and the dropped tree cleans
-    /// itself up.
-    pub async fn capture<H: CaptureHandler>(
+    /// exit and its next check. Submission transfers the tree to its cleanup
+    /// task before returning the completion observer. Dropping an unpolled
+    /// observer never drops the original tree or its retirement callbacks.
+    /// `spawner` retains the caller's submission context across a spawn worker.
+    pub fn capture<H: CaptureHandler>(
+        self,
+        spawner: &crate::TaskSpawner,
+        schedule: CaptureSchedule,
+        max_bytes: usize,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
+    ) -> ProcessCapture<H> {
+        ProcessCapture {
+            completion: spawner.spawn(self.capture_owned(schedule, max_bytes, input, handler)),
+        }
+    }
+
+    async fn capture_owned<H: CaptureHandler>(
         self,
         schedule: CaptureSchedule,
         max_bytes: usize,

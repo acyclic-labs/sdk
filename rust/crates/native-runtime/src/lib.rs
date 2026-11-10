@@ -67,7 +67,7 @@ pub use process_tree::ProcessPipeReader;
 pub use process_tree::ProcessPipeWriter;
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureProgress, CaptureRequest, CaptureSchedule,
-    CaptureStop, CaptureWakes, ControlledCapture, LaunchFailure, OwnedCaptureInput,
+    CaptureStop, CaptureWakes, ControlledCapture, LaunchFailure, OwnedCaptureInput, ProcessCapture,
     ProcessCaptureFailure, ProcessCaptureStream, ProcessChunk, ProcessCommand, ProcessControl,
     ProcessCustody, ProcessCustodyLease, ProcessDrain, ProcessInput, ProcessOutput,
     ProcessReadiness, ProcessStdio, ProcessTree, ProcessTreeIo, ProcessTreeStorage,

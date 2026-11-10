@@ -1711,7 +1711,8 @@ mod seeded_capture {
                 if scheduled {
                     tree.capture_driven(capture, 64, None, collect, None).await
                 } else {
-                    tree.capture(capture, 64, None, collect).await
+                    tree.capture(&crate::TaskSpawner::current(), capture, 64, None, collect)
+                        .await
                 }
             };
             let mut operation = Box::pin(schedule.scope(operation));

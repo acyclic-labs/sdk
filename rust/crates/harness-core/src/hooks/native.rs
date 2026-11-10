@@ -83,7 +83,7 @@ impl Hooks {
                     }
                     None => input.encode(event, cwd, rewritten),
                 }
-                .map(|bytes| Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes)));
+                .map(|bytes| (workspace.to_path_buf(), cwd.to_path_buf(), bytes));
                 let hook = Arc::clone(hook);
                 let (check, wake, execution) =
                     (Arc::clone(&check), wake.clone(), execution.clone());
@@ -96,7 +96,7 @@ impl Hooks {
 
 pub(super) async fn run_hook(
     hook: Arc<HookSpec>,
-    request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
+    request: (PathBuf, PathBuf, Vec<u8>),
     owner_check: HookCheck,
     maximum_bytes: usize,
     owner_wake: Option<acyclic_native_runtime::ProcessWake>,
@@ -112,9 +112,10 @@ pub(super) async fn run_hook(
         wakes,
     };
     let timeout = Duration::from_millis(hook.timeout_ms);
-    let input = request.2.clone();
+    let (workspace, cwd, input) = request;
+    let spawner = acyclic_native_runtime::TaskSpawner::current();
     // Spawning may block; the running hook then holds no worker.
-    let (tree, handler) = run_blocking_io(
+    let capture = run_blocking_io(
         move || {
             let mut handler = handler;
             if maximum_bytes == 0 {
@@ -124,20 +125,19 @@ pub(super) async fn run_hook(
                 }));
             }
             handler.check().map_err(Error::process_io)?;
-            let mut command =
-                hook_command(&hook, &request.0, &request.1, |key| match &execution {
-                    Some(execution) => execution
-                        .environment
-                        .get(key)
-                        .map(|value| value.as_str().into()),
-                    None => crate::native_environment::variable(key),
-                })?;
+            let mut command = hook_command(&hook, &workspace, &cwd, |key| match &execution {
+                Some(execution) => execution
+                    .environment
+                    .get(key)
+                    .map(|value| value.as_str().into()),
+                None => crate::native_environment::variable(key),
+            })?;
             if let Some(execution) = &execution {
                 command.env_clear().envs(&execution.environment);
             }
             command
-                .current_dir(&request.1)
-                .env("CLAUDE_PROJECT_DIR", &request.0)
+                .current_dir(&cwd)
+                .env("CLAUDE_PROJECT_DIR", &workspace)
                 .stdin(ProcessStdio::piped())
                 .stdout(ProcessStdio::piped())
                 .stderr(ProcessStdio::piped());
@@ -147,7 +147,13 @@ pub(super) async fn run_hook(
                 None => ProcessTree::spawn(&mut command),
             }
             .map_err(Error::process_io)?;
-            Ok((tree, handler))
+            Ok(tree.capture(
+                &spawner,
+                CaptureSchedule::new(timeout),
+                maximum_bytes,
+                Some(OwnedCaptureInput::Literal(input)),
+                handler,
+            ))
         },
         None,
     )
@@ -156,15 +162,7 @@ pub(super) async fn run_hook(
     .map_err(Error::process_io)??;
     // The spawned capture keeps ownership of the tree until its cleanup
     // finishes, even if this hook's caller is cancelled.
-    let outcome = acyclic_native_runtime::spawn(tree.capture(
-        CaptureSchedule::new(timeout),
-        maximum_bytes,
-        Some(OwnedCaptureInput::Literal(input)),
-        handler,
-    ))
-    .await
-    .and_then(|outcome| outcome)
-    .map_err(Error::process_io)?;
+    let outcome = capture.await.map_err(Error::process_io)?;
     let output = outcome.result.map_err(|failure| {
         Error::process_exit(
             failure.error,

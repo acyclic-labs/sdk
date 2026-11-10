@@ -155,7 +155,8 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
         // Observe actual native delivery, including a batch retained before entry.
         let batch = loop {
             watch
-                .wait_for_changes_with_native_work(&arrival)
+                .changed_with_native_work(&arrival)
+                .await
                 .map_err(engine_err("native batch arrival"))?;
             let batch = watch
                 .poll(4_096, WorkCounters::UNBOUNDED, &cancel)

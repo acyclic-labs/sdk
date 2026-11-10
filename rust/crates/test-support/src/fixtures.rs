@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 ///
 /// # Panics
 ///
-/// If the selected executable path is not absolute.
+/// If no executable is supplied, or its selected path is not absolute.
 #[macro_export]
 macro_rules! cargo_binary {
     ($name:literal) => {
@@ -19,7 +19,11 @@ macro_rules! cargo_binary {
             .or_else(|| ::std::env::var_os(concat!("CARGO_BIN_EXE_", $name)))
             .or_else(|| ::std::env::var_os(concat!("NEXTEST_BIN_EXE_", $name).replace('-', "_")));
         let path = selected.map_or_else(
-            || ::std::path::PathBuf::from(env!(concat!("CARGO_BIN_EXE_", $name))),
+            || {
+                ::std::path::PathBuf::from(option_env!(concat!("CARGO_BIN_EXE_", $name)).expect(
+                    concat!("test binary was not supplied by Cargo or nextest: ", $name),
+                ))
+            },
             ::std::path::PathBuf::from,
         );
         assert!(

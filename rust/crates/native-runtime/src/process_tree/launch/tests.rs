@@ -89,7 +89,7 @@ async fn collected_and_streamed_launches_run_a_command_identically() -> io::Resu
     let Ok(collected) = command(root.path()).capture(Recorder::default()).await else {
         panic!("collected launch failed");
     };
-    let collected = collected.await??;
+    let collected = collected.await?;
     let collected = collected.result.map_err(io::Error::other)?;
     let executable = std::env::current_exe()?;
     #[cfg(unix)]
@@ -190,7 +190,7 @@ async fn refusals_precede_spawn_and_return_the_original_handler() -> io::Result<
     let Ok(capture) = command(root.path()).capture(Recorder::default()).await else {
         panic!("negative control was refused");
     };
-    assert!(capture.await??.result.is_ok());
+    assert!(capture.await?.result.is_ok());
     assert!(marker.exists(), "the negative control never ran");
     Ok(())
 }

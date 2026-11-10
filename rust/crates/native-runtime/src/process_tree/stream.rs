@@ -118,12 +118,32 @@ impl<H: CaptureHandler> Capture<H> {
     }
 }
 
+/// The completion observer of an already submitted native capture.
+/// Dropping it detaches observation; the original task still joins physical
+/// cleanup before releasing its handler and custody.
+pub struct ProcessCapture<H: CaptureHandler> {
+    pub(super) completion: crate::TaskHandle<io::Result<CaptureOutcome<H>>>,
+}
+
+impl<H: CaptureHandler> Future for ProcessCapture<H> {
+    type Output = io::Result<CaptureOutcome<H>>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.get_mut().completion)
+            .poll(context)
+            .map(|result| result.and_then(std::convert::identity))
+    }
+}
+
 /// The output receiver and original cleanup owner of one process tree.
 /// Dropping it closes output credit, waking capture even for a quiet child.
 /// The detached owner still joins the original tree before releasing custody.
 pub struct ProcessCaptureStream<H: CaptureHandler> {
     receiver: mpsc::Receiver<ProcessChunk>,
-    completion: crate::TaskHandle<io::Result<CaptureOutcome<H>>>,
+    completion: ProcessCapture<H>,
 }
 
 impl<H: CaptureHandler> ProcessCaptureStream<H> {
@@ -148,16 +168,14 @@ impl<H: CaptureHandler> ProcessCaptureStream<H> {
         context: &mut std::task::Context<'_>,
     ) -> Poll<io::Result<CaptureOutcome<H>>> {
         self.receiver.close();
-        std::pin::Pin::new(&mut self.completion)
-            .poll(context)
-            .map(|result| result.and_then(std::convert::identity))
+        std::pin::Pin::new(&mut self.completion).poll(context)
     }
 
     /// Joins physical cleanup and returns original callbacks and custody.
     /// Calling before output EOF cancels remaining output and the process.
     pub async fn finish(self) -> io::Result<CaptureOutcome<H>> {
         drop(self.receiver);
-        self.completion.await?
+        self.completion.await
     }
 }
 
@@ -184,7 +202,7 @@ impl<H: CaptureHandler> ProcessCaptureStream<H> {
         });
         Self {
             receiver,
-            completion,
+            completion: ProcessCapture { completion },
         }
     }
 }
@@ -214,7 +232,7 @@ impl ProcessTree {
         ));
         ProcessCaptureStream {
             receiver,
-            completion,
+            completion: ProcessCapture { completion },
         }
     }
 

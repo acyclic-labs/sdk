@@ -349,6 +349,28 @@ impl SharedState {
     }
 }
 
+/// One publication event for native arrival observers and synchronous fences.
+/// Both wait forms consume the same retained state. Arrival holds no worker.
+#[derive(Debug, Default)]
+struct WatchEvent {
+    fenced: Condvar,
+    changed: tokio::sync::Notify,
+}
+
+impl WatchEvent {
+    fn notify_all(&self) {
+        self.fenced.notify_all();
+        self.changed.notify_waiters();
+    }
+
+    fn wait<'a, T>(
+        &self,
+        guard: std::sync::MutexGuard<'a, T>,
+    ) -> std::sync::LockResult<std::sync::MutexGuard<'a, T>> {
+        self.fenced.wait(guard)
+    }
+}
+
 /// Exclusive custody of an authenticated baseline scan.
 ///
 /// Finishing consumes this owner. Dropping it, including when an async capture
@@ -359,6 +381,7 @@ impl SharedState {
 #[must_use = "keep the scan owner until finish_rescan or abort"]
 pub struct NativeWatchRescan {
     shared: Arc<Mutex<SharedState>>,
+    fenced: Arc<WatchEvent>,
     epoch: u64,
     invalidation: Option<WatchInvalidationReason>,
 }
@@ -387,6 +410,7 @@ impl NativeWatchRescan {
         {
             shared.abandon_rescan(reason);
         }
+        self.fenced.notify_all();
     }
 }
 
@@ -473,7 +497,7 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
 struct RootHints {
     root: PathBuf,
     shared: Arc<Mutex<SharedState>>,
-    fenced: Arc<Condvar>,
+    fenced: Arc<WatchEvent>,
     _root_allocation: Option<crate::NativeAllocation>,
 }
 
@@ -560,7 +584,7 @@ impl crate::source_watch::HostChangeSink for RootHints {
 
 /// Holds a lost delivery batch as the watch's state: it stays invalidated,
 /// and every fence waiting on it wakes to refuse, until a rescan begins.
-fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
+fn lose_delivery(shared: &Mutex<SharedState>, fenced: &WatchEvent) {
     if let Ok(mut state) = shared.lock() {
         state.source_lost = true;
         state
@@ -575,7 +599,7 @@ fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
 #[cfg(not(windows))]
 struct AdapterDelivery {
     shared: Arc<Mutex<SharedState>>,
-    fenced: Arc<Condvar>,
+    fenced: Arc<WatchEvent>,
 }
 
 #[cfg(not(windows))]
@@ -611,7 +635,7 @@ struct NativeEventDelivery {
     sender: QueueSender<QueuedWatchChange>,
     shared: Arc<Mutex<SharedState>>,
     queued: Arc<AtomicU32>,
-    fenced: Arc<Condvar>,
+    fenced: Arc<WatchEvent>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1518,7 +1542,7 @@ pub struct NativeWatch {
     windows_delivery: Arc<NativeEventDelivery>,
     queued: Arc<AtomicU32>,
     shared: Arc<Mutex<SharedState>>,
-    fenced: Arc<Condvar>,
+    fenced: Arc<WatchEvent>,
     fences: u64,
     epoch: u64,
     next_sequence: u64,
@@ -1529,6 +1553,12 @@ pub struct NativeWatch {
     // A terminal cause survives a refused housekeeping invocation.
     terminal_source_failure: Option<crate::demand::DemandError>,
     owner_allocation: Option<crate::NativeAllocation>,
+}
+
+impl Drop for NativeWatch {
+    fn drop(&mut self) {
+        lose_delivery(&self.shared, &self.fenced);
+    }
 }
 
 impl std::fmt::Debug for NativeWatch {
@@ -2005,7 +2035,7 @@ impl NativeWatch {
         let state = SharedState::new(Some(WatchInvalidationReason::InitialSnapshotRequired));
         let shared = Arc::new(Mutex::new(state));
         Self::startup_control(work)?;
-        let fenced = Arc::new(Condvar::new());
+        let fenced = Arc::new(WatchEvent::default());
         #[cfg(windows)]
         let (context_root, context_allocation) = Self::copy_startup_path(&root, work, original)?;
         #[cfg(windows)]
@@ -3021,8 +3051,10 @@ impl NativeWatch {
                     .lock()
                     .map_err(|_| NativeWatchError::StatePoisoned)?
                     .rescan = Some(epoch);
+                self.fenced.notify_all();
                 Ok(NativeWatchRescan {
                     shared: Arc::clone(&self.shared),
+                    fenced: Arc::clone(&self.fenced),
                     epoch,
                     invalidation,
                 })
@@ -3041,6 +3073,7 @@ impl NativeWatch {
         if let Ok(mut shared) = self.shared.lock() {
             shared.abandon_rescan(WatchInvalidationReason::BackendError);
         }
+        self.fenced.notify_all();
         // A poisoned state remains fail-closed through every public method.
     }
 
@@ -3762,55 +3795,62 @@ impl NativeWatch {
             .collect())
     }
 
-    /// Waits for a settled native batch or a required rescan. This consumes no
-    /// hints and performs no filesystem I/O. Cancellation and permanent producer
-    /// loss wake the same condition and return their original typed failure.
-    pub fn wait_for_changes_with_native_work(
+    /// Waits for a settled native batch or required rescan without holding a
+    /// worker. Hints are retained before registration; cancellation and original
+    /// producer loss wake the same observer. The future may outlive the watcher.
+    pub fn changed_with_native_work(
         &self,
         original: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeWatchError> {
-        original.admit(WorkCounters::UNCHARGED)?;
-        match &self.watcher {
+    ) -> impl std::future::Future<Output = Result<(), NativeWatchError>> + Send + use<> {
+        let available = match &self.watcher {
             NativeWatchDriver::Source(source) => {
-                source.ensure_wait_available().map_err(demand_watch_error)?;
+                source.ensure_wait_available().map_err(demand_watch_error)
             }
             NativeWatchDriver::StartupFailure(owner) => {
-                return Err(NativeWatchError::SourceStartup(Arc::clone(owner)));
+                Err(NativeWatchError::SourceStartup(Arc::clone(owner)))
             }
             #[cfg(not(windows))]
-            NativeWatchDriver::Adapter(_) => {}
-        }
+            NativeWatchDriver::Adapter(_) => Ok(()),
+        };
         let shared = Arc::clone(&self.shared);
-        let fenced = Arc::clone(&self.fenced);
-        let _cancel = original.cancellation().on_cancel(Some(original), move || {
-            let _state = shared
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            fenced.notify_all();
-        })?;
-        let mut state = self
-            .shared
-            .lock()
-            .map_err(|_| NativeWatchError::StatePoisoned)?;
-        loop {
+        let queued = Arc::clone(&self.queued);
+        let event = Arc::clone(&self.fenced);
+        let original = original.clone();
+        async move {
             original.admit(WorkCounters::UNCHARGED)?;
-            if state.source_lost {
-                return Err(NativeWatchError::SourceUnavailable);
-            }
-            if state.rescan.is_some() {
-                return Err(NativeWatchError::RescanInProgress);
-            }
-            #[cfg(target_os = "linux")]
-            let settled = !state.delivering;
-            #[cfg(not(target_os = "linux"))]
-            let settled = true;
-            if settled && state.has_changes(self.queued.load(Ordering::Acquire)) {
+            available?;
+            let ready = || {
+                let state = shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+                if state.source_lost {
+                    return Err(NativeWatchError::SourceUnavailable);
+                }
+                if state.rescan.is_some() {
+                    return Err(NativeWatchError::RescanInProgress);
+                }
+                #[cfg(target_os = "linux")]
+                let settled = !state.delivering;
+                #[cfg(not(target_os = "linux"))]
+                let settled = true;
+                Ok(settled && state.has_changes(queued.load(Ordering::Acquire)))
+            };
+            if ready()? {
                 return Ok(());
             }
-            state = self
-                .fenced
-                .wait(state)
-                .map_err(|_| NativeWatchError::StatePoisoned)?;
+            let cancelled = original.cancellation_wait()?;
+            let mut cancelled = std::pin::pin!(cancelled);
+            loop {
+                let changed = event.changed.notified();
+                let mut changed = std::pin::pin!(changed);
+                changed.as_mut().enable();
+                original.admit(WorkCounters::UNCHARGED)?;
+                if ready()? {
+                    return Ok(());
+                }
+                tokio::select! {
+                    () = changed.as_mut() => {},
+                    () = cancelled.as_mut() => return Err(NativeWatchError::Cancelled(CancellationError)),
+                }
+            }
         }
     }
 
