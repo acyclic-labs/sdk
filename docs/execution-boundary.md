@@ -329,17 +329,33 @@ so every syscall reaches an allow or deny verdict without a wait. This replaces
 the linear per-syscall comparison chain without an additional runtime table,
 allocation, syscall, descriptor, barrier or round trip.
 
-macOS and Windows currently return a typed unsupported refusal before creating
-a confined process. A path-based Seatbelt profile alone does not establish the
-object-bound grant or fence inherited descriptors. No partial macOS adapter is
-exposed as an enforced boundary.
+macOS translates the same composed grant into a deny-by-default Seatbelt
+profile, applied by Apple's `/usr/bin/sandbox-exec` before guest execution.
+Preparation verifies every bound root and resolves cwd component-by-component
+with rooted `openat`, refusing symlinks. Paths are quoted as Scheme strings;
+control characters and non-UTF-8 paths refuse before launch. Seatbelt enforces
+path subtrees, whereas Linux Landlock enforces inode-rooted subtrees: macOS
+does not promise to retain authority to a root renamed by another host actor
+after launch. The host must retain ownership of granted root pathnames.
+
+Seatbelt cannot revoke an inherited file descriptor. Admission therefore
+refuses standard streams other than pipes and the null device. The final native
+exec uses `POSIX_SPAWN_SETEXEC | POSIX_SPAWN_CLOEXEC_DEFAULT`, explicitly
+inheriting only those three streams. This seals every other descriptor in the
+kernel, without a host descriptor scan, a second child or a second custody owner.
+The trusted process-tree warden runs before this final exec. The native test
+exercises an actual non-CLOEXEC outside-file descriptor as an escape control.
+Read-only attenuation removes mutation rules for every writable root together.
+Networking translates to no rules, all networking, or outbound TCP port rules.
+The macOS default preserves host reads and uses the primary workspace as TMPDIR.
+Windows still returns a typed unsupported refusal for explicit confined grants.
 
 Follow-up work: Windows AppContainer integration at the native
-launch seam; macOS/Windows inherited-handle and root-identity race fencing;
+launch seam; Windows inherited-handle and root-identity race fencing;
 authenticated approval/role grants at all shell, executable-tool and process
 entry points; complete active-resource accounting; the shared OS-backed
 conformance suite and qualification of all affected targets. The current Windows
-adapter refuses confined execution. The default stock policy selects no grant.
+adapter refuses confined execution. Windows default stock policy selects no grant.
 No cross-platform confinement or runtime performance qualification is
 claimed by this milestone.
 
@@ -349,8 +365,8 @@ grant reaches the same consuming native launch; capture never retries a refusal
 without it. Recorded output substitution cannot establish kernel enforcement,
 so granted invocations always reach the native owner. This transport does not
 issue authority: the authenticated host must select the grant after approval.
-Stock policy admission can now supply that grant; existing default policies
-continue to select none.
+Stock Linux and macOS policy admission supply that grant independently of
+approval mode; Windows integration remains outstanding.
 
 Idle grants share immutable policy and one native handle per declared root.
 The handles pin object identities across deletion and numeric identity reuse;

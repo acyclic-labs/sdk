@@ -135,8 +135,8 @@ pub fn prepare<T>(
 
 /// Host-owned workspace boundary shared by shell and lifecycle hooks. Explicit
 /// execution grants retain their existing, separately authenticated authority.
-/// Linux refuses missing kernel support at launch, never retries unconfined.
-/// Other OS adapters remain pending and retain their inherited host boundary.
+/// Native enforcement failures refuse launch, never retry unconfined. Linux
+/// and macOS implement this default; the Windows adapter remains pending.
 #[doc(hidden)]
 pub fn workspace_grant<T>(
     mounts: &MountTable<T>,

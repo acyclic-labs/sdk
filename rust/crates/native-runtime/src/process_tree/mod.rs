@@ -388,7 +388,7 @@ impl ProcessTree {
                 let boundary = command.boundary.take();
                 #[cfg(target_os = "macos")]
                 if let Some(boundary) = &boundary {
-                    boundary.wrap_command(command);
+                    boundary.wrap_command(command)?;
                 }
                 if boundary.is_some() {
                     // The boundary installs its held directory in the child.

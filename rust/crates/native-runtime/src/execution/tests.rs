@@ -4,6 +4,10 @@ use crate::{ProcessCommand as Command, ProcessStdio as Stdio, ProcessTree};
 
 #[cfg(target_os = "macos")]
 #[test]
+#[allow(
+    unsafe_code,
+    reason = "FFI negative control creates a genuinely inheritable descriptor"
+)]
 fn sandbox_denies_outside_write() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = temp.path().join("workspace \"quoted\"");
@@ -13,6 +17,17 @@ fn sandbox_denies_outside_write() {
     std::fs::create_dir(&volume).unwrap();
     std::fs::write(&outside, "original").unwrap();
     std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+    let inherited = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&outside)
+        .unwrap();
+    use std::os::fd::AsRawFd;
+    // SAFETY: this exclusively owned fixture descriptor remains open for the
+    // test. Clearing CLOEXEC makes the negative control a real ambient leak.
+    assert_ne!(
+        unsafe { libc::fcntl(inherited.as_raw_fd(), libc::F_SETFD, 0) },
+        -1
+    );
     for access in [ExecutionAccess::WorkspaceWrite, ExecutionAccess::ReadOnly] {
         let grant = ExecutionGrant::composed(
             &workspace,
@@ -24,6 +39,16 @@ fn sandbox_denies_outside_write() {
         .unwrap()
         .compile_native()
         .unwrap();
+        let mut bypass = Command::new("/bin/sh");
+        bypass
+            .args(["-c", "printf leaked"])
+            .env_clear()
+            .current_dir(grant.workspace())
+            .stdin(Stdio::null())
+            .stdout(inherited.try_clone().unwrap())
+            .stderr(Stdio::null());
+        let refusal = ProcessTree::spawn_granted(bypass, &grant, None).unwrap_err();
+        assert!(refusal.get_ref().unwrap().is::<ExecutionRefusal>());
         let mut command = Command::new("/bin/sh");
         command
             .args([
@@ -31,6 +56,7 @@ fn sandbox_denies_outside_write() {
                 r#"
             (printf changed > escape) 2>/dev/null && exit 10
             /bin/sh -c 'printf changed > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11
+            (eval "printf leaked >&$EXTRA_FD") 2>/dev/null && exit 12
             (printf inside > inside) 2>/dev/null
             (printf volume > "$VOLUME/written") 2>/dev/null
             printf confined
@@ -39,7 +65,8 @@ fn sandbox_denies_outside_write() {
             .env_clear()
             .env("OUTSIDE", &outside)
             .env("VOLUME", &volume)
-            .current_dir(&workspace)
+            .env("EXTRA_FD", inherited.as_raw_fd().to_string())
+            .current_dir(grant.workspace())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

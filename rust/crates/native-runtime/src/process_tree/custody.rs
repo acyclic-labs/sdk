@@ -285,7 +285,7 @@ mod unix {
                 let boundary = command.boundary.take();
                 #[cfg(target_os = "macos")]
                 if let Some(boundary) = &boundary {
-                    boundary.wrap_command(command);
+                    boundary.wrap_command(command)?;
                 }
                 let mut native = command.to_std()?;
                 let descriptor = directory.as_raw_fd();

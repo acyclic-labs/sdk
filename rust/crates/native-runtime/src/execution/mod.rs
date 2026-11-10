@@ -681,8 +681,10 @@ impl std::fmt::Debug for PreparedExecution {
 
 impl PreparedExecution {
     #[cfg(target_os = "macos")]
-    pub(crate) fn wrap_command(&self, command: &mut crate::ProcessCommand) {
+    pub(crate) fn wrap_command(&self, command: &mut crate::ProcessCommand) -> io::Result<()> {
+        macos::validate_stdio(command.sandbox_stdio()).map_err(failure)?;
         command.wrap_sandbox(&self.platform.profile);
+        Ok(())
     }
     #[cfg(target_os = "linux")]
     pub(crate) fn working_directory(&self) -> &std::fs::File {
@@ -696,7 +698,7 @@ impl PreparedExecution {
         #[cfg(target_os = "linux")]
         self.platform.install(_command, self.grant);
         #[cfg(target_os = "macos")]
-        self.platform.install(_command);
+        self.platform.install(_command)?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
