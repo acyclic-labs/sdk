@@ -430,6 +430,7 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
             gate.release.notify_one();
         }
         schedule.drained().await;
+        owner_released.released().await;
         assert!(
             weak.upgrade().is_none(),
             "composition owner survived its physical task retirement"

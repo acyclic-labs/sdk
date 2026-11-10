@@ -8,7 +8,7 @@ use crate::storage::{ObjectId, ObjectKind};
 use thiserror::Error;
 
 const DOMAIN: &[u8] = b"acyclic-fs-generation-export-v1\0";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 
 /// Deterministic complete object manifest for one immutable generation.
 #[derive(Clone, Debug, Eq, PartialEq)]

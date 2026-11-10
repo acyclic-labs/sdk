@@ -12,7 +12,8 @@ use thiserror::Error;
 const DOMAIN: &[u8] = b"acyclic-fs-retention-created-v1\0";
 const ID_DOMAIN: &[u8] = b"acyclic-fs-retention-authority-v1\0";
 const DELETED_DOMAIN: &[u8] = b"acyclic-fs-workspace-deleted-v1\0";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
+const DELETED_VERSION: u16 = 1;
 
 /// Why one immutable generation remains durably reachable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
@@ -238,7 +239,7 @@ pub fn decode_workspace_deleted(
     let mut decoder = Decoder::new(
         bytes,
         DELETED_DOMAIN,
-        VERSION,
+        DELETED_VERSION,
         maximum_payload_bytes,
         &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
     )?;
@@ -301,7 +302,7 @@ pub fn encode_workspace_deleted<E: From<CanonicalDecodeError>>(
     }))?;
     let mut encoder = Encoder::with_exact_capacity(
         DELETED_DOMAIN,
-        VERSION,
+        DELETED_VERSION,
         length,
         |step| observe(EncodeWorkStep::Allocation(step)),
         allocation_error,

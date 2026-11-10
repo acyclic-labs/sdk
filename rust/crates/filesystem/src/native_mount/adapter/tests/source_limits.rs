@@ -1026,7 +1026,12 @@ fn physical_source_quiescence_includes_accepted_owner_destruction()
     finishing
         .join()
         .map_err(|_| "producer retirement panicked")?;
-    cleanup.join().map_err(|_| "physical cleanup panicked")??;
+    assert!(
+        cleanup
+            .join()
+            .map_err(|_| "physical cleanup panicked")??
+            .into_result()?
+    );
     assert!(!complete, "quiescence preceded accepted owner destruction");
     assert!(source.capture_retired());
     Ok(())

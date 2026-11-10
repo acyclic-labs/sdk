@@ -66,6 +66,17 @@ fn manifest_round_trip_is_canonical_and_bounded() -> Result<(), Box<dyn std::err
         decode_generation_export_manifest(&encoded, encoded.len() as u64, 1),
         Err(GenerationExportManifestError::TooManyObjects)
     ));
+    // Old/unknown headers refuse before the removed configuration fields.
+    for version in [0_u16, 1, u16::MAX] {
+        let mut obsolete = encoded[..DOMAIN.len() + 2].to_vec();
+        obsolete[DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
+        assert!(matches!(
+            decode_generation_export_manifest(&obsolete, None, None),
+            Err(GenerationExportManifestError::Decode(CanonicalDecodeError::UnsupportedVersion {
+                found, expected: 2
+            })) if found == version
+        ));
+    }
     // Equal plaintext with a different locator is a different root reference.
     value.generation_id = GenerationId::from_root(plain_root);
     assert!(matches!(

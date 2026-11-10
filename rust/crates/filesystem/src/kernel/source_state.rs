@@ -255,7 +255,7 @@ mod tests {
             decode_source_fact(&encode_source_fact(unbounded)?, 4096)?,
             unbounded
         );
-        for version in [0_u16, 2, u16::MAX] {
+        for version in [0_u16, 1, u16::MAX] {
             let mut obsolete = encoded.clone();
             obsolete[DOMAIN.len()..DOMAIN.len() + 2].copy_from_slice(&version.to_le_bytes());
             assert!(matches!(

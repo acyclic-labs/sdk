@@ -12,7 +12,7 @@ use crate::storage::{ObjectId, ObjectKind};
 use thiserror::Error;
 
 const DOMAIN: &[u8] = b"acyclic-fs-volume-created-v1\0";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 
 pub(crate) const CONFIG_ENCODED_BYTES: usize = 32;
 /// Immutable creation fact at sequence one of a volume authority.

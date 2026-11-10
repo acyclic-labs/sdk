@@ -157,6 +157,7 @@ async fn check_prefix(native: bool, cancel: bool) -> TestResult {
         }
         gate.release.notify_one();
         schedule.drained().await;
+        owner_released.released().await;
         assert!(
             weak.upgrade().is_none(),
             "selected-prefix owner survived its physical task retirement"
