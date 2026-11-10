@@ -12,7 +12,7 @@ use crate::{
     agent::{AgentPath, ConversationEntry, StatusRecord},
 };
 use acyclic_harness_client::{
-    AgentClient, AgentClientError, AgentEvent, AgentSelection, ReadTarget,
+    AgentClient, AgentClientError, AgentEvent, AgentSelection, ReadTarget, WireSessionError,
 };
 use acyclic_stream::{StreamPath, wire};
 
@@ -216,7 +216,13 @@ impl Observer {
         if error.code() == "unavailable" {
             self.connection.stream_failure(error)
         } else {
-            storage(error)
+            match error {
+                AgentClientError::Subscription {
+                    resource,
+                    cause: WireSessionError::Stream(source),
+                } => Error::StreamFollow { resource, source },
+                error => storage(error),
+            }
         }
     }
 
