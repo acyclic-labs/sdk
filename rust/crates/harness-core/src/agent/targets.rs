@@ -177,26 +177,36 @@ fn check_name(name: &str) -> Result<(), super::Error> {
 
 /// Every target visible to an agent, in attach order, and its home.
 /// Selection examines only the selected name's complete bounded byte domain;
-/// cloning retains immutable storage without copying records or strings.
+/// cloning retains one immutable admission without copying records or strings.
 #[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(try_from = "RosterWire")]
 pub struct Roster {
-    home: Arc<str>,
-    targets: Arc<[TargetRecord]>,
+    #[serde(flatten)]
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "{ home: string; targets: TargetRecord[] }")
+    )]
+    admitted: Arc<AdmittedRoster>,
+}
+
+#[derive(Serialize)]
+struct AdmittedRoster {
+    home: String,
+    targets: Vec<TargetRecord>,
     #[serde(skip)]
     home_position: usize,
     #[serde(skip)]
-    canonical: Arc<[u8]>,
+    canonical: Vec<u8>,
     #[serde(skip)]
     digest: [u8; 32],
     #[serde(skip)]
-    positions: Arc<RosterPositions>,
+    positions: RosterPositions,
 }
 
 impl PartialEq for Roster {
     fn eq(&self, other: &Self) -> bool {
-        self.home == other.home && self.targets == other.targets
+        self.admitted.home == other.admitted.home && self.admitted.targets == other.admitted.targets
     }
 }
 
@@ -206,8 +216,8 @@ impl fmt::Debug for Roster {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Roster")
-            .field("home", &self.home)
-            .field("targets", &self.targets)
+            .field("home", &self.admitted.home)
+            .field("targets", &self.admitted.targets)
             .finish()
     }
 }
@@ -319,12 +329,14 @@ impl Roster {
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.targets.roster.v1");
         hasher.update(&bytes);
         Ok(Self {
-            home: wire.home.into(),
-            targets: wire.targets.into(),
-            home_position,
-            canonical: bytes.into(),
-            digest: *hasher.finalize().as_bytes(),
-            positions: Arc::new(positions),
+            admitted: Arc::new(AdmittedRoster {
+                home: wire.home,
+                targets: wire.targets,
+                home_position,
+                canonical: bytes,
+                digest: *hasher.finalize().as_bytes(),
+                positions,
+            }),
         })
     }
 
@@ -339,25 +351,25 @@ impl Roster {
 
     /// The target an omitted `target` names.
     pub fn home_name(&self) -> &str {
-        &self.home
+        &self.admitted.home
     }
 
     /// Every target in attach order. Changes require admitting a new roster.
     pub fn targets(&self) -> &[TargetRecord] {
-        &self.targets
+        &self.admitted.targets
     }
 
     /// The retained canonical announcement bytes and digest, admitted once
     /// with this immutable roster. Reading them neither encodes nor hashes.
     pub fn canonical(&self) -> (&[u8], [u8; 32]) {
-        (&self.canonical, self.digest)
+        (&self.admitted.canonical, self.admitted.digest)
     }
 
     /// What a turn announces when its agent last announced `announced`: this
     /// roster's encoding and digest when they differ, else nothing.
     ///
     pub fn announcement(&self, announced: Option<[u8; 32]>) -> Option<(&[u8], [u8; 32])> {
-        (announced != Some(self.digest)).then(|| self.canonical())
+        (announced != Some(self.admitted.digest)).then(|| self.canonical())
     }
 
     /// The target a call names: its home when `target` is omitted, the
@@ -368,21 +380,22 @@ impl Roster {
     /// The refusal the call settles with.
     pub fn select(&self, target: Option<&str>) -> Result<&TargetRecord, TargetRefusal> {
         self.select_position(target)
-            .map(|position| &self.targets[position])
+            .map(|position| &self.admitted.targets[position])
     }
 
     /// The position in this admitted roster, shared with its executor table.
     pub(crate) fn select_position(&self, target: Option<&str>) -> Result<usize, TargetRefusal> {
-        let named = target.unwrap_or(&self.home);
-        let found = if named == &*self.home {
-            Some(self.home_position)
+        let named = target.unwrap_or(&self.admitted.home);
+        let found = if named == &*self.admitted.home {
+            Some(self.admitted.home_position)
         } else {
-            self.positions
+            self.admitted
+                .positions
                 .find(named, &mut crate::NativeIndexWork(None))
                 .expect("unbounded original roster read")
         };
         let refused = match found {
-            Some(position) if self.targets[position].state == TargetState::Online => {
+            Some(position) if self.admitted.targets[position].state == TargetState::Online => {
                 return Ok(position);
             }
             Some(_) => Refused::Offline,
@@ -397,6 +410,7 @@ impl Roster {
         TargetRefusal {
             target: target.to_owned(),
             online: self
+                .admitted
                 .targets
                 .iter()
                 .filter(|record| {
@@ -530,6 +544,7 @@ mod tests {
                 "immutable roster clone allocated"
             );
             let retained = original.clone();
+            assert!(Arc::ptr_eq(&original.admitted, &retained.admitted));
             assert!(std::ptr::eq(original.home_name(), retained.home_name()));
             assert!(std::ptr::eq(original.targets(), retained.targets()));
             assert!(std::ptr::eq(original.canonical().0, retained.canonical().0));
@@ -545,7 +560,11 @@ mod tests {
             ] {
                 let mut examined = Examinations::default();
                 assert_eq!(
-                    retained.positions.find(query, &mut examined).unwrap(),
+                    retained
+                        .admitted
+                        .positions
+                        .find(query, &mut examined)
+                        .unwrap(),
                     Some(expected)
                 );
                 // Complete encoding, strictly increasing radix bits and one
