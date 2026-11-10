@@ -22,25 +22,11 @@ public static class GraphcoderConPty {
         try {
             RequireNativeCustody();
             step = "arguments";
-            // Typed options only; the caller's owner holds the one deadline.
-            const string usage = "usage: conpty BINARY WORKSPACE CATALOG SETTINGS MODEL [--resume] [--operation ID] [--diagnostic-records N] [--diagnostic-record-bytes B]";
-            if (args.Length < 5) throw new ArgumentException(usage);
-            var options = new StringBuilder(); bool resume = false, operation = false;
-            var diagnostics = new System.Collections.Generic.HashSet<string>();
-            for (int index = 5; index < args.Length; index++) {
-                if (args[index] == "--resume" && !resume) { resume = true; options.Append(" --resume"); }
-                else if (args[index] == "--operation" && !operation && index + 1 < args.Length && args[index + 1].Length != 0) {
-                    operation = true; options.Append(" --operation " + Quote(args[++index]));
-                } else if ((args[index] == "--diagnostic-records" || args[index] == "--diagnostic-record-bytes")
-                    && diagnostics.Add(args[index]) && index + 1 < args.Length) {
-                    ulong value;
-                    string flag = args[index];
-                    if (!UInt64.TryParse(args[++index], out value)) throw new ArgumentException(usage);
-                    options.Append(" " + flag + " " + value.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                } else throw new ArgumentException(usage);
-            }
+            if (args.Length == 0) throw new ArgumentException("usage: conpty ABSOLUTE_BINARY [ARG ...]");
+            var command = new StringBuilder(Quote(args[0]));
+            for (int index = 1; index < args.Length; index++) command.Append(" " + Quote(args[index]));
             step = "terminal";
-            return Run(args[0], args[1], args[2], args[3], args[4], options.ToString());
+            return Run(args[0], command);
         } catch (Exception error) { Refuse(step, error); return 125; }
     }
     [StructLayout(LayoutKind.Sequential)] struct Coord { public short X, Y; }
@@ -117,9 +103,8 @@ public static class GraphcoderConPty {
             }
         }
     }
-    static int Run(string binary, string workspace, string catalog, string settings, string model, string options) {
-        if (!Path.IsPathRooted(binary) || !Path.IsPathRooted(workspace) || !Path.IsPathRooted(catalog) || !Path.IsPathRooted(settings))
-            throw new ArgumentException("ConPTY paths must be absolute");
+    static int Run(string binary, StringBuilder command) {
+        if (!Path.IsPathRooted(binary)) throw new ArgumentException("ConPTY executable must be absolute");
         IntPtr inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
         IntPtr console = IntPtr.Zero, attributes = IntPtr.Zero;
         ProcessInfo process = new ProcessInfo(); bool attributeInitialized = false, rootExited = false;
@@ -145,8 +130,8 @@ public static class GraphcoderConPty {
                 Require(SetStdHandle(-10, IntPtr.Zero), "clear inherited input");
                 Require(SetStdHandle(-11, IntPtr.Zero), "clear inherited output");
                 Require(SetStdHandle(-12, IntPtr.Zero), "clear inherited error");
-                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --workspace " + Quote(workspace) + " --settings-root " + Quote(settings) + " --catalog " + Quote(catalog) + " --model " + Quote(model) + options),IntPtr.Zero, IntPtr.Zero, false,
-                    0x00080004, IntPtr.Zero, workspace, ref startup, out process), "CreateProcessW with real ConPTY");
+                Require(CreateProcessW(binary, command, IntPtr.Zero, IntPtr.Zero, false,
+                    0x00080004, IntPtr.Zero, Directory.GetCurrentDirectory(), ref startup, out process), "CreateProcessW with real ConPTY");
             } finally {
                 bool restoredInput = SetStdHandle(-10, parentInput);
                 bool restoredOutput = SetStdHandle(-11, parentOutput);

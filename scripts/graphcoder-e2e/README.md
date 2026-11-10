@@ -42,6 +42,13 @@ Install `scripts/graphcoder-pty` with its frozen Bun lockfile and lifecycle scri
 The terminal package is required for PTY cases and the complete helper suite;
 headless selections load only their own runtime dependencies.
 
+`node scripts/test-graphcoder-entry.mjs /absolute/graphcoder /absolute/acyclic`
+launches bare GraphCoder and the explicit preset through this same PTY owner,
+checks their first TUI frame and clean exit, and checks headless EOF with pipes.
+The binaries read an ordinary isolated catalog through `ACYCLIC_CATALOG`;
+any model connection fails the check. This covers entry and terminal selection,
+not provider responses, hosted deployment or shared live-path admission.
+
 ```sh
 node scripts/node-tests.mjs --only scripts/graphcoder-e2e
 # Linux/Linux: real FUSE mount custody, including the process-only negative control.

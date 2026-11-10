@@ -193,7 +193,8 @@ fork_join_conformance() {
 
 # Exercise the shipping binary through its shared real-provider CLI suite.
 installed_graphcoder() {
-  cargo test --locked -p graphcoder --test cli
+  cargo test --locked -p acyclic-plugin --test cli
+  node scripts/qualify-cli-input.mjs --build "$(command -v cargo)"
 }
 
 # The native hosts own tools and providers. Qualify their thin adapters and the

@@ -10,7 +10,7 @@ before backend-specific identities are removed for comparison.
 Build and run the original scenario:
 
 ```sh
-cargo build --locked --offline -p graphcoder --bin graphcoder --features acyclic-native-runtime/test-support
+cargo build --locked --offline -p acyclic-plugin --bin graphcoder --features acyclic-native-runtime/test-support
 cargo test --locked --offline -p acyclic-conformance --features graphcoder-backends --test graphcoder_backends graphcoder_runs_one_scenario_identically_on_every_backend -- --exact
 ```
 

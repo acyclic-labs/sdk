@@ -67,7 +67,7 @@ native)
         local::tests::hermetic::default_state_overlap_is_refused_before_checkout_publication \
         local::tests::hermetic::explicit_state_overlap_is_refused_before_checkout_publication \
         local::tests::hermetic::canonical_separation_rejects_both_overlap_directions
-    timed cli-build cargo test --locked -p graphcoder --test cli --features "$harness_features" \
+    timed cli-build cargo test --locked -p acyclic-plugin --test cli --features "$harness_features" \
         --no-run --message-format=json >"$artifacts"
     run_built cli rust/crates/harness \
         recreated_checkout_runs_a_fresh_operation_through_the_real_cli_and_http
@@ -89,7 +89,7 @@ windows-base)
         --lib --tests --features "$features" --target x86_64-pc-windows-gnu
     ;;
 windows-cli)
-    timed windows-cli cargo check --locked -p graphcoder --tests \
+    timed windows-cli cargo check --locked -p acyclic-plugin --tests \
         --features "$harness_features" --target x86_64-pc-windows-gnu
     ;;
 windows-fuzz)
