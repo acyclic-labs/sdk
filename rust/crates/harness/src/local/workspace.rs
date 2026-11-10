@@ -178,12 +178,12 @@ impl LocalWorkspace {
         }
         Ok(owned)
     }
-    /// Binds a child's home beside its project and retains the session's
-    /// already admitted shared projections.
+    /// Bind exactly the selected agent's auxiliary volumes. Reuse an admitted
+    /// projection only when it names that same volume.
     pub(super) async fn bound_mounts(
         &self,
         project: &VolumeRef,
-        scratch: VolumeRef,
+        bindings: &[crate::agent::VolumeBinding],
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<Mounts>> {
         // Bind auxiliary volumes outside the sparse projection. Linux's
@@ -205,23 +205,21 @@ impl LocalWorkspace {
             root.path(),
             project,
             None,
-            native
-                .then(|| (crate::filesystem::HOME_VOLUME.into(), scratch, None))
-                .into_iter()
-                .chain(
-                    self.mounts
+            bindings
+                .iter()
+                .filter(|binding| {
+                    native
+                        && binding.name != "project"
+                        && binding.name != crate::filesystem::PRIVATE_VOLUME
+                })
+                .map(|binding| {
+                    let source = self
+                        .mounts
                         .mounts()
-                        .filter(|(_, mount)| {
-                            native && mount.view.volume.class() == VolumeClass::SessionShared
-                        })
-                        .map(|(_, mount)| {
-                            (
-                                mount.view.name.clone(),
-                                mount.view.volume.clone(),
-                                mount.view.source.clone(),
-                            )
-                        }),
-                ),
+                        .find(|(_, mount)| mount.view.volume == binding.volume)
+                        .and_then(|(_, mount)| mount.view.source.clone());
+                    (binding.name.clone(), binding.volume.clone(), source)
+                }),
         )?;
         if native {
             volumes::attach(

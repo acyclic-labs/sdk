@@ -1518,6 +1518,10 @@ async fn run_current(
                                 view.back = 0;
                                 view.pending_dirty = true;
                             }
+                            InputEffect::Interrupt if queries.source().is_some() => {
+                                queries.close(query_future.as_mut());
+                                overlay_top = 0;
+                            }
                             InputEffect::Host(Action::Escape) if overlay.is_some() || queries.source().is_some() => {
                                 match ui.select(&conversation, None).await {
                                     Ok(()) => {

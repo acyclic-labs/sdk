@@ -294,11 +294,17 @@ impl LocalHarness {
         workspace: &Arc<super::workspace::LocalWorkspace>,
         agent: &AgentPath,
         project: &crate::conversation::VolumeRef,
-        scratch: &crate::conversation::VolumeRef,
+        bindings: &[VolumeBinding],
         scope: &crate::core::Scope,
         verifier: &crate::core::AuthorityVerifier,
     ) -> Result<Arc<super::workspace::LocalWorkspace>> {
-        if project == &self.project && scratch == &self.scratch {
+        if project == &self.project
+            && self.session_bindings().iter().all(|expected| {
+                bindings.iter().any(|binding| {
+                    binding.name == expected.name && binding.volume == expected.volume
+                })
+            })
+        {
             return Ok(Arc::clone(workspace));
         }
         let view = workspace.spawned_project_view(project).await?;
@@ -308,7 +314,7 @@ impl LocalHarness {
             scope.copy(&mut None)?,
         );
         let (workspace, _) = workspace
-            .bound_task_view(view, project, scratch.clone(), &owner, &authority)
+            .bound_task_view(view, project, bindings, &owner, &authority)
             .await?;
         Ok(workspace)
     }
@@ -369,7 +375,12 @@ impl LocalHarness {
                 #[cfg(any(test, feature = "native-execution"))]
                 workspace: self.workspace.clone(),
             };
-            if project == &self.project && scratch == &self.scratch {
+            if project == &self.project
+                && scratch == &self.scratch
+                && agent.volumes.iter().any(|binding| {
+                    binding.name == super::SHARED_VOLUME && binding.volume == self.shared
+                })
+            {
                 return Ok(TurnBindings {
                     harness: Arc::clone(&self.harness),
                     context,
@@ -384,7 +395,7 @@ impl LocalHarness {
                         workspace,
                         &agent.path,
                         project,
-                        scratch,
+                        &agent.volumes,
                         &authority.scope,
                         &verifier,
                     )

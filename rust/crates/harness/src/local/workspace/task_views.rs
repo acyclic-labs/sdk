@@ -21,7 +21,7 @@ impl LocalWorkspace {
         &self,
         view: workspace::View,
         project: &VolumeRef,
-        scratch: VolumeRef,
+        bindings: &[crate::agent::VolumeBinding],
         owner: &dyn super::owner::ViewOwner,
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<(Arc<LocalWorkspace>, Arc<Mounts>)> {
@@ -37,7 +37,7 @@ impl LocalWorkspace {
             state
                 .allocated_mounts
                 .retain(|_, mounts| mounts.strong_count() != 0);
-            let mounts = self.bound_mounts(project, scratch, authority).await?;
+            let mounts = self.bound_mounts(project, bindings, authority).await?;
             state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
             mounts
         };

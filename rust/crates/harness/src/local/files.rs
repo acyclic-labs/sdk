@@ -55,17 +55,12 @@ impl LocalHarness {
             );
             let view = workspace.spawned_project_view(&project.volume).await?;
             if workspace.has_physical_task_source(&view)? {
-                let home = parent_state
-                    .volumes
-                    .iter()
-                    .find(|binding| binding.name == crate::filesystem::HOME_VOLUME)
-                    .ok_or_else(|| Error::Invalid("parent has no home binding".into()))?;
                 let bound = self
                     .project_workspace(
                         workspace,
                         &parent,
                         &project.volume,
-                        &home.volume,
+                        &parent_state.volumes,
                         &signed,
                         &verifier,
                     )

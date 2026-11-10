@@ -277,7 +277,7 @@ mod tests {
             ),
         )?
         .state_directory(state.path())
-        .without_default_tools();
+        .workspace_mounting(crate::local::WorkspaceMounting::Native);
         let local = Arc::new(super::super::LocalHarness::open(config).await?);
         let project = crate::filesystem::workspace_ref(
             local.project.provider().clone(),
@@ -448,6 +448,46 @@ mod tests {
                     .find(|binding| binding.name == "project")
                     .ok_or_else(|| Error::Invalid("missing project binding".into()))?;
                 assert_ne!(binding.volume, local.project);
+                let workspace = local.workspace.as_ref().unwrap();
+                let (signed, verifier) = local
+                    .agents
+                    .get()
+                    .unwrap()
+                    .server()
+                    .bound()
+                    .volume_scope(root)
+                    .await
+                    .map_err(storage)?;
+                let authority = crate::filesystem::NativeMountAuthority::admitted(
+                    verifier,
+                    signed.copy(&mut None)?,
+                );
+                let mounts = workspace
+                    .bound_mounts(&binding.volume, &state.volumes, &authority)
+                    .await?;
+                let view = workspace.spawned_project_view(&binding.volume).await?;
+                super::super::checkout_tools::access::require_mount_access(
+                    view.workspace(),
+                    &mounts,
+                    &signed,
+                    signed.capabilities(),
+                    "session shell",
+                )
+                .await?;
+                assert_eq!(
+                    mounts
+                        .named(Some(super::super::SHARED_VOLUME))?
+                        .1
+                        .view
+                        .volume,
+                    state
+                        .volumes
+                        .iter()
+                        .find(|binding| binding.name == super::super::SHARED_VOLUME)
+                        .unwrap()
+                        .volume
+                );
+
                 projects.push(crate::filesystem::workspace_ref(
                     binding.volume.provider().clone(),
                     &binding.volume.storage_name(&mut None)?,
@@ -1059,9 +1099,13 @@ mod tests {
                 return Err(Error::Invalid("missing descendant".into()));
             };
             selected = tree.select(agent).await?;
-            Conversation::open(selected.clone())
+            let phase = Conversation::open(selected.clone())
                 .wait_current_input()
                 .await?;
+            assert!(
+                matches!(phase, crate::agent::Phase::Idle),
+                "{name} did not become idle: {phase:?}"
+            );
             descendants.push(selected.clone());
         }
         let parent_state = local
@@ -1094,7 +1138,7 @@ mod tests {
                 local.workspace.as_ref().unwrap(),
                 descendants[0].root(),
                 &binding("project"),
-                &binding(crate::filesystem::HOME_VOLUME),
+                &parent_state.volumes,
                 &signed,
                 &verifier,
             )
