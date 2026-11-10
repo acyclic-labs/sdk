@@ -189,10 +189,12 @@ impl Session {
             .publish_client_files(conversation.client_session(), operation, changes)
             .await?;
         // The next conditional edit needs the committed descriptor, including
-        // another command in this input batch. Reopen one consistent query cut
-        // rather than manufacturing a FileRef or retaining optimistic state.
-        *self = Self::open(conversation).await?;
-        Ok(())
+        // another command in this input batch. Read one consistent query cut
+        // while retaining projections of unchanged original file contents.
+        self.snapshot = conversation
+            .client_files(conversation.client_session(), paths(), None)
+            .await?;
+        self.project()
     }
 }
 
