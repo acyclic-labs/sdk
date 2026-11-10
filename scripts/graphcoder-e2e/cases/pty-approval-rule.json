@@ -1,0 +1,21 @@
+{
+  "id": "pty-approval-rule",
+  "adapter": "anthropic",
+  "workspace": {"kind": "plain", "files": {
+    "approval-policy.json": "{\"approvers\":[{\"kind\":\"human\",\"principal\":\"human\"}]}"
+  }},
+  "extra_args": ["--approval-policy", "{{workspace}}/approval-policy.json"],
+  "model": {"steps": [
+    {"when": {}, "tools": [
+      {"id": "first", "name": "Write", "arguments": {"file_path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}},
+      {"id": "second", "name": "Write", "arguments": {"file_path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}}
+    ]},
+    {"when": {"tool_result": "repeat.txt"}, "text": ["RULE_REUSED_DONE"]}
+  ]},
+  "inputs": [{"mode": "pty", "actions": [
+    {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "repeat the exact approved action"},
+    {"when": {"contains": ["repeat.txt", "REPEAT_RULE_BODY", "r exact rule"]}, "send": "r\r"},
+    {"when": {"contains": ["RULE_REUSED_DONE", "○"]}, "send": "\u0004"}
+  ]}],
+  "assert": {"requests": 2, "files": {"repeat.txt": "REPEAT_RULE_BODY\n"}}
+}

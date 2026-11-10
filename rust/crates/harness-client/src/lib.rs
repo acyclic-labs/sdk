@@ -45,7 +45,7 @@ pub use acyclic_harness_core::agent::{
 };
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::{
-    interaction::{ApprovalBinding, Interaction},
+    interaction::{ApprovalBinding, ApprovalVerdict, Interaction},
     model::ModelContent,
 };
 #[cfg(any(feature = "agents", feature = "wasm"))]

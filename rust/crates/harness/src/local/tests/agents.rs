@@ -198,13 +198,13 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     different.action_digest[0] ^= 1;
     assert!(
         client
-            .decide_with_binding(&id, different, true)
+            .decide_with_binding(&id, different, true.into())
             .await
             .is_err()
     );
     assert_eq!(provider.request_count(), opened_calls + 1);
     client
-        .decide_with_binding(&id, binding.clone(), true)
+        .decide_with_binding(&id, binding.clone(), true.into())
         .await?;
     let (agents, _) = harness.agents().await?;
     let root = &worker;
@@ -216,7 +216,9 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     assert_eq!(saved_length, length);
     assert_eq!(historical, bytes[..MAX_READ_BYTES as usize]);
     assert_eq!(provider.request_count(), requests);
-    client.decide_with_binding(&id, binding, true).await?;
+    client
+        .decide_with_binding(&id, binding, true.into())
+        .await?;
     assert_eq!(provider.request_count(), requests);
     agents
         .archive(
@@ -688,6 +690,13 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     }
     assert_eq!(usage.totals().calls, 1);
     assert_eq!(usage.totals().completed, 1);
+    assert_eq!(usage.model(), Some(("scripted", "test")));
+    assert_eq!(usage.open_children(), Some(0));
+    assert_eq!(
+        usage.context(),
+        Some(crate::executor::ContextUsage::Unavailable),
+        "ordinary disabled-compaction dispatch does not perform accounting"
+    );
     assert!(usage.totals().currency.is_none());
     assert_eq!(usage.totals().token_nano_units.value(), None);
     // The file exporter must accept the same original completion, including
@@ -715,6 +724,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         input: inbox,
         after: 0,
         wait: false,
+        observed_children: Some(0),
     };
     let mut reply = Ok(connection.execute(&command).await?);
     let version = crate::executor::ModelUsageRecord::VERSION;
@@ -1117,6 +1127,261 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     assert_eq!(rows.len(), 2, "an admitted call was lost or duplicated");
     assert_ne!(rows[0].usage.dispatch, rows[1].usage.dispatch);
     assert_eq!(rows.iter().filter(|row| row.usage.completed).count(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn idle_usage_follows_child_lifecycle_without_a_parent_model_call() -> Result<()> {
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let provider = super::scripted([super::ScriptedTurn::Text("child done".into())]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(
+                directory.path(),
+                volume(directory.path()).await?,
+                provider.clone(),
+            )?
+            .without_default_tools()
+            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+            .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let root = connection.root().clone();
+    let client = Conversation::open(connection.clone());
+    let mut usage = client.usage_query();
+    while !usage.synchronized() {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.open_children(), Some(0));
+    // Even a waiting selection can establish its initial metadata at an empty
+    // tail. No journal record is invented to transport an actor observation.
+    let (agents, _) = harness.agents().await?;
+    let tail = crate::agent::inbox_tail(&**agents.provider(), &root)
+        .await
+        .map_err(agent)?;
+    assert!(matches!(
+        connection
+            .execute(&AgentCommand::Usage {
+                agent: root.clone(),
+                input: tail,
+                after: 0,
+                wait: true,
+                observed_children: None,
+            })
+            .await?,
+        AgentReply::Usage {
+            page: None,
+            open_children: 0,
+            ..
+        }
+    ));
+    let spawning = async {
+        match connection
+            .execute(&AgentCommand::Spawn {
+                parent: root.clone(),
+                id: crate::agent::IntentId::try_from("counted-child").map_err(agent)?,
+                brief: crate::model::ModelContent::Text("child".into()),
+                role: "worker".into(),
+            })
+            .await?
+        {
+            AgentReply::Spawned { agent, .. } => Ok(agent),
+            _ => Err(Error::Invalid("spawn did not return its child".into())),
+        }
+    };
+    let observing = async {
+        while usage.open_children() != Some(1) {
+            usage.advance().await?;
+        }
+        Ok::<_, Error>(())
+    };
+    let (child, ()) = tokio::try_join!(spawning, observing)?;
+    settled(&harness, &child).await?;
+    // Consume the already committed parent control input before parking at
+    // its quiet tail again. Both queries retain their original producer cuts.
+    let closing = async {
+        agents
+            .archive(
+                &child,
+                &crate::agent::Sender::User {
+                    principal: crate::approvals::HUMAN_APPROVER.into(),
+                },
+                &crate::agent::IntentId::try_from("close-counted-child").map_err(agent)?,
+            )
+            .await
+            .map_err(agent)?;
+        settled(&harness, &child).await?;
+        Ok::<_, Error>(())
+    };
+    let observing = async {
+        while usage.open_children() != Some(0) {
+            usage.advance().await?;
+        }
+        Ok::<_, Error>(())
+    };
+    tokio::try_join!(closing, observing)?;
+    assert_eq!(usage.totals().calls, 0);
+    assert_eq!(
+        provider.request_count(),
+        1,
+        "only the child requested a model"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work() -> Result<()> {
+    fn completed_turn(entries: Vec<Vec<u8>>) -> Result<()> {
+        let entry = entries
+            .last()
+            .ok_or_else(|| Error::Invalid("pricing turn is absent".into()))?;
+        let entry = ConversationEntry::decode(entry).map_err(agent)?;
+        if entry.outcome != crate::agent::TurnOutcome::Completed {
+            return Err(Error::Invalid(format!(
+                "pricing turn did not complete: {:?}",
+                entry.outcome
+            )));
+        }
+        Ok(())
+    }
+    use crate::{
+        executor::{ModelPriceRecord, ModelPrices, TokenPrice},
+        local::agent_conversation::UsageScope,
+        model::{ModelContent, ModelEvent},
+        test_support::{ScriptedEvent, ScriptedTurn},
+    };
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    let completed = |input, output| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::Content {
+                delta: "done".into(),
+            }),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({
+                    "usage": {"input_tokens": input, "output_tokens": output}
+                }),
+            }),
+        ])
+    };
+    let prices = Arc::new(ModelPrices::from_jsonl(
+        &serde_json::to_vec(&ModelPriceRecord {
+            version: 1,
+            revision: "chosen-price-1".into(),
+            provider: "scripted".into(),
+            model: "test".into(),
+            effective_at: 1,
+            currency: "USD".into(),
+            input_nano_units_per_million: Some(1_000_000),
+            output_nano_units_per_million: Some(2_000_000),
+            cached: TokenPrice::Included,
+            cache_write: TokenPrice::Included,
+            reasoning: TokenPrice::Included,
+        })
+        .map_err(agent)?,
+    )?);
+    let provider = super::scripted([
+        completed(100, 20),
+        completed(200, 30),
+        ScriptedTurn::Events(vec![ScriptedEvent::Interrupted {
+            error: "priced provider failure".into(),
+        }]),
+    ]);
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), volume(directory.path()).await?, provider)?
+                .without_default_tools()
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .compaction(crate::context::CompactionPolicy::Threshold(
+                    crate::context::ThresholdCompaction {
+                        response_reserve_tokens: 4096,
+                        recent_tokens: 4096,
+                    },
+                )),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let root = connection.root().clone();
+    let client = Conversation::open(connection.clone());
+    client.send("priced-root", "root").await?;
+    completed_turn(settled(&harness, &root).await?)?;
+    let AgentReply::Spawned { agent: child, .. } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: root.clone(),
+            id: crate::agent::IntentId::try_from("priced-child").map_err(agent)?,
+            brief: ModelContent::Text("child".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("spawn did not return its child".into()));
+    };
+    completed_turn(settled(&harness, &child).await?)?;
+    let root_cost = client.usage_totals(UsageScope::Agent, &prices).await?;
+    assert_eq!(
+        (
+            root_cost.calls,
+            root_cost.completed,
+            root_cost.token_nano_units.value()
+        ),
+        (1, 1, Some(140))
+    );
+    let tree_cost = client
+        .usage_totals(UsageScope::Tree(&|_| false), &prices)
+        .await?;
+    assert_eq!(
+        (
+            tree_cost.calls,
+            tree_cost.completed,
+            tree_cost.token_nano_units.value()
+        ),
+        (2, 2, Some(400))
+    );
+    assert_eq!(
+        client
+            .usage_totals(UsageScope::Tree(&|agent| agent == &child), &prices)
+            .await?,
+        root_cost
+    );
+    // Fresh authenticated selection and the live fold agree with the visitor;
+    // the child's inherited root context is not charged a second time.
+    let reopened = conversation(&harness).await?;
+    let mut live = reopened.usage_query_with_prices(Arc::clone(&prices));
+    while !live.synchronized() {
+        live.advance().await?;
+    }
+    assert_eq!(live.totals(), &root_cost);
+    assert!(matches!(
+        live.context(),
+        Some(crate::executor::ContextUsage::Counted { input_tokens, capacity_tokens: 32_768 })
+            if input_tokens > 0
+    ));
+    assert_eq!(
+        reopened
+            .usage_totals(UsageScope::Tree(&|_| false), &prices)
+            .await?,
+        tree_cost
+    );
+    let mut events = client.observe(Some(client.settled().await?)).await?;
+    let inbox = client.send("priced-failure", "fail").await?;
+    let result = client.settle("priced-failure", inbox, &mut events).await;
+    assert!(
+        format!("{result:?}").contains("priced provider failure"),
+        "failure lost its original cause: {result:?}"
+    );
+    let durable = client
+        .observation()
+        .await?
+        .usage_totals(UsageScope::Tree(&|_| false), &prices)
+        .await?;
+    assert_eq!((durable.calls, durable.completed), (3, 2));
+    assert_eq!(durable.token_nano_units.known, 400);
+    assert_eq!(durable.token_nano_units.unknown, 1);
+    assert_eq!(durable.token_nano_units.value(), None);
     Ok(())
 }
 

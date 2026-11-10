@@ -131,6 +131,9 @@ pub enum AgentReply {
     Usage {
         /// Exact original inbox sequence, at or after this agent's fork cut.
         input: u64,
+        /// Direct open children in the original actor observation, including
+        /// an idle inbox tail with no journal page.
+        open_children: u64,
         /// One fixed journal page; None marks the current committed inbox tail.
         /// At that tail, `settled` means the agent has been archived.
         page: Option<acyclic_harness_core::executor::ModelUsagePage>,
@@ -532,15 +535,20 @@ fn validate_reply(
                 page: None,
                 input,
                 settled,
+                open_children,
             },
             AgentCommand::Usage {
                 input: requested,
                 after,
                 wait,
+                observed_children,
                 ..
             },
         ) => {
-            return if input >= requested && *after == 0 && (!wait || *settled) {
+            return if input >= requested
+                && *after == 0
+                && (!wait || *settled || *observed_children != Some(*open_children))
+            {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
@@ -551,18 +559,31 @@ fn validate_reply(
                 page: Some(page),
                 input,
                 settled,
+                open_children,
             },
             AgentCommand::Usage {
                 agent,
                 after,
                 input: requested,
                 wait,
+                observed_children,
             },
         ) => {
             return if input >= requested
                 && (input == requested || *after == 0)
-                && (!wait || *settled || page.end > *after)
+                && (!wait
+                    || *settled
+                    || page.end > *after
+                    || *observed_children != Some(*open_children))
                 && page.items.len() <= 32
+                && (page.context.is_none() || page.end > *after)
+                && !matches!(
+                    page.context,
+                    Some(acyclic_harness_core::executor::ContextUsage::Counted {
+                        capacity_tokens: 0,
+                        ..
+                    })
+                )
                 && page.end.checked_sub(*after).is_some_and(|visited| {
                     visited <= 32
                         && page.items.len() as u64 <= visited
@@ -982,6 +1003,7 @@ mod tests {
                 input: 3,
                 after,
                 wait: false,
+                observed_children: Some(0),
             };
             for visited in [0, 1, 31, 32] {
                 let Some(end) = after.checked_add(visited) else {
@@ -990,8 +1012,10 @@ mod tests {
                 let reply = AgentReply::Usage {
                     input: 3,
                     settled: false,
+                    open_children: 0,
                     page: Some(ModelUsagePage {
                         items: vec![],
+                        context: None,
                         end,
                         next: (visited == 32).then_some(end),
                     }),
@@ -1004,6 +1028,7 @@ mod tests {
                     input: 3,
                     after,
                     wait: true,
+                    observed_children: Some(0),
                 };
                 if visited == 0 {
                     assert!(
@@ -1024,6 +1049,18 @@ mod tests {
                 } else {
                     assert!(decode_agent_reply(&bytes, &live)?.is_ok());
                 }
+                let mut envelope = Envelope::decode(bytes.as_slice())?;
+                let Some(envelope::Value::Reply(body)) = &mut envelope.value else {
+                    return Err("usage envelope lost its reply".into());
+                };
+                let mut value: serde_json::Value = serde_json::from_slice(body)?;
+                value["page"]["context"] =
+                    serde_json::json!({"kind":"counted","input_tokens":1,"capacity_tokens":0});
+                *body = serde_json::to_vec(&value)?;
+                assert!(matches!(
+                    decode_agent_reply(&envelope.encode_to_vec(), &command),
+                    Err(CommandError::Invalid)
+                ));
                 // Mutate the actual reply envelope: a premature continuation,
                 // backward cursor or a skipped page must not advance the view.
                 for (bad_end, next) in [

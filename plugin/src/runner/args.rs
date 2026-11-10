@@ -95,6 +95,10 @@ pub struct Args {
     /// stdout and sends ordinary answers to stderr. Missing metrics stay null.
     #[arg(global = true, long, value_name = "PATH|-")]
     pub usage_jsonl: Option<PathBuf>,
+    /// Explicit version-one JSONL price records for token estimates. The
+    /// interactive client retains the selection in its session prices.jsonl.
+    #[arg(long, value_name = "FILE", conflicts_with = "host_workspace")]
+    pub prices: Option<PathBuf>,
     /// Follow every agent's own journal to DIR/<stable-agent-id>.jsonl.
     /// Uses the root event output's version-one execution and payload envelopes.
     /// Also writes DIR/agents.jsonl, appending once on discovery:

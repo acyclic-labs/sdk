@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod chain;
+mod grants;
 pub use chain::{
     ApprovalResponder, NextStage, fingerprint as request_fingerprint,
     next_stage as next_agent_stage, validate_agent_decision,
@@ -188,9 +189,9 @@ impl Default for ApprovalPolicy {
 impl ApprovalPolicy {
     /// Validates and pins the complete configuration, including escalation order.
     pub fn bind(&self) -> Result<ApprovalGate> {
-        if self.approvers.is_empty() || self.approvers.len() > 32 {
+        if self.approvers.is_empty() {
             return Err(Error::Invalid(
-                "approval chain must contain 1..32 approvers".into(),
+                "approval chain must contain an approver".into(),
             ));
         }
         let mut principals = std::collections::BTreeSet::new();
@@ -199,9 +200,6 @@ impl ApprovalPolicy {
                 Approver::Rules {
                     principal, rules, ..
                 } => {
-                    if rules.len() > 1024 {
-                        return Err(Error::Invalid("too many approval rules".into()));
-                    }
                     for rule in rules {
                         for selector in &rule.selectors {
                             selector.validate()?;

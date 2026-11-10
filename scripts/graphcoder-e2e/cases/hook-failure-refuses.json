@@ -1,0 +1,63 @@
+{
+  "id": "hook-failure-refuses",
+  "adapter": "anthropic",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "write",
+            "name": "Write",
+            "arguments": {
+              "file_path": "approved.txt",
+              "content": "APPROVED_E2E\n"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "tool execution failed: process: exit Some(1): E2E_HOOK_FAILURE"
+        },
+        "text": [
+          "HOOK_REFUSED_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "write approved file",
+      "answer": "HOOK_REFUSED_DONE"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "jsonl": {
+      "hooks.jsonl": [
+        {
+          "hook_event_name": "PreToolUse",
+          "fixture_action": "fail"
+        }
+      ]
+    },
+    "absent_files": [
+      "approved.txt"
+    ],
+    "tool_errors": [
+      "E2E_HOOK_FAILURE"
+    ],
+    "tool_contains": [
+      "tool execution failed: process: exit Some(1): E2E_HOOK_FAILURE"
+    ]
+  },
+  "settings": {
+    ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" fail\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" fail\"}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" fail\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" fail\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" fail\"}]}]}}"
+  }
+}
