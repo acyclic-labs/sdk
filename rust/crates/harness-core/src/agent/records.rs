@@ -673,16 +673,19 @@ impl ChildWakeSet {
             .map_err(|_| Error::Record("child wake count exceeds this platform"))?;
         let mut children = super::Children::from_digest(self.root, count)?;
         children.bind(provider);
-        Ok(children
+        children
             .page_values(after, limit)
             .await?
             .into_iter()
-            .map(|(child, settled_at_micros)| ChildWake {
-                child,
-                settled_at_micros,
-                woke_at_micros: self.woke_at_micros,
+            .map(|(child, settled_at_micros)| {
+                Ok(ChildWake {
+                    child,
+                    settled_at_micros: settled_at_micros
+                        .ok_or(Error::Record("child wake leaf has no measurement"))?,
+                    woke_at_micros: self.woke_at_micros,
+                })
             })
-            .collect())
+            .collect()
     }
 }
 

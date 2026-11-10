@@ -1,4 +1,4 @@
-//! Persistent child membership. Checkpoints retain two roots and counts;
+//! Persistent child membership and measurements. Checkpoints retain roots and counts;
 //! point updates copy at most one path in a 128-bit Patricia tree. Immutable
 //! nodes are staged before the checkpoint publishes their root, so a failed
 //! actor commit can leave only unreachable nodes, never visible membership.
@@ -21,7 +21,8 @@ type Digest = [u8; 32];
 enum Node {
     Leaf {
         id: [u8; 16],
-        value: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<u64>,
     },
     Branch {
         bit: u8,
@@ -302,13 +303,16 @@ impl Children {
     }
     /// Inserts one child and stages only the nodes on its changed path.
     pub async fn insert(&mut self, child: &AgentPath) -> Result<bool, Error> {
-        self.insert_value(child, 0).await
+        self.insert_entry(child, None).await
     }
     pub(crate) async fn insert_value(
         &mut self,
         child: &AgentPath,
         value: u64,
     ) -> Result<bool, Error> {
+        self.insert_entry(child, Some(value)).await
+    }
+    async fn insert_entry(&mut self, child: &AgentPath, value: Option<u64>) -> Result<bool, Error> {
         let id = child.id_bytes();
         let mut branches = Vec::new();
         let found = self.walk(id, |branch| branches.push(branch)).await?;
@@ -398,7 +402,7 @@ impl Children {
         &self,
         after: Option<&AgentId>,
         limit: usize,
-    ) -> Result<Vec<(AgentId, u64)>, Error> {
+    ) -> Result<Vec<(AgentId, Option<u64>)>, Error> {
         let after = after.map(AgentId::to_bytes);
         let mut pending = self
             .root
