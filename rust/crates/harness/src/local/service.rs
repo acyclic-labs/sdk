@@ -1094,7 +1094,7 @@ mod tests {
                 local.workspace.as_ref().unwrap(),
                 descendants[0].root(),
                 &binding("project"),
-                &binding(super::super::HOME_VOLUME),
+                &binding(crate::filesystem::HOME_VOLUME),
                 &signed,
                 &verifier,
             )

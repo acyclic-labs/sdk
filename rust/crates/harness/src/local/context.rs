@@ -365,9 +365,6 @@ impl LocalHarness {
                 .conventions
                 .push(workspace.context_line().to_owned());
             if self.checkout_context {
-                #[cfg(test)]
-                self.environment_reads
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let (selected, _) = workspace.selected_view().await?;
                 // A selected branch can use a separate physical mount. Reuse
                 // that admitted handle; never report the base mount for it.

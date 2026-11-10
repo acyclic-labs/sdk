@@ -690,7 +690,7 @@ impl Conversation {
     /// # Errors
     /// Session, host, decoding or follow admission failures.
     pub async fn observe_current(&self) -> Result<(super::Observer, Phase)> {
-        let (settled, statuses, phase) = self.settlement().await?;
+        let (settled, statuses, phase) = self.settlement(false).await?;
         Ok((
             super::Observer::open(&self.connection, settled, statuses.saturating_sub(1))?,
             phase,

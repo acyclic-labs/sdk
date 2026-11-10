@@ -412,7 +412,7 @@ pub(super) async fn open(
             volumes::recover_after_crash(setup, &Path::new(".volumes").join(name))?;
         }
     }
-    volumes::seed::adopt_home(filesystem, scratch, &root).await?;
+    volumes::seed::adopt_home(filesystem, attach.scratch, &root).await?;
     let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     acyclic_fs::WorkspaceGraph::new(store.clone())

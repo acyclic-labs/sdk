@@ -58,7 +58,7 @@ impl LocalHarness {
                 let home = parent_state
                     .volumes
                     .iter()
-                    .find(|binding| binding.name == super::HOME_VOLUME)
+                    .find(|binding| binding.name == crate::filesystem::HOME_VOLUME)
                     .ok_or_else(|| Error::Invalid("parent has no home binding".into()))?;
                 let bound = self
                     .project_workspace(

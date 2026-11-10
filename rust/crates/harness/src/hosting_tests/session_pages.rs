@@ -1,9 +1,7 @@
 //! Directory scale is independent of actors that are not selected or running.
 use super::*;
 use crate::agent::Phase;
-use acyclic_stream::{
-    CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, StreamProviderExt as _,
-};
+use acyclic_stream::{CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey};
 
 #[tokio::test]
 async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Result {
