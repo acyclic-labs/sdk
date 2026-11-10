@@ -46,7 +46,7 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 18 settles a definitive turn failure as a failed conversation entry.
 /// Version 19 (retired) scoped status addresses by complete ancestry.
 /// Version 20 carries child settlement-to-wake measurements in status records.
-pub const RECORD_VERSION: u32 = 20;
+pub const RECORD_VERSION: u32 = 21;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -629,16 +629,59 @@ pub struct ChildWake {
     pub woke_at_micros: u64,
 }
 
+/// Immutable completion samples for one returned wait. The index root is
+/// published with this status; neither status nor checkpoint size grows with
+/// the number of completions. Read samples through the owner's bounded query.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(deny_unknown_fields)]
+pub struct ChildWakes {
+    /// Persistent index of direct child ids and original settlement times.
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "{ root: number[] | null; count: number }")
+    )]
+    pub settlements: super::Children,
+    /// Parent delivery clock at the actual wait return, before the driver runs.
+    pub woke_at_micros: u64,
+}
+impl ChildWakes {
+    /// Read only the requested samples at this immutable cut.
+    pub async fn page<P: acyclic_stream::StreamProvider + ?Sized>(
+        &self,
+        provider: std::sync::Arc<P>,
+        after: Option<&AgentId>,
+        limit: usize,
+    ) -> Result<Vec<ChildWake>, Error> {
+        let mut entries = self.settlements.clone();
+        entries.bind(provider);
+        entries
+            .values_page(after, limit)
+            .await?
+            .into_iter()
+            .map(|(child, value)| {
+                Ok(ChildWake {
+                    child,
+                    settled_at_micros: value
+                        .ok_or(Error::Record("child completion has no timestamp"))?,
+                    woke_at_micros: self.woke_at_micros,
+                })
+            })
+            .collect()
+    }
+}
+
 /// One status stream record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct StatusRecord {
-    /// One measurement per observed child, published only when its wait returns.
+    /// Paged measurements, published only when the wait returns.
     /// Travels through the existing status/SessionFrame telemetry projection.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub child_wakes: Vec<ChildWake>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_wakes: Option<ChildWakes>,
     /// Phase after the transition that wrote it.
     pub phase: Phase,
     /// Inbox cursor consumed by that transition.

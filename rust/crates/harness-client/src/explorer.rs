@@ -121,7 +121,7 @@ mod tests {
             let root = AgentPath::root(&AgentId::from_bytes([1; 16]));
             let memory = MemoryStream::default();
             let status = StatusRecord {
-                child_wakes: Vec::new(),
+                child_wakes: None,
                 phase: Phase::Idle,
                 cursor: 0,
                 conversation: 0,

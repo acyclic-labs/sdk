@@ -374,7 +374,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     assert_eq!(host.state(&root).await?.need, 1);
     for bytes in values(&*provider, root.status()?).await? {
         assert!(
-            StatusRecord::decode(&bytes)?.child_wakes.is_empty(),
+            StatusRecord::decode(&bytes)?.child_wakes.is_none(),
             "a partial completion burst must not report a returned wait"
         );
     }
@@ -414,24 +414,30 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let measured: Vec<_> = statuses
         .iter()
-        .filter(|status| !status.child_wakes.is_empty())
+        .filter(|status| status.child_wakes.is_some())
         .collect();
     assert_eq!(measured.len(), 1, "one telemetry record per returned wait");
     let wake = measured[0];
     assert_eq!(wake.cursor, before + CHILDREN as u64);
+    let samples = wake
+        .child_wakes
+        .as_ref()
+        .ok_or("missing wake root")?
+        .page(provider.clone(), None, CHILDREN)
+        .await?;
     assert_eq!(
-        wake.child_wakes.len(),
+        samples.len(),
         CHILDREN,
         "every child must have a wake measurement"
     );
     assert_eq!(
-        wake.child_wakes
+        samples
             .iter()
             .map(|sample| sample.child.clone())
             .collect::<BTreeSet<_>>(),
         children.iter().map(AgentPath::id).collect()
     );
-    for sample in &wake.child_wakes {
+    for sample in &samples {
         assert_eq!(sample.settled_at_micros, NOW * 1_000);
         assert_eq!(sample.woke_at_micros, NOW * 1_000);
         assert!(

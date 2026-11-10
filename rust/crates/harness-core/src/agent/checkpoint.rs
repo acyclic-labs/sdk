@@ -18,8 +18,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            // V4 stores persistent membership roots; old checkpoints are refused whole.
-            version: "4".into(),
+            // V5 also stores pending completion roots; old checkpoints are refused whole.
+            version: "5".into(),
         });
     &IDENTITY
 }
@@ -471,7 +471,7 @@ mod tests {
             let encoded = serde_json::to_vec(&outcome).expect("outcome");
             assert!(encoded.len() <= MAX_OUTCOME_BYTES, "{}", encoded.len());
             StatusRecord {
-                child_wakes: Vec::new(),
+                child_wakes: None,
                 phase: Phase::Done { outcome },
                 cursor: u64::MAX,
                 conversation: u64::MAX,
@@ -529,12 +529,18 @@ mod tests {
                     .await
                     .expect("membership page")
             });
+            let mut settlements = crate::agent::Children::new();
+            futures::executor::block_on(async {
+                for id in &identities {
+                    settlements
+                        .set_value(&path.child(id).expect("child"), u64::MAX)
+                        .await
+                        .expect("completion");
+                }
+            });
             for outcome in outcomes() {
                 let state = AgentState {
-                    child_settlements: identities
-                        .iter()
-                        .map(|child| (child.clone(), u64::MAX))
-                        .collect(),
+                    child_settlements: settlements.clone(),
                     profile: adopted.profile.clone(),
                     parent: path.parent(),
                     path: path.clone(),
@@ -683,11 +689,7 @@ mod tests {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);
             for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
-                let record = StatusRecord { child_wakes: (0..FIXTURE_CHILDREN).map(|n| super::super::ChildWake {
-                    child: super::super::AgentId::from_bytes((n as u128).to_be_bytes()),
-                    settled_at_micros: u64::MAX,
-                    woke_at_micros: u64::MAX,
-                }).collect(), phase, cursor: u64::MAX, conversation: u64::MAX };
+                let record = StatusRecord { child_wakes: Some(crate::agent::ChildWakes { settlements: crate::agent::Children::new(), woke_at_micros: u64::MAX }), phase, cursor: u64::MAX, conversation: u64::MAX };
                 let worst = assert_record_bound(&record);
                 let mut sample: StatusRecord = varied(&record, name, text);
                 sample.cursor = cursor;
@@ -703,10 +705,63 @@ mod tests {
     }
 
     #[test]
+    fn ten_thousand_completions_keep_checkpoint_and_status_constant_sized() {
+        futures::executor::block_on(async {
+            let path = AgentPath::root(&id(1));
+            let mut adopted = adoption();
+            adopted.parent = None;
+            adopted.agent = path.id();
+            let mut state = AgentState::adopted(path.clone(), &adopted).expect("adoption");
+            let mut first = None;
+            for n in 0..10_000 {
+                state
+                    .child_settlements
+                    .set_value(&path.child(&id(n)).expect("child"), u64::MAX)
+                    .await
+                    .expect("completion");
+                if n == 0 {
+                    first = Some(encode(&state).expect("checkpoint").len());
+                }
+            }
+            let encoded = encode(&state).expect("checkpoint");
+            assert!(
+                encoded.len() <= first.expect("first cut") + 4,
+                "checkpoint grew with completion count"
+            );
+            assert_eq!(decode(&encoded).expect("decode"), state);
+            let status = StatusRecord {
+                child_wakes: Some(crate::agent::ChildWakes {
+                    settlements: state.child_settlements.clone(),
+                    woke_at_micros: u64::MAX,
+                }),
+                phase: Phase::Idle,
+                cursor: u64::MAX,
+                conversation: u64::MAX,
+            };
+            assert!(
+                status.encode().expect("status").len() < 512,
+                "status embedded the completion list"
+            );
+            let page = status
+                .child_wakes
+                .expect("measurements")
+                .settlements
+                .values_page(None, 3)
+                .await
+                .expect("bounded page");
+            assert_eq!(page.len(), 3);
+            assert!(
+                page.iter()
+                    .all(|(_, timestamp)| *timestamp == Some(u64::MAX))
+            );
+        });
+    }
+
+    #[test]
     fn waiting_host_status_requires_a_bounded_name() {
         for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
             let record = StatusRecord {
-                child_wakes: Vec::new(),
+                child_wakes: None,
                 phase: Phase::WaitingHost { host },
                 cursor: 0,
                 conversation: 0,
@@ -717,7 +772,7 @@ mod tests {
             );
         }
         let record = StatusRecord {
-            child_wakes: Vec::new(),
+            child_wakes: None,
             phase: Phase::WaitingHost {
                 host: widest(MAX_INTENT_BYTES),
             },

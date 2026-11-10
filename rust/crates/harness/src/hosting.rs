@@ -496,6 +496,38 @@ where
                         .await?,
                 })
             }
+            AgentCommand::ChildWakes {
+                agent,
+                status,
+                page,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let after = page
+                    .cursor()
+                    .map(crate::agent::AgentId::parse)
+                    .transpose()
+                    .map_err(|_| Error::Record("invalid completion cursor"))?;
+                let mut items = self
+                    .bound
+                    .child_wakes(agent, *status, after.as_ref(), page.items() as usize + 1)
+                    .await?;
+                let mut credit = PageCredit::new(page, |next| AgentReply::ChildWakes {
+                    items: Vec::new(),
+                    next,
+                })?;
+                for (index, item) in items.iter().take(page.items() as usize).enumerate() {
+                    let continues = index + 1 < items.len();
+                    if !credit
+                        .accept(item, continues.then_some(item.child.as_str().len() as u64))?
+                    {
+                        break;
+                    }
+                }
+                let next =
+                    (credit.items < items.len()).then(|| items[credit.items - 1].child.to_string());
+                items.truncate(credit.items);
+                Ok(AgentReply::ChildWakes { items, next })
+            }
             AgentCommand::Directory {
                 agent,
                 path,
@@ -1359,6 +1391,7 @@ where
                 | AgentCommand::ProjectHeads { .. }
                 | AgentCommand::History { .. }
                 | AgentCommand::Directory { .. }
+                | AgentCommand::ChildWakes { .. }
                 | AgentCommand::Approvals { .. }
                 | AgentCommand::Reply { .. }
                 | AgentCommand::Settlement { .. }

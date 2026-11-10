@@ -19,7 +19,7 @@ type Digest = [u8; 32];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Node {
-    Leaf([u8; 16]),
+    Leaf([u8; 16], Option<u64>),
     Branch {
         bit: u8,
         left: Digest,
@@ -30,7 +30,7 @@ enum Node {
 
 impl Node {
     fn encode(&self) -> Result<Vec<u8>, Error> {
-        serde_json::to_vec(&(1u32, self)).map_err(|_| Error::Record("child index does not encode"))
+        serde_json::to_vec(&(2u32, self)).map_err(|_| Error::Record("child index does not encode"))
     }
 }
 
@@ -72,7 +72,7 @@ impl<P: StreamProvider + ?Sized> Storage for Provider<P> {
             }
             let (version, node): (u32, Node) = serde_json::from_slice(&record.value)
                 .map_err(|_| Error::Record("child index node is malformed"))?;
-            if version != 1 {
+            if version != 2 {
                 return Err(Error::Record("unsupported child index node version"));
             }
             Ok(node)
@@ -237,7 +237,7 @@ impl Children {
         let mut next = self.root;
         while let Some(digest) = next {
             match self.node(digest).await? {
-                Node::Leaf(found) => return Ok(Some((found, digest))),
+                Node::Leaf(found, _) => return Ok(Some((found, digest))),
                 Node::Branch {
                     bit,
                     left,
@@ -266,7 +266,7 @@ impl Children {
     }
     async fn branch(&self, bit: u8, left: Digest, right: Digest) -> Result<Digest, Error> {
         let max = match self.node(right).await? {
-            Node::Leaf(id) | Node::Branch { max: id, .. } => id,
+            Node::Leaf(id, _) | Node::Branch { max: id, .. } => id,
         };
         self.stage(Node::Branch {
             bit,
@@ -289,13 +289,30 @@ impl Children {
     }
     /// Inserts one child and stages only the nodes on its changed path.
     pub async fn insert(&mut self, child: &AgentPath) -> Result<bool, Error> {
+        self.put(child, None, false).await
+    }
+    /// Set bounded per-child data using the same persistent index as membership.
+    /// Replacing a value copies only its search path, never the whole map.
+    pub async fn set_value(&mut self, child: &AgentPath, value: u64) -> Result<(), Error> {
+        self.put(child, Some(value), true).await.map(|_| ())
+    }
+    async fn put(
+        &mut self,
+        child: &AgentPath,
+        value: Option<u64>,
+        replace: bool,
+    ) -> Result<bool, Error> {
         let id = child.id_bytes();
         let mut branches = Vec::new();
         let found = self.walk(id, |branch| branches.push(branch)).await?;
-        if found.is_some_and(|(found, _)| found == id) {
+        if let Some((found, old)) = found.filter(|(found, _)| *found == id) {
+            if replace && self.node(old).await? != Node::Leaf(found, value) {
+                let leaf = self.stage(Node::Leaf(id, value)).await?;
+                self.root = Some(self.rebuild(leaf, branches).await?);
+            }
             return Ok(false);
         }
-        let leaf = self.stage(Node::Leaf(id)).await?;
+        let leaf = self.stage(Node::Leaf(id, value)).await?;
         let root = if let Some((found, old_leaf)) = found {
             let bit = (0u8..128)
                 .find(|bit| right(id, *bit) != right(found, *bit))
@@ -352,7 +369,7 @@ impl Children {
         let mut previous = None;
         while let Some(digest) = next {
             match self.node(digest).await? {
-                Node::Leaf(id) => return Ok(Some(AgentId::from_bytes(id))),
+                Node::Leaf(id, _) => return Ok(Some(AgentId::from_bytes(id))),
                 Node::Branch { bit, left, .. } => {
                     if bit >= 128 || previous.is_some_and(|previous| previous >= bit) {
                         return Err(Error::Record("child index branch order is invalid"));
@@ -367,6 +384,19 @@ impl Children {
     /// Up to `limit` child identities after `after`, in identity order. A
     /// caller continues from the last returned identity until the page empties.
     pub async fn page(&self, after: Option<&AgentId>, limit: usize) -> Result<Vec<AgentId>, Error> {
+        Ok(self
+            .values_page(after, limit)
+            .await?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect())
+    }
+    /// A bounded page of identities and their optional values at this immutable cut.
+    pub async fn values_page(
+        &self,
+        after: Option<&AgentId>,
+        limit: usize,
+    ) -> Result<Vec<(AgentId, Option<u64>)>, Error> {
         let after = after.map(AgentId::to_bytes);
         let mut pending = self
             .root
@@ -379,10 +409,10 @@ impl Children {
                 break;
             };
             match self.node(digest).await? {
-                Node::Leaf(id) if after.is_none_or(|after| id > after) => {
-                    page.push(AgentId::from_bytes(id))
+                Node::Leaf(id, value) if after.is_none_or(|after| id > after) => {
+                    page.push((AgentId::from_bytes(id), value))
                 }
-                Node::Leaf(_) => {}
+                Node::Leaf(_, _) => {}
                 Node::Branch {
                     bit,
                     left,
@@ -510,6 +540,28 @@ mod tests {
             }
         }
         assert_eq!(snapshot.len(), 513);
+        let sampled = expected.iter().take(17).cloned().collect::<Vec<_>>();
+        for (n, id) in sampled.iter().enumerate() {
+            children.set_value(&parent.child(id)?, n as u64).await?;
+            counted.cost(258, 130);
+        }
+        assert!(
+            snapshot
+                .values_page(None, 17)
+                .await?
+                .iter()
+                .all(|(_, value)| value.is_none())
+        );
+        counted.cost(2 * 128 + 2 * 17 + 1, 0);
+        assert_eq!(
+            children.values_page(None, 17).await?,
+            sampled
+                .iter()
+                .enumerate()
+                .map(|(n, id)| (id.clone(), Some(n as u64)))
+                .collect::<Vec<_>>()
+        );
+        counted.cost(2 * 128 + 2 * 17 + 1, 0);
         let encoded = serde_json::to_vec(&children)?;
         assert!(
             encoded.len() < 256,

@@ -341,6 +341,16 @@ pub enum AgentCommand {
         /// Visible rows and complete encoded reply bytes, including continuation.
         page: AgentPageRequest,
     },
+    /// Bounded completion measurements at an original status cut.
+    ChildWakes {
+        /// Selected owner, admitted within this authenticated tree.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Sequence in the owner's original status stream.
+        status: u64,
+        /// Row/byte credit; cursor is the preceding page's last child id.
+        page: AgentPageRequest,
+    },
     /// One authorized private directory page at its original immutable cut.
     Directory {
         /// Exact selected agent; paths never select a different private volume.
@@ -544,6 +554,13 @@ impl AgentCommand {
                     .validate(&mut None)
                     .map_err(|_| CommandError::Invalid)
             }
+            Self::ChildWakes { page, .. } => {
+                if let Some(after) = page.cursor() {
+                    acyclic_harness_core::agent::AgentId::parse(after)
+                        .map_err(|_| CommandError::Invalid)?;
+                }
+                Ok(())
+            }
             Self::Directory {
                 path,
                 generation,
@@ -614,6 +631,7 @@ impl AgentCommand {
             | Self::ProjectHeads { agent }
             | Self::Diff { agent, .. }
             | Self::Directory { agent, .. }
+            | Self::ChildWakes { agent, .. }
             | Self::Approvals { agent, .. }
             | Self::Decide { agent, .. }
             | Self::Reply { agent, .. }
@@ -649,6 +667,7 @@ impl AgentCommand {
             Self::ProjectHeads { .. } => "project_heads",
             Self::Diff { .. } => "diff",
             Self::Directory { .. } => "directory",
+            Self::ChildWakes { .. } => "child_wakes",
             Self::Approvals { .. } => "approvals",
             Self::Decide { .. } => "decide",
             Self::Reply { .. } => "reply",

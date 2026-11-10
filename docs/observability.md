@@ -38,8 +38,13 @@ stream and SessionFrame projection read by GraphCoder and benchmark captures.
 Each sample identifies a direct child relative to the status owner and retains
 `settled_at_micros` from the original `ChildSettled` or `ChildDone` inbox commit,
 and `woke_at_micros` from the parent delivery clock where the wait resumes, before
-the driver runs. Samples accumulate with the waiting checkpoint and publish once
-with the returning step's ordinary commit; partial completions emit none. Both
+the driver runs. The waiting checkpoint retains a persistent index root and count.
+The returning step publishes that root plus its return clock in the original
+status record; partial completions emit no measurement reference. Consumers page
+samples with the authenticated owner/status query, using the last child id as
+the exclusive cursor. Each query reauthorizes the owner and resolves the original
+status before loading index nodes. No checkpoint, status record or steady-state
+subscription grows with the completion count. Both
 timestamps are Unix microseconds (the delivery clock has millisecond resolution).
 Clock skew remains visible in the raw pair; an absent sample is unknown. These
 are wait-return measurements, not provider-call or tool-result-publication times.

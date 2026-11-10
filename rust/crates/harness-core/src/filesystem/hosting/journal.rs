@@ -71,6 +71,41 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Page completion measurements referenced by an exact original status.
+    /// Rechecks tree admission before resolving any content-addressed index.
+    pub async fn child_wakes(
+        &self,
+        agent: &AgentPath,
+        status: u64,
+        after: Option<&AgentId>,
+        limit: usize,
+    ) -> Result<Vec<crate::agent::ChildWake>, Error> {
+        use crate::agent::AgentRecord as _;
+        use futures::TryStreamExt as _;
+        self.admit_path(agent)?;
+        let provider = self.agents.provider();
+        let mut records = provider
+            .read(acyclic_stream::ReadRequest {
+                path: agent.status()?,
+                from: status,
+                limit: 1,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let record = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .filter(|record| record.sequence == status)
+            .ok_or(Error::Record("status measurement cut is missing"))?;
+        match crate::agent::StatusRecord::decode(&record.value)?.child_wakes {
+            Some(wakes) => wakes.page(provider.clone(), after, limit).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Bounded call admissions and completions from the original private journal.
     /// Quiet pages wait on the same inbox, journal and actor producers as events.
     pub async fn usage_page(

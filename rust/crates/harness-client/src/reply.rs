@@ -164,6 +164,13 @@ pub enum AgentReply {
         /// Visible fragments in cursor order; empty only for an empty projection.
         items: Vec<DiffFilePage>,
     },
+    /// Ordered original wait-completion measurements.
+    ChildWakes {
+        /// Only the requested page at the original status cut.
+        items: Vec<acyclic_harness_core::agent::ChildWake>,
+        /// Last returned child id when more samples may remain.
+        next: Option<String>,
+    },
     /// Authorized names at one generation, without eager file reads.
     Directory {
         /// Ordered visible names and the immutable generation that supplied them.
@@ -661,6 +668,21 @@ fn validate_reply(
                 return Err(CommandError::Invalid);
             }
             return Ok(());
+        }
+        (AgentReply::ChildWakes { items, next }, AgentCommand::ChildWakes { page, .. }) => {
+            if items.array_windows::<2>().any(|[a, b]| a.child >= b.child)
+                || page.cursor().is_some_and(|after| {
+                    items
+                        .first()
+                        .is_some_and(|item| item.child.as_str() <= after)
+                })
+                || next
+                    .as_deref()
+                    .is_some_and(|next| items.last().is_none_or(|item| item.child.as_str() != next))
+            {
+                return Err(CommandError::Invalid);
+            }
+            (items.len(), next, page)
         }
         (AgentReply::Diff { items }, AgentCommand::Diff { page, .. }) => {
             return validate_diff_page(items, page, bytes);

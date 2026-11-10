@@ -11,7 +11,7 @@ use super::control_trace::{self, Decision};
 pub use super::input::{Progress, Queued, TurnInput};
 use super::input::{awaits, input};
 use super::{
-    AgentOutcome, AgentPath, ChildDone, ChildSettled, ChildWake, Error, ForkAdopted, InboxRecord,
+    AgentOutcome, AgentPath, ChildDone, ChildSettled, ChildWakes, Error, ForkAdopted, InboxRecord,
     IntentId, Phase, StatusRecord, VolumeBinding,
     kernel::{self, Admit, Control, Mode, Pick},
 };
@@ -70,8 +70,8 @@ pub enum SpawnOutcome {
 #[serde(deny_unknown_fields)]
 pub struct AgentState {
     /// Original completion commit times retained only until this wait resumes.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub child_settlements: Vec<(super::AgentId, u64)>,
+    #[serde(default, skip_serializing_if = "super::Children::is_empty")]
+    pub child_settlements: super::Children,
     /// This agent.
     pub path: AgentPath,
     /// Spawning agent.
@@ -229,7 +229,7 @@ impl AgentState {
             .transpose()
             .map_err(|error| Error::Turn(Box::new(error)))?;
         Ok(Self {
-            child_settlements: Vec::new(),
+            child_settlements: super::Children::new(),
             path,
             parent: adopted.parent.clone(),
             profile: adopted.profile.clone(),
@@ -599,7 +599,18 @@ impl PreparedStep {
     ) -> Result<(), Error> {
         self.step.state.open_children.bind(provider.clone());
         self.step.state.archive_pending.bind(provider.clone());
-        self.step.state.awaiting.bind(provider);
+        self.step.state.awaiting.bind(provider.clone());
+        self.step.state.child_settlements.bind(provider.clone());
+        self.step.state.child_settlements.persist().await?;
+        if let Some(wakes) = &mut self
+            .step
+            .status
+            .as_mut()
+            .and_then(|status| status.child_wakes.as_mut())
+        {
+            wakes.settlements.bind(provider);
+            wakes.settlements.persist().await?;
+        }
         self.step.state.open_children.persist().await?;
         self.step.state.archive_pending.persist().await?;
         self.step.state.awaiting.persist().await
@@ -720,7 +731,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             admit(state, sequence, record, settled_at_micros).await?
         }
     };
-    let mut child_wakes = Vec::new();
+    let mut child_wakes = None;
     let applied = outs.len();
     if state.closed {
         state.child_settlements.clear();
@@ -811,7 +822,7 @@ pub(super) async fn failed_step(
     let previous = published(&state);
     let mut outs = Vec::new();
     shed(&mut state, &mut outs, failure);
-    let step = finalize_step(state, outs, &previous, cursor, Vec::new())?;
+    let step = finalize_step(state, outs, &previous, cursor, None)?;
     let checkpoint = checkpoint::from_encoded(checkpoint::encode(&step.state)?)?;
     Ok(PreparedStep { step, checkpoint })
 }
@@ -821,7 +832,7 @@ fn finalize_step(
     mut outs: Vec<Out>,
     previous: &Phase,
     cursor: u64,
-    child_wakes: Vec<ChildWake>,
+    child_wakes: Option<ChildWakes>,
 ) -> Result<Step, Error> {
     let queued = !state.queued.is_empty() || state.overflow.is_some();
     let approval_ready = approval_position(&state).is_some();
@@ -911,7 +922,7 @@ fn finalize_step(
         .conversation_tail
         .checked_add(appended)
         .ok_or(Error::Record("agent conversation tail overflow"))?;
-    let status = (&phase != previous || !child_wakes.is_empty()).then_some(StatusRecord {
+    let status = (&phase != previous || child_wakes.is_some()).then_some(StatusRecord {
         child_wakes,
         phase,
         cursor,
@@ -1021,7 +1032,7 @@ async fn admit(
             if state.awaiting.contains(child).await?
                 && let Some(settled_at) = settled_at_micros
             {
-                state.child_settlements.push((child.id(), settled_at));
+                state.child_settlements.set_value(child, settled_at).await?;
             }
             settle_awaited(&mut state, child).await?;
         }
@@ -1102,7 +1113,7 @@ async fn run<T: TurnDriver + ?Sized>(
     (cursor, now_unix_ms): (u64, u64),
     alarm_wake: bool,
     outs: &mut Vec<Out>,
-    child_wakes: &mut Vec<ChildWake>,
+    child_wakes: &mut Option<ChildWakes>,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<(), Error> {
     let approval = approval_position(state);
@@ -1125,15 +1136,13 @@ async fn run<T: TurnDriver + ?Sized>(
     // Completion times came with the original deliveries; this adds no read,
     // commit or telemetry channel. A partial quorum emits nothing until here.
     if picked == Pick::Resume {
-        child_wakes.extend(
-            std::mem::take(&mut state.child_settlements)
-                .into_iter()
-                .map(|(child, settled_at_micros)| ChildWake {
-                    child,
-                    settled_at_micros,
-                    woke_at_micros: now_unix_ms.saturating_mul(1_000),
-                }),
-        );
+        let settlements = std::mem::take(&mut state.child_settlements);
+        if !settlements.is_empty() {
+            *child_wakes = Some(ChildWakes {
+                settlements,
+                woke_at_micros: now_unix_ms.saturating_mul(1_000),
+            });
+        }
     }
     // A resumed turn keeps the input that started it.
     let started = match (&state.turn, &input) {
