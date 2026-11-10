@@ -28,7 +28,7 @@ impl NativeDemandReadMeter {
         let cancellation = work.cancellation.clone();
         Self(Mutex::new(work), cancellation, None)
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_backing(
         work: DemandWork,
         backing: crate::kernel::allocation::retained::StandaloneLease,
