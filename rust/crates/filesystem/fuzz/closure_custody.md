@@ -19,7 +19,7 @@ it before the first physical read. Restore the production source after applying
 the patch, then require the relation to pass:
 
 ```sh
-cargo test -p acyclic-fs --no-default-features --features local,memory,distributed --lib kernel::closure::tests::minimal_generation_has_a_complete_authenticated_closure -- --exact
+cargo test -p acyclic-fs --no-default-features --lib kernel::closure::tests::minimal_generation_has_a_complete_authenticated_closure -- --exact
 ```
 
 Lease transfer, combination and frame borrowing take constant work and introduce

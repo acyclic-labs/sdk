@@ -121,7 +121,7 @@ impl Opening {
         } else {
             crate::context::CompactionPolicy::Disabled
         };
-        #[cfg(any(test, feature = "native-execution"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         // Coordination uses the existing checkout. Only our own native shell
         // needs its auxiliary volumes projected before a command can run.
         let native_execution = tools

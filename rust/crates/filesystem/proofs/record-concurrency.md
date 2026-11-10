@@ -10,7 +10,7 @@ Run the controls from the repository root on Linux:
 ```sh
 export RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh"
 cargo nextest run --locked -p acyclic-fs --no-default-features \
-  --features memory,model-checking --lib --profile ci \
+  --features model-checking --lib --profile ci \
   -E 'test(=git_compat::tests::model::concurrent_branch_registration_publishes_only_accepted_updates) | test(=git_compat::tests::model::concurrent_renewal_fences_the_superseded_lease)' \
   --no-tests=fail --no-fail-fast
 ```

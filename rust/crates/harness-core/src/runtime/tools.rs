@@ -978,7 +978,7 @@ impl ToolContext {
             };
         #[cfg(not(target_arch = "wasm32"))]
         let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let custody = {
             let _ = retained;
             None
@@ -992,7 +992,7 @@ impl ToolContext {
                     .await?;
                 #[cfg(not(target_arch = "wasm32"))]
                 let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let custody = {
                     let _ = retained;
                     None::<()>

@@ -280,7 +280,7 @@ benchmarks. The private conformance crate retains the agent and host diagnostics
 Run these benchmarks on demand; no schedule or per-merge execution is required.
 
 ```sh
-cargo bench -p acyclic-objects --features local --bench objects
+cargo bench -p acyclic-objects --bench objects
 cargo bench -p acyclic-fs --bench filesystem
 cargo bench -p acyclic-fs --bench filesystem_alloc
 cargo bench -p acyclic-conformance --features local-runner --bench write_validation

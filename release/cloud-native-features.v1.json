@@ -38,12 +38,12 @@
     "acyclic-fs": {
       "sources": [
         {
-          "manifest": "managed-agents/Cargo.toml",
-          "sha256": "b951922c65ba32d47df416c06822c5e3e977278b71a8a67dcb7c7f293baeffd2"
-        },
-        {
           "manifest": "Cargo.toml",
           "sha256": "350ebe7a56d82699ea61ba67db2ab6ffd1ca478d6946dff8ca0c94bbf1e03e3b"
+        },
+        {
+          "manifest": "managed-agents/Cargo.toml",
+          "sha256": "b951922c65ba32d47df416c06822c5e3e977278b71a8a67dcb7c7f293baeffd2"
         }
       ],
       "features": {
@@ -119,12 +119,12 @@
     "acyclic-machines": {
       "sources": [
         {
-          "manifest": "managed-agents/Cargo.toml",
-          "sha256": "b951922c65ba32d47df416c06822c5e3e977278b71a8a67dcb7c7f293baeffd2"
-        },
-        {
           "manifest": "Cargo.toml",
           "sha256": "350ebe7a56d82699ea61ba67db2ab6ffd1ca478d6946dff8ca0c94bbf1e03e3b"
+        },
+        {
+          "manifest": "managed-agents/Cargo.toml",
+          "sha256": "b951922c65ba32d47df416c06822c5e3e977278b71a8a67dcb7c7f293baeffd2"
         }
       ],
       "features": {
@@ -146,12 +146,12 @@
     "acyclic-objects": {
       "sources": [
         {
-          "manifest": "managed-agents/Cargo.toml",
-          "sha256": "b951922c65ba32d47df416c06822c5e3e977278b71a8a67dcb7c7f293baeffd2"
-        },
-        {
           "manifest": "Cargo.toml",
           "sha256": "350ebe7a56d82699ea61ba67db2ab6ffd1ca478d6946dff8ca0c94bbf1e03e3b"
+        },
+        {
+          "manifest": "managed-agents/Cargo.toml",
+          "sha256": "b951922c65ba32d47df416c06822c5e3e977278b71a8a67dcb7c7f293baeffd2"
         }
       ],
       "features": {
@@ -163,12 +163,12 @@
     "acyclic-stream": {
       "sources": [
         {
-          "manifest": "managed-agents/Cargo.toml",
-          "sha256": "b951922c65ba32d47df416c06822c5e3e977278b71a8a67dcb7c7f293baeffd2"
-        },
-        {
           "manifest": "Cargo.toml",
           "sha256": "350ebe7a56d82699ea61ba67db2ab6ffd1ca478d6946dff8ca0c94bbf1e03e3b"
+        },
+        {
+          "manifest": "managed-agents/Cargo.toml",
+          "sha256": "b951922c65ba32d47df416c06822c5e3e977278b71a8a67dcb7c7f293baeffd2"
         }
       ],
       "features": {
