@@ -146,6 +146,8 @@ impl ViewOwner for PausedOwner {
 
 #[tokio::test]
 async fn binding_preparation_releases_the_checkout_owner() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
+    acyclic_fs::initialize_native_mount_services().map_err(storage)?;
     let directory = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = LocalHarness::open(
@@ -236,6 +238,8 @@ async fn binding_preparation_releases_the_checkout_owner() -> Result<()> {
 
 #[tokio::test]
 async fn native_guard_retains_the_original_binding_until_physical_retirement() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
+    acyclic_fs::initialize_native_mount_services().map_err(storage)?;
     let directory = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = LocalHarness::open(
