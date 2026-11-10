@@ -188,7 +188,8 @@ pub struct Server<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     resource: String,
     /// Only uncertain root publications retain process state; settled sessions
     /// are discovered directly from the stream directory.
-    pending_roots: std::sync::Mutex<std::collections::BTreeMap<AgentPath, Prepared>>,
+    pending_roots:
+        std::sync::Mutex<std::collections::BTreeMap<AgentPath, (blake3::Hash, Prepared)>>,
 }
 
 /// What serving a root came to.
@@ -419,6 +420,7 @@ where
             command,
             AgentCommand::Sessions { .. }
                 | AgentCommand::NewSession { .. }
+                | AgentCommand::ForkSession { .. }
                 | AgentCommand::LatestSession {}
         ) || command
             .agent()
@@ -539,12 +541,16 @@ where
                     agent: self.bound.latest_session().await?,
                 })
             }
-            AgentCommand::NewSession { id } => {
+            AgentCommand::NewSession { id } | AgentCommand::ForkSession { id, .. } => {
                 if !self.platform.sessions() {
                     return Err(Error::Record("this host serves one tree"));
                 }
                 let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.session.v1");
                 hasher.update(self.root.as_str().as_bytes());
+                // New and historical root intents are independent namespaces.
+                if let AgentCommand::ForkSession { .. } = command {
+                    hasher.update(b"history");
+                }
                 hasher.update(
                     &serde_json::to_vec(&(by, id))
                         .map_err(|_| Error::Record("session identity cannot encode"))?,
@@ -553,26 +559,81 @@ where
                 hasher.finalize_xof().fill(&mut bytes);
                 let identity = crate::agent::AgentId::from_bytes(bytes);
                 let path = AgentPath::root(&identity);
+                let parameters = blake3::hash(
+                    &serde_json::to_vec(command)
+                        .map_err(|_| Error::Record("session request cannot encode"))?,
+                );
                 let pending = self
                     .pending_roots
                     .lock()
                     .map_err(|_| Error::Record("session publication owner is poisoned"))?
                     .remove(&path);
+                if pending.is_none() {
+                    match agents.state(&path).await {
+                        Ok(state) => {
+                            let provenance = state
+                                .profile
+                                .as_ref()
+                                .and_then(|profile| profile.continuation.as_ref());
+                            let same = match command {
+                                AgentCommand::ForkSession { agent, at, .. } => provenance
+                                    .is_some_and(|origin| {
+                                        origin.parent_run_id == *agent
+                                            && origin.stream_offset == *at
+                                    }),
+                                _ => provenance.is_none(),
+                            };
+                            if !same {
+                                return Err(Error::Record(
+                                    "session intent already names another creation",
+                                ));
+                            }
+                            return Ok(AgentReply::Root { agent: path });
+                        }
+                        Err(Error::NoSuchAgent) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
                 let prepared = match pending {
-                    Some(prepared) => prepared,
+                    Some((original, prepared)) => {
+                        if original != parameters {
+                            self.pending_roots
+                                .lock()
+                                .map_err(|_| {
+                                    Error::Record("session publication owner is poisoned")
+                                })?
+                                .insert(path, (original, prepared));
+                            return Err(Error::Record(
+                                "uncertain session intent names another request",
+                            ));
+                        }
+                        prepared
+                    }
                     None => {
                         let root = self
                             .platform
                             .session_root(identity)
                             .await
                             .map_err(|error| Error::Turn(Box::new(error)))?;
-                        match self.platform.session_source() {
-                            Some(source) => {
+                        match command {
+                            AgentCommand::ForkSession { agent, at, .. } => {
                                 self.bound
-                                    .prepare_isolated_session(id, root, &source)
+                                    .prepare_session_history(
+                                        id,
+                                        root,
+                                        self.within_tree(agent)?,
+                                        *at,
+                                    )
                                     .await?
                             }
-                            None => self.bound.prepare_session_root(id, root).await?,
+                            _ => match self.platform.session_source() {
+                                Some(source) => {
+                                    self.bound
+                                        .prepare_isolated_session(id, root, &source)
+                                        .await?
+                                }
+                                None => self.bound.prepare_session_root(id, root).await?,
+                            },
                         }
                     }
                 };
@@ -583,7 +644,7 @@ where
                         self.pending_roots
                             .lock()
                             .map_err(|_| Error::Record("session publication owner is poisoned"))?
-                            .insert(path, prepared);
+                            .insert(path, (parameters, prepared));
                         return Err(Error::Unknown(Box::new(request)));
                     }
                 };
@@ -1101,29 +1162,12 @@ where
                             } else {
                                 None
                             };
-                            profile.continuation = Some(Box::new(crate::agent::Continuation {
-                                version: 1,
-                                parent_run_id: parent.clone(),
-                                stream_offset: *at,
-                                workspace_generations: saved
-                                    .volumes
-                                    .iter()
-                                    .map(|volume| crate::agent::HistoryVolume {
-                                        binding: volume.binding.clone(),
-                                        generation: volume.generation,
-                                    })
-                                    .collect(),
+                            profile.continuation = Some(Box::new(crate::agent::Continuation::at(
+                                parent,
+                                *at,
+                                &saved,
                                 override_item,
-                                live_children_at_cut: saved.live_children,
-                                non_replay_manifest: [
-                                    "wall_clocks",
-                                    "web_network",
-                                    "external_machine_state",
-                                    "model_sampling",
-                                ]
-                                .map(str::to_owned)
-                                .to_vec(),
-                            }));
+                            )));
                         }
                         Some(crate::agent::HistorySelection {
                             conversation: saved.conversation,
@@ -1515,6 +1559,7 @@ where
                 | AgentCommand::ClientFiles { .. }
                 | AgentCommand::Read { .. } => true,
                 AgentCommand::NewSession { .. }
+                | AgentCommand::ForkSession { .. }
                 | AgentCommand::Prompt { .. }
                 | AgentCommand::Cancel { .. }
                 | AgentCommand::Compact { .. }
