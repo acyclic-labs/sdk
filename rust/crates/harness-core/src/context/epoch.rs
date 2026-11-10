@@ -184,7 +184,7 @@ impl ContextEpoch {
             change(&key, now.get(&key).copied(), body);
         }
         for skill in &live.discovery.skills {
-            let key = format!("skill:{}", skill.name);
+            let key = skill_key(skill)?;
             if told.get(&key) != now.get(&key) {
                 change(
                     &key,
@@ -202,8 +202,11 @@ impl ContextEpoch {
         }
         for key in told.keys().filter(|key| !now.contains_key(*key)) {
             let body = match key.split_once(':') {
-                Some(("skill", name)) => {
-                    serde_json::json!({"version": 1, "skill": {"name": name}, "removed": true})
+                Some(("skill", identity)) => {
+                    let (name, root, path): (String, ContextRoot, String) =
+                        serde_json::from_str(identity)
+                            .map_err(|error| Error::Invalid(error.to_string()))?;
+                    serde_json::json!({"version": 1, "skill": {"name": name, "root": root, "path": path}, "removed": true})
                 }
                 Some(("instructions", identity)) => {
                     let (volume, path): (crate::conversation::VolumeRef, String) =
@@ -237,6 +240,11 @@ pub struct ContextChange {
     pub notice: crate::conversation::wire::Notice,
 }
 
+fn skill_key(skill: &SkillMetadata) -> Result<String> {
+    let identity = serde_json::to_string(&(&skill.name, &skill.source.root, &skill.source.path))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(format!("skill:{identity}"))
+}
 fn instruction_key(instruction: &crate::model::ProjectInstruction) -> Result<String> {
     let source = instruction.source();
     // Original source identity, never the retained body's storage location.
@@ -248,7 +256,7 @@ fn instruction_key(instruction: &crate::model::ProjectInstruction) -> Result<Str
 
 impl ContextManifest {
     /// The digest of each model-visible source, keyed by source: each
-    /// instruction file by its original volume and path, each skill by name, and the
+    /// instruction file by its original volume and path, each skill by name and original source, and the
     /// conventions. A changed digest is a change the model must be told.
     pub fn digests(&self) -> Result<BTreeMap<String, [u8; 32]>> {
         let mut digests = BTreeMap::new();
@@ -261,7 +269,7 @@ impl ContextManifest {
         for skill in &self.discovery.skills {
             // A retained body can change without changing its path or
             // frontmatter. Its exact source identity is part of freshness.
-            digests.insert(format!("skill:{}", skill.name), digest(skill)?);
+            digests.insert(skill_key(skill)?, digest(skill)?);
         }
         digests.insert("conventions".into(), digest(&self.conventions)?);
         Ok(digests)

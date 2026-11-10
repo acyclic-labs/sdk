@@ -81,11 +81,19 @@ impl UserWatch {
     /// generation a scan begun after this call observes, or `None` when one
     /// could not be watched. The generation is read before registering, so
     /// a change racing the scan always invalidates its catalog.
-    fn arm(&self, roots: &[PathBuf]) -> Option<u64> {
+    fn arm(&self, roots: &[PathBuf], bounds: &DiscoveryWork) -> Option<u64> {
         use std::sync::atomic::Ordering;
         let generation = self.generation.load(Ordering::Acquire);
+        let mut retained = self.watches.lock().ok()?;
+        retained.clear();
+        let mut work = *bounds;
         let mut watches = Vec::new();
         for root in roots {
+            work.include(DiscoveryWork {
+                directories: 1,
+                ..Default::default()
+            })
+            .ok()?;
             // Arm the root before listing: a newly created child must either
             // be listed below or invalidate this scan through the root watch.
             match self.watch(root) {
@@ -98,21 +106,30 @@ impl UserWatch {
                     }
                 }
             }
-            let directories: Vec<PathBuf> = match std::fs::read_dir(root) {
-                Ok(entries) => entries
-                    .filter_map(std::result::Result::ok)
-                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                    .map(|entry| entry.path())
-                    .collect(),
+            let entries = match std::fs::read_dir(root) {
+                Ok(entries) => entries,
                 // An absent root's creation is a change in its parent.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(_) => return None,
             };
-            for directory in directories {
-                watches.push(self.watch(&directory)?);
+            for entry in entries {
+                work.include(DiscoveryWork {
+                    entries: 1,
+                    ..Default::default()
+                })
+                .ok()?;
+                let entry = entry.ok()?;
+                if entry.file_type().ok()?.is_dir() {
+                    work.include(DiscoveryWork {
+                        directories: 1,
+                        ..Default::default()
+                    })
+                    .ok()?;
+                    watches.push(self.watch(&entry.path())?);
+                }
             }
         }
-        *self.watches.lock().ok()? = watches;
+        *retained = watches;
         Some(generation)
     }
 
@@ -613,7 +630,7 @@ impl NativeSkills {
             {
                 return Ok((Some(*generation), skills));
             }
-            let generation = self.user_watch.arm(&self.user_roots);
+            let generation = self.user_watch.arm(&self.user_roots, bounds);
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = native_work(&cancellation)?;
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
