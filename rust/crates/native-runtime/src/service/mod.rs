@@ -202,6 +202,9 @@ pub fn spawn_service_process(
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null());
                 command.process_group(0);
+                for name in obs::LAUNCH_ENVIRONMENT {
+                    command.env_remove(name);
+                }
                 let mut child = command.spawn()?;
                 let readiness = child
                     .stdout

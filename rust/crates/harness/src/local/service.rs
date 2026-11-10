@@ -884,7 +884,9 @@ mod tests {
             std::fs::read(checkout.path().join("shared.txt")).map_err(storage)?,
             b"base\n"
         );
-        let first_commit = sessions::merge(&first, "publish-first").await?;
+        let first_commit = sessions::merge(&first, "publish-first")
+            .await
+            .map_err(|error| Error::Storage(format!("first integration: {error}")))?;
         assert!(
             first_commit.is_some(),
             "integration must create a merge commit"
@@ -918,7 +920,9 @@ mod tests {
             b"first\n"
         );
         std::fs::write(checkout.path().join("shared.txt"), b"resolved\n").map_err(storage)?;
-        let second_commit = sessions::merge(&second, "publish-second").await?;
+        let second_commit = sessions::merge(&second, "publish-second")
+            .await
+            .map_err(|error| Error::Storage(format!("resolved integration: {error}")))?;
         assert!(second_commit.is_some());
         assert_eq!(
             std::fs::read(checkout.path().join("shared.txt")).map_err(storage)?,

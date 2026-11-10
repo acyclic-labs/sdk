@@ -314,7 +314,9 @@ impl LocalHarness {
                 });
             }
             #[cfg(any(test, feature = "native-execution"))]
-            if let Some(workspace) = &self.workspace {
+            if super::open::uses_native_execution(&self.tools)?
+                && let Some(workspace) = &self.workspace
+            {
                 let view = workspace.spawned_project_view(project).await?;
                 let owner = super::workspace::owner::AgentOwner(agent.path.clone());
                 let mount_authority = crate::filesystem::NativeMountAuthority::admitted(
