@@ -90,6 +90,9 @@ pub fn condition_conflict(
 /// pushed, in canonical order, into `skipped`, which the caller admitted with
 /// capacity for every soft append; nothing else is copied, and [`applied`]
 /// then views the request without them.
+/// The backend must first normalize `request` through
+/// [`crate::request::validate_commit`]. Settlement preserves that canonical
+/// path order, not the caller's mutation order.
 pub fn settle(
     request: &CommitRequest,
     mut tail: impl FnMut(&StreamPath) -> Result<Option<u64>, StreamError>,

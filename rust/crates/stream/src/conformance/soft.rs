@@ -48,15 +48,27 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     };
     let mut expected = vec![absent.clone(), closing.clone()];
     expected.sort();
-    if receipt.skipped != expected
-        || receipt.appends.len() != 2
-        || provider.tail(open.clone()).await? != 2
+    if receipt.skipped != expected {
+        return Err(Failure::Invariant(
+            "soft append skipped paths must follow canonical path order from request::validate_commit, not caller order",
+        ));
+    }
+    if receipt.appends.len() != 2 {
+        return Err(Failure::Invariant("soft append applied count must be two"));
+    }
+    if provider.tail(open.clone()).await? != 2
         || provider.tail(closing.clone()).await? != 1
         || provider.tail(carrier).await? != 1
         || provider.tail(absent.clone()).await != Err(StreamError::NotFound)
-        || provider.commit(request.clone()).await? != outcome
     {
-        return Err(violated!());
+        return Err(Failure::Invariant(
+            "soft append tails must advance only applied paths; skipped absent paths must remain absent",
+        ));
+    }
+    if provider.commit(request.clone()).await? != outcome {
+        return Err(Failure::Invariant(
+            "soft append replay must preserve the original outcome and canonical skipped order",
+        ));
     }
     receipt.validate_request(&{
         let mut canonical = request.clone();
