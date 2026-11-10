@@ -75,19 +75,15 @@ fn turns(
             .state_directory(directory.join("state")))
         };
         let mut cuts = [0; 10];
-        let mut cut = |index, phase| {
-            cuts[index] = schedule.durable_write_count();
-            eprintln!("FLUSH_WINDOW {phase}: {}", cuts[index]);
-        };
-        cut(0, "fresh-open-begin");
+        cuts[0] = schedule.durable_write_count();
         let harness = Arc::new(entry(LocalHarness::open(config()?)).await?);
-        cut(1, "fresh-open-end");
+        cuts[1] = schedule.durable_write_count();
         let (agents, _) = entry(harness.agents()).await?;
         for (turn, expected) in expected[..5].iter().enumerate() {
             prompt(&harness, &format!("turn-{turn}"), "reply", expected).await?;
             // Join the serving dispatcher's delivery and committed checkpoint.
             entry(agents.runtime().complete()).await.map_err(storage)?;
-            cut(turn + 2, "settled-reply-end");
+            cuts[turn + 2] = schedule.durable_write_count();
         }
         use acyclic_stream::StreamProviderExt as _;
         agents
@@ -100,15 +96,15 @@ fn turns(
             })
             .await
             .map_err(storage)?;
-        cut(7, "independent-commit-end");
+        cuts[7] = schedule.durable_write_count();
         drop(agents);
         drop(harness);
         let reopened = Arc::new(entry(LocalHarness::open(config()?)).await?);
-        cut(8, "reopen-end");
+        cuts[8] = schedule.durable_write_count();
         prompt(&reopened, "reopened", "reply", &expected[5]).await?;
         let (agents, _) = entry(reopened.agents()).await?;
         entry(agents.runtime().complete()).await.map_err(storage)?;
-        cut(9, "reopened-first-end");
+        cuts[9] = schedule.durable_write_count();
         Ok(cuts)
     })
 }
