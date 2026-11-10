@@ -162,13 +162,8 @@ impl LocalHarness {
             } else {
                 ""
             };
-            let sandbox = if cfg!(any(target_os = "linux", target_os = "macos")) {
-                "Shell commands and lifecycle hooks run in a workspace-write OS sandbox."
-            } else {
-                "Shell commands retain the host boundary; native OS confinement is not yet available."
-            };
             manifest.conventions.push(format!(
-                "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home}"
+                "Approval mode: {mode}. Shell commands have no OS sandbox. A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home}"
             ));
             // The agent tools bind per turn, outside the registry; the model
             // sees them through the manifest like every other tool. A turn

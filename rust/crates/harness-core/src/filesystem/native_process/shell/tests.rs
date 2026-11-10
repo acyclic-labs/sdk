@@ -95,99 +95,6 @@ fn invocation(root: &Path) -> Invocation {
     }
 }
 
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases() -> Result<()> {
-    let temp = tempfile::tempdir().map_err(Error::process_io)?;
-    let root = temp.path().join("view");
-    let volume = temp.path().join("volume");
-    let outside = temp.path().join("outside");
-    std::fs::create_dir_all(root.join(".volumes")).map_err(Error::process_io)?;
-    std::fs::create_dir(&volume).map_err(Error::process_io)?;
-    std::fs::write(&outside, "original").map_err(Error::process_io)?;
-    std::os::unix::fs::symlink(&outside, root.join("escape")).map_err(Error::process_io)?;
-    std::os::unix::fs::symlink(&volume, root.join(".volumes/data")).map_err(Error::process_io)?;
-    let mut mounts = table(root.canonicalize().map_err(Error::process_io)?)?;
-    for (relative, mount) in mounts.mounts_mut() {
-        if !relative.is_empty() {
-            mount.native_root = Some(volume.clone());
-        }
-    }
-    // Both source and literal argv use production preparation and the original
-    // native capture owner. No optional-kernel skip: this is Linux qualification.
-    for (cwd, command) in [
-        (
-            None,
-            crate::tools::ShellCommand::Source(
-                r#"printf inside > inside; printf volume > .volumes/data/written;
-             printf temp > "$TMPDIR/tempfile";
-             test "$(/bin/cat "$OUTSIDE")" = original || exit 13;
-             /bin/cat /proc/self/environ >/dev/null 2>&1 || exit 14;
-             (printf escaped > escape) 2>/dev/null && exit 10;
-             /bin/sh -c 'printf escaped > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11;
-             /bin/cat "/proc/$OWNER/environ" >/dev/null 2>&1 && exit 12;
-             printf confined"#
-                    .into(),
-            ),
-        ),
-        (
-            Some(".volumes/data".into()),
-            crate::tools::ShellCommand::Argv(vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                "printf mounted > cwd-write; printf mounted".into(),
-            ]),
-        ),
-    ] {
-        let mut native = invocation(&mounts.root);
-        native.environment.insert(
-            "OUTSIDE".into(),
-            outside.to_str().expect("fixture path").into(),
-        );
-        native
-            .environment
-            .insert("OWNER".into(), std::process::id().to_string());
-        let output = run(
-            ShellInput {
-                command,
-                cwd,
-                timeout_ms: None,
-                target: None,
-            },
-            &mounts,
-            native,
-            1,
-            None,
-            || Ok(()),
-        )
-        .await?
-        .ok_or_else(|| Error::Storage("sandbox capture interrupted".into()))?;
-        assert!(output.success, "{output:?}");
-        assert!(!output.stdout.is_empty());
-        assert_eq!(
-            std::fs::read(&outside).map_err(Error::process_io)?,
-            b"original"
-        );
-    }
-    assert_eq!(
-        std::fs::read(root.join("inside")).map_err(Error::process_io)?,
-        b"inside"
-    );
-    assert_eq!(
-        std::fs::read(root.join("tempfile")).map_err(Error::process_io)?,
-        b"temp"
-    );
-    assert_eq!(
-        std::fs::read(volume.join("written")).map_err(Error::process_io)?,
-        b"volume"
-    );
-    assert_eq!(
-        std::fs::read(volume.join("cwd-write")).map_err(Error::process_io)?,
-        b"mounted"
-    );
-    Ok(())
-}
-
 // A declared native binding may leave the primary root, but resolving a
 // symlink within it must never leave that binding's own authorized root.
 #[test]
@@ -454,9 +361,6 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     // The old inheritance choice physically exposes both named credentials and
     // the ambient shell startup hook to exactly the same command.
     let mut broken = prepare(input, &mounts, configured(false), 1)?;
-    // This is the deliberately unconfined old path, not an attempt to make
-    // an authenticated grant accept an ambient environment.
-    broken.execution_grant = None;
     broken.inherit_environment = true;
     let output = capture::capture_with_custody(
         broken,
