@@ -35,41 +35,46 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         harness.verifier.clone(),
         harness.signed.copy(&mut None)?,
     );
-    let owner = AgentOwner(crate::agent::AgentPath::root(
-        &crate::agent::AgentId::from_bytes([1; 16]),
-    ));
-    let first = workspace
-        .bound_task_view(
-            view().await?,
-            &harness.project,
-            harness.scratch.clone(),
-            &owner,
-            &authority,
-        )
-        .await?;
+    let (entered, observed) = oneshot::channel();
+    let (release, released) = oneshot::channel();
+    let owner = PausedOwner {
+        original: AgentOwner(crate::agent::AgentPath::root(
+            &crate::agent::AgentId::from_bytes([1; 16]),
+        )),
+        entered: crate::sync::SyncMutex::new(Some(entered)),
+        release: AsyncMutex::new(Some(released)),
+    };
+    let preparing = workspace.bound_task_view(
+        view().await?,
+        &harness.project,
+        harness.scratch.clone(),
+        &owner,
+        &authority,
+    );
+    tokio::pin!(preparing);
+    tokio::select! {
+        outcome = &mut preparing => {
+            outcome?;
+            return Err(Error::Conflict("physical binding completed before its owner released".into()));
+        }
+        observed = observed => {
+            observed.map_err(|_| Error::Conflict("physical binding owner disappeared".into()))?;
+        }
+    }
     let second = workspace
         .bound_task_view(
             view().await?,
             &harness.project,
             harness.scratch.clone(),
-            &owner,
+            &owner.original,
             &authority,
         )
         .await?;
-    assert!(Arc::ptr_eq(
-        first.binding.as_ref().expect("first binding"),
-        second.binding.as_ref().expect("reused binding"),
-    ));
     assert!(
         second
             .mounts
             .named(Some(crate::filesystem::HOME_VOLUME))
             .is_err()
-    );
-    std::fs::write(first.path.join("shared.txt"), b"shared").map_err(storage)?;
-    assert_eq!(
-        std::fs::read(second.path.join("shared.txt")).map_err(storage)?,
-        b"shared"
     );
     assert!(matches!(
         workspace
@@ -77,12 +82,25 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
                 view().await?,
                 &harness.project,
                 harness.project.clone(),
-                &owner,
+                &owner.original,
                 &authority,
             )
             .await,
         Err(Error::Conflict(_)),
     ));
+    std::fs::write(second.path.join("shared.txt"), b"shared").map_err(storage)?;
+    release
+        .send(())
+        .map_err(|_| Error::Conflict("physical binding owner stopped".into()))?;
+    let first = preparing.await?;
+    assert!(Arc::ptr_eq(
+        first.binding.as_ref().expect("first binding"),
+        second.binding.as_ref().expect("reused binding"),
+    ));
+    assert_eq!(
+        std::fs::read(first.path.join("shared.txt")).map_err(storage)?,
+        b"shared"
+    );
     Ok(())
 }
 
