@@ -788,6 +788,10 @@ impl Error {
             Self::NativeGit { .. } => ErrorCode::Storage,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeBoundary { code, .. } => *code,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeConstruction { .. } => ErrorCode::Storage,
         }
     }
 
