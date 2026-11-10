@@ -1,13 +1,14 @@
 {
   "id": "pty-approval-rule",
+  "adapter": "messages",
   "workspace": {"kind": "plain", "files": {
     "approval-policy.json": "{\"approvers\":[{\"kind\":\"human\",\"principal\":\"human\"}]}"
   }},
   "extra_args": ["--approval-policy", "{{workspace}}/approval-policy.json"],
   "model": {"steps": [
     {"when": {}, "tools": [
-      {"id": "first", "name": "write", "arguments": {"path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}},
-      {"id": "second", "name": "write", "arguments": {"path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}}
+      {"id": "first", "name": "Write", "arguments": {"file_path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}},
+      {"id": "second", "name": "Write", "arguments": {"file_path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}}
     ]},
     {"when": {"tool_result": "file"}, "text": ["RULE_REUSED_DONE"]}
   ]},
