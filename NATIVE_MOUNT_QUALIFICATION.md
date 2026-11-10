@@ -93,7 +93,10 @@ variants alone do not prove execution without FUSE or mount privileges.
 Build `graphcoder` and `harness-mock-model` on Linux, then supply a locally
 installed Node image with Git and a compatible glibc (for example
 `node:24-trixie`). Node and Git support the acceptance fixtures; GraphCoder
-itself needs only the platform shell.
+itself needs only the platform shell. Run from a committed checkout with Git
+available on the client. The qualifier transfers its committed acceptance
+sources and the supplied binaries through Docker's copy API, so the daemon
+does not need access to client filesystem paths.
 
 ```sh
 docker pull node:24-trixie
@@ -111,7 +114,9 @@ merge/archive and reopen/crash-resume assertions execute against the shipping
 binary, with both automatic and explicit physical selection. Automatic mode
 must report its selection reason. The image ID, Docker configuration, executable
 and acceptance-source digests, requests and captures are retained in the fresh
-evidence directory. Cancellation and completion both remove the same container.
+evidence directory, including the source archive and its digest. Evidence is
+copied back before retirement. Cancellation and completion both remove the same
+container; success is published only after retirement succeeds.
 
 Plain directories contain authored files. File tools and filesystem operations
 read their bound volume through the harness API; a shell does not implicitly
