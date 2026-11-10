@@ -1253,11 +1253,12 @@ async fn run<T: TurnDriver + ?Sized>(
                 .map(|timeout| now_unix_ms.saturating_add(timeout));
             let sleep = until.awaited.is_empty();
             let reachable = open.len();
-            let wait = kernel::until(need, reachable, sleep, deadline, until.input);
+            let input = until.input;
+            let wait = kernel::until(need, reachable, sleep, deadline, input);
             #[cfg(feature = "test-support")]
             control_trace::record(
                 state,
-                Decision::Until(need, reachable, sleep, deadline, until.input, wait),
+                Decision::Until(need, reachable, sleep, deadline, input, wait),
             );
             if matches!(wait, kernel::Wait::Await { .. }) {
                 outs.extend(open.iter().map(|child| Out::Send {

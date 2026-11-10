@@ -1509,13 +1509,32 @@ async fn attention_alarm_default_resumes_on_input_or_original_deadline() -> Resu
         );
         let progress = waiting.state.turn.as_ref().ok_or("retained turn")?;
         assert_eq!(progress.checkpoint, b"waiting-for-reply");
-        let saved = waiting.state.clone();
+        let notified = step(
+            &driver,
+            &root,
+            Some(waiting.state.clone()),
+            (2, 5_050),
+            Wake::Inbox {
+                sequence: 1,
+                record: InboxRecord::Awaited,
+            },
+            stop(),
+        )
+        .await?;
+        assert_eq!(notified.state.phase, waiting.state.phase);
+        assert_eq!(notified.alarm, waiting.alarm);
+        assert_eq!(
+            driver.0.lock().unwrap().len(),
+            1,
+            "notification must not run the turn"
+        );
+        let saved = notified.state;
         let replied = step(
             &driver,
             &root,
             Some(saved.clone()),
-            (2, 5_100),
-            record(1, "reply"),
+            (3, 5_100),
+            record(2, "reply"),
             stop(),
         )
         .await?;
@@ -1530,7 +1549,7 @@ async fn attention_alarm_default_resumes_on_input_or_original_deadline() -> Resu
         );
         assert_eq!(
             replied.state.queued.front().ok_or("retained reply")?.inbox,
-            1
+            2
         );
         assert!(driver.0.lock().unwrap().is_empty());
         if let Some(timeout) = timeout {
@@ -1539,7 +1558,7 @@ async fn attention_alarm_default_resumes_on_input_or_original_deadline() -> Resu
                 &driver,
                 &root,
                 Some(saved),
-                (1, 5_000 + timeout),
+                (2, 5_000 + timeout),
                 Wake::Alarm,
                 stop(),
             )
