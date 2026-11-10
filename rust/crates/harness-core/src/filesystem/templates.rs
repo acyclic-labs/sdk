@@ -81,6 +81,11 @@ mod tests {
             .await?;
         assert_eq!(triager.context, SpawnContext::Fresh);
         assert_eq!(triager.template.as_ref().unwrap().volume(), &seed);
+        let explanation = templates
+            .child(&parent, &path, &volumes, "explanation", None)
+            .await?;
+        assert_eq!(explanation.context, SpawnContext::Fork);
+        assert_eq!(explanation.template.as_ref().unwrap().volume(), &seed);
         let original = templates
             .child(&parent, &path, &volumes, "worker", None)
             .await?;
