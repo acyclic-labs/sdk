@@ -80,7 +80,7 @@ also exercises long identity round trips and frame refusal, then drives the
 actual step and commit lowering with oversized approval and archive identities.
 Both must settle as a bounded failure before publishing any driver effect.
 `mutations/native_intent_frame_guard.patch` removes those production guards and
-must fail this unchanged control at unchecked effects. The independent
+must fail this unchanged control at unchecked effects. The same control derives a near-full approval ID from the real empty-wake writer, then resumes a parent with a retained child-settlement receipt. The complete status must be admitted before any effect is published; the bounded failure keeps that receipt. `mutations/native_approval_wake_frame_guard.patch` omits only the actual wake receipts from admission and must fail this control. The independent
 `mutations/native_archive_frame_guard.patch` retains approval admission and
 removes only archive admission; the same control must fail to settle the turn.
 Run it with

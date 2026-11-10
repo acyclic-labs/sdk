@@ -1248,7 +1248,7 @@ async fn run<T: TurnDriver + ?Sized>(
         || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
         || matches!(&turn.wait, Wait::User(path) if super::records::check_ui_path(path).is_err())
         || matches!(&turn.wait, Wait::Approval { id, binding } if super::AgentRecord::encode(&StatusRecord {
-            child_wakes: Vec::new(),
+            child_wakes: child_wakes.clone(),
             phase: Phase::WaitingApproval { id: id.clone(), binding: binding.clone() },
             cursor: u64::MAX,
             conversation: u64::MAX,

@@ -8,6 +8,27 @@ async fn an_invalid_turn_fails_before_publishing_status_or_effects() -> Result {
     for length in [129, 255, MAX_RECORD_BYTES] {
         acyclic_harness_core::agent::codec_fuzz::check(&vec![b'a'; length]);
     }
+    // Derive the last approval ID the empty-wake writer admits. A retained
+    // child receipt must still fit beside it when that wait actually returns.
+    let approval = |length| StatusRecord {
+        child_wakes: Vec::new(),
+        phase: Phase::WaitingApproval {
+            id: intent(&"a".repeat(length)),
+            binding: None,
+        },
+        cursor: u64::MAX,
+        conversation: u64::MAX,
+    };
+    let (mut fits, mut refuses) = (0, MAX_RECORD_BYTES);
+    while fits + 1 < refuses {
+        let length = fits + (refuses - fits) / 2;
+        if approval(length).encode().is_ok() {
+            fits = length;
+        } else {
+            refuses = length;
+        }
+    }
+    approval(fits).encode()?;
     let invalid = [String::new(), "x".repeat(MAX_NAME_BYTES + 1), "\0".into()]
         .into_iter()
         .map(Wait::Host)
@@ -32,13 +53,31 @@ async fn an_invalid_turn_fails_before_publishing_status_or_effects() -> Result {
                 id: intent(&"a".repeat(MAX_RECORD_BYTES)),
             }),
         )]);
-    for (wait, extra) in invalid {
+    let invalid = invalid.map(|(wait, extra)| (wait, extra, false)).chain([(
+        Wait::Approval {
+            id: intent(&"a".repeat(fits)),
+            binding: None,
+        },
+        None,
+        true,
+    )]);
+    for (wait, extra, child_settled) in invalid {
         let (root, mut state) = one_below_the_child_limit()?;
         state.turn = Some(Progress {
             inbox: 0,
             checkpoint: Vec::new(),
         });
-        state.phase = Phase::Running;
+        state.phase = if child_settled {
+            let child = state.open_children.first().ok_or("missing child")?.id();
+            state.open_children.clear();
+            state.child_settlements.push((child, 0));
+            Phase::Waiting {
+                deadline_unix_ms: None,
+                input: false,
+            }
+        } else {
+            Phase::Running
+        };
         let driver = script(vec![TurnStep {
             checkpoint: Some(vec![]),
             reserved_children: 0,
@@ -76,13 +115,9 @@ async fn an_invalid_turn_fails_before_publishing_status_or_effects() -> Result {
             spawns(&result.outs).is_empty(),
             "invalid wait published unchecked effects"
         );
-        StatusRecord {
-            child_wakes: Vec::new(),
-            phase: result.state.phase.clone(),
-            cursor: u64::MAX,
-            conversation: u64::MAX,
-        }
-        .encode()?;
+        let status = result.status.as_ref().ok_or("missing terminal status")?;
+        assert_eq!(status.child_wakes.len(), usize::from(child_settled));
+        status.encode()?;
         lower(
             &result,
             1,
