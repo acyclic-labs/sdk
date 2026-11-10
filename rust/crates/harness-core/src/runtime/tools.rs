@@ -1298,7 +1298,7 @@ impl ToolContext {
                     Ok((selected, _, retained)) => {
                         #[cfg(not(target_arch = "wasm32"))]
                         let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-                        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                        #[cfg(target_arch = "wasm32")]
                         let _ = retained;
                         Some(selected.generation)
                     }
@@ -1321,7 +1321,7 @@ impl ToolContext {
                             .await?;
                         #[cfg(not(target_arch = "wasm32"))]
                         let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-                        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                        #[cfg(target_arch = "wasm32")]
                         let _ = retained;
                     }
                     Ok(())
