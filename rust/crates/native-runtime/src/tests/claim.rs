@@ -192,9 +192,8 @@ fn another_process_claim_excludes_until_that_process_dies() -> io::Result<()> {
     assert!(contended(StoreClaim::acquire(&path)));
     owner.0.kill()?;
     owner.0.wait()?;
-    // The dead owner's record remains, but its process lock lapsed with it.
-    // Another process's sweep may already have removed the lock itself.
-    recorded_process_lock(&path)?;
+    // Death releases either ownership mechanism: a recorded process lock
+    // or the claim file's retained OS lock. Neither requires a record here.
     drop(StoreClaim::acquire(&path)?);
     Ok(())
 }
@@ -205,17 +204,28 @@ fn failing_probe(_: std::fs::File) -> io::Result<crate::FileLock> {
     Err(io::Error::from(io::ErrorKind::PermissionDenied))
 }
 
+fn failed_probe_refuses(path: &Path) -> io::Result<()> {
+    assert!(contended(StoreClaim::acquire_probing(path, failing_probe)));
+    // A check requires the caller to hold the claim file's lock. A held-file
+    // owner excludes that lock directly; only recorded owners can be checked.
+    match crate::FileLock::try_acquire(std::fs::File::open(path)?, crate::FileLockMode::Shared) {
+        Ok(file) => {
+            let check = StoreClaim::check_probing(&file, failing_probe)?;
+            assert!(check.claimed, "an unanswered probe admitted: {check:?}");
+        }
+        Err(error) if is_exclusive_lock_contention(&error) => {}
+        Err(error) => return Err(error),
+    }
+    Ok(())
+}
+
 #[test]
 fn an_owner_whose_lock_probe_fails_keeps_its_claim() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("owner.lock");
     let owner = Owner::spawn(&path)?;
     // The probe never answered, so nothing proves the owner dead.
-    assert!(contended(StoreClaim::acquire_probing(&path, failing_probe)));
-    let file = crate::FileLock::new(std::fs::File::open(&path)?);
-    let check = StoreClaim::check_probing(&file, failing_probe)?;
-    assert!(check.claimed, "an unanswered probe admitted: {check:?}");
-    drop(file);
+    failed_probe_refuses(&path)?;
     // The same owner, probed for real, is alive; once gone it is dead.
     assert!(contended(StoreClaim::acquire(&path)));
     drop(owner);
@@ -438,6 +448,7 @@ fn a_process_whose_record_would_not_fit_holds_its_claims_instead() -> io::Result
     // No record that a reader could take only in part.
     assert_eq!(std::fs::metadata(&path)?.len(), 0);
     assert!(contended(StoreClaim::acquire(&path)));
+    failed_probe_refuses(&path)?;
     owner.0.kill()?;
     owner.0.wait()?;
     drop(StoreClaim::acquire(&path)?);
@@ -456,7 +467,8 @@ fn a_claim_file_longer_than_any_record_refuses() -> io::Result<()> {
     bytes.resize(crate::claim::RECORD_LIMIT + 1, 0);
     std::fs::write(&path, &bytes)?;
     assert!(contended(StoreClaim::acquire(&path)));
-    let file = crate::FileLock::new(std::fs::File::open(&path)?);
+    let file =
+        crate::FileLock::try_acquire(std::fs::File::open(&path)?, crate::FileLockMode::Shared)?;
     assert!(StoreClaim::is_claimed(&file)?);
     Ok(())
 }
@@ -484,8 +496,6 @@ fn longest_lockless_record(directory: &Path) -> io::Result<Vec<u8>> {
 fn a_claim_check_allocates_within_its_bound() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("owner.lock");
-    let held = directory.path().join("held.lock");
-    let _claim = StoreClaim::acquire(&held)?;
     let mut oversized = lockless_record(directory.path(), u32::MAX, b"boot:1");
     oversized.resize(crate::claim::RECORD_LIMIT + 1, 0);
     let records = [
@@ -496,7 +506,6 @@ fn a_claim_check_allocates_within_its_bound() -> io::Result<()> {
             StoreClaim::CHECK_READ_OPERATIONS,
         ),
         (oversized, true, 1),
-        (std::fs::read(&held)?, true, 1),
         (
             lockless_record(directory.path(), u32::MAX, b"boot:1"),
             false,
@@ -505,7 +514,8 @@ fn a_claim_check_allocates_within_its_bound() -> io::Result<()> {
     ];
     for (record, claimed, read_operations) in records {
         std::fs::write(&path, &record)?;
-        let file = crate::FileLock::new(std::fs::File::open(&path)?);
+        let file =
+            crate::FileLock::try_acquire(std::fs::File::open(&path)?, crate::FileLockMode::Shared)?;
         let mut checked = None;
         let allocated = acyclic_test_support::measure(|| {
             checked = Some(StoreClaim::check(&file));
@@ -536,7 +546,9 @@ fn claim_check_process() -> io::Result<()> {
     let Some(path) = std::env::var_os(CHECK_CHILD) else {
         return Ok(());
     };
-    StoreClaim::check(&crate::FileLock::new(std::fs::File::open(path)?)).map(drop)
+    let file =
+        crate::FileLock::try_acquire(std::fs::File::open(path)?, crate::FileLockMode::Shared)?;
+    StoreClaim::check(&file).map(drop)
 }
 
 /// A check reads another store's claim; it never establishes this
