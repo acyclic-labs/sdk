@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::{PrivateDirectoryEntry, PrivateDirectoryEntryKind};
 
 /// Filesystem-backed admission barrier for version-pinned conversation content.
 pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
