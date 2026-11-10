@@ -122,15 +122,23 @@ async fn snapshot_callbacks_retire_outside_the_original_job_mutex() {
 
 #[tokio::test]
 async fn publication_wakers_can_cancel_other_follows() {
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicUsize, Ordering},
-    };
+    use std::cell::RefCell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Wake;
 
+    // A public follow need not be Send. Its original owner stays on this
+    // current-thread executor; the Send + Sync waker only identifies the wake.
+    thread_local! {
+        static VICTIM: RefCell<Option<crate::FollowStream>> = const { RefCell::new(None) };
+    }
+    struct Victim;
+    impl Drop for Victim {
+        fn drop(&mut self) {
+            VICTIM.with(|victim| drop(victim.borrow_mut().take()));
+        }
+    }
     struct CancelFollow {
         index: Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>,
-        victim: Mutex<Option<crate::FollowStream>>,
         wakes: AtomicUsize,
     }
     impl Wake for CancelFollow {
@@ -144,8 +152,7 @@ async fn publication_wakers_can_cancel_other_follows() {
                 self.index.try_lock().is_ok(),
                 "follow wake retained the index lock"
             );
-            let victim = self.victim.lock().unwrap().take();
-            drop(victim);
+            VICTIM.with(|victim| drop(victim.borrow_mut().take()));
             self.wakes.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -175,9 +182,10 @@ async fn publication_wakers_can_cancel_other_follows() {
             .unwrap()
             .unwrap()
             .follows;
+        VICTIM.with(|original| assert!(original.replace(Some(victim)).is_none()));
+        let _victim = Victim;
         let observer = Arc::new(CancelFollow {
             index: Arc::clone(&index),
-            victim: Mutex::new(Some(victim)),
             wakes: AtomicUsize::new(0),
         });
         let wake = Waker::from(Arc::clone(&observer));
@@ -192,7 +200,7 @@ async fn publication_wakers_can_cancel_other_follows() {
             observer.wakes.load(Ordering::SeqCst) > 0,
             "publication left its follow parked"
         );
-        assert!(observer.victim.lock().unwrap().is_none());
+        VICTIM.with(|victim| assert!(victim.borrow().is_none()));
         assert!(
             matches!(std::pin::Pin::new(&mut followed).poll_next(&mut Context::from_waker(Waker::noop())),
             std::task::Poll::Ready(Some(Ok(crate::FollowUpdate::Record(record)))) if record.sequence == u64::from(existing))

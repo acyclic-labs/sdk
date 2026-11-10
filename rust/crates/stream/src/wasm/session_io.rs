@@ -24,6 +24,7 @@ struct Endpoint {
 }
 struct Writing {
     channel: wire::SessionChannel,
+    subscription: bool,
     controller: web_sys::AbortController,
     abort: AbortHandle,
 }
@@ -121,10 +122,21 @@ impl Responses {
                 match Pin::new(write).poll(cx) {
                     Poll::Pending => break,
                     Poll::Ready(result) => {
-                        self.writing.borrow_mut().take();
+                        let writing = self.writing.borrow_mut().take();
                         self.write = None;
                         if let Ok(Err(error)) = result {
-                            return Poll::Ready(Some(Err(failure(error))));
+                            let error = failure(error);
+                            if let Some(writing) =
+                                writing.filter(|writing| writing.subscription && !error.transient)
+                            {
+                                // The rejected interest installed no channel. Its
+                                // terminal must leave sibling interests connected.
+                                return Poll::Ready(Some(Ok(Frame::closed(
+                                    writing.channel,
+                                    error.error,
+                                ))));
+                            }
+                            return Poll::Ready(Some(Err(error)));
                         }
                     }
                 }
@@ -139,6 +151,9 @@ impl Responses {
                     let (abort, registration) = AbortHandle::new_pair();
                     *self.writing.borrow_mut() = Some(Writing {
                         channel: owner(&frame),
+                        subscription: matches!(&frame.body, Some(wire::session_frame::Body::Interest(interest))
+                            if interest.remove.is_empty()
+                                && matches!(interest.upsert.as_slice(), [subscription] if subscription.channel.is_some())),
                         controller,
                         abort,
                     });
@@ -342,8 +357,8 @@ mod tests {
                                     wire::SessionInterest {
                                         upsert: vec![wire::SessionSubscription {
                                             channel: Some(wire::SessionChannel {
-                                                channel_id: 1,
-                                                generation: 1,
+                                                channel_id: 7,
+                                                generation: 11,
                                             }),
                                             ..Default::default()
                                         }],
@@ -359,16 +374,25 @@ mod tests {
                     Box::pin(futures::stream::pending())
                 };
                 let mut responses = endpoint.session(source).await.unwrap();
-                match responses
+                let outcome = responses
                     .next()
                     .await
-                    .expect("original callback must complete")
-                {
-                    Err(failure) => {
-                        assert_eq!(failure.error, error);
-                        assert_eq!(failure.transient, transient);
-                    }
-                    Ok(_) => panic!("a rejected callback must fail the physical connection"),
+                    .expect("original callback must complete");
+                if write && !transient {
+                    let frame =
+                        outcome.expect("permanent interest refusal must preserve connection");
+                    assert_eq!(frame.wire().channel_id, 7);
+                    assert_eq!(frame.wire().generation, 11);
+                    let Some(wire::session_frame::Body::Closed(closed)) =
+                        frame.wire().body.as_ref()
+                    else {
+                        panic!("a rejected interest must close its original channel")
+                    };
+                    assert_eq!(closed.code, error.code());
+                } else {
+                    let failure = outcome.expect_err("callback must fail the physical connection");
+                    assert_eq!(failure.error, error);
+                    assert_eq!(failure.transient, transient);
                 }
                 drop(responses);
             }
@@ -399,5 +423,116 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(failure(actual).error, reported, "public session refusal");
+
+        // Use the real authenticated server for the successful handshake and
+        // replies. Reject only the second interest at the platform write boundary;
+        // its original error must cross the pool without retiring the connection.
+        async fn append_sibling(provider: &MemoryStream) {
+            provider
+                .append(crate::AppendRequest {
+                    path: crate::StreamPath::new("sibling").unwrap(),
+                    records: vec![crate::OwnedBytes::from_static(b"value").into()],
+                    if_tail: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
+                })
+                .await
+                .unwrap();
+        }
+        let provider = Arc::new(MemoryStream::default());
+        append_sibling(&provider).await;
+        let (requests, incoming) = futures::channel::mpsc::unbounded();
+        let responses = crate::session::serve(
+            provider.clone(),
+            crate::session::testing::authority(),
+            "node".into(),
+            crate::session::Limits::default(),
+            Box::pin(incoming),
+        )
+        .unwrap();
+        let responses = Rc::new(futures::lock::Mutex::new(responses));
+        let next = Closure::<dyn Fn() -> Promise>::new(move || {
+            let responses = responses.clone();
+            wasm_bindgen_futures::future_to_promise(async move {
+                match responses.lock().await.next().await {
+                    Some(Ok(frame)) => {
+                        Ok(Uint8Array::from(frame.wire().encode_to_vec().as_slice()).into())
+                    }
+                    Some(Err(error)) => Err(super::super::js_error(error)),
+                    None => Ok(JsValue::NULL),
+                }
+            })
+        });
+        let reject = Rc::new(std::cell::Cell::new(false));
+        let rejections = Rc::new(std::cell::Cell::new(0));
+        let send = Closure::<dyn Fn(Uint8Array) -> Promise>::new({
+            let reject = reject.clone();
+            let rejections = rejections.clone();
+            let reported = reported.clone();
+            move |bytes: Uint8Array| {
+                let frame = wire_codec::session::decode_frame(&bytes.to_vec()).unwrap();
+                if matches!(&frame.body, Some(wire::session_frame::Body::Interest(interest)) if !interest.upsert.is_empty())
+                {
+                    if reject.replace(false) {
+                        rejections.set(rejections.get() + 1);
+                        return Promise::reject(&super::super::js_error(reported.clone()));
+                    }
+                }
+                requests.unbounded_send(Ok(frame)).unwrap();
+                Promise::resolve(&JsValue::UNDEFINED)
+            }
+        });
+        let close = Closure::<dyn Fn()>::new(|| {});
+        let io = Object::new();
+        for (name, method) in [
+            ("next", next.as_ref()),
+            ("send", send.as_ref()),
+            ("close", close.as_ref()),
+        ] {
+            Reflect::set(&io, &name.into(), method).unwrap();
+        }
+        let connections = Rc::new(std::cell::Cell::new(0));
+        let connect = Closure::<dyn Fn() -> JsValue>::new({
+            let connections = connections.clone();
+            move || {
+                connections.set(connections.get() + 1);
+                io.clone().into()
+            }
+        });
+        let session = super::super::WasmSession::new(
+            connect.as_ref().unchecked_ref::<Function>().clone(),
+            true,
+            None,
+        );
+        session
+            .register_credential(
+                0,
+                Uint8Array::from(crate::session::testing::credential().as_ref()),
+            )
+            .unwrap();
+        let request = request.encode_to_vec();
+        session.heads(&request, 0).await.unwrap();
+        let mut sibling = crate::records_only(
+            session
+                .client
+                .follow(crate::FollowRequest::new(
+                    crate::StreamPath::new("sibling").unwrap(),
+                    0,
+                ))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(sibling.next().await.unwrap().unwrap().sequence, 0);
+        reject.set(true);
+        let error = session.heads(&request, 0).await.unwrap_err();
+        assert_eq!(failure(error).error, reported, "original rejected interest");
+        append_sibling(&provider).await;
+        assert_eq!(sibling.next().await.unwrap().unwrap().sequence, 1);
+        session.heads(&request, 0).await.unwrap();
+        assert_eq!(rejections.get(), 1);
+        assert_eq!(
+            connections.get(),
+            1,
+            "channel refusal retains the original connection"
+        );
     }
 }

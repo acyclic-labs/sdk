@@ -14,7 +14,10 @@ export interface SessionTransport {
   /** Canonical v1 frames; the Rust session admits each untrusted message. */
   readonly incoming: AsyncIterable<Uint8Array>;
   /** Abort withdraws a write that has not yet entered the transport queue.
-   * Rejection fails the physical session; subscription refusals arrive in incoming frames. */
+   * A permanent rejection of an Interest with exactly one upsert and no removals
+   * means that subscription was not installed; its original channel is refused
+   * and the physical session remains usable. Other rejections fail the physical
+   * session. Mark observed physical interruptions with `transient: true`. */
   send(frame: Uint8Array<ArrayBuffer>, signal?: AbortSignal): Promise<void>;
   close(): void;
 }
