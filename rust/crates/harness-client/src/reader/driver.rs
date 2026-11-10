@@ -461,6 +461,8 @@ pub(super) fn fetched(record: Record) -> Fetched {
         sequence: record.sequence,
         value: record.value,
         commit: record.commit_id,
+        origin: record.origin,
+        committed_at_micros: record.committed_at_micros,
     }
 }
 

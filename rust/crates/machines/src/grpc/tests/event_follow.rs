@@ -51,13 +51,13 @@ async fn event_follow_retains_cursor_and_original_terminal_over_authenticated_rp
         }
         drop(provider);
         if !terminate {
-            assert!(matches!(
-                events
-                    .next()
-                    .await
-                    .map(|result| result.map_err(|error| error.classification().clone())),
-                Some(Err(ProviderError::Unavailable))
-            ));
+            let error = events.next().await.unwrap().unwrap_err();
+            assert_eq!(error.classification(), &ProviderError::Unavailable);
+            let original = std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<tonic::Status>())
+                .expect("event follow erased the original transport status");
+            assert_eq!(original.code(), tonic::Code::Unavailable);
+            assert_eq!(original.message(), "original event producer lost");
         }
         assert!(events.next().await.is_none());
         drop(events);

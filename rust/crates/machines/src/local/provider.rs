@@ -54,11 +54,12 @@ pub async fn provider(
     Ok(AdmittedMachine::open(backend, observation, streams, journal).await?)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PhysicalState {
-    Live,
-    Stopping,
-    Uncertain,
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct PhysicalState {
+    // Stop requests and uncertain retirement are independent: a worker can
+    // retire uncertain before publishing its original completion result.
+    stopping: bool,
+    uncertain: bool,
 }
 
 struct Generation {
@@ -72,7 +73,7 @@ impl Generation {
         Ok(Self {
             control: ProcessControl::unbounded().map_err(|_| ProviderError::Unavailable)?,
             live: Arc::new(RwLock::new(())),
-            state: watch::channel(PhysicalState::Live).0,
+            state: watch::channel(PhysicalState::default()).0,
         })
     }
 }
@@ -88,7 +89,7 @@ impl LocalBackend {
             .generation
             .lock()
             .map_err(|_| ProviderError::Unavailable)?;
-        if *generation.state.borrow() != PhysicalState::Live {
+        if *generation.state.borrow() != PhysicalState::default() {
             return Err(ProviderError::CommandIndeterminate(self.machine.id));
         }
         generation.control.check().map_err(|_| {
@@ -136,7 +137,10 @@ impl Drop for PhysicalWait {
     fn drop(&mut self) {
         if !self.completed {
             self.control.stop();
-            self.state.send_replace(PhysicalState::Uncertain);
+            self.state.send_modify(|state| {
+                state.stopping = true;
+                state.uncertain = true;
+            });
         }
     }
 }
@@ -153,7 +157,7 @@ impl CaptureHandler for Execution {
     }
     fn retired(&mut self, completed: bool) {
         if !completed {
-            self.state.send_replace(PhysicalState::Uncertain);
+            self.state.send_modify(|state| state.uncertain = true);
         }
         self.live.take();
     }
@@ -162,7 +166,7 @@ impl CaptureHandler for Execution {
 impl Drop for Execution {
     fn drop(&mut self) {
         if self.live.is_some() {
-            self.state.send_replace(PhysicalState::Uncertain);
+            self.state.send_modify(|state| state.uncertain = true);
         }
     }
 }
@@ -183,13 +187,13 @@ impl NativeMachine for LocalBackend {
         };
         tokio::select! {
             biased;
-            // The original execution may itself mark retirement uncertain.
-            // Keep its ready result before observing that same state change.
+            // Uncertain retirement can precede this worker's result. Only an
+            // external stop may end observation before that original result.
             execution = self.machine.exec(command, owner, until) => {
                 wait.completed = true;
                 Ok(Box::pin(execution) as ExecStream)
             }
-            _ = observed.wait_for(|state| *state != PhysicalState::Live) => {
+            _ = observed.wait_for(|state| state.stopping) => {
                 Ok(Box::pin(futures::stream::iter([
                     Err(ProviderError::CommandIndeterminate(self.machine.id)),
                 ])) as ExecStream)
@@ -204,8 +208,8 @@ impl NativeMachine for LocalBackend {
                 .map_err(|_| ProviderError::Unavailable)?;
             generation.control.stop();
             generation.state.send_if_modified(|state| {
-                if *state == PhysicalState::Live {
-                    *state = PhysicalState::Stopping;
+                if !state.stopping {
+                    state.stopping = true;
                     true
                 } else {
                     false
@@ -218,11 +222,11 @@ impl NativeMachine for LocalBackend {
         let mut observed = state.subscribe();
         tokio::select! {
             biased;
-            _ = observed.wait_for(|state| *state == PhysicalState::Uncertain) => {
+            _ = observed.wait_for(|state| state.uncertain) => {
                 Err(ProviderError::CommandIndeterminate(self.machine.id))
             }
             _retired = live.write_owned() => {
-                if *state.borrow() == PhysicalState::Uncertain {
+                if state.borrow().uncertain {
                     Err(ProviderError::CommandIndeterminate(self.machine.id))
                 } else { Ok(()) }
             }
