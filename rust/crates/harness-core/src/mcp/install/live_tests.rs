@@ -376,6 +376,13 @@ async fn live_mcp_case(compose: bool) -> Result<()> {
 
 #[tokio::test(start_paused = true)]
 async fn changed_mcp_schema_is_refused_before_dispatch_and_replays() -> Result<()> {
+    for granted in [false, true] {
+        changed_schema_case(granted).await?;
+    }
+    Ok(())
+}
+
+async fn changed_schema_case(granted: bool) -> Result<()> {
     let remote = Arc::new(Remote {
         change_schema: true,
         changed: AtomicU64::new(0),
@@ -428,7 +435,7 @@ async fn changed_mcp_schema_is_refused_before_dispatch_and_replays() -> Result<(
     .with_compaction_policy(CompactionPolicy::Disabled)
     .with_tool_authority(
         RuntimeScope::new(
-            crate::Capabilities::new(["mcp:call:watched"]),
+            crate::Capabilities::new(granted.then_some("mcp:call:watched")),
             Default::default(),
         )?,
         Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
@@ -441,16 +448,23 @@ async fn changed_mcp_schema_is_refused_before_dispatch_and_replays() -> Result<(
         selected_context: None,
     };
     let output = executor.execute(input.clone(), &journal).await?;
-    assert!(
-        model.requests()[1]
-            .messages
-            .iter()
-            .flat_map(|message| message.content.parts())
-            .any(|part| {
-                matches!(part, ModelContentPart::ToolResult {
-            content: crate::model::ToolResultContent::Error { message, .. }, ..
-        } if message.contains("tool definition changed after the model request"))
-            })
+    let requests = model.requests();
+    let failure = requests[1]
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            ModelContentPart::ToolResult {
+                content: crate::model::ToolResultContent::Error { message, .. },
+                ..
+            } => Some(message),
+            _ => None,
+        })
+        .expect("a refused tool result");
+    assert_eq!(
+        failure.contains("tool definition changed after the model request"),
+        granted,
+        "ungranted tools must not disclose definition changes"
     );
     assert_eq!(executor.execute(input, &journal).await?, output);
     assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
