@@ -30,7 +30,7 @@ impl TurnDriver for Replying {
         _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
-            let (inbox, input) = match (input, &agent.turn) {
+            let queued = match (input, &agent.turn) {
                 (
                     Some(Queued {
                         input: TurnInput::Hook { host, .. },
@@ -38,20 +38,22 @@ impl TurnDriver for Replying {
                     }),
                     Some(turn),
                 ) if host == HOST => {
-                    let Queued { inbox, input } = serde_json::from_slice(&turn.checkpoint)
+                    let Queued { inbox, input, .. } = serde_json::from_slice(&turn.checkpoint)
                         .map_err(|_| Error::Record("unexpected conformance checkpoint"))?;
                     return settle(inbox, input);
                 }
                 (
-                    Some(Queued {
-                        inbox,
-                        input: input @ TurnInput::Message { .. },
-                    }),
+                    Some(
+                        queued @ Queued {
+                            input: TurnInput::Message { .. },
+                            ..
+                        },
+                    ),
                     None,
-                ) => (inbox, input),
+                ) => queued,
                 _ => return Err(Error::Record("unexpected conformance input")),
             };
-            let TurnInput::Message { id, .. } = &input else {
+            let TurnInput::Message { id, .. } = &queued.input else {
                 return Err(Error::Record("unexpected conformance input"));
             };
             if id.as_str() == "hold" {
@@ -67,7 +69,7 @@ impl TurnDriver for Replying {
                 });
             }
             if id.as_str().starts_with("native-") {
-                let checkpoint = serde_json::to_vec(&Queued { inbox, input })
+                let checkpoint = serde_json::to_vec(&queued)
                     .map_err(|_| Error::Record("conformance checkpoint does not encode"))?;
                 return Ok(TurnStep {
                     reserved_children: 0,
@@ -77,7 +79,7 @@ impl TurnDriver for Replying {
                     drops: None,
                 });
             }
-            settle(inbox, input)
+            settle(queued.inbox, queued.input)
         })
     }
 }
@@ -99,7 +101,8 @@ fn settle(inbox: u64, input: TurnInput) -> std::result::Result<TurnStep, Error> 
         tool_results: None,
         steering: None,
         notices: None,
-    };
+    }
+    .with_observed_prefix(0);
     Ok(TurnStep {
         reserved_children: 0,
         checkpoint: None,
