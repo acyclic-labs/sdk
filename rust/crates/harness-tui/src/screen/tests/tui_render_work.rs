@@ -49,7 +49,7 @@ fn scene(length: usize, width: u16, height: u16, rewrap: bool, scan: bool) -> [W
                     .key(
                         KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
                         1,
-                        width
+                        usize::from(width)
                     )
                     .is_empty()
             );
