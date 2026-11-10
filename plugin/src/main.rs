@@ -22,7 +22,14 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<()> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
+    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    let (selected, args) = match arguments.as_slice() {
+        [flag, task, rest @ ..] if flag == "--task" && !rest.is_empty() => (Some(task), rest),
+        [flag, ..] if flag == "--task" => {
+            return Err("step=admit native command: --task requires ID COMMAND; recovery: run acyclic --help".into());
+        }
+        _ => (None, arguments.as_slice()),
+    };
     let Some(command) = args.first().cloned() else {
         return help();
     };
@@ -31,23 +38,16 @@ fn run() -> Result<()> {
             .enable_all()
             .build()?
             .block_on(acyclic_plugin_identity::run(
-                &args,
+                args,
                 Some(acyclic_plugin_identity::interrupt_context()),
             ))?;
         return Ok(());
     }
-    if internal(&args)? {
+    if internal(args)? {
         return Ok(());
     }
-    let (selected, arguments) = match args.as_slice() {
-        [flag, task, rest @ ..] if flag == "--task" && !rest.is_empty() => (Some(task), rest),
-        [flag, ..] if flag == "--task" => {
-            return Err("step=admit native command: --task requires ID COMMAND; recovery: run acyclic --help".into());
-        }
-        _ => (None, args.as_slice()),
-    };
     let mut directory = None;
-    let action = acyclic_plugin::input::workspace_action(arguments, || {
+    let action = acyclic_plugin::input::workspace_action(args, || {
         if let Some(task) = selected {
             return parse_task(task);
         }
