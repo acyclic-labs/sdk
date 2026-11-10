@@ -39,6 +39,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     );
     // The root orchestrator admits delegation, not file writes. Select an
     // actual worker before observing the original write approval.
+    eprintln!("approval stage: harness opened");
     let connection = harness.connect().await?;
     let AgentReply::Spawned {
         agent: worker,
@@ -54,9 +55,13 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     else {
         return Err(Error::Invalid("approval worker did not open".into()));
     };
+    eprintln!("approval stage: worker spawned {worker:?}");
     let client = Conversation::open(connection.select(worker.clone()).await?);
+    eprintln!("approval stage: worker selected");
     let mut startup = ObservedConversation::observe(Arc::clone(&client), Some(0)).await?;
+    eprintln!("approval stage: startup observer opened");
     startup.settled(ready).await?;
+    eprintln!("approval stage: startup settled");
     drop(startup);
     let opened_calls = provider.request_count();
     provider.extend([
@@ -78,8 +83,10 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         observer: client.replay(&projection)?,
     };
     let inbox = client.send("approval-input", "echo the request").await?;
+    eprintln!("approval stage: input sent {inbox}");
     let (id, published_binding, delivery) = loop {
         let (event, delivery) = observed.observer.next_projected().await?;
+        eprintln!("approval event: {event:?}");
         match event? {
             Some(crate::local::Event::Status(StatusRecord {
                 phase: crate::agent::Phase::WaitingApproval { id, binding },
@@ -109,6 +116,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         let after = projection.event(&delivery).after;
         projection.accepted(&delivery.resource, after);
     };
+    eprintln!("approval stage: waiting approval {id}");
     let sequence = projection
         .event(&delivery)
         .sequence
