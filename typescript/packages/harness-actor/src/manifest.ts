@@ -4,7 +4,8 @@
 import type { ActorLimits, Binding, BindingGrant, DeploymentManifest, EntryAsset, HostCredential,
   SecretRef, SubscriptionSpec, VolumeProvider } from "@acyclic-labs/workers/manifest";
 import type { ProviderSpec } from "@acyclic-labs/harness";
-import { ACCOUNT_LEAF, HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH, OBJECTS_ENDPOINT } from "./bindings.js";
+import { ACCOUNT_LEAF, HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH, OBJECTS_ENDPOINT,
+  STREAMS_ENDPOINT } from "./bindings.js";
 
 /** Declared name of the model credential reference; never a credential value. */
 export const MODEL_SECRET = "modelCredential";
@@ -20,9 +21,10 @@ export interface HarnessDeployment {
   readonly grants: BindingGrant[];
   /** The platform's cell Edge origin. Its Machines endpoint creates each
    * actor's Machine, with a credential that is by default the platform's
-   * account leaf; the `objects` binding's Objects v1 endpoint is the same
-   * origin, always with the account leaf. Both are host-only: neither origin
-   * nor credential enters the guest environment. */
+   * account leaf; the `objects` binding's Objects v1 endpoint and the
+   * `sharedStreams` binding's Stream v1 endpoint are the same origin, always
+   * with the account leaf. All are host-only: no origin or credential enters
+   * the guest environment. */
   readonly machines: { readonly origin: string; readonly credential?: HostCredential };
 }
 
@@ -80,6 +82,7 @@ export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpe
         hostFetch: [
           { name: MACHINES_ENDPOINT, origin: cell, credential: deployment.machines.credential ?? ACCOUNT_LEAF },
           { name: OBJECTS_ENDPOINT, origin: cell, credential: ACCOUNT_LEAF },
+          { name: STREAMS_ENDPOINT, origin: cell, credential: ACCOUNT_LEAF },
         ],
       }],
       bindings: deployment.bindings,

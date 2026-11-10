@@ -29,6 +29,7 @@ mod watermarks;
 pub use watermarks::watermarks_from_wire;
 
 mod head;
+mod provider_cursor;
 mod receipt;
 mod record_frames;
 mod revision;
@@ -36,6 +37,7 @@ pub use head::{
     fork_origin_from_wire, fork_origin_to_wire, head_from_wire, head_to_wire, heads_from_response,
     heads_from_wire, heads_request_to_wire, heads_to_wire,
 };
+pub use provider_cursor::provider_cursor;
 pub use receipt::{fork_receipt_from_wire, receipt_from_wire, receipt_to_wire};
 pub use record_frames::record_frames;
 pub(crate) use revision::revision_from;
