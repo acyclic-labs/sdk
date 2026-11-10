@@ -1,26 +1,17 @@
 # Agent boundary proofs
 
-The Kani package includes the production slot arithmetic by path. Its four
-harnesses quantify over all machine-sized counts, with a valid starting state
-(`open <= 256`, `reserved <= 256 - open`) where needed. They establish the
-client ceiling, room for each reserved child, preservation of a paused turn's
-capacity when a child finishes, and overflow-safe replay admission. They do
-not assume a second implementation of the arithmetic.
+The Kani package includes the production spawn admission predicate by path.
+Its harnesses check admission for live parents, refusal of new children after
+archive, and idempotent replay of existing children. Counts and depth are not
+inputs to admission.
 
 `agent-model::slot_schedules` executes the production serialized actor step:
-60 pause/client/resume schedules, client response-loss replay, and completion
-of an already-open recorded child during an approval pause. Production actor
-steps commit serially; this is a deterministic transition simulation rather
-than a model of different concurrency primitives. It does not qualify a
-provider's crash recovery or hosted endpoint.
-
-The completion regression found a lost reservation: a recorded spawn can
-already name an open child, so it initially reserves no additional capacity.
-If that child finishes while the turn pauses, a client could take the vacated
-slot before the recorded spawn settles. The transition now holds vacated
-slots until the driver reconciles its recorded effects. Duplicate completion
-does not reserve twice. This conservatively holds other vacated slots during
-the active turn as well; settlement releases them.
+24 pause/client/resume schedules, client response-loss replay, and completion
+of an already-open recorded child during an approval pause. All client and
+recorded spawns remain admissible beyond the former 256-child cap. The native
+reopen regression retains the open children and the paused driver's checkpoint.
+The historical execution receipts describe the former reservation mechanism;
+they do not qualify these changed properties.
 
 The generated `ExplicitStreamProvider` removes defaults from the canonical
 provider declaration. Missing adapter implementations fail compilation,

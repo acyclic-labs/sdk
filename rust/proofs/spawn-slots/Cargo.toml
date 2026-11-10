@@ -1,4 +1,4 @@
-# This dependency-free package checks the exact production arithmetic without
+# This dependency-free package checks the exact production admission predicate without
 # translating the rest of the SDK (or a second arithmetic implementation).
 [package]
 license.workspace = true

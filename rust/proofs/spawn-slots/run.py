@@ -166,17 +166,17 @@ try:
                    "-p", "agent-spawn-slot-proofs"]
         run("kani-version", ["cargo", "kani", "--version"], env=env)
         run("kani-positive", command, env=env)
-        slot_path = "rust/crates/harness-core/src/agent/slots.rs"
+        slot_path = "rust/crates/harness-core/src/agent/spawn_admission.rs"
         for label, before, after in [
-            ("reservation-control", "MAX_OPEN_CHILDREN.saturating_sub(if turn { reserved } else { 0 })", "MAX_OPEN_CHILDREN"),
-            ("vacated-control", "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)", "reserved"),
+            ("live-control", "!closed || existing", "closed || existing"),
+            ("replay-control", "!closed || existing", "!closed && !existing"),
         ]:
             changed = variant(label, slot_path, before, after)
             run(label, command, cwd=changed, env=env, failure="VERIFICATION:- FAILED")
     elif args.mode == "mutants":
         for label, path, before, after, target, oracle in [
-            ("vacated-control", "rust/crates/harness-core/src/agent/slots.rs",
-             "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)", "reserved", "main",
+            ("vacated-control", "rust/crates/harness-core/src/agent/spawn_admission.rs",
+             "!closed || existing", "closed || existing", "main",
              "a_child_finishing_during_pause_cannot_strand_a_recorded_replay"),
             ("digest-control", "rust/crates/harness-core/src/filesystem/attestation.rs",
              "digest: digest()?", "digest: [0; 32]", "acyclic_harness_core",

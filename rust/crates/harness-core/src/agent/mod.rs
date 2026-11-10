@@ -55,7 +55,7 @@ pub(crate) use settled::{named_child, select_children};
 pub(crate) mod spawn_names;
 pub use spawn_names::{SpawnResolution, resolve_spawn_name};
 mod messaging;
-mod slots;
+mod spawn_admission;
 mod steering;
 pub use messaging::{MessageDelivery, peer_send_allowed, sibling_send_allowed};
 pub use steering::{
@@ -89,10 +89,9 @@ pub use layout::{
 };
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
-    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome,
-    SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait, Wake,
-    requested_child, step,
+    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OUTCOME_BYTES, MAX_QUEUED, MAX_QUEUED_BYTES,
+    OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome, SpawnRefusal, Step,
+    TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait, Wake, requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, ChildWake,

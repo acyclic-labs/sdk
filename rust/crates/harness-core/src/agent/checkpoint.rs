@@ -41,8 +41,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            // V2 retains terminal archive refusals and their pending children.
-            version: "2".into(),
+            // V3 removes child-slot reservations; old checkpoints are refused whole.
+            version: "3".into(),
         });
     &IDENTITY
 }
@@ -335,11 +335,12 @@ mod tests {
     use super::*;
     // A deep fixture, not an admission bound.
     const FIXTURE_DEPTH: usize = 64;
+    const FIXTURE_CHILDREN: usize = 256;
     use crate::agent::{
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
         ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
-        MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message,
-        NoticePayload, Phase, Sender, SpawnRequest, StatusRecord, TurnInput, VolumeBinding,
+        MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, NoticePayload, Phase, Sender,
+        SpawnRequest, StatusRecord, TurnInput, VolumeBinding,
     };
     use crate::conversation::{
         FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES,
@@ -689,7 +690,7 @@ mod tests {
         for depth in [FIXTURE_DEPTH - 1, FIXTURE_DEPTH] {
             let path = agent(depth);
             let children = if depth < FIXTURE_DEPTH {
-                MAX_OPEN_CHILDREN
+                FIXTURE_CHILDREN
             } else {
                 0
             };
@@ -730,7 +731,6 @@ mod tests {
                     closed: true,
                     reported: true,
                     turn: None,
-                    reserved_children: u16::MAX,
                 };
                 let bytes = encode(&state).expect("encodes");
                 assert!(
@@ -851,7 +851,7 @@ mod tests {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);
             for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
-                let record = StatusRecord { child_wakes: (0..super::super::MAX_OPEN_CHILDREN).map(|n| super::super::ChildWake {
+                let record = StatusRecord { child_wakes: (0..FIXTURE_CHILDREN).map(|n| super::super::ChildWake {
                     child: super::super::AgentId::from_bytes((n as u128).to_be_bytes()),
                     settled_at_micros: u64::MAX,
                     woke_at_micros: u64::MAX,

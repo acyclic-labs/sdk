@@ -24,8 +24,8 @@ use crate::agent::spawn_names::{spawn_intent, spawn_name};
 use crate::{
     Error, Result,
     agent::{
-        AgentPath, AgentState, CreationConfig, IntentId, MAX_OPEN_CHILDREN, SpawnTemplates,
-        TurnChildren, TurnEffect, TurnEffects, TurnOutcome, named_child,
+        AgentPath, AgentState, CreationConfig, IntentId, SpawnTemplates, TurnChildren, TurnEffect,
+        TurnEffects, TurnOutcome, named_child,
     },
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
@@ -210,13 +210,6 @@ impl AgentTool {
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
                 profile.peers = peers;
-                // The agent's hard limit: a spawn the step would refuse is
-                // refused here, before the model is told it succeeded.
-                if !self.within(&intent, MAX_OPEN_CHILDREN).await? {
-                    return Ok(rejected(format!(
-                        "at most {MAX_OPEN_CHILDREN} open children; archive one or wait for one to finish"
-                    )));
-                }
                 let brief = turn
                     .writer
                     .stage_once(
@@ -319,14 +312,6 @@ impl AgentTool {
             }
         }
         Ok(open)
-    }
-
-    /// Whether spawning `intent` keeps at most `limit` open children. A spawn
-    /// already recorded (a replayed call) is within its own limit.
-    async fn within(&self, intent: &IntentId, limit: usize) -> Result<bool> {
-        let open = self.open().await?;
-        let child = TurnEffect::child(&self.turn.agent, intent).map_err(agent)?;
-        Ok(open.contains(&child) || open.len() < limit)
     }
 
     /// `agent` when this turn may reach it: an open child, or the parent too.

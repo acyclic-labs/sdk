@@ -1,14 +1,14 @@
 {
   "version": 1,
-  "status": "bounded_component_proofs_passed",
+  "status": "changed_unqualified",
   "qualification": {
     "local": "unqualified",
     "cloud": "unqualified"
   },
   "decisions": [
-    "Include the actual dependency-free production slot arithmetic in a small Kani workspace.",
+    "Include the actual dependency-free production spawn admission predicate in the Kani workspace; child counts and depth are not admission inputs.",
     "Use deterministic schedules of the production actor step, which serializes inbox commits, rather than a separate concurrent reducer.",
-    "Keep slots vacated during a paused turn until the driver reconciles recorded effects; duplicate ChildDone reserves nothing.",
+    "Replay, completion and concurrent client spawns share the serialized actor transition without reservation accounting.",
     "Generate ExplicitStreamProvider from the same trait declaration; it removes all defaults and generates forwarding, so missing adapter methods fail compilation.",
     "Attestor implementations retain the documented deterministic-function obligation; adapter properties verify original admission, exact digest and repeat evidence, not arbitrary third-party signer purity.",
     "Bound WaitingHost names introduced by main and fail invalid driver waits before effects are published."
@@ -16,26 +16,25 @@
   "targets": [
     {
       "id": "spawn_slots",
-      "production": "rust/crates/harness-core/src/agent/slots.rs",
+      "production": "rust/crates/harness-core/src/agent/spawn_admission.rs",
       "proofs": [
-        "Kani: client_cannot_take_a_recorded_slot",
-        "Kani: every_recorded_child_fits_after_client_admission",
-        "Kani: completing_a_child_does_not_release_a_paused_turns_slot",
-        "Kani: replay_and_untrusted_reservation_counts_do_not_overflow",
-        "agent-model: slot_schedules"
+        "Kani: live_parents_admit_new_children",
+        "Kani: closed_parents_refuse_new_children",
+        "Kani: replay_preserves_an_existing_child",
+        "agent-model: spawn_schedules_preserve_all_recorded_spawns"
       ],
       "controls": [
         {
-          "file": "rust/crates/harness-core/src/agent/slots.rs",
-          "before": "MAX_OPEN_CHILDREN.saturating_sub(if turn { reserved } else { 0 })",
-          "after": "MAX_OPEN_CHILDREN",
-          "expected": "Kani counterexample and unchanged slot schedule assertion failure"
+          "file": "rust/crates/harness-core/src/agent/spawn_admission.rs",
+          "before": "!closed || existing",
+          "after": "closed || existing",
+          "expected": "Kani counterexample and unchanged actor schedule assertion failure"
         },
         {
-          "file": "rust/crates/harness-core/src/agent/slots.rs",
-          "before": "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)",
-          "after": "reserved",
-          "expected": "Kani counterexample and unchanged ChildDone replay regression failure"
+          "file": "rust/crates/harness-core/src/agent/spawn_admission.rs",
+          "before": "!closed || existing",
+          "after": "!closed && !existing",
+          "expected": "Kani counterexample for replay of an existing child"
         }
       ]
     },
@@ -90,7 +89,7 @@
       ]
     },
     {
-      "id": "persisted_slot_inputs",
+      "id": "persisted_spawn_inputs",
       "production": "rust/crates/harness-core/src/agent/checkpoint.rs",
       "proofs": [
         "harness-core: agent_model::runtime::native_reopen_preserves_reserved_spawns_until_the_matching_approval"
@@ -99,11 +98,11 @@
         {
           "file": "rust/crates/harness-core/src/agent/checkpoint.rs",
           "before": "    Ok(state)\n}",
-          "after": "    state.reserved_children = 0;\n    Ok(state)\n}",
-          "expected": "The unchanged native reopen oracle rejects loss of the three reserved spawns; compilation failure does not qualify the control."
+          "after": "    state.open_children.clear();\n    Ok(state)\n}",
+          "expected": "The native reopen oracle rejects loss of the open children."
         }
       ],
-      "qualification": "Linux x86_64: the exact native reopen target passed 1/1 in 0.02 s at f9410d59b19fc0869d457c6ef3bd36fd642cb773. Clearing reserved_children in the production decoder failed the unchanged target at runtime (0 instead of 3), 0/1 in 0.04 s. Actual LocalStream, original AgentHost and committed writer/reader; controlled turn driver, not native executor/provider wire or complete shell refinement."
+      "qualification": "Current source unqualified. Historical receipts below cover the former reservation mechanism."
     }
   ],
   "execution_receipts": [

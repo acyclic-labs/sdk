@@ -19,7 +19,6 @@ use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 
-pub use super::slots::MAX_OPEN_CHILDREN;
 /// Most inputs held in the checkpoint. Later input stays in the inbox, which is
 /// the agent's unbounded durable queue, and is read back as the window drains.
 pub const MAX_QUEUED: usize = 32;
@@ -44,8 +43,6 @@ pub const OVERSIZED_OUTCOME: &str = "agent outcome exceeds MAX_OUTCOME_BYTES";
 pub enum SpawnRefusal {
     /// The agent is archived.
     Archived,
-    /// The agent already has [`MAX_OPEN_CHILDREN`] open children.
-    Limit,
     /// The host runs no children, so it creates none to wait forever.
     Unhosted,
     /// The parent's role does not admit the requested role.
@@ -157,12 +154,6 @@ pub struct AgentState {
     pub reported: bool,
     /// The turn in progress.
     pub turn: Option<Progress>,
-    /// While a turn is in progress, the children its recorded spawns open
-    /// when it settles, beyond those already open, plus slots vacated while
-    /// it pauses. A replayed recorded spawn may name one of those children;
-    /// clients cannot take its slot before the turn settles.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub reserved_children: u16,
 }
 
 fn is_zero<T: Default + PartialEq>(count: &T) -> bool {
@@ -269,7 +260,6 @@ impl AgentState {
             closed: false,
             reported: false,
             turn: None,
-            reserved_children: 0,
         })
     }
 
@@ -293,11 +283,6 @@ impl AgentState {
         }
     }
 
-    /// Open-child slots a spawn requested now may take.
-    fn free_children(&self) -> usize {
-        super::slots::client_ceiling(self.turn.is_some(), usize::from(self.reserved_children))
-    }
-
     /// The outcome of the spawn named `intent`, read from the state committed
     /// by the step that applied it. Its child is derived from the intent, and
     /// that step either opened it, found it open, or refused it for exactly
@@ -308,13 +293,9 @@ impl AgentState {
         let child = self.spawned(intent).expect("canonical child path");
         if self.open_children.contains(&child) {
             SpawnOutcome::Spawned { child }
-        } else if self.closed {
-            SpawnOutcome::Refused {
-                reason: SpawnRefusal::Archived,
-            }
         } else {
             SpawnOutcome::Refused {
-                reason: SpawnRefusal::Limit,
+                reason: SpawnRefusal::Archived,
             }
         }
     }
@@ -544,9 +525,6 @@ impl Until {
 pub struct TurnStep {
     /// Driver checkpoint for the next step; ignored when the turn finished.
     pub checkpoint: Option<Vec<u8>>,
-    /// While the turn stays in progress, how many children its recorded
-    /// spawns open when it settles, beyond those already open.
-    pub reserved_children: usize,
     /// Effects, in order.
     pub outs: Vec<Out>,
     /// What to wait for next.
@@ -725,9 +703,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
                 volumes: Vec::new(),
                 history: spawn.history,
             });
-            // A turn in progress keeps the slots its recorded spawns take.
-            let free = state.free_children();
-            apply_spawns(&mut state, &mut outs, 0, free);
+            apply_spawns(&mut state, &mut outs, 0);
             state
         }
         (Some(state), Wake::Inbox { sequence, record }) => {
@@ -751,7 +727,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         )
         .await?;
     }
-    apply_spawns(&mut state, &mut outs, applied, MAX_OPEN_CHILDREN);
+    apply_spawns(&mut state, &mut outs, applied);
     let tails = (state.conversation_tail, state.status_tail);
     let completion = (
         state.awaited,
@@ -1023,12 +999,7 @@ fn admit(
         }
     }
     if let InboxRecord::ChildDone(done) = &record {
-        if state.open_children.remove(&done.child) && state.turn.is_some() {
-            // The paused journal may already contain a replayed spawn of this
-            // child. Its slot remains owned by the turn until the driver next
-            // reconciles recorded effects. Duplicate ChildDone consumes none.
-            state.reserved_children = super::slots::reserve_vacated(state.reserved_children);
-        }
+        state.open_children.remove(&done.child);
         state.archive_pending.remove(&done.child);
     }
     match &record {
@@ -1164,7 +1135,6 @@ async fn run<T: TurnDriver + ?Sized>(
         Err(error) if error.uncertain() => return Err(error),
         Err(error) => TurnStep {
             checkpoint: None,
-            reserved_children: 0,
             outs: Vec::new(),
             wait: Wait::Done(AgentOutcome::Failed {
                 message: error.to_string(),
@@ -1182,7 +1152,6 @@ async fn run<T: TurnDriver + ?Sized>(
     {
         turn = TurnStep {
             checkpoint: None,
-            reserved_children: 0,
             outs: Vec::new(),
             wait: Wait::Done(AgentOutcome::Failed {
                 message: INADMISSIBLE_EFFECT.into(),
@@ -1217,7 +1186,7 @@ async fn run<T: TurnDriver + ?Sized>(
             // counts now. This step's own spawns are open children too, so
             // apply them first: a wait on a child spawned in the same step
             // asks it. Applying is idempotent for the step's later pass.
-            apply_spawns(state, outs, spawned, MAX_OPEN_CHILDREN);
+            apply_spawns(state, outs, spawned);
             let open: BTreeSet<AgentPath> = until
                 .awaited
                 .intersection(&state.open_children)
@@ -1257,10 +1226,6 @@ async fn run<T: TurnDriver + ?Sized>(
         inbox,
         checkpoint: turn.checkpoint.unwrap_or_default(),
     });
-    state.reserved_children = match state.turn {
-        Some(_) => u16::try_from(turn.reserved_children.min(MAX_OPEN_CHILDREN)).unwrap_or(u16::MAX),
-        None => 0,
-    };
     state.reported = next.reported;
     (state.awaiting, state.need) = if matches!(next.mode, Mode::Await(_)) {
         awaiting
@@ -1387,7 +1352,7 @@ pub(super) fn requested_intent(sequence: u64) -> Result<IntentId, Error> {
 /// children every earlier spawn of the step opened. A refused spawn creates
 /// nothing and is dropped from `outs`; a requester reads every outcome from
 /// the committed state with [`AgentState::spawn_outcome`].
-fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize, limit: usize) {
+fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize) {
     let mut index = from;
     while index < outs.len() {
         let Out::Spawn { intent, .. } = &outs[index] else {
@@ -1395,10 +1360,11 @@ fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize, limit:
             continue;
         };
         let opened = match state.spawned(intent) {
-            Ok(child) if state.open_children.contains(&child) => true,
             Ok(child)
-                if !state.closed
-                    && super::slots::admits(state.open_children.len(), limit, false) =>
+                if super::spawn_admission::admits(
+                    state.closed,
+                    state.open_children.contains(&child),
+                ) =>
             {
                 state.open_children.insert(child);
                 true
