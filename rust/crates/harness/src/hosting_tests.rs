@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+mod session_pages;
+
 struct Never;
 
 impl TurnExecutors for Never {
@@ -43,6 +45,7 @@ struct Owner {
     revoke_read: AtomicBool,
     revoke_query: AtomicBool,
     childless: AtomicBool,
+    sessions: AtomicBool,
     diff: std::sync::Mutex<Option<QueryPause>>,
     admission: std::sync::Mutex<Option<QueryPause>>,
 }
@@ -53,6 +56,10 @@ struct QueryPause {
 }
 
 impl Platform for Owner {
+    fn sessions(&self) -> bool {
+        self.sessions.load(Ordering::SeqCst)
+    }
+
     fn policy<'a>(
         &'a self,
         _: &'a Principal,
