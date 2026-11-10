@@ -262,6 +262,9 @@ where
             }));
         }
     };
+    if platform.sessions() {
+        bound.initialize_sessions().await?;
+    }
     Ok(Serving::Served(server(bound, platform, root)))
 }
 
@@ -280,6 +283,9 @@ where
     O: AsyncObjectStore + 'static,
 {
     bound.admit_path(&root)?;
+    if platform.sessions() {
+        bound.initialize_sessions().await?;
+    }
     Ok(server(bound, platform, root))
 }
 
@@ -405,7 +411,9 @@ where
     fn command_resource(&self, command: &AgentCommand) -> String {
         if matches!(
             command,
-            AgentCommand::Sessions { .. } | AgentCommand::NewSession { .. }
+            AgentCommand::Sessions { .. }
+                | AgentCommand::NewSession { .. }
+                | AgentCommand::LatestSession {}
         ) || command
             .agent()
             .is_some_and(|agent| !self.root.contains(agent))
@@ -416,7 +424,30 @@ where
         }
     }
 
-    /// Delivers one context request to `agent`; its checkpoint settles in
+    fn authorize_command(
+        &self,
+        authorization: &CallAuthorization,
+        command: &AgentCommand,
+        attributes: &acyclic_auth::contract::RecordAttributes,
+        policy: PolicyDecision,
+    ) -> Result<(), StreamError> {
+        authorization.authorize(&self.resource, &[], attributes, policy)?;
+        let selected = self.command_resource(command);
+        if selected != self.resource {
+            authorization
+                .dependent_resource(
+                    acyclic_auth::contract::ResourcePattern {
+                        name: selected.clone(),
+                        prefix: false,
+                    },
+                    "actors/invoke",
+                )?
+                .authorize(&selected, &[], attributes, policy)?;
+        }
+        Ok(())
+    }
+
+    /// Delivers one context request to the agent; its checkpoint settles in
     /// the agent's conversation like a turn.
     async fn context(
         &self,
@@ -494,6 +525,14 @@ where
                 let delivery = agents.archive(self.within_tree(agent)?, by, id).await?;
                 Ok(AgentReply::Delivered { delivery })
             }
+            AgentCommand::LatestSession {} => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                Ok(AgentReply::LatestSession {
+                    agent: self.bound.latest_session().await?,
+                })
+            }
             AgentCommand::NewSession { id } => {
                 if !self.platform.sessions() {
                     return Err(Error::Record("this host serves one tree"));
@@ -521,7 +560,7 @@ where
                             .session_root(identity)
                             .await
                             .map_err(|error| Error::Turn(Box::new(error)))?;
-                        self.bound.prepare_root(id, root).await?
+                        self.bound.prepare_session_root(id, root).await?
                     }
                 };
                 let agent = match self.bound.submit_root(prepared).await? {
@@ -1357,11 +1396,8 @@ where
         &self,
         invocation: &[u8],
     ) -> Result<acyclic_stream::session::CallTarget, StreamError> {
-        let call = self.admit(invocation)?;
-        acyclic_stream::session::CallTarget::new(
-            self.command_resource(call.command()),
-            "actors/invoke",
-        )
+        self.admit(invocation)?;
+        acyclic_stream::session::CallTarget::new(self.resource.clone(), "actors/invoke")
     }
 
     fn call(
@@ -1382,7 +1418,7 @@ where
                 .map_err(|_| StreamError::InvalidArgument)?;
             let authorize = async |command: &AgentCommand| {
                 let policy = server.platform.policy(&principal, command).await?;
-                authorization.authorize(&server.command_resource(command), &[], &attributes, policy)
+                server.authorize_command(&authorization, command, &attributes, policy)
             };
             // Every command, a staged head included, is authorized as it
             // arrives: a head names its agent and kind, so a denied caller
@@ -1434,6 +1470,7 @@ where
             let query = match call.command() {
                 AgentCommand::Bind { .. }
                 | AgentCommand::Root {}
+                | AgentCommand::LatestSession {}
                 | AgentCommand::Sessions { .. }
                 | AgentCommand::Children { .. }
                 | AgentCommand::ProjectHeads { .. }
@@ -1469,12 +1506,7 @@ where
                 // receipts retain their original commit outcome semantics.
                 let principal = authorization.principal()?;
                 let policy = server.platform.policy(&principal, call.command()).await?;
-                authorization.authorize(
-                    &server.command_resource(call.command()),
-                    &[],
-                    &attributes,
-                    policy,
-                )?;
+                server.authorize_command(&authorization, call.command(), &attributes, policy)?;
             }
             call.reply(&result).map_err(|_| StreamError::LimitExceeded)
         })

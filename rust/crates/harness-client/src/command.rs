@@ -130,6 +130,8 @@ pub enum AgentCommand {
     },
     /// Discover the root admitted by this session's credential.
     Root {},
+    /// Read the last committed root-directory membership in constant work.
+    LatestSession {},
     /// Page the explicitly admitted root-session directory.
     Sessions {
         /// Bounded directory credit and its opaque continuation.
@@ -581,7 +583,10 @@ impl AgentCommand {
     #[must_use]
     pub const fn agent(&self) -> Option<&AgentPath> {
         match self {
-            Self::Root {} | Self::Sessions { .. } | Self::NewSession { .. } => None,
+            Self::Root {}
+            | Self::LatestSession {}
+            | Self::Sessions { .. }
+            | Self::NewSession { .. } => None,
             Self::Bind { agent } => agent.as_ref(),
             Self::Spawn { parent: agent, .. }
             | Self::Fork { parent: agent, .. }
@@ -618,6 +623,7 @@ impl AgentCommand {
         match self {
             Self::Bind { .. } => "bind",
             Self::Root {} => "root",
+            Self::LatestSession {} => "latest_session",
             Self::Sessions { .. } => "sessions",
             Self::NewSession { .. } => "new_session",
             Self::AgentFiles { .. } => "agent_files",

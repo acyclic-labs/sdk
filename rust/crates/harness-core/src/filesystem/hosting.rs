@@ -49,6 +49,7 @@ pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
 
 mod client_files;
 mod journal;
+mod sessions;
 
 #[cfg(all(target_os = "linux", feature = "native-execution"))]
 mod guest;
@@ -485,22 +486,7 @@ where
         directory: &str,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<super::AgentObservation, Error> {
-        if let TurnAdmission::Admitted { scope, .. } = &self.admission {
-            let whole = acyclic_fs::access::Capability::whole_volume(
-                None,
-                &acyclic_fs::access::Action::ALL,
-            )
-            .to_scope_label()
-            .map_err(|error| turn(crate::Error::Invalid(error.to_string())))?;
-            if scope.agent().is_some()
-                || !scope
-                    .capabilities()
-                    .iter()
-                    .any(|grant| grant == whole.as_str())
-            {
-                return Err(turn(crate::Error::Unauthorized("session directory enrollment requires the placement owner's whole-volume admission".into())));
-            }
-        }
+        self.admit_sessions()?;
         self.client_observation(root, calls, clock, Some(directory))
             .await
     }
@@ -1131,6 +1117,26 @@ where
         intent: &IntentId,
         request: RootRequest,
     ) -> Result<Prepared, Error> {
+        self.prepare_root_request(intent, request, false).await
+    }
+
+    /// Prepare an independent root and its directory membership in one commit.
+    /// The serving placement initializes its directory once before admission.
+    pub async fn prepare_session_root(
+        &self,
+        intent: &IntentId,
+        request: RootRequest,
+    ) -> Result<Prepared, Error> {
+        self.admit_sessions()?;
+        self.prepare_root_request(intent, request, true).await
+    }
+
+    async fn prepare_root_request(
+        &self,
+        intent: &IntentId,
+        request: RootRequest,
+        indexed: bool,
+    ) -> Result<Prepared, Error> {
         self.admit_root(&request)?;
         if self.turns.templates().is_some() {
             self.volumes.seed_layer().await.map_err(turn)?;
@@ -1143,7 +1149,7 @@ where
             policy,
         } = request;
         let volumes: Vec<VolumeBinding> = fresh.iter().chain(&retained).cloned().collect();
-        let Spawn { child, request } = self.agents.prepare_root(
+        let Spawn { child, mut request } = self.agents.prepare_root(
             intent,
             ForkAdopted {
                 profile: None,
@@ -1157,6 +1163,9 @@ where
                 policy,
             },
         )?;
+        if indexed {
+            self.index_session(&child, &mut request)?;
+        }
         let fs = &self.volumes.filesystem;
         let cancellation = CancellationToken::new();
         let mut creations = Vec::with_capacity(fresh.len());
