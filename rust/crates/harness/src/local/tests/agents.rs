@@ -656,6 +656,31 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         .read(&entry.output, 1 << 20, None, None)?
         .await?;
     assert!(!output.is_empty());
+    // The same authenticated connection queries an original status cut; a
+    // caller cannot choose a foreign owner or invent a missing status record.
+    let (samples, next) = client
+        .child_wakes(0, acyclic_harness_client::AgentPageRequest::default())
+        .await?;
+    assert!(samples.is_empty() && next.is_none());
+    assert!(
+        client
+            .child_wakes(
+                u64::MAX,
+                acyclic_harness_client::AgentPageRequest::default()
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute(&AgentCommand::ChildWakes {
+                agent: AgentPath::root(&crate::agent::AgentId::from_bytes([91; 16])),
+                status: 0,
+                page: acyclic_harness_client::AgentPageRequest::default(),
+            })
+            .await
+            .is_err()
+    );
     // Give this scenario two visible files, independent of internal layout.
     let cancellation = acyclic_fs::CancellationToken::new();
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
