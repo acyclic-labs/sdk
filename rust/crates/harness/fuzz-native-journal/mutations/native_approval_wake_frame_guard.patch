@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/agent/machine.rs b/rust/crates/harness-core/src/agent/machine.rs
+index 782c7f98013..b74c78af4b5 100644
+--- a/rust/crates/harness-core/src/agent/machine.rs
++++ b/rust/crates/harness-core/src/agent/machine.rs
+@@ -1241,7 +1241,7 @@ async fn run<T: TurnDriver + ?Sized>(
+         || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
+         || matches!(&turn.wait, Wait::User(path) if super::records::check_ui_path(path).is_err())
+         || matches!(&turn.wait, Wait::Approval { id, binding } if super::AgentRecord::encode(&StatusRecord {
+-            child_wakes: child_wakes.clone(),
++            child_wakes: Vec::new(),
+             phase: Phase::WaitingApproval { id: id.clone(), binding: binding.clone() },
+             cursor: u64::MAX,
+             conversation: u64::MAX,
