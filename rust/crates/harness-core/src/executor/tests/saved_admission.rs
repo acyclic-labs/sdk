@@ -132,6 +132,11 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
             ]),
         }],
     );
+    let provider = Arc::new(
+        Arc::into_inner(provider)
+            .expect("unique fixture model")
+            .without_accounting(),
+    );
     let executor = uncompacted_executor(
         Model::new("test".into(), "saved".into(), "1".into())?,
         provider.clone(),
@@ -171,6 +176,19 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
     let output = executor.execute(input.clone(), &journal).await?;
     assert_eq!(output.text, "recovered");
     assert_eq!(executor.execute(input.clone(), &journal).await?, output);
+    let replayed = executor.model_step(&journal, &input, 0, &[]).await?;
+    assert!(matches!(
+        replayed.last(),
+        Some(ModelEvent::Completed { .. })
+    ));
+    let fresh = TurnInput {
+        operation_id: OperationId::new(),
+        ..input.clone()
+    };
+    assert!(matches!(
+        executor.model_step(&journal, &fresh, 0, &[]).await,
+        Err(Error::Unsupported(_))
+    ));
     let changed = TurnInput {
         input: ModelContent::Text("changed".into()),
         ..input
