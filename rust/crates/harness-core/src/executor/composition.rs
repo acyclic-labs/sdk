@@ -72,8 +72,8 @@ impl StockExecutor {
         Ok(self)
     }
 
-    /// Replaces or disables automatic compaction. Disabled compaction sends
-    /// ordinary requests unchecked; single inference keeps capacity admission.
+    /// Replaces or disables automatic compaction. Verified request admission is
+    /// required under every policy, including when compaction is disabled.
     #[must_use]
     pub fn with_compaction_policy(mut self, policy: crate::context::CompactionPolicy) -> Self {
         self.compaction = Some(policy);

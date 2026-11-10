@@ -52,11 +52,7 @@ impl StockExecution<'_> {
         let (mut projection, prepared) = self
             .prepare_response_context(journal, input, step, prior_messages)
             .await?;
-        let accounting = if self.unchecked()? {
-            None
-        } else {
-            Some(self.response_accounting(&prepared).await?)
-        };
+        let accounting = Some(self.response_accounting(&prepared).await?);
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
@@ -269,13 +265,11 @@ impl StockExecution<'_> {
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step, prior_messages) = turn;
         let (mut projection, accounting) = captured;
-        if self.unchecked()? {
-            return Ok(prepared);
-        }
         let accounting = match accounting {
             Some(accounting) => accounting,
-            // A single inference saved without a count passes the same
-            // admission as a fresh one.
+            // Projections prepared with compaction disabled may have no count.
+            // Started calls recover their immutable request in dispatch; a
+            // fresh call must pass the same admission as a new projection.
             None if matches!(
                 self.compaction_policy()?,
                 crate::context::CompactionPolicy::Disabled
@@ -300,7 +294,12 @@ impl StockExecution<'_> {
         }
         let input_tokens =
             with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
-        if self.single_request {
+        if self.single_request
+            || matches!(
+                self.compaction_policy()?,
+                crate::context::CompactionPolicy::Disabled
+            )
+        {
             let output = accounting
                 .capacity
                 .output_reservation(self.output_tokens())?;
@@ -313,7 +312,7 @@ impl StockExecution<'_> {
                     "model request exceeds selected model capacity",
                 ));
             }
-            if !prepared.request().tools.is_empty() {
+            if self.single_request && !prepared.request().tools.is_empty() {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Unauthorized,
