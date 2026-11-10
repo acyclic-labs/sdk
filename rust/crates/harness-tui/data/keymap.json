@@ -11,8 +11,6 @@
     "Ctrl+End": "cursor.end",
     "Ctrl+Left": "cursor.word-left",
     "Ctrl+Right": "cursor.word-right",
-    "Alt+Left": "cursor.word-left",
-    "Alt+Right": "cursor.word-right",
     "Super+Left": "cursor.line-start",
     "Super+Right": "cursor.line-end",
     "Super+Up": "cursor.start",
