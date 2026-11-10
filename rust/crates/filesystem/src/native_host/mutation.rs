@@ -44,7 +44,7 @@ impl HostRoot {
         #[cfg(unix)]
         with_parent_leaf(&self.directory(), path, work, create_unix_directory_leaf)
     }
-    #[cfg(all(windows, any(test, feature = "native-mount")))]
+    #[cfg(windows)]
     pub(crate) fn create_dir_handle<W: SourceDemandReadWork>(
         &self,
         path: &NativePath,

@@ -8,12 +8,12 @@ use crate::{Error, Result, approvals::ApprovalGate, context::ModelContextCapacit
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeSet, io::Write};
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
-#[cfg(feature = "filesystem")]
+#[cfg(not(target_arch = "wasm32"))]
 mod binding;
-#[cfg(feature = "filesystem")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use binding::{BoundTools, ToolBinding};
 mod native;
 pub use native::NativeToolProfile;
