@@ -1099,9 +1099,11 @@ mod tests {
                 &verifier,
             )
             .await?;
+        let parent_shell =
+            super::super::tests::request_text(&local, &provider.requests()[1]).await?;
         assert!(
             std::fs::read_to_string(parent_workspace.path.join("parent.txt"))
-                .map_err(storage)?
+                .map_err(|error| Error::Storage(format!("parent shell marker at {}: {error}; original model input after shell: {parent_shell}", parent_workspace.path.display())))?
                 .contains("parent"),
             "the parent's shell must have bound its checkout before merging"
         );
@@ -1198,7 +1200,12 @@ mod tests {
             .await?;
         parent.wait_current_input().await?;
         assert_eq!(
-            std::fs::read(parent_workspace.path.join("observed.txt")).map_err(storage)?,
+            std::fs::read(parent_workspace.path.join("observed.txt")).map_err(|error| {
+                Error::Storage(format!(
+                    "parent shell after merge at {}: {error}",
+                    parent_workspace.path.display()
+                ))
+            })?,
             b"nested\n",
             "a later parent shell must see the merged file"
         );

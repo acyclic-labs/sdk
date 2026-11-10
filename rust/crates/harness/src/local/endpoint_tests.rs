@@ -47,18 +47,6 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         reader.head(outside.status().map_err(exchange)?).await,
         Err(StreamError::AccessDenied)
     );
-    assert_eq!(
-        reader
-            .children_page(acyclic_stream::ChildrenPageRequest {
-                parent: Some(StreamPath::new(crate::agent::AGENTS).map_err(exchange)?),
-                after: None,
-                hierarchy_version: None,
-                limit: 16,
-                tail_stream: None,
-            })
-            .await,
-        Err(StreamError::AccessDenied)
-    );
     let directory_connection = harness.connect_sessions().await?;
     let session = super::super::sessions::create(&directory_connection, "reader-session").await?;
     let page = session
@@ -74,6 +62,25 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         .await
         .map_err(exchange)?;
     assert!(page.children.is_empty());
+    assert_eq!(
+        reader.head(session.root.status().map_err(exchange)?).await,
+        Err(StreamError::AccessDenied)
+    );
+    // The primitive filters broad discovery to authorized children. A directory
+    // owner can discover both roots; this original tree credential sees only its own.
+    let page = reader
+        .children_page(acyclic_stream::ChildrenPageRequest {
+            parent: Some(StreamPath::new(crate::agent::AGENTS).map_err(exchange)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: None,
+        })
+        .await
+        .map_err(exchange)?;
+    assert_eq!(page.children.len(), 1);
+    assert_eq!(page.children[0].path.as_str(), connection.root.as_str());
+    assert!(page.next_after.is_none());
     Ok(())
 }
 impl PersistenceCut for Cut {

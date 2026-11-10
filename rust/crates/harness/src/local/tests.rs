@@ -78,7 +78,7 @@ impl ObservedConversation {
 }
 
 /// Inspect the immutable text bodies delivered through the real content reader.
-async fn request_text(
+pub(super) async fn request_text(
     harness: &LocalHarness,
     request: &crate::model::ModelRequest,
 ) -> Result<String> {
