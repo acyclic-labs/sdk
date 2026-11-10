@@ -27,7 +27,8 @@ const bind = async (name, input) => {
 };
 const parse = JSON.parse, stringify = JSON.stringify;
 const encode = (path, data) => typeof data === 'string' ? data
-    : path.endsWith('.ts') ? `export default JSON.parse(${stringify(stringify(data))})` : stringify(data);
+    : path.endsWith('.ts') ? `export default JSON.parse(${stringify(stringify(data))})`
+    : stringify(data);
 
 // Each value holds one immutable version. Byte pages stay pinned to that
 // version; text()/json()/lines() never issue hidden host calls.
