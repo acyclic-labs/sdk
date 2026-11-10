@@ -190,7 +190,8 @@ pub struct RequestMatch {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
 pub enum HookFailure {
-    /// Report the failure and continue with the other hooks and caller.
+    /// Report the failure and continue with the other hooks. A failed before-tool
+    /// hook still refuses tool admission; other lifecycle sites may continue.
     #[default]
     Report,
     /// Report the failure and block the guarded action, without aborting other hooks.
