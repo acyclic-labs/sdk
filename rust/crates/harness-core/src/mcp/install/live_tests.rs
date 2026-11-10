@@ -428,11 +428,7 @@ async fn changed_schema_case(granted: bool) -> Result<()> {
             ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                     "changed".into(),
-                    if id == "first" {
-                        first_name.clone()
-                    } else {
-                        "mcp.watched.old".into()
-                    },
+                    "mcp.watched.old".into(),
                     json!({}),
                 ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
