@@ -80,8 +80,7 @@ export function enabled(item, features) {
   return declaredFeatures(item, features).join(" ");
 }
 
-export function featureSets(item, eachFeature = false) {
-  if (!eachFeature) return [["check", "--locked", "--manifest-path", item.manifest_path, "--lib", "--all-features"]];
+export function featureSets(item) {
   const own = Object.keys(item.features).filter(name => name !== "default").sort();
   const defaults = Object.hasOwn(item.features, "default") ? ["default"] : [];
   const sets = [
