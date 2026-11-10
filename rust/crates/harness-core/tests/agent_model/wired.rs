@@ -545,11 +545,19 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         };
         submit(&*stream, send(&path, &super::user(), &record)?).await?;
     }
-    // Discovery can append a source notice behind an already-arrived input.
-    // The first request must observe the same complete window as later ones.
+    // Ordinary arrivals do not replace the turn's original frozen frontier.
+    assert!(boundary.messages(operation, 0, None).await?.is_empty());
+    let messages = boundary.messages(operation, 1, None).await?;
+    let cut = boundary.selection(operation, 1)?;
+    // Preparation explicitly includes its committed source updates, including
+    // earlier arrivals in the same ordered prefix. A foreign turn cannot do so.
+    assert!(matches!(
+        boundary.include_prepared_sources(foreign, cut.through),
+        Err(acyclic_harness_core::Error::Invalid(_))
+    ));
+    boundary.include_prepared_sources(operation, cut.through)?;
     let initial = boundary.messages(operation, 0, None).await?;
     let initial_cut = boundary.selection(operation, 0)?;
-    let messages = boundary.messages(operation, 1, None).await?;
     assert_eq!(initial, messages);
     assert_eq!(messages.len(), 1);
     for message in &messages {
@@ -570,8 +578,9 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
             .content
             .validate_limits(Default::default(), &mut None)?;
     }
-    let cut = boundary.selection(operation, 1)?;
     assert_eq!(initial_cut, cut);
+    // Restore the selected step checked by the admission assertions below.
+    assert_eq!(boundary.messages(operation, 1, None).await?, messages);
     assert!(matches!(
         boundary.selection(foreign, 1),
         Err(acyclic_harness_core::Error::Invalid(_))
@@ -605,10 +614,19 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         )?,
     )
     .await?;
+    assert_eq!(boundary.messages(operation, 0, None).await?, initial);
+    assert_eq!(
+        boundary.messages(operation, 0, Some(initial_cut)).await?,
+        initial
+    );
     // A retry renders the original frozen batch, even with a newer same-key event.
     assert_eq!(boundary.messages(operation, 1, Some(cut)).await?, messages);
     assert!(boundary.transcript(operation).await?.is_none());
     boundary.admitted(operation, 1).await?;
+    assert!(matches!(
+        boundary.include_prepared_sources(operation, cut.through + 1),
+        Err(acyclic_harness_core::Error::Conflict(_))
+    ));
     let transcript = boundary
         .transcript(operation)
         .await?

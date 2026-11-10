@@ -2927,7 +2927,11 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
     let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
     std::fs::write(checkout.join("AGENTS.md"), b"RULE_ONE\n").map_err(agent)?;
     let mut client = ObservedConversation::open(&harness).await?;
-    client.send("one", "FIRST_PROMPT").await?;
+    assert_eq!(
+        client.send("one", "FIRST_PROMPT").await?.outcome,
+        crate::agent::TurnOutcome::Completed,
+        "the instruction proof must reach model dispatch"
+    );
     std::fs::write(checkout.join("AGENTS.md"), b"RULE_TWO\n").map_err(agent)?;
     client.send("two", "SECOND_PROMPT").await?;
     let request = |index| {

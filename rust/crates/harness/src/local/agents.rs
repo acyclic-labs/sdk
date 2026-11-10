@@ -163,7 +163,7 @@ impl TurnContext for LocalContext {
                 .await?;
             // Before the turn's first request: the step-0 boundary appends
             // what changed since the epoch froze.
-            local
+            let through = local
                 .announce_changes(
                     agent,
                     &epoch,
@@ -172,6 +172,13 @@ impl TurnContext for LocalContext {
                     authority.content.reader.as_ref(),
                 )
                 .await?;
+            if let Some(through) = through {
+                authority
+                    .journal
+                    .model_boundary()
+                    .ok_or_else(|| Error::Invalid("agent turn has no model boundary".into()))?
+                    .include_prepared_sources(turn, through)?;
+            }
             #[cfg(any(test, feature = "hooks"))]
             let hooks = local.turn_hooks(turn, &**writer).await?;
             let (executor, context) =

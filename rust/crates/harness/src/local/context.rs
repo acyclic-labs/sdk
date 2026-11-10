@@ -116,9 +116,19 @@ impl LocalHarness {
         binding: &Binding<'_>,
         publisher: &dyn ContentPublisher,
         reader: &dyn ContentResidencyVerifier,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         let Some(hosted) = self.agents.get() else {
-            return Ok(());
+            return Ok(None);
+        };
+        let mut through = None;
+        let mut delivered = |delivery| -> Result<()> {
+            if let crate::agent::Delivered::Committed { inbox } = delivery {
+                let cursor = inbox
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("context delivery cursor overflow".into()))?;
+                through = Some(through.map_or(cursor, |previous: u64| previous.max(cursor)));
+            }
+            Ok(())
         };
         let live = self.live_manifest(binding, publisher, Vec::new()).await?;
         let cached = self
@@ -172,11 +182,13 @@ impl LocalHarness {
             path: agent.path.clone(),
         };
         if let Some(pending) = told.state.pending.take() {
-            hosted
-                .agents()
-                .send(&agent.path, &by, &pending)
-                .await
-                .map_err(storage)?;
+            delivered(
+                hosted
+                    .agents()
+                    .send(&agent.path, &by, &pending)
+                    .await
+                    .map_err(storage)?,
+            )?;
         }
         for change in ContextEpoch::changes(&told.state.digests, &live, reader).await? {
             let mut hash = blake3::Hasher::new_derive_key("acyclic.local.context-change.v1");
@@ -226,18 +238,20 @@ impl LocalHarness {
                 }
             };
             told.file = Some(file);
-            hosted
-                .agents()
-                .send(&agent.path, &by, &record)
-                .await
-                .map_err(storage)?;
+            delivered(
+                hosted
+                    .agents()
+                    .send(&agent.path, &by, &record)
+                    .await
+                    .map_err(storage)?,
+            )?;
             told.state.pending = None;
         }
         self.told
             .lock()
             .map_err(|_| Error::Storage("context change lock poisoned".into()))?
             .insert(agent.path.clone(), told);
-        Ok(())
+        Ok(through)
     }
 
     /// This turn's hook configuration: the live one, pinned once per turn so
