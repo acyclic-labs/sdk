@@ -94,6 +94,10 @@ impl ToolRegistry {
         self
     }
 
+    pub(crate) fn retain_sources(&mut self, mut keep: impl FnMut(&dyn ToolSource) -> bool) {
+        self.sources.retain(|source| keep(source.as_ref()));
+    }
+
     pub(crate) async fn refresh(&self) -> Result<()> {
         for source in &self.sources {
             source.refresh().await?;

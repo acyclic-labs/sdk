@@ -62,8 +62,23 @@ impl ToolSource for WatchedConfig {
                 self.watch.arm()?;
                 let config = NativeSettings::load_mcp(self.settings.clone()).await?;
                 if state.1 != config {
-                    let installed = config
-                        .clone()
+                    let unchanged = |source: &dyn ToolSource| {
+                        config.servers.iter().any(|(name, server)| {
+                            state.1.servers.get(name) == Some(server)
+                                && source.capability() == Some(format!("mcp:call:{name}").as_str())
+                        })
+                    };
+                    let mut next_tools = self.snapshot()?;
+                    next_tools.retain_sources(unchanged);
+                    let changed = McpConfig {
+                        servers: config
+                            .servers
+                            .iter()
+                            .filter(|(name, server)| state.1.servers.get(*name) != Some(*server))
+                            .map(|(name, server)| (name.clone(), server.clone()))
+                            .collect(),
+                    };
+                    let installed = changed
                         .install(
                             ToolRegistry::default(),
                             &self.workspace,
@@ -71,23 +86,53 @@ impl ToolSource for WatchedConfig {
                             self.secrets.clone(),
                         )
                         .await?;
-                    let next = installed.tools.definitions(None)?;
-                    let mut tools = self
-                        .tools
-                        .lock()
-                        .map_err(|_| Error::Storage("MCP config lock poisoned".into()))?;
-                    let mut removed = self
-                        .removed
-                        .lock()
-                        .map_err(|_| Error::Storage("MCP config lock poisoned".into()))?;
-                    for tool in tools.definitions(None)? {
-                        if !next.iter().any(|new| new.name == tool.name) {
-                            removed.insert(tool.name);
+                    let failed = |source: &dyn ToolSource| {
+                        installed.diagnostics.iter().any(|failure| {
+                            source.capability()
+                                == Some(format!("mcp:call:{}", failure.server).as_str())
+                        })
+                    };
+                    let mut previous = self.snapshot()?;
+                    previous.retain_sources(failed);
+                    next_tools.extend(previous)?;
+                    next_tools.extend(installed.tools)?;
+                    let next = next_tools.definitions(None)?;
+                    {
+                        let mut tools = self
+                            .tools
+                            .lock()
+                            .map_err(|_| Error::Storage("MCP config lock poisoned".into()))?;
+                        let mut removed = self
+                            .removed
+                            .lock()
+                            .map_err(|_| Error::Storage("MCP config lock poisoned".into()))?;
+                        for tool in tools.definitions(None)? {
+                            if !next.iter().any(|new| new.name == tool.name) {
+                                removed.insert(tool.name);
+                            }
+                        }
+                        removed.retain(|name| !next.iter().any(|tool| &tool.name == name));
+                        *tools = next_tools;
+                    }
+                    let mut admitted = config;
+                    for failure in &installed.diagnostics {
+                        match state.1.servers.get(&failure.server) {
+                            Some(server) => {
+                                admitted
+                                    .servers
+                                    .insert(failure.server.clone(), server.clone());
+                            }
+                            None => {
+                                admitted.servers.remove(&failure.server);
+                            }
                         }
                     }
-                    removed.retain(|name| !next.iter().any(|tool| &tool.name == name));
-                    *tools = installed.tools;
-                    state.1 = config;
+                    state.1 = admitted;
+                    if !installed.diagnostics.is_empty() {
+                        // Keep failed transports pending while successful and
+                        // unchanged connections retain their original owners.
+                        return self.snapshot()?.refresh().await;
+                    }
                 }
                 state.0 = revision;
             }

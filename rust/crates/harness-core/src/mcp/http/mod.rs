@@ -172,26 +172,35 @@ impl HttpMcpTransport {
         let provider = self.provider.clone();
         let generation = self.tools_generation.clone();
         self.notifications = Some(Arc::new(NotificationWatch(tokio::spawn(async move {
-            let operation = OperationId::new();
-            let result = async {
-                let response = provider.exchange(operation, request.clone()).await?;
-                if response.status == 405 {
-                    return Ok(());
+            let mut backoff = std::time::Duration::from_millis(100);
+            loop {
+                let operation = OperationId::new();
+                let result = async {
+                    let response = provider.exchange(operation, request.clone()).await?;
+                    if response.status == 405 {
+                        return Ok(false);
+                    }
+                    if response.status != 200 {
+                        return Err(Error::Indeterminate(operation));
+                    }
+                    sse::notifications(
+                        response.body,
+                        operation,
+                        request.maximum_response_bytes,
+                        &generation,
+                    )
+                    .await?;
+                    Ok(true)
                 }
-                if response.status != 200 {
-                    return Err(Error::Indeterminate(operation));
+                .await;
+                if matches!(result, Ok(false)) {
+                    return;
                 }
-                sse::notifications(
-                    response.body,
-                    operation,
-                    request.maximum_response_bytes,
-                    &generation,
-                )
-                .await
-            }
-            .await;
-            if result.is_err() {
+                // EOF is a disconnected notification transport too. Invalidate
+                // before reconnecting so events lost across the gap are read.
                 generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(std::time::Duration::from_secs(5));
             }
         }))));
         Ok(())
