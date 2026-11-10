@@ -261,8 +261,24 @@ impl CommandCatalog {
                 tool: *tool,
                 input: tool.input(arguments),
             },
-            CommandAction::Theme {} => CommandResolution::Select {
-                query: CommandQuery::Theme,
+            CommandAction::Theme {} => match arguments {
+                "" => CommandResolution::Select {
+                    query: CommandQuery::Theme,
+                },
+                mode => CommandResolution::Submit {
+                    request: CommandRequest::Theme {
+                        mode: match mode {
+                            "auto" => ThemeMode::Auto,
+                            "dark" => ThemeMode::Dark,
+                            "light" => ThemeMode::Light,
+                            _ => {
+                                return Err(Error::Invalid(
+                                    "/theme expects auto, dark or light".into(),
+                                ));
+                            }
+                        },
+                    },
+                },
             },
             CommandAction::Builtin { command } => resolve_builtin(*command, arguments),
         }))

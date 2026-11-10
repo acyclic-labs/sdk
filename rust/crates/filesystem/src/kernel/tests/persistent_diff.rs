@@ -784,7 +784,7 @@ mod model {
         let mut values = Vec::new();
         let mut after = None;
         for _ in 0..=256 {
-            let receipt = paginate::<_, TreeFormat>(
+            let receipt = paginate::<TreeFormat>(
                 store,
                 (
                     root,
@@ -927,7 +927,7 @@ async fn diff_accounted<S: AsyncObjectStore, F: Format>(
     cancellation: &CancellationToken,
 ) -> Result<Diff<F::Key, F::Value>, OperationFailure<FsError>> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = diff_with_accounting::<S, F>(
+    let result = diff_with_accounting::<F>(
         store,
         before,
         after,

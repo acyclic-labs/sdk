@@ -228,23 +228,18 @@ async fn unchanged_edge<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<bool, FsError> {
-    let present = super::super::persistent_point::lookup_projected_with_accounting::<
-        S,
-        BindingFormat,
-        _,
-        _,
-        _,
-    >(
-        store,
-        record.bindings.ok_or(FsError::InvalidDiff)?,
-        |edge| edge.parent.cmp(&parent).then_with(|| edge.name.cmp(name)),
-        |_, accounting| Ok(Owned::new((), accounting.claim_owned(0, 0)?, 0)),
-        DecodeLimits::for_volume(config),
-        accounting,
-        cancellation,
-        None,
-    )
-    .await?;
+    let present =
+        super::super::persistent_point::lookup_projected_with_accounting::<BindingFormat, _, _, _>(
+            store,
+            record.bindings.ok_or(FsError::InvalidDiff)?,
+            |edge| edge.parent.cmp(&parent).then_with(|| edge.name.cmp(name)),
+            |_, accounting| Ok(Owned::new((), accounting.claim_owned(0, 0)?, 0)),
+            DecodeLimits::for_volume(config),
+            accounting,
+            cancellation,
+            None,
+        )
+        .await?;
     let found = present.is_some();
     if let Some(present) = present {
         present.retire(accounting)?;

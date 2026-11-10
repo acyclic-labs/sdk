@@ -33,14 +33,13 @@ async fn proposal_normalization_reuses_receipt_owned_publication_roots() -> Test
         let mut records = store
             .provider
             .read(ReadRequest {
-                key: Some(acyclic_stream::ReadKeySeek {
+                key: Some(acyclic_stream::ReadKeySeek::exact(
                     key,
-                    before: head
-                        .sequence
+                    head.sequence
                         .get()
                         .checked_add(1)
                         .ok_or("sequence overflow")?,
-                }),
+                )),
                 path: stream_path(authority, "/records")?,
                 from: 1,
                 limit: 1,

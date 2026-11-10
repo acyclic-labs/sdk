@@ -1,6 +1,9 @@
 use super::*;
 use ratatui::{Terminal, backend::TestBackend};
 
+#[path = "tests/tui_render_work.rs"]
+mod tui_render_work;
+
 fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
     let transcript = vec![Line::raw("retained history"); length / 2];
     let tools = vec![Line::raw("retained tool"); length - transcript.len()];

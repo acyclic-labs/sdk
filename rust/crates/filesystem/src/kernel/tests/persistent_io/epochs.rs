@@ -77,7 +77,7 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                 let pending = async {
                     let mut values = Vec::new();
                     if batch {
-                        let mut pages = read_pages_with_accounting::<_, TreeFormat, _>(
+                        let mut pages = read_pages_with_accounting::<TreeFormat, _>(
                             &cache,
                             ids.iter().copied(),
                             limits,
@@ -96,7 +96,7 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                         pages.finish_with_accounting(&mut accounting, &cancel)?;
                     } else {
                         values.push(
-                            read_page_with_accounting::<_, TreeFormat>(
+                            read_page_with_accounting::<TreeFormat>(
                                 &cache,
                                 ids[0],
                                 limits,
@@ -182,7 +182,7 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                 // A fresh miss can populate the new epoch, using the same
                 // decoder and immutable source rather than replaying a prefix.
                 let mut fresh = KernelAccounting::standalone(B, &cancel);
-                let (page, allocation) = read_page_with_accounting::<_, TreeFormat>(
+                let (page, allocation) = read_page_with_accounting::<TreeFormat>(
                     &cache, ids[0], limits, &mut fresh, &cancel, None,
                 )
                 .await?;

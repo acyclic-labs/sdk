@@ -157,7 +157,7 @@ impl crate::guest::Composition for Guard {
                         attempt < attempts,
                         "unchanged guards caused another storage attempt"
                     );
-                    request.conditions.push(CommitCondition::Tail {
+                    request.effects[0].conditions.push(CommitCondition::Tail {
                         path: self.path.clone(),
                         expected: 0,
                     });
@@ -260,13 +260,13 @@ async fn guarded_store() -> Result<(Store<MemoryStream>, ActorReference), Box<dy
                 Bytes::from_static(b"held"),
             ),
         ] {
-            held.join(Effect {
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutation: CommitMutation::Append {
+            held.join(acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Absent { path: path.clone() }],
+                vec![CommitMutation::Append {
                     path,
                     records: vec![value.into()],
-                },
-            })?;
+                }],
+            ))?;
         }
     }
     for effect in [
@@ -393,13 +393,13 @@ async fn a_failed_record_does_not_starve_other_ready_subscriptions() -> TestResu
                 cursor: 0,
             },
         );
-        create.join(Effect {
-            conditions: vec![CommitCondition::Absent { path: path.clone() }],
-            mutation: CommitMutation::Append {
+        create.join(acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent { path: path.clone() }],
+            vec![CommitMutation::Append {
                 path,
                 records: vec![Bytes::copy_from_slice(value).into()],
-            },
-        })?;
+            }],
+        ))?;
     }
     for effect in [
         store.create(

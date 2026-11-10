@@ -77,10 +77,11 @@ fn request(
             ],
         )?
     };
+    let mut effects = work.vec(1)?;
+    effects.push(acyclic_stream::CommitEffect::hard(conditions, mutations));
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions,
-        mutations,
+        effects,
         idempotency_key,
     })
 }
@@ -89,7 +90,8 @@ fn digest(
     request: &mut CommitRequest,
     work: &mut AuthorityWork<'_>,
 ) -> Result<[u8; 32], AuthorityStoreError> {
-    let Some(CommitMutation::Append { path, records }) = request.mutations.first() else {
+    let Some(CommitMutation::Append { path, records }) = request.effects[0].mutations.first()
+    else {
         return Err(AuthorityStoreError::RejectedStatic(
             "publication gates only append",
         ));
@@ -101,7 +103,7 @@ fn digest(
     bytes = bytes
         .checked_add(1 + 8 + path.as_str().len() as u64 + 8 + record.hash_bytes())
         .ok_or(crate::WorkError::Overflow)?;
-    for condition in &request.conditions {
+    for condition in &request.effects[0].conditions {
         let (path, scalar) = match condition {
             CommitCondition::Head { path, .. } => (path, 40),
             CommitCondition::Tail { path, .. } => (path, 8),
@@ -193,7 +195,8 @@ fn qualified(
     let [retained] = append.records.as_slice() else {
         return Ok(false);
     };
-    let [CommitMutation::Append { path, records }] = candidate.mutations.as_slice() else {
+    let [CommitMutation::Append { path, records }] = candidate.effects[0].mutations.as_slice()
+    else {
         return Ok(false);
     };
     Ok(append.path == *path

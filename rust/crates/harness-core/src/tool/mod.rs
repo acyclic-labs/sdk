@@ -31,7 +31,7 @@ pub use projection::*;
 mod approval;
 pub use approval::ToolApprovalVerifier;
 mod registry;
-pub use registry::{Tool, ToolRegistry};
+pub use registry::{Tool, ToolRegistry, ToolSource};
 mod codec;
 #[cfg(feature = "filesystem")]
 pub(crate) use codec::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES;

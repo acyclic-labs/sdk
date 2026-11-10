@@ -66,13 +66,12 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
             async move {
                 provider.commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![
+                    effects: vec![crate::CommitEffect::hard(vec![
                         crate::CommitCondition::Tail { path: StreamPath::new("agents/a")?, expected: 1 },
                         crate::CommitCondition::Absent { path: StreamPath::new("agents/b")? },
-                    ],
-                    mutations: ["agents/a", "agents/b"].into_iter().map(|path| Ok(CommitMutation::Append {
+                    ], ["agents/a", "agents/b"].into_iter().map(|path| Ok(CommitMutation::Append {
                         path: StreamPath::new(path)?, records: vec![(Bytes::from_static(b"accepted")).into()],
-                    })).collect::<std::result::Result<Vec<_>, StreamError>>()?,
+                    })).collect::<std::result::Result<Vec<_>, StreamError>>()?)],
                     idempotency_key: IdempotencyKey::new(Bytes::from_static(b"compacting"))?,
                 }).await
             }

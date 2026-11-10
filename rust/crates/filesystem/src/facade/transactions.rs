@@ -271,16 +271,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 count.checked_add(authored_mutation_operation_count(mutation))
             })
             .ok_or(WorkError::Overflow)?;
-        crate::heap_future::in_borrowed_frame!(
-            accounting,
-            |accounting| self.apply_authored_transaction_validated(
-                input,
-                count,
-                accounting,
-                cancellation
-            ),
-            erase_task
-        )
+        crate::heap_future::in_borrowed_frame!(accounting, |accounting| self
+            .apply_authored_transaction_validated(input, count, accounting, cancellation))
     }
 
     async fn apply_authored_transaction_validated(

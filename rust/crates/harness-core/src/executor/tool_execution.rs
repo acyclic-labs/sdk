@@ -8,6 +8,7 @@ mod dispatch;
 enum ToolCallRejection {
     /// The composition binds no granted tool by this name.
     Unavailable,
+    Removed,
     /// The arguments violate the tool's pinned input schema.
     InvalidInput(Error),
     /// The bound policy denied the call, or the tool refused it definitively (authorization,
@@ -18,6 +19,10 @@ enum ToolCallRejection {
 impl ToolCallRejection {
     fn into_failure(self, io: Option<&PreparationIo>) -> (ToolFailureKind, Error) {
         match self {
+            Self::Removed => (
+                ToolFailureKind::Removed,
+                stock_boundary(io, crate::wire::ErrorCode::NotFound, "tool was removed"),
+            ),
             Self::Unavailable => (
                 ToolFailureKind::Unavailable,
                 stock_boundary(
@@ -106,14 +111,24 @@ impl<'io> StockExecution<'io> {
         } else {
             Ok(None)
         };
-        let admitted = match self.stock.tools.get(&invocation.name, None, self.io)? {
+        self.stock.tools.refresh().await?;
+        let admitted = match self.stock.tools.resolve(&invocation.name, self.io)? {
             Some(tool) => self
                 .authorize_tool_invocation(
-                    tool,
+                    &tool,
                     &invocation,
                     target.as_ref().ok().and_then(|target| target.clone()),
                 )?
                 .map(|(context, capability)| (tool, context, capability)),
+            None if self
+                .stock
+                .epoch_tools
+                .as_ref()
+                .is_some_and(|tools| tools.iter().any(|tool| tool.name == invocation.name))
+                || self.stock.tools.was_removed(&invocation.name)? =>
+            {
+                Err(ToolCallRejection::Removed)
+            }
             None => Err(ToolCallRejection::Unavailable),
         };
         let (tool, mut context, _capability) = match admitted {
@@ -125,6 +140,7 @@ impl<'io> StockExecution<'io> {
                 return self.push_tool_result(&invocation, content, None, prior_messages);
             }
         };
+        let tool = tool.as_ref();
         if let Some(context) = &mut context {
             context.model_turn = (operation_id, step);
         }
@@ -488,7 +504,7 @@ impl<'io> StockExecution<'io> {
         // A native call runs where its capability's call would, and its start
         // records that target. A call its declaration refuses runs nowhere;
         // admission settles the refusal.
-        let canonical = match self.stock.tools.get(&invocation.name, None, None)? {
+        let canonical = match self.stock.tools.resolve(&invocation.name, None)? {
             Some(tool) => match tool.executor.canonical(invocation, self.native_work()) {
                 Ok(canonical) => canonical,
                 // A declaration refusal is settled by admission. Resource and
@@ -596,7 +612,12 @@ impl<'io> StockExecution<'io> {
         let capability = with_history_io(self.io, |work| {
             preparation_format(format_args!("tool:call:{}", granted.definition.name), work)
         })?;
-        if !self.stock.tool_scope.grants().contains(&capability) {
+        if !self.stock.tool_scope.grants().contains(&capability)
+            && !self
+                .stock
+                .tools
+                .source_granted(&granted.definition.name, self.stock.tool_scope.grants())?
+        {
             return Ok(Err(ToolCallRejection::Unavailable));
         }
         // Shape precedes resource authorization, so a tool authorizes only well-formed calls.

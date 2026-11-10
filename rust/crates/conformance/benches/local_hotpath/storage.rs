@@ -6,7 +6,7 @@ use super::{
 };
 use acyclic_actors::{
     addressing::ActorReference,
-    guest::{AlarmChange, Checkpoint, CodecIdentity, Effect, Subscription, Transition, Trigger},
+    guest::{AlarmChange, Checkpoint, CodecIdentity, Subscription, Transition, Trigger},
     local::{PreparedPublish, Snapshot, Store},
 };
 use acyclic_fs::{CancellationToken, WorkBudget};
@@ -441,8 +441,8 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) 
         // Fresh original input plus activation share one conditional commit.
         // Input publication and its finite read are outside the durable row.
         let mut input = PreparedPublish::foreign(key(format!("actor-input/{index}"))?);
-        input.join(Effect {
-            conditions: vec![if index == 0 {
+        input.join(acyclic_stream::CommitEffect::hard(
+            vec![if index == 0 {
                 CommitCondition::Absent {
                     path: inbox.path().clone(),
                 }
@@ -452,11 +452,11 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) 
                     expected: sequence,
                 }
             }],
-            mutation: CommitMutation::Append {
+            vec![CommitMutation::Append {
                 path: inbox.path().clone(),
                 records: vec![payload.clone().into()],
-            },
-        })?;
+            }],
+        ))?;
         input.join(store.activation(&address))?;
         store.submit(input).await?;
         let mut records = inbox.read(sequence, 1).await?;

@@ -255,23 +255,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     }
 }
 
-// Keep each owner's natural borrow in its existing async factory. Both
-// entry points expand the same accounted protocol, with no owner copy or
-// additional future layer.
+// Both owners share one funded boundary: policy observation must not embed
+// authority, tree lookup and metadata-read state in every enclosing callback.
 macro_rules! policy_revision {
     ($volume:expr, $accounting:ident, $cancellation:ident) => {{
         let mut scope = $accounting.allocation_scope()?;
-        async {
+        crate::heap_future::in_borrowed_frame!(&mut *scope, |scope| async {
             let volume = $volume;
-            let (generation, observed) = volume
-                .resolve_head_generation(&mut scope, $cancellation)
-                .await?;
+            let (generation, observed) =
+                volume.resolve_head_generation(scope, $cancellation).await?;
             let metadata = {
                 let (root, _root_allocation) = read_generation_root_with_accounting(
                     &volume.fs.inner.objects,
                     generation,
                     volume.config,
-                    &mut scope,
+                    scope,
                     $cancellation,
                 )
                 .await?;
@@ -283,7 +281,7 @@ macro_rules! policy_revision {
                     root.file_table,
                     root.root_file_id,
                     DecodeLimits::for_volume(volume.config),
-                    &mut scope,
+                    scope,
                     $cancellation,
                     None,
                 )
@@ -292,12 +290,12 @@ macro_rules! policy_revision {
                     volume.fs.objects(),
                     (record.ok_or(FsError::NotFound)?).metadata,
                     DecodeLimits::for_volume(volume.config),
-                    &mut scope,
+                    scope,
                     $cancellation,
                 )
                 .await?
             };
-            let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut scope)?;
+            let mut authority = crate::async_storage::AuthorityFrame::borrow(scope)?;
             let current = volume
                 .fs
                 .inner
@@ -311,8 +309,7 @@ macro_rules! policy_revision {
                     metadata.named_attributes,
                 )),
             )
-        }
-        .await
+        })
     }};
 }
 

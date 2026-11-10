@@ -7,113 +7,117 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Owned<Vec<Dependency>>, FsError> {
-        let mut dependencies = Owned::<Vec<Dependency>>::allocate(0, accounting)?;
-        let mut exact_regions =
-            Owned::<Vec<(Option<FileRecord>, DependencyRegion)>>::allocate(0, accounting)?;
-        for operation in operations {
-            accounting.charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
-            let mut records = [None; 2];
-            if let Some(paths) = operation.paths() {
-                for (index, path) in paths.into_iter().enumerate() {
-                    if index == 1 && path == paths[0] {
-                        records[1] = records[0];
-                        continue;
-                    }
-                    let observed = crate::kernel::observe_path_async_with_accounting(
-                        &self.volume.fs.inner.objects,
-                        &self.base_root,
-                        path,
-                        self.volume.config,
-                        accounting,
-                        cancellation,
-                        None,
-                        false,
-                    )
-                    .await?;
-                    *records.get_mut(index).ok_or(FsError::InvalidDiff)? = observed.0.lookup.record;
-                    let bytes =
-                        Self::mutation_dependency_bytes(&observed.0.dependencies, accounting)?;
-                    Self::append_mutation_dependencies(
-                        &mut dependencies,
-                        Owned::new(observed.0.dependencies, observed.1, bytes),
-                        accounting,
-                    )?;
-                }
-            } else {
-                let ids = match operation {
-                    Mutation::File { file_id, .. } => [Some(*file_id), None],
-                    Mutation::CloneFileRange {
-                        source_file_id,
-                        destination_file_id,
-                        ..
-                    } => [Some(*source_file_id), Some(*destination_file_id)],
-                    _ => [None, None],
-                };
-                for (index, id) in ids.into_iter().enumerate() {
-                    if index == 1 && id == ids[0] {
-                        records[1] = records[0];
-                    } else if let Some(id) = id {
-                        *records.get_mut(index).ok_or(FsError::InvalidDiff)? =
-                            lookup_file_record_async_with_accounting(
-                                &self.volume.fs.inner.objects,
-                                self.base_root.file_table,
-                                id,
-                                DecodeLimits::for_volume(self.volume.config),
-                                accounting,
-                                cancellation,
-                                None,
-                            )
-                            .await?
-                            .0;
-                    }
-                }
-            }
-            for region in
-                super::mutation_regions::exact_mutation_regions(operation, records[0], records[1])
-                    .into_iter()
-                    .flatten()
-            {
-                exact_regions.ensure_for_push(usize::MAX, accounting)?;
+        crate::heap_future::in_borrowed_frame!(accounting, |accounting| async {
+            let mut dependencies = Owned::<Vec<Dependency>>::allocate(0, accounting)?;
+            let mut exact_regions =
+                Owned::<Vec<(Option<FileRecord>, DependencyRegion)>>::allocate(0, accounting)?;
+            for operation in operations {
                 accounting.charge(WorkCounters {
-                    bytes_copied: size_of::<(Option<FileRecord>, DependencyRegion)>() as u64,
+                    items_examined: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                exact_regions.value.push(region);
+                let mut records = [None; 2];
+                if let Some(paths) = operation.paths() {
+                    for (index, path) in paths.into_iter().enumerate() {
+                        if index == 1 && path == paths[0] {
+                            records[1] = records[0];
+                            continue;
+                        }
+                        let observed = crate::kernel::observe_path_async_with_accounting(
+                            &self.volume.fs.inner.objects,
+                            &self.base_root,
+                            path,
+                            self.volume.config,
+                            accounting,
+                            cancellation,
+                            None,
+                            false,
+                        )
+                        .await?;
+                        *records.get_mut(index).ok_or(FsError::InvalidDiff)? =
+                            observed.0.lookup.record;
+                        let bytes =
+                            Self::mutation_dependency_bytes(&observed.0.dependencies, accounting)?;
+                        Self::append_mutation_dependencies(
+                            &mut dependencies,
+                            Owned::new(observed.0.dependencies, observed.1, bytes),
+                            accounting,
+                        )?;
+                    }
+                } else {
+                    let ids = match operation {
+                        Mutation::File { file_id, .. } => [Some(*file_id), None],
+                        Mutation::CloneFileRange {
+                            source_file_id,
+                            destination_file_id,
+                            ..
+                        } => [Some(*source_file_id), Some(*destination_file_id)],
+                        _ => [None, None],
+                    };
+                    for (index, id) in ids.into_iter().enumerate() {
+                        if index == 1 && id == ids[0] {
+                            records[1] = records[0];
+                        } else if let Some(id) = id {
+                            *records.get_mut(index).ok_or(FsError::InvalidDiff)? =
+                                lookup_file_record_async_with_accounting(
+                                    &self.volume.fs.inner.objects,
+                                    self.base_root.file_table,
+                                    id,
+                                    DecodeLimits::for_volume(self.volume.config),
+                                    accounting,
+                                    cancellation,
+                                    None,
+                                )
+                                .await?
+                                .0;
+                        }
+                    }
+                }
+                for region in super::mutation_regions::exact_mutation_regions(
+                    operation, records[0], records[1],
+                )
+                .into_iter()
+                .flatten()
+                {
+                    exact_regions.ensure_for_push(usize::MAX, accounting)?;
+                    accounting.charge(WorkCounters {
+                        bytes_copied: size_of::<(Option<FileRecord>, DependencyRegion)>() as u64,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    exact_regions.value.push(region);
+                }
             }
-        }
-        Self::subsume_mutation_record_dependencies(&mut exact_regions.value, accounting)?;
-        let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
-            &self.volume.fs.inner.objects,
-            probe_limits(self.volume.config),
-            accounting,
-        )?;
-        let probe = (probe, probe_allocation);
-        let region_bytes = exact_regions.bytes;
-        let captured = probe
-            .0
-            .capture_records_many_with_accounting(
-                exact_regions.value,
+            Self::subsume_mutation_record_dependencies(&mut exact_regions.value, accounting)?;
+            let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
+                &self.volume.fs.inner.objects,
+                probe_limits(self.volume.config),
                 accounting,
-                cancellation,
-                None,
-            )
-            .await;
-        crate::kernel::retire_allocation(exact_regions.allocation, region_bytes, accounting)?;
-        {
-            let (probe, _allocation) = probe;
-            probe.retire_with_accounting(accounting)?;
-        }
-        let captured = captured?;
-        let bytes = Self::mutation_dependency_bytes(&captured.0, accounting)?;
-        Self::append_mutation_dependencies(
-            &mut dependencies,
-            Owned::new(captured.0, captured.1, bytes),
-            accounting,
-        )?;
-        Ok(dependencies)
+            )?;
+            let probe = (probe, probe_allocation);
+            let region_bytes = exact_regions.bytes;
+            let captured = probe
+                .0
+                .capture_records_many_with_accounting(
+                    exact_regions.value,
+                    accounting,
+                    cancellation,
+                    None,
+                )
+                .await;
+            crate::kernel::retire_allocation(exact_regions.allocation, region_bytes, accounting)?;
+            {
+                let (probe, _allocation) = probe;
+                probe.retire_with_accounting(accounting)?;
+            }
+            let captured = captured?;
+            let bytes = Self::mutation_dependency_bytes(&captured.0, accounting)?;
+            Self::append_mutation_dependencies(
+                &mut dependencies,
+                Owned::new(captured.0, captured.1, bytes),
+                accounting,
+            )?;
+            Ok(dependencies)
+        })
     }
 
     pub(super) fn mutation_region_name_bytes(region: &DependencyRegion) -> u64 {
@@ -305,166 +309,177 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         if self.prepared_merge_parent.is_some() {
             return Err(FsError::PreparedMergePending);
         }
-        let Owned {
-            value: mut operations,
-            allocation: mut operations_allocation,
-            ..
-        } = input;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let KernelOwnedAllocation::NativeOriginal(guard) = &operations_allocation {
-            let bytes = Self::mutation_input_owned_bytes(&operations, accounting)?;
-            if guard.bytes() != bytes {
-                return Err(NativeTreeMaterializationError::InvalidLayout.into());
-            }
-        }
-        self.admit_mutation_names_with_accounting(
-            &mut operations,
-            &mut operations_allocation,
-            accounting,
-            cancellation,
-        )
-        .await?;
-        let captured = self
-            .capture_mutation_dependencies_with_accounting(&operations, accounting, cancellation)
-            .await?;
-        let extension = self
-            .dependencies
-            .proof()
-            .prepare_mutations(captured.value)?;
-        let staged_names = extension.retained_name_bytes_with_step(|| {
-            accounting.charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })
-        })?;
-        let mut staged = (extension, captured.allocation);
-        accounting.release_owned(
-            &mut staged.1,
-            captured
-                .bytes
-                .checked_sub(staged_names)
-                .ok_or(WorkError::Overflow)?,
-        )?;
-        let final_input_bytes = Self::mutation_input_owned_bytes(&operations, accounting)?;
-        let produced = crate::kernel::apply_generation_mutations_retaining_with_accounting(
-            &self.volume.fs.inner.objects,
-            &self.root,
-            operations,
-            self.volume.config,
-            accounting,
-            cancellation,
-        )
-        .await;
-        let (receipt, returned_operations, allocation) = produced?;
-        let mut working = (receipt.root, allocation);
-        drop(returned_operations);
-        accounting.release_owned(&mut operations_allocation, final_input_bytes)?;
-        if working.0.file_table == self.root.file_table {
-            let bytes = root_parent_bytes(&working.0)?;
-            drop(working.0);
-            crate::kernel::retire_allocation(working.1, bytes, accounting)?;
-            drop(staged.0);
-            accounting.release_owned(&mut staged.1, staged_names)?;
-            return Ok(());
-        }
-        accounting.charge(WorkCounters {
-            bytes_copied: size_of::<CheckoutDependencies>() as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let mut prepared_dependencies = self.dependencies.proof().dependencies.clone();
-        let producer = &self.dependencies.data_custody;
-        let held = match accounting {
+        crate::heap_future::in_borrowed_frame!(accounting, |accounting| async {
+            let Owned {
+                value: mut operations,
+                allocation: mut operations_allocation,
+                ..
+            } = input;
             #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { .. } => self
-                .root
-                .hold
-                .as_ref()
-                .map(|_| {
-                    crate::collection::clone_generation_root(&working.0, accounting, Some(producer))
+            if let KernelOwnedAllocation::NativeOriginal(guard) = &operations_allocation {
+                let bytes = Self::mutation_input_owned_bytes(&operations, accounting)?;
+                if guard.bytes() != bytes {
+                    return Err(NativeTreeMaterializationError::InvalidLayout.into());
+                }
+            }
+            self.admit_mutation_names_with_accounting(
+                &mut operations,
+                &mut operations_allocation,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            let captured = self
+                .capture_mutation_dependencies_with_accounting(
+                    &operations,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            let extension = self
+                .dependencies
+                .proof()
+                .prepare_mutations(captured.value)?;
+            let staged_names = extension.retained_name_bytes_with_step(|| {
+                accounting.charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
                 })
-                .transpose()?,
-            _ => {
-                let (allocations, work, budget, token) = accounting
-                    .standalone_parts()
-                    .ok_or(FsError::PendingMutationAllocationFailed)?;
-                token.check()?;
-                self.root
+            })?;
+            let mut staged = (extension, captured.allocation);
+            accounting.release_owned(
+                &mut staged.1,
+                captured
+                    .bytes
+                    .checked_sub(staged_names)
+                    .ok_or(WorkError::Overflow)?,
+            )?;
+            let final_input_bytes = Self::mutation_input_owned_bytes(&operations, accounting)?;
+            let produced = crate::kernel::apply_generation_mutations_retaining_with_accounting(
+                &self.volume.fs.inner.objects,
+                &self.root,
+                operations,
+                self.volume.config,
+                accounting,
+                cancellation,
+            )
+            .await;
+            let (receipt, returned_operations, allocation) = produced?;
+            let mut working = (receipt.root, allocation);
+            drop(returned_operations);
+            accounting.release_owned(&mut operations_allocation, final_input_bytes)?;
+            if working.0.file_table == self.root.file_table {
+                let bytes = root_parent_bytes(&working.0)?;
+                drop(working.0);
+                crate::kernel::retire_allocation(working.1, bytes, accounting)?;
+                drop(staged.0);
+                accounting.release_owned(&mut staged.1, staged_names)?;
+                return Ok(());
+            }
+            accounting.charge(WorkCounters {
+                bytes_copied: size_of::<CheckoutDependencies>() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let mut prepared_dependencies = self.dependencies.proof().dependencies.clone();
+            let producer = &self.dependencies.data_custody;
+            let held = match accounting {
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelAccounting::NativeOriginal { .. } => self
+                    .root
                     .hold
                     .as_ref()
                     .map(|_| {
                         crate::collection::clone_generation_root(
                             &working.0,
-                            &mut KernelAccounting::borrowed_standalone(
-                                allocations,
-                                work,
-                                budget,
-                                token,
-                            ),
-                            None,
+                            accounting,
+                            Some(producer),
                         )
                     })
-                    .transpose()?
-                    .map(|(root, _)| {
-                        let control = Self::root_control_claim(&root, Some(producer))?;
-                        Ok::<_, FsError>((root, control))
-                    })
-                    .transpose()?
-            }
-        };
-        if working.0.file_table == self.base_root.file_table {
-            prepared_dependencies.clear_mutations();
-            drop(staged.0);
-            accounting.release_owned(&mut staged.1, staged_names)?;
-        } else {
-            match accounting {
-                #[cfg(not(target_arch = "wasm32"))]
-                KernelAccounting::NativeOriginal { work: original, .. } => {
-                    let KernelOwnedAllocation::NativeOriginal(allocation) = &mut staged.1 else {
-                        unreachable!("original captured names retain original custody");
-                    };
-                    prepared_dependencies.commit_with_original_data_custody(
-                        staged.0,
-                        producer,
-                        allocation,
-                        original,
-                        cancellation,
-                    )?;
-                    // Duplicate keys have already physically died in commit.
-                    allocation.release(allocation.bytes())?;
+                    .transpose()?,
+                _ => {
+                    let (allocations, work, budget, token) = accounting
+                        .standalone_parts()
+                        .ok_or(FsError::PendingMutationAllocationFailed)?;
+                    token.check()?;
+                    self.root
+                        .hold
+                        .as_ref()
+                        .map(|_| {
+                            crate::collection::clone_generation_root(
+                                &working.0,
+                                &mut KernelAccounting::borrowed_standalone(
+                                    allocations,
+                                    work,
+                                    budget,
+                                    token,
+                                ),
+                                None,
+                            )
+                        })
+                        .transpose()?
+                        .map(|(root, _)| {
+                            let control = Self::root_control_claim(&root, Some(producer))?;
+                            Ok::<_, FsError>((root, control))
+                        })
+                        .transpose()?
                 }
-                _ => prepared_dependencies.commit_with_data_custody(
-                    staged.0,
-                    Some(producer),
-                    |bytes, operations, copied, items| {
-                        let delta = WorkCounters {
-                            bytes_copied: copied,
-                            items_examined: items,
-                            ..WorkCounters::UNCHARGED
+            };
+            if working.0.file_table == self.base_root.file_table {
+                prepared_dependencies.clear_mutations();
+                drop(staged.0);
+                accounting.release_owned(&mut staged.1, staged_names)?;
+            } else {
+                match accounting {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    KernelAccounting::NativeOriginal { work: original, .. } => {
+                        let KernelOwnedAllocation::NativeOriginal(allocation) = &mut staged.1
+                        else {
+                            unreachable!("original captured names retain original custody");
                         };
-                        accounting.admit(delta)?;
-                        if operations != 0 || copied != 0 {
-                            accounting.claim_owned(bytes, operations)?;
-                        }
-                        accounting.charge(delta)
-                    },
-                )?,
+                        prepared_dependencies.commit_with_original_data_custody(
+                            staged.0,
+                            producer,
+                            allocation,
+                            original,
+                            cancellation,
+                        )?;
+                        // Duplicate keys have already physically died in commit.
+                        allocation.release(allocation.bytes())?;
+                    }
+                    _ => prepared_dependencies.commit_with_data_custody(
+                        staged.0,
+                        Some(producer),
+                        |bytes, operations, copied, items| {
+                            let delta = WorkCounters {
+                                bytes_copied: copied,
+                                items_examined: items,
+                                ..WorkCounters::UNCHARGED
+                            };
+                            accounting.admit(delta)?;
+                            if operations != 0 || copied != 0 {
+                                accounting.claim_owned(bytes, operations)?;
+                            }
+                            accounting.charge(delta)
+                        },
+                    )?,
+                }
             }
-        }
-        let control = match &mut working.1 {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelOwnedAllocation::NativeOriginal(allocation) => {
-                cancellation.check()?;
-                let scope = allocation.work().checkout_control_sink(producer)?;
-                allocation.transfer_checkout_control(producer, &scope)?
-            }
-            KernelOwnedAllocation::Standalone => {
-                Self::root_control_claim(&working.0, Some(producer))?
-            }
-        };
-        // Refuse invalid root custody before publishing the prepared proof.
-        self.root.set(self.root.base, (working.0, control), held)?;
-        self.dependencies.proof().dependencies = prepared_dependencies;
-        Ok(())
+            let control = match &mut working.1 {
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelOwnedAllocation::NativeOriginal(allocation) => {
+                    cancellation.check()?;
+                    let scope = allocation.work().checkout_control_sink(producer)?;
+                    allocation.transfer_checkout_control(producer, &scope)?
+                }
+                KernelOwnedAllocation::Standalone => {
+                    Self::root_control_claim(&working.0, Some(producer))?
+                }
+            };
+            // Refuse invalid root custody before publishing the prepared proof.
+            self.root.set(self.root.base, (working.0, control), held)?;
+            self.dependencies.proof().dependencies = prepared_dependencies;
+            Ok(())
+        })
     }
 
     pub(super) fn mutation_input_owned_bytes(

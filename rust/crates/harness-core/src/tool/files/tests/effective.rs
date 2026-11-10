@@ -7,6 +7,107 @@ use crate::filesystem::MemoryHarnessStorage;
 use crate::resources::GenerationRef;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+#[tokio::test]
+async fn waiting_reads_cover_media_and_effective_paths_and_can_be_dropped() -> Result<()> {
+    use futures::FutureExt as _;
+    for effective in [false, true] {
+        for (selection, media) in [
+            (None, "text/plain"),
+            (Some(json!({"kind":"pdf"})), "application/pdf"),
+            (Some(json!({"kind":"image","detail":"auto"})), "image/png"),
+        ] {
+            let fs = acyclic_fs::Fs::memory();
+            let storage = MemoryHarnessStorage::from_providers(
+                crate::AgentId::new(),
+                4096,
+                fs.clone(),
+                fs.stream_provider(),
+            )
+            .await?;
+            let content = storage.content_bindings();
+            let task = crate::runtime::Bindings {
+                scope: RuntimeScope::new(
+                    Capabilities::new([
+                        content.volume.directory_read_capability("", &mut None)?,
+                        "tool:call:read".into(),
+                    ]),
+                    Limits {
+                        file_bytes: 4096,
+                        render_bytes: 4096,
+                        ..Limits::default()
+                    },
+                )?,
+                content: Some(content.clone()),
+                ..crate::runtime::Bindings::local()
+            }
+            .build()?
+            .agent_context(&Capabilities::default(), content)?;
+            let path = if effective {
+                ".volumes/effective/pending"
+            } else {
+                "pending"
+            };
+            let mut invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "waiting".into(),
+                name: "read".into(),
+                arguments: json!({"path":path,"selection":selection}),
+            };
+            let context =
+                ToolContext::new(Arc::new(task), invocation.operation_id, &invocation.call_id)?;
+            let tool = read()?;
+            assert!(
+                tool.executor
+                    .execute(invocation.clone(), Some(context.clone()))
+                    .await
+                    .is_err()
+            );
+            invocation.arguments["wait"] = json!(true);
+            // Explicitly drop an unfinished read, as an interrupted turn does.
+            let mut abandoned = tool
+                .executor
+                .execute(invocation.clone(), Some(context.clone()));
+            assert!(abandoned.as_mut().now_or_never().is_none());
+            drop(abandoned);
+            if effective {
+                // A suppression file is present physically but absent in the
+                // effective view; waiting must require a later publication.
+                storage
+                    .stage(
+                        OperationId::new(),
+                        "pending",
+                        b"off: true",
+                        "text/plain",
+                        "off",
+                    )
+                    .await?;
+            }
+            let mut pending = tool.executor.execute(invocation, Some(context));
+            assert!(pending.as_mut().now_or_never().is_none());
+            storage
+                .stage(
+                    OperationId::new(),
+                    "unrelated",
+                    b"other",
+                    "text/plain",
+                    "other",
+                )
+                .await?;
+            assert!(pending.as_mut().now_or_never().is_none());
+            storage
+                .stage(OperationId::new(), "pending", b"published", media, "ready")
+                .await?;
+            let result = pending.await?;
+            if selection.is_none() {
+                assert_eq!(result.value["text"], "published");
+            } else {
+                assert_eq!(result.value["media"], selection.unwrap());
+            }
+        }
+    }
+    Ok(())
+}
+
 // Interpose one actual publication after the original filesystem range has
 // selected its generation. All reads still use the authenticated storage reader.
 struct AdvanceAfterSelection {

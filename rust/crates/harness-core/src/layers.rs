@@ -30,6 +30,9 @@ pub use manifest::ManifestTree;
 
 /// Tool path of the agent's home volume.
 pub const HOME_PATH: &str = ".volumes/home/";
+/// Read-only tool path of the calling agent's original private output volume.
+/// This is a model read route; it creates no guest mount or per-agent work.
+pub const OUTPUT_PATH: &str = ".volumes/output/";
 /// Tool path of the seed volume.
 pub const SEED_PATH: &str = ".volumes/seed/";
 /// Tool path of host-published system files.
@@ -95,10 +98,13 @@ pub fn seed_skill(path: &str) -> Option<&'static [u8]> {
 }
 
 /// Whether a tool path names a read-only layer view: the effective tree or
-/// the seed or the host's system metadata. Writes go to the home.
+/// the seed, original tool output or the host's system metadata. Writes go to the home.
 #[must_use]
 pub fn read_only(path: &str) -> bool {
-    path.starts_with(EFFECTIVE_PATH) || path.starts_with(SEED_PATH) || path.starts_with(SYSTEM_PATH)
+    path.starts_with(EFFECTIVE_PATH)
+        || path.starts_with(SEED_PATH)
+        || path.starts_with(SYSTEM_PATH)
+        || path.starts_with(OUTPUT_PATH)
 }
 
 /// A host-published read-only layer, shared by every agent in a composition.

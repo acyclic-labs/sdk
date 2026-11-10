@@ -1,0 +1,41 @@
+120x40
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Named(Background)/Flags(0x0)/»○ GraphCoder · project · main
+«Spec(Rgb { r: 9, g: 105, b: 218 })/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 9, g: 105, b: 218 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»●«Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»┌─ rust«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» │ // Answer the question.«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» │ «Spec(Rgb { r: 9, g: 105, b: 218 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»fn«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» answer() -> «Spec(Rgb { r: 9, g: 105, b: 218 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»u32«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» {
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» │ «Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»    «Spec(Rgb { r: 9, g: 105, b: 218 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»let«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» text = «Spec(Rgb { r: 26, g: 127, b: 55 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»"forty-two"«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»;
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» │ «Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»    «Spec(Rgb { r: 154, g: 103, b: 0 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»42«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» │ «Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»}
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» └─«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» ┌─ sh«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» │ «Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»echo «Spec(Rgb { r: 26, g: 127, b: 55 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»"$HOME"«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» «Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»# where«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/» └─«Named(Foreground)/Spec(Rgb { r: 236, g: 238, b: 239 })/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Named(Background)/Flags(0x0)/»────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» Follow up
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                                                           model · 24% (2400/10000) · $0.12 · 2 children
+«Spec(Rgb { r: 110, g: 119, b: 129 })/Named(Background)/Flags(0x0)/»                                                                                 Enter: send · Tab: queue · Ctrl-D: quit

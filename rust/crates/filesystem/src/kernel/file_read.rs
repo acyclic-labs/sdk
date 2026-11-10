@@ -115,125 +115,149 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
             accounting.record_completed(copied)?;
             output
         }
-        FilePayload::Regular {
-            logical_bytes,
-            extents,
-        } => {
-            let plan = ReadOwned::from(
-                super::range::plan_extent_range_with_accounting(
-                    store,
-                    ExtentRangeRequest {
-                        root: extents,
-                        file_size: logical_bytes,
-                        range: request.range,
-                        maximum_spans: request.maximum_spans,
-                        limits: request.limits,
-                        budget: request.budget,
-                    },
-                    accounting,
-                    cancellation,
-                )
-                .await?,
-            );
-            let length = usize::try_from(request.range.length)
-                .map_err(|_| FileRangeReadError::InvalidRange)?;
-            if let [span] = plan.value.spans.as_slice()
-                && let ExtentKind::Content {
-                    object,
-                    object_offset,
-                } = span.kind
-            {
-                if span.offset != request.range.offset || span.length != request.range.length {
-                    return Err(FileRangeReadError::InvalidRange.into());
-                }
-                let nested = super::blob::read_blob_range_with_accounting(
-                    store,
-                    object,
-                    ByteRange {
-                        offset: object_offset,
-                        length: span.length,
-                    },
-                    request.limits,
-                    accounting,
-                    cancellation,
-                    false,
-                )
-                .await?;
-                if nested.bytes.len() != length {
-                    return Err(FileRangeReadError::InvalidRange.into());
-                }
-                let retained = plan.value.retained_allocation_bytes;
-                drop(plan.value);
-                release_read_allocation(retained, plan.custody, accounting)?;
-                accounting.charge(completed)?;
-                return Ok(FileRangeRead {
-                    bytes: nested.bytes,
-                    logical_owned_bytes: nested.logical_owned_bytes,
-                    work: accounting.spent(),
-                });
-            }
-            let mut output = allocate_read_buffer(length, accounting)?;
-            for span in &plan.value.spans {
-                let start = span
-                    .offset
-                    .checked_sub(request.range.offset)
-                    .and_then(|offset| usize::try_from(offset).ok())
-                    .ok_or(FileRangeReadError::InvalidRange)?;
-                let end = usize::try_from(span.length)
-                    .ok()
-                    .and_then(|length| start.checked_add(length))
-                    .filter(|end| *end <= length)
-                    .ok_or(FileRangeReadError::InvalidRange)?;
-                if start != output.value.len() {
-                    return Err(FileRangeReadError::InvalidRange.into());
-                }
-                let copied = WorkCounters {
-                    bytes_copied: span.length,
-                    ..WorkCounters::UNCHARGED
-                };
-                let ExtentKind::Content {
-                    object,
-                    object_offset,
-                } = span.kind
-                else {
-                    accounting.admit(copied)?;
-                    output.value.resize(end, 0);
-                    accounting.record_completed(copied)?;
-                    continue;
-                };
-                let nested = super::blob::read_blob_range_with_accounting(
-                    store,
-                    object,
-                    ByteRange {
-                        offset: object_offset,
-                        length: span.length,
-                    },
-                    request.limits,
-                    accounting,
-                    cancellation,
-                    false,
-                )
-                .await?;
-                if nested.bytes.len() != end - start {
-                    return Err(FileRangeReadError::InvalidRange.into());
-                }
-                accounting.admit(copied)?;
-                output.value.extend_from_slice(&nested.bytes);
-                accounting.record_completed(copied)?;
-                let retained = nested.logical_owned_bytes;
-                drop(nested);
-                release_standalone_read_bytes(retained, accounting)?;
-            }
-            if output.value.len() != length {
-                return Err(FileRangeReadError::InvalidRange.into());
-            }
-            let retained = plan.value.retained_allocation_bytes;
-            drop(plan.value);
-            release_read_allocation(retained, plan.custody, accounting)?;
-            output
+        FilePayload::Regular { .. } => {
+            return crate::heap_future::in_borrowed_frame!(accounting, |accounting| {
+                read_regular_range(store, request, completed, accounting, cancellation)
+            });
         }
         _ => return Err(FileRangeReadError::NotRegular.into()),
     };
+    finish_range_read(output, completed, accounting)
+}
+
+async fn read_regular_range<S: AsyncObjectStore>(
+    store: &S,
+    request: FileRangeRequest,
+    completed: WorkCounters,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<FileRangeRead, FsError> {
+    let FilePayload::Regular {
+        logical_bytes,
+        extents,
+    } = request.record.payload
+    else {
+        return Err(FileRangeReadError::NotRegular.into());
+    };
+    let plan = ReadOwned::from(
+        super::range::plan_extent_range_with_accounting(
+            store,
+            ExtentRangeRequest {
+                root: extents,
+                file_size: logical_bytes,
+                range: request.range,
+                maximum_spans: request.maximum_spans,
+                limits: request.limits,
+                budget: request.budget,
+            },
+            accounting,
+            cancellation,
+        )
+        .await?,
+    );
+    let length =
+        usize::try_from(request.range.length).map_err(|_| FileRangeReadError::InvalidRange)?;
+    if let [span] = plan.value.spans.as_slice()
+        && let ExtentKind::Content {
+            object,
+            object_offset,
+        } = span.kind
+    {
+        if span.offset != request.range.offset || span.length != request.range.length {
+            return Err(FileRangeReadError::InvalidRange.into());
+        }
+        let nested = super::blob::read_blob_range_with_accounting(
+            store,
+            object,
+            ByteRange {
+                offset: object_offset,
+                length: span.length,
+            },
+            request.limits,
+            accounting,
+            cancellation,
+            false,
+        )
+        .await?;
+        if nested.bytes.len() != length {
+            return Err(FileRangeReadError::InvalidRange.into());
+        }
+        let retained = plan.value.retained_allocation_bytes;
+        drop(plan.value);
+        release_read_allocation(retained, plan.custody, accounting)?;
+        accounting.charge(completed)?;
+        return Ok(FileRangeRead {
+            bytes: nested.bytes,
+            logical_owned_bytes: nested.logical_owned_bytes,
+            work: accounting.spent(),
+        });
+    }
+    let mut output = allocate_read_buffer(length, accounting)?;
+    for span in &plan.value.spans {
+        let start = span
+            .offset
+            .checked_sub(request.range.offset)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or(FileRangeReadError::InvalidRange)?;
+        let end = usize::try_from(span.length)
+            .ok()
+            .and_then(|length| start.checked_add(length))
+            .filter(|end| *end <= length)
+            .ok_or(FileRangeReadError::InvalidRange)?;
+        if start != output.value.len() {
+            return Err(FileRangeReadError::InvalidRange.into());
+        }
+        let copied = WorkCounters {
+            bytes_copied: span.length,
+            ..WorkCounters::UNCHARGED
+        };
+        let ExtentKind::Content {
+            object,
+            object_offset,
+        } = span.kind
+        else {
+            accounting.admit(copied)?;
+            output.value.resize(end, 0);
+            accounting.record_completed(copied)?;
+            continue;
+        };
+        let nested = super::blob::read_blob_range_with_accounting(
+            store,
+            object,
+            ByteRange {
+                offset: object_offset,
+                length: span.length,
+            },
+            request.limits,
+            accounting,
+            cancellation,
+            false,
+        )
+        .await?;
+        if nested.bytes.len() != end - start {
+            return Err(FileRangeReadError::InvalidRange.into());
+        }
+        accounting.admit(copied)?;
+        output.value.extend_from_slice(&nested.bytes);
+        accounting.record_completed(copied)?;
+        let retained = nested.logical_owned_bytes;
+        drop(nested);
+        release_standalone_read_bytes(retained, accounting)?;
+    }
+    if output.value.len() != length {
+        return Err(FileRangeReadError::InvalidRange.into());
+    }
+    let retained = plan.value.retained_allocation_bytes;
+    drop(plan.value);
+    release_read_allocation(retained, plan.custody, accounting)?;
+    finish_range_read(output, completed, accounting)
+}
+
+fn finish_range_read(
+    output: ReadOwned<Vec<u8>>,
+    completed: WorkCounters,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<FileRangeRead, FsError> {
     let logical_owned_bytes = usize_to_u64(output.value.capacity());
     let bytes = owned_read_bytes(output)?;
     accounting.charge(completed)?;

@@ -378,9 +378,9 @@ impl<F: Format> Cursor<F> {
         })
     }
 
-    async fn expand<S: AsyncObjectStore>(
+    async fn expand(
         &mut self,
-        store: &S,
+        store: &dyn Source,
         before: bool,
         after: bool,
         accounting: &mut KernelAccounting<'_>,
@@ -406,7 +406,7 @@ impl<F: Format> Cursor<F> {
                 count += 1;
             }
         }
-        let mut batch = persistent_io::read_pages_with_accounting::<S, F, _>(
+        let mut batch = persistent_io::read_pages_with_accounting::<F, _>(
             store,
             ids.into_iter().take(count),
             self.limits,
@@ -439,9 +439,9 @@ impl<F: Format> Cursor<F> {
         }
     }
 
-    async fn advance<S: AsyncObjectStore>(
+    async fn advance(
         &mut self,
-        store: &S,
+        store: &dyn Source,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<(bool, bool)>, FsError> {
@@ -469,9 +469,9 @@ impl<F: Format> Cursor<F> {
         }
     }
 
-    pub(crate) async fn next<S: AsyncObjectStore>(
+    pub(crate) async fn next(
         &mut self,
-        store: &S,
+        store: &dyn Source,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<Owned<ValueChange<F::Key, F::Value>>>, FsError> {
@@ -483,9 +483,9 @@ impl<F: Format> Cursor<F> {
 
     /// A set has equal keys and values, so a changed edge has exactly one
     /// endpoint. Move it through the pair frontier without a redundant key copy.
-    pub(crate) async fn next_set_change<S: AsyncObjectStore>(
+    pub(crate) async fn next_set_change(
         &mut self,
-        store: &S,
+        store: &dyn Source,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<(usize, Owned<F::Value>)>, FsError>
@@ -575,9 +575,9 @@ impl<F: Format> Values<F> {
         Cursor::new(None, Some(root), limits, accounting).map(Self)
     }
 
-    pub(crate) async fn next<S: AsyncObjectStore>(
+    pub(crate) async fn next(
         &mut self,
-        store: &S,
+        store: &dyn Source,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<Owned<F::Value>>, FsError> {

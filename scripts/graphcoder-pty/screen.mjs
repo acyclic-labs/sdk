@@ -1,6 +1,22 @@
 // Inspect actual terminal cells, including cursor-addressed diff updates.
 import headless from "@xterm/headless";
 export const Terminal = headless.Terminal;
+// Match the real visible cells, including attributes lost by text-only captures.
+export function styledRun(terminal, { text, bold, fg, bg }) {
+  const color = (cell, side, expected) => expected === undefined || (expected === true
+    ? !cell[`is${side}Default`]() : [].concat(expected).includes(cell[`get${side}Color`]()));
+  for (const line of rows(terminal)) {
+    if (!line) continue;
+    for (let x = 0; x <= terminal.cols - text.length; x++) {
+      const cells = Array.from(text, (_, index) => line.getCell(x + index));
+      if (cells.map(cell => cell?.getChars() || " ").join("") === text
+          && cells.every((cell, index) => text[index] === " " || (cell
+            && (bold === undefined || !!cell.isBold() === bold)
+            && color(cell, "Fg", fg) && color(cell, "Bg", bg)))) return true;
+    }
+  }
+  return false;
+}
 function rows(terminal, buffer = terminal.buffer.active) {
   return Array.from({ length: terminal.rows }, (_, y) => buffer.getLine(buffer.viewportY + y));
 }

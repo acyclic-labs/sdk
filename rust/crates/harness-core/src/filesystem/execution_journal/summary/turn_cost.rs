@@ -119,7 +119,9 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
             filesystem,
         )
         .await?;
-    let operation = OperationId::new();
+    // The retry digest includes this identity, so fix it to keep index shape
+    // and the allocation high-water mark reproducible.
+    let operation = OperationId::from_bytes([81; 16]);
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
@@ -163,7 +165,14 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
                     &event,
                     Some(&io)
                 )?
-                .await?
+                .await
+                .inspect_err(|error| {
+                    eprintln!(
+                        "append step={step} live={} local={} error={error:?}",
+                        work.live_allocation_bytes(),
+                        io.owned_bytes().unwrap_or_default()
+                    );
+                })?
         );
         let after = io.receipt();
         // A bounded cache may read cold index pages, never a journal
@@ -207,6 +216,11 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
             "append charged work outside its invocation at step {step}"
         );
     }
+    eprintln!(
+        "append history=1000 live={} peak={}",
+        work.live_allocation_bytes(),
+        work.receipt().peak_allocation_bytes
+    );
     Ok(())
 }
 

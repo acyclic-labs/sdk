@@ -13,13 +13,15 @@ async fn external_composition_policy_fence(seal: bool) -> TestResult {
     let effect = StreamPath::new("harness/approval-answer")?;
     let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![acyclic_stream::CommitCondition::Absent {
-            path: effect.clone(),
-        }],
-        mutations: vec![acyclic_stream::CommitMutation::Append {
-            path: effect.clone(),
-            records: vec![b"approved".to_vec().into()],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![acyclic_stream::CommitCondition::Absent {
+                path: effect.clone(),
+            }],
+            vec![acyclic_stream::CommitMutation::Append {
+                path: effect.clone(),
+                records: vec![b"approved".to_vec().into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(b"approval-composition".to_vec())?,
     });
     if seal {
@@ -49,7 +51,10 @@ async fn external_composition_policy_fence(seal: bool) -> TestResult {
         newer
             .scope(async { store.seal(&mut commit, &mut work) })
             .await?;
-        assert_eq!(commit.request().conditions, request.conditions);
+        assert_eq!(
+            commit.request().effects[0].conditions,
+            request.effects[0].conditions
+        );
         assert_eq!(commit.request().idempotency_key, request.idempotency_key);
     }
     let outcome = provider.commit(commit.request().clone()).await?;

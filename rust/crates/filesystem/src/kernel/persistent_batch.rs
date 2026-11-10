@@ -3,10 +3,10 @@
 use super::allocation::{KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io;
+use super::persistent_io::Source;
 use super::persistent_point::{Owned, project_failure, query_error, split_allocation};
 use super::search::{binary_search_with_accounting, partition_point_with_accounting};
 use super::{CanonicalDecodeError, DecodeLimits};
-use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
@@ -62,8 +62,8 @@ struct Match {
     queries: Range<usize>,
 }
 
-pub(crate) async fn lookup_async<S, F>(
-    store: &S,
+pub(crate) async fn lookup_async<F>(
+    store: &dyn Source,
     root: ObjectId,
     keys: &[F::Key],
     limits: DecodeLimits,
@@ -71,11 +71,10 @@ pub(crate) async fn lookup_async<S, F>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Vec<Option<F::Value>>>, Failure>
 where
-    S: AsyncObjectStore,
     F: Format,
 {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = lookup_async_with_accounting::<S, F>(
+    let result = lookup_async_with_accounting::<F>(
         store,
         root,
         keys,
@@ -98,8 +97,8 @@ where
     clippy::too_many_arguments,
     reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
 )]
-pub(crate) async fn lookup_async_with_accounting<S, F>(
-    store: &S,
+pub(crate) async fn lookup_async_with_accounting<F>(
+    store: &dyn Source,
     root: ObjectId,
     keys: &[F::Key],
     limits: DecodeLimits,
@@ -114,7 +113,6 @@ pub(crate) async fn lookup_async_with_accounting<S, F>(
     crate::FsError,
 >
 where
-    S: AsyncObjectStore,
     F: Format,
 {
     accounting.check()?;
@@ -147,7 +145,7 @@ where
                     .page;
                 machine.visit(page, accounting)?;
             }
-            let mut pages = persistent_io::read_pages_with_accounting::<S, F, _>(
+            let mut pages = persistent_io::read_pages_with_accounting::<F, _>(
                 store,
                 machine
                     .requests

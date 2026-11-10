@@ -1,5 +1,5 @@
 //! One `GraphCoder` binary, built once, run unchanged against each backend:
-//! this machine's harness, the self-hosted endpoint (`graphcoder serve`)
+//! this machine's harness, the self-hosted endpoint (`acyclic serve`)
 //! over gRPC, and the same server entry point with injected seams
 //! (`graphcoder-seams serve`, its own verifier). Only the endpoint
 //! differs for the client, and only the seams for the server. Each runs one
@@ -9,8 +9,8 @@
 //! shape.
 //!
 //! Build the binary first, with fixture signing custody:
-//! `cargo build -p graphcoder --features acyclic-native-runtime/test-support`.
-//! `GRAPHCODER` names it elsewhere than the shared target directory.
+//! `cargo build -p acyclic-plugin --features acyclic-native-runtime/test-support`.
+//! `ACYCLIC_TEST_BINARY` names it elsewhere than the shared target directory.
 use acyclic_native_runtime::{
     CaptureHandler, CaptureSchedule, ProcessCaptureStream, ProcessCommand, ProcessInput,
     ProcessOutput, ProcessStdio, ProcessTree, TaskSpawner,
@@ -34,15 +34,15 @@ const WRITTEN: &str = "conformance write";
 
 /// The binary every backend runs.
 fn executable() -> PathBuf {
-    if let Some(path) = std::env::var_os("GRAPHCODER") {
+    if let Some(path) = std::env::var_os("ACYCLIC_TEST_BINARY") {
         return path.into();
     }
     let deps = std::env::current_exe().unwrap();
     let target = deps.parent().and_then(Path::parent).unwrap();
-    let path = target.join(format!("graphcoder{}", std::env::consts::EXE_SUFFIX));
+    let path = target.join(format!("acyclic{}", std::env::consts::EXE_SUFFIX));
     assert!(
         path.exists(),
-        "build the graphcoder binary first: cargo build -p graphcoder          --features acyclic-native-runtime/test-support ({})",
+        "build the acyclic binary first: cargo build -p acyclic-plugin          --features acyclic-native-runtime/test-support ({})",
         path.display()
     );
     path
@@ -272,8 +272,8 @@ impl Home {
             .env("LOCALAPPDATA", &settings)
             .env("XDG_DATA_HOME", &settings)
             .env("TERM", "dumb")
-            .env("GRAPHCODER_LOG", "off")
-            .env_remove("GRAPHCODER_MODEL")
+            .env("ACYCLIC_LOG", "off")
+            .env_remove("ACYCLIC_MODEL")
             .env_remove("ACYCLIC_ENDPOINT")
             .env_remove("ACYCLIC_API_KEY")
             .current_dir(self.workspace())
@@ -497,7 +497,7 @@ async fn interactive_capture_preserves_bytes_and_reports_original_eof() -> io::R
     Ok(())
 }
 
-/// The endpoint `graphcoder serve` prints once it serves, announced by the
+/// The endpoint `acyclic serve` prints once it serves, announced by the
 /// harness server itself: the one entry point a managed host serves through,
 /// with nothing of the binary's own between them.
 async fn served(server: &mut Running) -> Value {

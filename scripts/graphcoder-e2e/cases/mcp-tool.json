@@ -7,7 +7,44 @@
   "model": {
     "steps": [
       {
-        "when": {},
+        "when": {
+          "user": "MCP_PARENT_TASK"
+        },
+        "tools": [
+          {
+            "id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "name": "mcp-worker",
+              "task": "MCP_WORKER_TASK",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "MCP_PARENT_TASK",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                {
+                  "$tool_result": "/agent"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "MCP_WORKER_TASK"
+        },
         "tools": [
           {
             "id": "mcp",
@@ -20,7 +57,17 @@
       },
       {
         "when": {
+          "user": "MCP_WORKER_TASK",
           "tool_result": "MCP_E2E_hello"
+        },
+        "text": [
+          "MCP_WORKER_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "MCP_PARENT_TASK",
+          "tool_result": "MCP_WORKER_DONE"
         },
         "text": [
           "done"
@@ -31,12 +78,12 @@
   "inputs": [
     {
       "mode": "headless",
-      "text": "hello",
+      "text": "MCP_PARENT_TASK",
       "answer": "done"
     }
   ],
   "assert": {
-    "requests": 2,
+    "requests": 5,
     "jsonl": {
       "mcp.jsonl": [
         {
@@ -61,6 +108,17 @@
     },
     "model_contains": [
       "MCP_E2E_hello"
+    ],
+    "tool_results": [
+      {
+        "settled": [
+          {
+            "phase": "idle",
+            "answer": "MCP_WORKER_DONE"
+          }
+        ],
+        "unsettled": []
+      }
     ]
   },
   "settings": {

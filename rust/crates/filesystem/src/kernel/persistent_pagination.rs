@@ -6,10 +6,10 @@ use super::allocation::{
 };
 use super::list::{DirectoryReadError as Error, DirectoryReadFailure as Failure};
 use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
+use super::persistent_io::Source;
 use super::persistent_io::{self, OwnedPage};
 use super::persistent_point::{Owned, retire_allocation, split_allocation};
 use super::search::partition_point_with_accounting;
-use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
@@ -49,8 +49,8 @@ impl<K> Pending<K> {
     clippy::too_many_arguments,
     reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
 )]
-pub(crate) async fn paginate<S, F>(
-    store: &S,
+pub(crate) async fn paginate<F>(
+    store: &dyn Source,
     query: (ObjectId, Bound<&F::Key>, u32, Direction),
     limits: DecodeLimits,
     budget: WorkBudget,
@@ -58,12 +58,11 @@ pub(crate) async fn paginate<S, F>(
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<Receipt<F::Value>, Failure>
 where
-    S: AsyncObjectStore,
     F: Format,
 {
     let (root, bound, maximum_values, direction) = query;
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = paginate_with_accounting::<S, F>(
+    let result = paginate_with_accounting::<F>(
         store,
         (root, bound, maximum_values, direction),
         limits,
@@ -81,8 +80,8 @@ where
     clippy::too_many_arguments,
     reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
 )]
-pub(crate) async fn paginate_with_accounting<S, F>(
-    store: &S,
+pub(crate) async fn paginate_with_accounting<F>(
+    store: &dyn Source,
     query: (ObjectId, Bound<&F::Key>, u32, Direction),
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
@@ -90,7 +89,6 @@ pub(crate) async fn paginate_with_accounting<S, F>(
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(Receipt<F::Value>, KernelOwnedAllocation), crate::FsError>
 where
-    S: AsyncObjectStore,
     F: Format,
 {
     let (root, bound, maximum_values, direction) = query;
@@ -117,7 +115,7 @@ where
                 .page;
             let step = async {
                 machine.visit(page)?;
-                let (decoded, allocation) = persistent_io::read_page_with_accounting::<S, F>(
+                let (decoded, allocation) = persistent_io::read_page_with_accounting::<F>(
                     store,
                     page,
                     limits,

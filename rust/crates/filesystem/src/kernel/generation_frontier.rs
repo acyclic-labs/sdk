@@ -55,11 +55,13 @@ pub(crate) async fn generation_frontier<A: AsyncAuthorityStore, O: AsyncObjectSt
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<GenerationFrontier, FsError> {
-    crate::heap_future::in_borrowed_frame!(
+    crate::heap_future::in_borrowed_frame!(accounting, |accounting| replay_frontier(
+        authority,
+        objects,
+        request,
         accounting,
-        |accounting| replay_frontier(authority, objects, request, accounting, cancellation),
-        erase_task
-    )
+        cancellation
+    ))
 }
 
 async fn replay_frontier<A: AsyncAuthorityStore, O: AsyncObjectStore>(

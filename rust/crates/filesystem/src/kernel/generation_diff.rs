@@ -98,19 +98,15 @@ pub(crate) async fn diff_generation_file_tables<O: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(GenerationDiff, KernelOwnedAllocation), FsError> {
-    crate::heap_future::in_borrowed_frame!(
+    crate::heap_future::in_borrowed_frame!(accounting, |accounting| diff_tables(
+        objects,
+        before,
+        after,
+        maximum_changes,
+        limits,
         accounting,
-        |accounting| diff_tables(
-            objects,
-            before,
-            after,
-            maximum_changes,
-            limits,
-            accounting,
-            cancellation
-        ),
-        erase_task
-    )
+        cancellation
+    ))
 }
 
 async fn diff_tables<O: AsyncObjectStore>(

@@ -80,27 +80,24 @@ async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
             let selected = record(if outcome == 1 { 7 } else { 2 }).file_id;
             let (producer, completion) = tokio::sync::oneshot::channel();
             *store.release.lock().unwrap() = Some(completion);
-            let mut operation = Box::pin(lookup_projected_with_accounting::<
-                _,
-                FileTableFormat,
-                _,
-                _,
-                _,
-            >(
-                &store,
-                root,
-                |candidate| candidate.cmp(&selected),
-                |value, accounting| {
-                    assert_eq!(*value, record(2));
-                    let mut output = Owned::<Vec<u8>>::allocate(37, accounting)?;
-                    output.value.push(2);
-                    Ok(output)
-                },
-                DecodeLimits::default(),
-                &mut accounting,
-                &cancellation,
-                None,
-            ));
+            let mut operation =
+                Box::pin(
+                    lookup_projected_with_accounting::<FileTableFormat, _, _, _>(
+                        &store,
+                        root,
+                        |candidate| candidate.cmp(&selected),
+                        |value, accounting| {
+                            assert_eq!(*value, record(2));
+                            let mut output = Owned::<Vec<u8>>::allocate(37, accounting)?;
+                            output.value.push(2);
+                            Ok(output)
+                        },
+                        DecodeLimits::default(),
+                        &mut accounting,
+                        &cancellation,
+                        None,
+                    ),
+                );
             assert!(futures::poll!(operation.as_mut()).is_pending());
             assert!(store.release.lock().unwrap().is_none());
             match outcome {
@@ -227,7 +224,7 @@ async fn native_point_uses_the_original_counters_and_retires_scratch()
         .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let (value, allocation) = lookup_async_with_accounting::<_, FileTableFormat>(
+    let (value, allocation) = lookup_async_with_accounting::<FileTableFormat>(
         &store,
         root,
         &record(2).file_id,
@@ -262,7 +259,7 @@ async fn native_point_denies_scratch_before_provider_work() -> Result<(), Box<dy
     .map_err(|(error, _)| error)?;
     let before = original.receipt();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let result = lookup_async_with_accounting::<_, FileTableFormat>(
+    let result = lookup_async_with_accounting::<FileTableFormat>(
         &store,
         root,
         &record(1).file_id,

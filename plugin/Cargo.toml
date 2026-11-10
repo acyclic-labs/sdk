@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = true
-description = "Native host workspace hook shims and shared harness file client"
+description = "Acyclic agent CLI and native host integration"
 homepage = "https://github.com/acyclic-labs/sdk"
 documentation = "https://docs.rs/acyclic-plugin"
 readme = "README.md"
@@ -18,19 +18,37 @@ categories = ["command-line-utilities", "development-tools"]
 name = "acyclic"
 path = "src/main.rs"
 
+[[bin]]
+name = "graphcoder"
+path = "src/graphcoder.rs"
+
+[features]
+test-support = ["acyclic-fs/test-support", "acyclic-harness/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
+
 [dependencies]
 acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.2.0", default-features = false, features = ["local"] }
 acyclic-plugin-identity = { path = "identity", version = "=0.2.0" }
-acyclic-harness = { path = "../rust/crates/harness", version = "=0.2.0", default-features = false, features = ["filesystem-local", "native-execution"] }
+acyclic-harness = { path = "../rust/crates/harness", version = "=0.2.0", default-features = false, features = ["filesystem-local", "native-execution", "serve", "terminal", "tui", "search-http"] }
+acyclic-harness-client = { path = "../rust/crates/harness-client", version = "=0.2.0", default-features = false }
+acyclic-harness-providers = { path = "../rust/crates/harness-providers", version = "=0.2.0", features = ["local"] }
 acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.2.0" }
+acyclic-observability = { path = "../rust/crates/observability", version = "=0.2.0" }
+acyclic-stream = { path = "../rust/crates/stream", version = "=0.2.0", default-features = false }
 blake3.workspace = true
+clap.workspace = true
+futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempfile = "3"
-tokio = { workspace = true, features = ["io-std"] }
+tempfile = "3.27.0"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "sync", "io-std", "io-util", "net", "signal", "time"] }
 
 [dev-dependencies]
+acyclic-harness = { path = "../rust/crates/harness", features = ["test-support"] }
+axum.workspace = true
 acyclic-test-support = { path = "../rust/crates/test-support" }
+acyclic-native-runtime = { path = "../rust/crates/native-runtime", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
@@ -39,3 +57,11 @@ workspace = true
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
+
+[[example]]
+name = "embedded"
+path = "examples/embedded.rs"

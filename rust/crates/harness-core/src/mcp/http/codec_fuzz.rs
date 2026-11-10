@@ -27,7 +27,13 @@ fn parse(
         headers: [("content-type".into(), media.into())].into(),
         body: Box::pin(body),
     };
-    futures::executor::block_on(response::decode(response, operation, maximum, None))
+    futures::executor::block_on(response::decode(
+        response,
+        operation,
+        maximum,
+        None,
+        &std::sync::atomic::AtomicU64::new(0),
+    ))
 }
 
 /// Require positive admission of an actual captured response, rather than only

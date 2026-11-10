@@ -82,44 +82,46 @@ pub(super) async fn read_selected_with_accounting<
     if matches!(selector, GenerationSelector::Head) {
         acyclic_test_support::differential::record(("workspace read", maximum_bytes));
     }
-    let mut scope = accounting.allocation_scope()?;
-    let result = async {
-        let (mut checkout, path) = workspace
-            .open_read_path(selector, path, &mut scope, cancellation)
-            .await?;
-        let lookup = {
-            let (lookup, _allocation) = checkout
-                .value
-                .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, true)
+    crate::heap_future::in_borrowed_frame!(accounting, |accounting| async {
+        let mut scope = accounting.allocation_scope()?;
+        let result = async {
+            let (mut checkout, path) = workspace
+                .open_read_path(selector, path, &mut scope, cancellation)
                 .await?;
-            lookup
-        };
-        let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
-        if record.kind != FileKind::Regular {
-            return Err(WorkspaceError::NotRegularFile);
+            let lookup = {
+                let (lookup, _allocation) = checkout
+                    .value
+                    .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, true)
+                    .await?;
+                lookup
+            };
+            let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
+            if record.kind != FileKind::Regular {
+                return Err(WorkspaceError::NotRegularFile);
+            }
+            let length = regular_file_bytes(record)?;
+            if maximum_bytes.is_some_and(|maximum| length > maximum) {
+                return Err(WorkspaceError::ReadLimitExceeded);
+            }
+            let range = crate::ByteRange { offset: 0, length };
+            let read = checkout
+                .value
+                .read_record_range_with_accounting(record, range, range, &mut scope, cancellation)
+                .await?;
+            path.retire(&mut scope)?;
+            checkout.retire(&mut scope)?;
+            Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(
+                read.bytes,
+                read.logical_owned_bytes,
+            ))
         }
-        let length = regular_file_bytes(record)?;
-        if maximum_bytes.is_some_and(|maximum| length > maximum) {
-            return Err(WorkspaceError::ReadLimitExceeded);
+        .await;
+        let result = authorize(workspace, result, &mut scope, cancellation).await;
+        if result.is_ok() {
+            scope.keep();
         }
-        let range = crate::ByteRange { offset: 0, length };
-        let read = checkout
-            .value
-            .read_record_range_with_accounting(record, range, range, &mut scope, cancellation)
-            .await?;
-        path.retire(&mut scope)?;
-        checkout.retire(&mut scope)?;
-        Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(
-            read.bytes,
-            read.logical_owned_bytes,
-        ))
-    }
-    .await;
-    let result = authorize(workspace, result, &mut scope, cancellation).await;
-    if result.is_ok() {
-        scope.keep();
-    }
-    result
+        result
+    })
 }
 
 pub(super) async fn read_range<

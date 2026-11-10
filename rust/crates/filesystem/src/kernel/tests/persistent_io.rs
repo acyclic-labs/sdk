@@ -85,7 +85,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
     )?;
     let baseline = first_allocations.live_bytes();
     let independent_bytes = independent.value.capacity() as u64;
-    let first = (read_page_with_accounting::<_, TreeFormat>(
+    let first = (read_page_with_accounting::<TreeFormat>(
         &store,
         page,
         DecodeLimits::default(),
@@ -110,7 +110,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
 
     let mut warm_allocations = AllocationLedger::default();
     let mut warm_work = WorkCounters::default();
-    let warm = (read_page_with_accounting::<_, TreeFormat>(
+    let warm = (read_page_with_accounting::<TreeFormat>(
         &store,
         page,
         DecodeLimits::default(),
@@ -143,7 +143,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
         WorkBudget::UNBOUNDED,
         &cancellation,
     );
-    let (shared, allocation) = (read_page_with_accounting::<_, TreeFormat>(
+    let (shared, allocation) = (read_page_with_accounting::<TreeFormat>(
         &store,
         page,
         DecodeLimits::default(),
@@ -176,7 +176,7 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
         },
         &cancellation,
     );
-    let (shared, allocation) = (read_page_with_accounting::<_, TreeFormat>(
+    let (shared, allocation) = (read_page_with_accounting::<TreeFormat>(
         &store,
         page,
         DecodeLimits::default(),
@@ -204,7 +204,7 @@ async fn decoded_cache_rejection_releases_owned_page_allocation()
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let failure = (read_page_with_accounting::<_, TreeFormat>(
+    let failure = (read_page_with_accounting::<TreeFormat>(
         &store,
         page,
         DecodeLimits::default(),
@@ -259,7 +259,7 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
     )?;
     let seed_baseline = seed_allocations.live_bytes();
     let independent_bytes = independent.value.capacity() as u64;
-    let seed = (read_page_with_accounting::<_, TreeFormat>(
+    let seed = (read_page_with_accounting::<TreeFormat>(
         &store,
         first,
         limits,
@@ -296,7 +296,7 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
     )?;
     let baseline = allocations.live_bytes();
     let independent_bytes = independent.value.capacity() as u64;
-    let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(
+    let mut batch = (read_pages_with_accounting::<TreeFormat, _>(
         &store,
         [first, second, first].into_iter(),
         limits,
@@ -351,7 +351,7 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
 
     let mut warm_allocations = AllocationLedger::default();
     let mut warm_work = WorkCounters::default();
-    let mut warm = (read_pages_with_accounting::<_, TreeFormat, _>(
+    let mut warm = (read_pages_with_accounting::<TreeFormat, _>(
         &store,
         [first, second, first].into_iter(),
         limits,
@@ -425,7 +425,7 @@ async fn post_read_budget_failure_releases_every_decoded_allocation()
     let mut budget = WorkBudget::UNBOUNDED;
     budget.bytes_copied = 0;
     let cancellation = CancellationToken::new();
-    let result = (read_page_with_accounting::<_, TreeFormat>(
+    let result = (read_page_with_accounting::<TreeFormat>(
         &store,
         object,
         DecodeLimits::default(),
@@ -459,7 +459,7 @@ async fn single_page_read_authenticates_decode_and_releases_backend_ownership()
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let cancellation = CancellationToken::new();
-    let owned = (read_page_with_accounting::<_, TreeFormat>(
+    let owned = (read_page_with_accounting::<TreeFormat>(
         &store,
         object,
         DecodeLimits::default(),
@@ -497,7 +497,7 @@ async fn single_page_read_authenticates_decode_and_releases_backend_ownership()
     .await?;
     let mut allocations = AllocationLedger::default();
     let mut malformed_work = WorkCounters::default();
-    let failure = (read_page_with_accounting::<_, TreeFormat>(
+    let failure = (read_page_with_accounting::<TreeFormat>(
         &store,
         malformed_id,
         DecodeLimits::default(),
@@ -551,7 +551,7 @@ async fn shape_valid_malformed_tree_page_releases_decoded_allocation()
     .await?;
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let failure = (read_page_with_accounting::<_, TreeFormat>(
+    let failure = (read_page_with_accounting::<TreeFormat>(
         &store,
         object,
         DecodeLimits::default(),
@@ -585,7 +585,7 @@ async fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(
+    let mut batch = (read_pages_with_accounting::<TreeFormat, _>(
         &store,
         [first, second].into_iter(),
         limits,
@@ -636,7 +636,7 @@ async fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
     let cancellation = CancellationToken::new();
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let batch = (read_pages_with_accounting::<_, TreeFormat, _>(
+    let batch = (read_pages_with_accounting::<TreeFormat, _>(
         &store,
         [first, second].into_iter(),
         limits,
@@ -670,7 +670,7 @@ async fn page_batches_release_all_ownership_on_cancel_discard_and_early_finish()
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let batch = (read_pages_with_accounting::<_, TreeFormat, _>(
+    let batch = (read_pages_with_accounting::<TreeFormat, _>(
         &store,
         [first, second].into_iter(),
         limits,
@@ -705,7 +705,7 @@ async fn invalid_and_precancelled_batches_do_no_backend_work()
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let cancellation = CancellationToken::new();
-    let empty = (read_pages_with_accounting::<_, TreeFormat, _>(
+    let empty = (read_pages_with_accounting::<TreeFormat, _>(
         &store,
         std::iter::empty(),
         DecodeLimits::default(),
@@ -730,7 +730,7 @@ async fn invalid_and_precancelled_batches_do_no_backend_work()
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let cancelled = (read_pages_with_accounting::<_, TreeFormat, _>(
+    let cancelled = (read_pages_with_accounting::<TreeFormat, _>(
         &store,
         [object].into_iter(),
         DecodeLimits::default(),
@@ -763,7 +763,7 @@ async fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
 
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(
+    let mut batch = (read_pages_with_accounting::<TreeFormat, _>(
         &store,
         [first, second].into_iter(),
         limits,
@@ -803,7 +803,7 @@ async fn fully_consumed_batches_finish_and_reject_reads_past_the_exact_result()
     )?;
     assert_eq!(allocations.live_bytes(), 0);
 
-    let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(
+    let mut batch = (read_pages_with_accounting::<TreeFormat, _>(
         &store,
         [first].into_iter(),
         limits,
@@ -871,7 +871,7 @@ async fn late_batch_decode_failure_releases_every_pending_allocation()
     let cancellation = CancellationToken::new();
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    let mut batch = (read_pages_with_accounting::<_, TreeFormat, _>(
+    let mut batch = (read_pages_with_accounting::<TreeFormat, _>(
         &store,
         [first, second].into_iter(),
         limits,

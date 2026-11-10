@@ -264,7 +264,7 @@ async fn scoped_revision_waits_and_forwarded_reads_need_no_root_read_grant() -> 
     Ok(())
 }
 #[tokio::test]
-async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestResult {
+async fn indexed_reads_share_session_credit_and_count_delivered_records() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let client = local(&provider)?;
     for length in [1, crate::MAX_RECORD_KEY_BYTES] {
@@ -287,6 +287,8 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
             // Original projection is the independently allocating copy control.
             let old = acyclic_test_support::measure(|| {
                 copied = Some(wire::ReadKeySeek {
+                    end: None,
+                    order: Default::default(),
                     key: Bytes::copy_from_slice(&key),
                     before: 4,
                 });
@@ -294,6 +296,8 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
             let mut transferred = None;
             let direct = acyclic_test_support::measure(|| {
                 transferred = Some(wire_codec::read_key_to_wire(Some(crate::ReadKeySeek {
+                    end: None,
+                    order: Default::default(),
                     key,
                     before: 4,
                 })));
@@ -341,7 +345,12 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
             observed.limit.store(admissions, Ordering::SeqCst);
         }
         let mut request = read("events", 0, 1)?;
-        request.key = Some(crate::ReadKeySeek { key, before: 4 });
+        request.key = Some(crate::ReadKeySeek {
+            end: None,
+            order: Default::default(),
+            key,
+            before: 4,
+        });
         assert_eq!(
             client.read(request).await.err(),
             Some(if cancelled {
@@ -358,6 +367,8 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
     }
     let mut oversized = read("events", 0, 1)?;
     oversized.key = Some(crate::ReadKeySeek {
+        end: None,
+        order: Default::default(),
         key: vec![b'a'; crate::MAX_RECORD_KEY_BYTES + 1].into(),
         before: 4,
     });
@@ -373,8 +384,11 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
     .await?;
     let follow = wire::SessionFollow {
         key: Some(wire::ReadKeySeek {
+            end: None,
+            order: Default::default(),
             key: Bytes::from_static(b"a"),
             before: 4,
+            ..Default::default()
         }),
         read_limit: 1,
         until: Some(4),
@@ -400,13 +414,22 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
         item: Some(Item::Record(record)),
         ..Default::default()
     };
-    wire_codec::session::follow_data_sequence(&follow, 0, &data)?;
-    let Some(Item::Record(record)) = &mut data.item else {
-        unreachable!()
-    };
-    record.keys = vec![Bytes::from_static(b"a\0")];
+    assert_eq!(
+        wire_codec::session::follow_data_sequence(&follow, 0, &data)?,
+        0
+    );
+    // Negative controls: the cursor counts deliveries, so a skipped ordinal is
+    // refused; a record outside the seek fails the shared continuation rule.
+    data.after = Some(wire::SessionCursor {
+        next: 2,
+        opaque: Bytes::new(),
+    });
     assert_eq!(
         wire_codec::session::follow_data_sequence(&follow, 0, &data),
+        Err(StreamError::InvalidResponse)
+    );
+    assert_eq!(
+        crate::ReadKeySeek::exact(&b"a"[..], 4).advance(&mut 0, 0, &[&b"a\0"[..]]),
         Err(StreamError::InvalidResponse)
     );
     Ok(())

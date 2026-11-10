@@ -22,8 +22,21 @@ fn model_step_callers_keep_only_control_state() -> Result<()> {
         boundary: None,
     };
     let mut phase = DispatchPhase::new();
-    let preparation =
-        execution.prepare_dispatch_step(&journal, &input, 0, (&[], None), scope, &mut phase);
+    let preparation = execution.prepare_dispatch_step(
+        &journal,
+        &input,
+        0,
+        (&[], None),
+        RetainedModelStep {
+            #[cfg(feature = "research")]
+            journal_cut: None,
+            request: None,
+            admission: ModelEventAdmission::default(),
+            events: Vec::new(),
+        },
+        scope,
+        &mut phase,
+    );
     let preparation_bytes = std::mem::size_of_val(&preparation);
     drop(preparation);
     let dispatch = execution.dispatch_model_step(

@@ -70,9 +70,11 @@ fn check_type<T: DeserializeOwned + Serialize>(
         {
             return false;
         }
-        let Ok(repeated) =
-            measured_decode_reader::<T>(std::io::Cursor::new(&encoded), encoded.len() as u64, work)
-        else {
+        let Ok(repeated) = measured_decode_reader::<T>(
+            std::io::Cursor::new(encoded.as_slice()),
+            encoded.len() as u64,
+            work,
+        ) else {
             return false;
         };
         serde_json::to_vec(&repeated.0).is_ok_and(|bytes| bytes == encoded)

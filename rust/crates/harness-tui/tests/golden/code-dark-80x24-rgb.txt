@@ -1,0 +1,25 @@
+80x24
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»○ GraphCoder · project · main
+«Spec(Rgb { r: 97, g: 175, b: 239 })/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 97, g: 175, b: 239 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»●«Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»┌─ rust«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» │ // Answer the question.«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» │ «Spec(Rgb { r: 97, g: 175, b: 239 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»fn«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» answer() -> «Spec(Rgb { r: 97, g: 175, b: 239 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»u32«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» {
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» │ «Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»    «Spec(Rgb { r: 97, g: 175, b: 239 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»let«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» text = «Spec(Rgb { r: 152, g: 195, b: 121 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»"forty-two"«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»;
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» │ «Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»    «Spec(Rgb { r: 229, g: 192, b: 123 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»42«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» │ «Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»}
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» └─«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» ┌─ sh«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» │ «Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»echo «Spec(Rgb { r: 152, g: 195, b: 121 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»"$HOME"«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» «Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»# where«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/» └─«Named(Foreground)/Spec(Rgb { r: 15, g: 16, b: 17 })/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» Follow up
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                   model · 24% (2400/10000) · $0.12 · 2 children
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»                                         Enter: send · Tab: queue · Ctrl-D: quit

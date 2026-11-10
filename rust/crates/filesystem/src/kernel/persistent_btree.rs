@@ -1108,7 +1108,7 @@ where
     }
 
     async fn read_page(&mut self, page: ObjectId) -> Result<Owned<Page<F>>, crate::FsError> {
-        let (decoded, allocation) = persistent_io::read_page_with_accounting::<S, F>(
+        let (decoded, allocation) = persistent_io::read_page_with_accounting::<F>(
             self.store,
             page,
             self.limits,

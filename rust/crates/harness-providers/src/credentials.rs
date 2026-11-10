@@ -10,6 +10,13 @@ pub struct Credentials {
     pub api_keys: BTreeMap<String, String>,
     #[serde(skip, default = "native_sources")]
     native_sources: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    #[serde(skip)]
+    path: Option<std::path::PathBuf>,
+    #[cfg(not(target_arch = "wasm32"))]
+    #[serde(skip)]
+    watch:
+        Option<std::sync::Arc<dyn Fn() -> acyclic_auth::credential::CredentialWatch + Send + Sync>>,
     #[cfg(all(test, not(target_arch = "wasm32")))]
     #[serde(skip)]
     pub(crate) source: Option<std::sync::Arc<dyn Fn(&str, Source) -> KeyResult + Send + Sync>>,
@@ -53,6 +60,10 @@ impl Default for Credentials {
         Self {
             api_keys: BTreeMap::new(),
             native_sources: true,
+            #[cfg(not(target_arch = "wasm32"))]
+            path: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            watch: None,
             #[cfg(all(test, not(target_arch = "wasm32")))]
             source: None,
         }
@@ -78,7 +89,9 @@ impl Credentials {
         }
         keyring::Entry::new("acyclic-harness", provider)
             .and_then(|entry| entry.set_password(key.trim()))
-            .map_err(|_| super::invalid("cannot store provider key in OS keychain service acyclic-harness; recovery: unlock the OS keychain and run graphcoder again"))
+            .map_err(|_| super::invalid("cannot store provider key in OS keychain service acyclic-harness; recovery: unlock the OS keychain and run graphcoder again"))?;
+        Self::changed();
+        Ok(())
     }
 
     /// Removes only this provider's entry, for host credential lifecycle owners.
@@ -87,7 +100,10 @@ impl Credentials {
         match keyring::Entry::new("acyclic-harness", provider)
             .and_then(|entry| entry.delete_credential())
         {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Ok(()) | Err(keyring::Error::NoEntry) => {
+                Self::changed();
+                Ok(())
+            }
             Err(_) => Err(super::invalid(
                 "cannot remove provider key; recovery: unlock the OS keychain",
             )),
@@ -113,6 +129,10 @@ impl Credentials {
         Self {
             api_keys,
             native_sources: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            path: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            watch: None,
             #[cfg(all(test, not(target_arch = "wasm32")))]
             source: None,
         }
@@ -196,8 +216,12 @@ impl Credentials {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_file(path: &std::path::Path) -> Result<Self> {
         match acyclic_fs::native_host::read_regular_file(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|_| super::invalid("invalid provider credential file")),
+            Ok(bytes) => {
+                let mut credentials: Self = serde_json::from_slice(&bytes)
+                    .map_err(|_| super::invalid("invalid provider credential file"))?;
+                credentials.path = Some(path.to_owned());
+                Ok(credentials)
+            }
             Err(_) => Err(super::invalid("cannot read provider credential file")),
         }
     }
@@ -215,3 +239,7 @@ fn explicit_credential_files_refuse_links() -> std::io::Result<()> {
     assert!(Credentials::from_file(&link).is_err());
     Ok(())
 }
+pub(crate) mod live;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod watched;
+pub(crate) use live::{Credential, CredentialInputs};

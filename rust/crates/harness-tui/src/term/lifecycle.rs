@@ -186,6 +186,7 @@ mod poison_tests {
                 guard.begin_frame(crate::term::FrameEffects {
                     cursor_hidden: true,
                     margins: false,
+                    hyperlinks: false,
                 });
                 panic!("injected writer panic");
             })

@@ -1,7 +1,10 @@
 //! Full shared-host run: files select roles, model spawns commit their selection,
 //! both HTTP adapters execute, and a new host resumes the retained child.
 use super::*;
+use acyclic_harness::agent::AgentRecord as _;
 use acyclic_harness::model::{ModelBinding, ModelResolver};
+use acyclic_stream::StreamProvider as _;
+use futures::TryStreamExt as _;
 
 struct Routes {
     root: Arc<acyclic_harness_providers::ResolvedModel>,
@@ -389,11 +392,24 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     ))?)?;
     resumed.agents().drain(&kid).await?;
     if copy_root_budgets {
-        let acyclic_harness::agent::Phase::Done {
-            outcome: acyclic_harness::agent::AgentOutcome::Failed { message },
-        } = resumed.agents().state(&kid).await?.phase
-        else {
-            panic!("copying the root's budgets did not fail the smaller worker");
+        let state = resumed.agents().state(&kid).await?;
+        assert!(state.conversation_tail > state.conversation_base);
+        let mut entries = stream
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: kid.conversation()?,
+                from: state.conversation_tail - 1,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?;
+        let record = entries
+            .try_next()
+            .await?
+            .ok_or("missing failed worker turn")?;
+        let entry = acyclic_harness::agent::ConversationEntry::decode(&record.value)?;
+        let acyclic_harness::agent::TurnOutcome::Failed { message } = entry.outcome else {
+            panic!("copying the root's budgets did not fail the smaller worker turn");
         };
         assert!(
             message.contains("compaction budgets exceed selected model capacity"),

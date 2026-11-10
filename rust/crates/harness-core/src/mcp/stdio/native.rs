@@ -31,6 +31,7 @@ pub struct StdioMcpTransport {
     service: RunningService<RoleClient, ClientConfig>,
     timeout: Duration,
     maximum_bytes: Arc<AtomicU32>,
+    tools_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     _process: Option<ProcessOwner>,
 }
 
@@ -159,12 +160,20 @@ impl StdioMcpTransport {
         W: AsyncWrite + Unpin + Send + 'static,
     {
         let maximum_bytes = Arc::new(AtomicU32::new(maximum_bytes));
+        let tools_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let changed = tools_generation.clone();
         let read = FramedRead::new(
             read,
             BoundedCodec::<ServerJsonRpcMessage>::new(Arc::clone(&maximum_bytes)),
         )
         .take_while(|message| std::future::ready(message.is_ok()))
-        .filter_map(|message| std::future::ready(message.ok()));
+        .filter_map(|message| std::future::ready(message.ok()))
+        .inspect(move |message| {
+            if matches!(message, ServerJsonRpcMessage::Notification(notification)
+                if matches!(notification.notification, rmcp::model::ServerNotification::ToolListChangedNotification(_))) {
+                changed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        });
         let write = FramedWrite::new(
             write,
             BoundedCodec::<ClientJsonRpcMessage>::new(Arc::clone(&maximum_bytes)),
@@ -190,6 +199,7 @@ impl StdioMcpTransport {
             service,
             timeout,
             maximum_bytes,
+            tools_generation,
             _process: process,
         })
     }
@@ -253,6 +263,16 @@ impl StdioMcpTransport {
 }
 
 impl McpToolTransport for StdioMcpTransport {
+    fn tools_generation(&self) -> u64 {
+        self.tools_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn list<'a>(
+        &'a self,
+        cursor: Option<String>,
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::ListToolsResult>> {
+        Box::pin(self.list_tools(OperationId::new(), cursor))
+    }
     fn call<'a>(
         &'a self,
         operation: OperationId,

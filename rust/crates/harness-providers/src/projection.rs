@@ -144,6 +144,10 @@ pub(crate) fn body_named<'a>(
     files: &mut FileText,
 ) -> Result<Request<'a>> {
     let adapter = provider.config.adapter;
+    // A route's prompt layout is fixed before credential discovery. A login
+    // appearing later may change authentication, never the cached system span.
+    let login_route = adapter == Adapter::Responses
+        && provider.config.authentication == crate::Authentication::ApiKeyOrCodexLogin;
     let (conversation, instruction) = request.split_summary_instruction()?;
     let rendered = acyclic_model_render::Provenance {
         family: adapter,
@@ -229,8 +233,7 @@ pub(crate) fn body_named<'a>(
             effective_effort = Some(*effort);
             continue;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if provider.codex_login.is_some() && message.role == ModelRole::System {
+        if login_route && message.role == ModelRole::System {
             system.push(text_content(&message.content, files)?);
             continue;
         }
@@ -309,13 +312,15 @@ pub(crate) fn body_named<'a>(
             fields.insert(Field::Stream, json!(true));
             fields.insert(Field::Store, json!(false));
             fields.insert(Field::MaxOutputTokens, json!(max));
-            #[cfg(not(target_arch = "wasm32"))]
-            if provider.codex_login.is_some() {
-                fields.remove(Field::MaxOutputTokens);
+            if login_route {
                 fields.insert(
                     Field::Instructions,
                     serde_json::Value::String(text::join(system, "\n\n")),
                 );
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if provider.codex_login.is_some() {
+                fields.remove(Field::MaxOutputTokens);
                 fields.insert(Field::ToolChoice, json!("auto"));
                 fields.insert(Field::ParallelToolCalls, json!(true));
             }

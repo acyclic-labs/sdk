@@ -5,65 +5,120 @@
 use crate::config::{ThemeStyles, Token};
 use acyclic_markdown::Tone;
 use ratatui::style::{Modifier, Style};
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
+
+/// Printable text, disjoint styles, link destinations and code bands, all
+/// indexed by UTF-8 source bytes until the shared layout wraps graphemes.
+pub(crate) struct Rendered {
+    pub text: String,
+    pub styles: Vec<(Range<usize>, Style)>,
+    pub links: Vec<(Range<usize>, Arc<str>)>,
+    pub bands: Vec<Range<usize>>,
+    pub code: Vec<(Range<usize>, acyclic_markdown::CodeLine)>,
+}
+
+/// Deferred syntax of one wrapped row. Source offsets stay in the immutable
+/// code line; display offsets refer to this row's sanitized graphemes.
+pub struct CodeRow {
+    pub(crate) source: acyclic_markdown::CodeLine,
+    pub(crate) cells: Vec<(Range<usize>, Range<usize>)>,
+}
+
+impl CodeRow {
+    pub(crate) fn paint(
+        &self,
+        line: &ratatui::text::Line<'_>,
+        theme: &ThemeStyles,
+    ) -> ratatui::text::Line<'static> {
+        use unicode_segmentation::UnicodeSegmentation as _;
+        let text = line.to_string();
+        let mut end = 0;
+        let mut original = crate::styled_cells::ordered_styles(line.spans.iter().map(|span| {
+            let start = end;
+            end += span.content.len();
+            (start..end, span.style)
+        }));
+        let visible = self.cells.first().map_or(0, |(_, source)| source.start)
+            ..self.cells.last().map_or(0, |(_, source)| source.end);
+        let ranges = self.source.styles_for(visible);
+        let mut syntax = crate::styled_cells::ordered_styles(
+            ranges
+                .iter()
+                .map(|(range, source)| (range.clone(), style(*source, theme))),
+        );
+        let mut cells = self.cells.iter().peekable();
+        let mut spans = Vec::new();
+        crate::styled_cells::append(
+            &mut spans,
+            text.grapheme_indices(true)
+                .map(|(at, text)| (at, text.to_owned())),
+            |at| {
+                let base = original(at);
+                while cells.peek().is_some_and(|(range, _)| range.end <= at) {
+                    cells.next();
+                }
+                cells
+                    .peek()
+                    .filter(|(range, _)| range.contains(&at))
+                    .map_or(base, |(_, source)| base.patch(syntax(source.start)))
+            },
+        );
+        let mut painted = ratatui::text::Line::from(spans).style(line.style);
+        painted.alignment = line.alignment;
+        painted
+    }
+}
 
 /// `text` presented as markdown with tables sized to `width` columns: its
-/// visible text, lines joined by `\n`, and the style of each styled byte
-/// range of it, in order and disjoint. A link shows its destination after
-/// its label, `label (url)`, unless the label is the destination itself, so
-/// it stays readable and a terminal can open it.
+/// visible text, lines joined by `\n`, with disjoint styled byte ranges,
+/// code bands and destinations retained separately from printable labels.
 #[must_use]
-pub fn render(
-    text: &str,
-    width: usize,
-    theme: &ThemeStyles,
-) -> (String, Vec<(Range<usize>, Style)>) {
+pub fn render(text: &str, width: usize, theme: &ThemeStyles) -> Rendered {
     let mut parser =
         acyclic_markdown::Markdown::with_width(u16::try_from(width).unwrap_or(u16::MAX));
     parser.push(text);
-    let mut shown = String::with_capacity(text.len());
+    render_lines(parser.lines(), theme)
+}
+
+pub(crate) fn render_lines(lines: &[acyclic_markdown::Line], theme: &ThemeStyles) -> Rendered {
+    let mut shown = String::new();
     let mut styles = Vec::new();
-    for (index, line) in parser.lines().iter().enumerate() {
+    let mut links = Vec::new();
+    let mut bands = Vec::new();
+    let mut code = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
         if index > 0 {
             shown.push('\n');
         }
-        let mut label_start = None;
-        for (at, span) in line.spans.iter().enumerate() {
+        let line_start = shown.len();
+        for span in &line.spans {
             let start = shown.len();
             shown.push_str(&span.text);
             let style = style(span.style, theme);
             if style != Style::default() {
                 styles.push((start..shown.len(), style));
             }
-            let Some(link) = &span.link else {
-                continue;
-            };
-            let begin = *label_start.get_or_insert(start);
-            // A link's label may span several styled spans: its destination
-            // follows the last of them.
-            let continues = line
-                .spans
-                .get(at + 1)
-                .is_some_and(|next| next.link.as_ref() == Some(link));
-            if continues {
-                continue;
+            if let Some(link) = &span.link {
+                links.push((start..shown.len(), Arc::clone(link)));
             }
-            if shown[begin..].trim() != link.as_ref() {
-                shown.push_str(" (");
-                let start = shown.len();
-                shown.push_str(link);
-                styles.push((
-                    start..shown.len(),
-                    theme
-                        .token(Token::Accent)
-                        .add_modifier(Modifier::UNDERLINED),
-                ));
-                shown.push(')');
-            }
-            label_start = None;
+        }
+        if line.code {
+            bands.push(line_start..shown.len());
+        }
+        if let Some(source) = &line.syntax {
+            code.push((
+                shown.len().saturating_sub(source.text().len())..shown.len(),
+                source.clone(),
+            ));
         }
     }
-    (shown, styles)
+    Rendered {
+        text: shown,
+        styles,
+        links,
+        bands,
+        code,
+    }
 }
 
 /// A tone takes its token's colour; muted text without one takes `muted`.
@@ -95,7 +150,11 @@ mod tests {
 
     #[test]
     fn markers_become_styles() {
-        let (shown, styles) = render("streaming **test answer**", 80, &ThemeStyles::default());
+        let Rendered {
+            text: shown,
+            styles,
+            ..
+        } = render("streaming **test answer**", 80, &ThemeStyles::default());
         assert_eq!(shown, "streaming test answer");
         let (range, style) = &styles[0];
         assert_eq!(&shown[range.clone()], "test answer");
@@ -105,25 +164,33 @@ mod tests {
     #[test]
     fn a_link_keeps_its_destination() {
         let theme = ThemeStyles::default();
-        let (shown, _) = render("see [the **docs**](https://example.com/a) now", 80, &theme);
-        assert_eq!(shown, "see the docs (https://example.com/a) now");
-        let (shown, _) = render("<https://example.com/b>", 80, &theme);
+        let Rendered {
+            text: shown, links, ..
+        } = render("see [the **docs**](https://example.com/a) now", 80, &theme);
+        assert_eq!(shown, "see the docs now");
+        assert!(
+            links
+                .iter()
+                .all(|(_, target)| target.as_ref() == "https://example.com/a")
+        );
+        let Rendered { text: shown, .. } = render("<https://example.com/b>", 80, &theme);
         assert_eq!(shown, "https://example.com/b");
-        let (shown, styles) = render(
+        let Rendered {
+            text: shown,
+            styles,
+            links,
+            ..
+        } = render(
             "see [ https://**example**.com/a ](https://example.com/a) [**next**](https://example.com/b)",
             80,
             &theme,
         );
-        assert_eq!(
-            shown,
-            "see  https://example.com/a  next (https://example.com/b)"
-        );
+        assert_eq!(shown, "see  https://example.com/a  next");
         assert!(styles.iter().any(|(range, style)| {
             &shown[range.clone()] == "example" && style.add_modifier.contains(Modifier::BOLD)
         }));
-        assert!(styles.iter().any(|(range, style)| {
-            &shown[range.clone()] == "https://example.com/b"
-                && style.add_modifier.contains(Modifier::UNDERLINED)
+        assert!(links.iter().any(|(range, target)| {
+            &shown[range.clone()] == "next" && target.as_ref() == "https://example.com/b"
         }));
     }
 }

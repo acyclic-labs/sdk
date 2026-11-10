@@ -375,12 +375,8 @@ fn failed_view_startup_retains_directory_until_original_physical_retirement()
         assert!(
             matches!(failed.error(), NativeMountError::Io(cause) if cause.raw_os_error() == code)
         );
-        let diagnostic = failed.to_string();
-        assert!(diagnostic.contains("read startup input"), "{diagnostic}");
-        assert!(
-            diagnostic.contains(&destination.to_string_lossy().to_string()),
-            "{diagnostic}"
-        );
+        assert_eq!(failed.operation, "read startup input");
+        assert_eq!(&failed.owner().request.destination, &destination);
         // The negative restores post-start ownership: returning the failure
         // drops the issuance before the driver's physical retirement.
         assert_eq!(destination.is_dir(), handoff);

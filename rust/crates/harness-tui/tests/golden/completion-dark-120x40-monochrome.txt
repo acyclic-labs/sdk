@@ -1,0 +1,41 @@
+120x40
+«Named(Foreground)/Named(Background)/Flags(DIM)/»○ GraphCoder · project · main
+«Named(Foreground)/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»●«Named(Foreground)/Named(Background)/Flags(BOLD)/»# Review«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» «Named(Foreground)/Named(Background)/Flags(BOLD)/»Bold«Named(Foreground)/Named(Background)/Flags(0x0)/», «Named(Foreground)/Named(Background)/Flags(ITALIC)/»emphasis«Named(Foreground)/Named(Background)/Flags(0x0)/», «Named(Foreground)/Named(Background)/Flags(DIM | STRIKEOUT)/»removed«Named(Foreground)/Named(Background)/Flags(0x0)/» and code.
+«Named(Foreground)/Named(Background)/Flags(DIM)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» 1. «Named(Foreground)/Named(Background)/Flags(0x0)/»first
+«Named(Foreground)/Named(Background)/Flags(DIM)/» 2. «Named(Foreground)/Named(Background)/Flags(0x0)/»second
+«Named(Foreground)/Named(Background)/Flags(DIM)/»    • «Named(Foreground)/Named(Background)/Flags(0x0)/»nested
+«Named(Foreground)/Named(Background)/Flags(DIM)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» │ «Named(Foreground)/Named(Background)/Flags(ITALIC | DIM)/»Read «Named(Foreground)/Named(Background)/Flags(ITALIC | UNDERLINE)/https://example.com/docs»the «Named(Foreground)/Named(Background)/Flags(BOLD | ITALIC | UNDERLINE)/https://example.com/docs»docs«Named(Foreground)/Named(Background)/Flags(ITALIC | DIM)/».«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» ┌───────┬───────────┐«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» │«Named(Foreground)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(BOLD)/»crate«Named(Foreground)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(DIM)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/»      «Named(Foreground)/Named(Background)/Flags(BOLD)/»note«Named(Foreground)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(DIM)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» ├───────┼───────────┤«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» │«Named(Foreground)/Named(Background)/Flags(0x0)/» tui   «Named(Foreground)/Named(Background)/Flags(DIM)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/» 界面 👩‍ é «Named(Foreground)/Named(Background)/Flags(DIM)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» └───────┴───────────┘«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»┌Completions───────────────────────────────────────────────┐
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│«Named(Foreground)/Named(Background)/Flags(INVERSE)/»/help  Show commands«Named(Foreground)/Named(Background)/Flags(0x0)/»                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│/diff  Workspace changes                                  │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│/theme  auto, dark or light                               │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»└──────────────────────────────────────────────────────────┘
+«Named(Foreground)/Named(Background)/Flags(DIM)/»────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» /
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                                                           model · 24% (2400/10000) · $0.12 · 2 children
+«Named(Foreground)/Named(Background)/Flags(DIM)/»                                                                                 Enter: send · Tab: queue · Ctrl-D: quit

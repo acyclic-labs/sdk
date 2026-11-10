@@ -13,11 +13,38 @@ use futures::{FutureExt as _, StreamExt as _};
 use serde_json::Value;
 use std::collections::VecDeque;
 
+fn tools_changed(value: &Value, generation: &std::sync::atomic::AtomicU64) {
+    if value.get("method").and_then(Value::as_str) == Some("notifications/tools/list_changed") {
+        generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+#[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+pub(super) async fn notifications(
+    body: BoxProviderStream<'static, Result<Bytes>>,
+    operation: OperationId,
+    maximum: u32,
+    generation: &std::sync::atomic::AtomicU64,
+) -> Result<()> {
+    // The watch lives for the connection, so the protective bound applies to
+    // each frame rather than the total number of notifications in its life.
+    let frames = crate::sse::frames(body, maximum as usize, crate::sse::Decoder::default());
+    futures::pin_mut!(frames);
+    while let Some(frame) = frames.next().await {
+        if let Some(value) = decode(frame, operation)? {
+            notification(&value, None)?;
+            tools_changed(&value, generation);
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn response(
     body: BoxProviderStream<'static, Result<Bytes>>,
     operation: OperationId,
     maximum_bytes: u32,
     callbacks: Option<(&HttpMcpTransport, ToolContext)>,
+    tools_generation: &std::sync::atomic::AtomicU64,
 ) -> Result<Value> {
     let mut spelling = [0; 36];
     let identity = uuid::Uuid::from_bytes(operation.into_bytes());
@@ -48,6 +75,7 @@ pub(super) async fn response(
         }
         if value.get("method").is_none() || value.get("id").is_none() {
             notification(&value, None)?;
+            tools_changed(&value, tools_generation);
             continue;
         }
         let (transport, context) = callbacks
@@ -88,7 +116,7 @@ pub(super) async fn response(
                         notification(&value, None)?;
                         return Err(Error::Indeterminate(operation));
                     }
-                    if value.get("method").is_some() && value.get("id").is_none() { notification(&value, None)?; }
+                    if value.get("method").is_some() && value.get("id").is_none() { notification(&value, None)?; tools_changed(&value, tools_generation); }
                     else {
                         if pending.len() as u64 >= u64::from(policy.maximum_requests) {
                             return Err(Error::Invalid("MCP pending callback bound exceeded".into()));

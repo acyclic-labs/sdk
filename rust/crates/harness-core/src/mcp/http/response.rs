@@ -9,6 +9,7 @@ pub(super) async fn decode(
     operation: OperationId,
     maximum_bytes: u32,
     callbacks: Option<(&HttpMcpTransport, ToolContext)>,
+    tools_generation: &std::sync::atomic::AtomicU64,
 ) -> Result<Value> {
     if response.status != 200 {
         return Err(Error::Indeterminate(operation));
@@ -23,7 +24,14 @@ pub(super) async fn decode(
     });
     match media.as_deref() {
         Some("text/event-stream") => {
-            return sse::response(response.body, operation, maximum_bytes, callbacks).await;
+            return sse::response(
+                response.body,
+                operation,
+                maximum_bytes,
+                callbacks,
+                tools_generation,
+            )
+            .await;
         }
         Some("application/json") => {}
         _ => {

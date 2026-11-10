@@ -11,14 +11,12 @@ test("head conditions retain commit identity through the client, WASM provider a
   if (!first.ok) throw new Error("seed failed");
   const wrong = commitId(new Uint8Array(32).fill(42));
   const result = await client.commit({
-    conditions: [{ stream, ifTail: 1n, ifCommitId: wrong }],
-    mutations: [{ append: { stream, values: [new Uint8Array([2])] } }],
+    effects: [{ conditions: [{ stream, ifTail: 1n, ifCommitId: wrong }], mutations: [{ append: { stream, values: [new Uint8Array([2])] } }], soft: false }]
   }, { idempotencyKey: key("wrong") });
   expect(result).toEqual({ ok: false, code: "conflict", conflicts: [{ path: "head", expectedCommitId: wrong, actualCommitId: first.commitId }] });
   expect(await stream.tail()).toBe(1n);
   const request = {
-    conditions: [{ stream, ifTail: 1n, ifCommitId: first.commitId }],
-    mutations: [{ append: { stream, values: [new Uint8Array([2])] } }],
+    effects: [{ conditions: [{ stream, ifTail: 1n, ifCommitId: first.commitId }], mutations: [{ append: { stream, values: [new Uint8Array([2])] } }], soft: false }]
   };
   const accepted = await client.commit(request, { idempotencyKey: key("correct") });
   expect(accepted.ok).toBe(true);
@@ -28,15 +26,14 @@ test("head conditions retain commit identity through the client, WASM provider a
 
 test("head normalization keeps the hash fence and rejects an empty-history anchor", async () => {
   const identity = commitId(new Uint8Array(32).fill(7));
-  const request = { conditions: [{ path: "head", ifTail: 1n, ifCommitId: identity }], mutations: [{ append: { path: "head", values: [new Uint8Array([1])] } }] };
+  const request = { effects: [{ conditions: [{ path: "head", ifTail: 1n, ifCommitId: identity }], mutations: [{ append: { path: "head", values: [new Uint8Array([1])] } }], soft: false }] };
   expect(await normalizeWireCommit(request, { idempotencyKey: key("normalize") })).toEqual(request);
-  await expect(normalizeWireCommit({ ...request, conditions: [{ path: "head", ifTail: 0n, ifCommitId: identity }] }, { idempotencyKey: key("empty") })).rejects.toMatchObject({ code: "invalid_argument" });
+  await expect(normalizeWireCommit({ effects: [{ ...request.effects[0]!, conditions: [{ path: "head", ifTail: 0n, ifCommitId: identity }] }] }, { idempotencyKey: key("empty") })).rejects.toMatchObject({ code: "invalid_argument" });
 });
 
 test("HTTP rejects head conditions until the hosted capability is negotiated", async () => {
   const wire = await normalizeWireCommitBytes({
-    conditions: [{ path: "head", ifTail: 1n, ifCommitId: commitId(new Uint8Array(32).fill(7)) }],
-    mutations: [{ append: { path: "head", values: [new Uint8Array([1])] } }],
+    effects: [{ conditions: [{ path: "head", ifTail: 1n, ifCommitId: commitId(new Uint8Array(32).fill(7)) }], mutations: [{ append: { path: "head", values: [new Uint8Array([1])] } }], soft: false }]
   }, { idempotencyKey: key("http") });
   await expect(encodeHttpRequest("commit", wire)).rejects.toMatchObject({ code: "unsupported" });
 });

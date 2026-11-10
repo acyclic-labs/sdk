@@ -462,7 +462,7 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
     let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
         let mut accounting =
             crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+        persistent_pagination::paginate_with_accounting::<TreeFormat>(
             &store,
             (
                 root,
@@ -523,16 +523,15 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
                 ] {
                     let mut accounting =
                         KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
-                    let (page, _) =
-                        persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
-                            &store,
-                            (root, bound, maximum, direction),
-                            DecodeLimits::default(),
-                            &mut accounting,
-                            &cancel,
-                            None,
-                        )
-                        .await?;
+                    let (page, _) = persistent_pagination::paginate_with_accounting::<TreeFormat>(
+                        &store,
+                        (root, bound, maximum, direction),
+                        DecodeLimits::default(),
+                        &mut accounting,
+                        &cancel,
+                        None,
+                    )
+                    .await?;
                     let mut expected: Vec<_> = ["a", "b", "c", "d", "e", "f"]
                         .into_iter()
                         .filter(|value| match (direction, bound) {
@@ -596,7 +595,7 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
     .await?;
     let before = name("c")?;
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
-    let failure = persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+    let failure = persistent_pagination::paginate_with_accounting::<TreeFormat>(
         &store,
         (forged, Bound::Excluded(&before), 1, Direction::Descending),
         DecodeLimits::default(),
@@ -682,7 +681,7 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
             },
             &cancel,
         );
-        let (page, _) = persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+        let (page, _) = persistent_pagination::paginate_with_accounting::<TreeFormat>(
             &store,
             (root, Bound::Unbounded, 1, Direction::Descending),
             DecodeLimits::default(),
@@ -708,7 +707,7 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
             },
             &cancel,
         );
-        let failure = persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+        let failure = persistent_pagination::paginate_with_accounting::<TreeFormat>(
             &store,
             (root, Bound::Unbounded, population + 3, Direction::Ascending),
             DecodeLimits::default(),
@@ -749,7 +748,7 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
             crate::NativeMaterializationWork::accounting_state_bytes()
         );
         let mut accounting = KernelAccounting::native(&original, &cancel);
-        let (page, allocation) = persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
+        let (page, allocation) = persistent_pagination::paginate_with_accounting::<TreeFormat>(
             &store,
             (root, Bound::Unbounded, 2, Direction::Descending),
             DecodeLimits::default(),
