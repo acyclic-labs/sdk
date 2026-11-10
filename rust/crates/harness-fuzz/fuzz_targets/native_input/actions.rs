@@ -202,7 +202,11 @@ pub(super) fn check(bytes: &[u8]) {
                 task: task.clone(),
                 command: "caller command".into(),
             },
-            HostAction::Agents { task: task.clone() },
+            HostAction::Agents {
+                task: task.clone(),
+                after: None,
+                limit: 256,
+            },
         ];
         for session in sessions {
             for next in [false, true] {

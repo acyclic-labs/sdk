@@ -389,6 +389,7 @@ pub(super) async fn open(
     let OwnerState { store, processes } = state;
     let &Attach {
         volume,
+        scratch,
         native_mounts,
         mounting,
         ..
