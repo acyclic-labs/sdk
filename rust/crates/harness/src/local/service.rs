@@ -834,6 +834,9 @@ mod tests {
             sessions::merge(&first, "publish-first").await?,
             first_commit
         );
+        // Spend the first attempt's capture identity before the merge reports
+        // its conflict. Resolution is another capture under the same request.
+        std::fs::write(checkout.path().join("local.txt"), b"local edit\n").map_err(storage)?;
         assert!(sessions::merge(&second, "publish-second").await.is_err());
         let conflicted =
             std::fs::read_to_string(checkout.path().join("shared.txt")).map_err(storage)?;
@@ -857,6 +860,10 @@ mod tests {
         assert_eq!(
             std::fs::read(checkout.path().join("second.txt")).map_err(storage)?,
             b"second\n"
+        );
+        assert_eq!(
+            std::fs::read(checkout.path().join("local.txt")).map_err(storage)?,
+            b"local edit\n"
         );
         assert_eq!(
             sessions::merge(&second, "publish-second").await?,
