@@ -32,6 +32,7 @@ name = "main"
 path = "tests/main.rs"
 
 [features]
+ui = ["dep:pulldown-cmark"]
 research = ["acyclic-observability/research"]
 provenance-export = ["metrics-export", "dep:oxrdf", "dep:oxttl"]
 metrics-export = ["dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:parquet"]
@@ -44,7 +45,7 @@ model-checking = ["acyclic-mcp/model-checking", "dep:loom", "dep:same-file", "de
 browser = ["wasm", "filesystem", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
-filesystem = ["acyclic-fs/memory", "acyclic-fs/session", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+filesystem = ["ui", "acyclic-fs/memory", "acyclic-fs/session", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-fs/session", "acyclic-stream/local", "acyclic-stream/session", "dep:dirs", "dep:getrandom", "dep:tempfile"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio", "acyclic-machines?/local"]
@@ -106,6 +107,7 @@ prost-reflect = { workspace = true, features = ["serde"] }
 schemars = "=1.2.3"
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+pulldown-cmark = { workspace = true, optional = true }
 serde-saphyr = { version = "=2.0.0", default-features = false, features = ["deserialize"] }
 sha2.workspace = true
 thiserror.workspace = true

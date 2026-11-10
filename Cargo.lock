@@ -715,6 +715,7 @@ dependencies = [
  "proc-macro2",
  "proptest",
  "prost",
+ "pulldown-cmark",
  "prost-build",
  "prost-reflect",
  "rcgen",

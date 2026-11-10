@@ -121,6 +121,8 @@ pub mod test_support;
 pub mod tool;
 pub mod tools;
 pub mod turn;
+#[cfg(feature = "ui")]
+pub mod ui;
 pub mod wire_api;
 pub mod wire_codec;
 pub mod workspace;
