@@ -36,9 +36,11 @@ unconfined AppArmor profile or `fusermount3`) select physical mounting instead:
 GraphCoder's `--workspace-mounting physical`. GraphCoder's default, `auto`,
 selects it when `probe_native_mount` reports the native provider unavailable
 and writes one stderr line naming the reason. `native` refuses to start without
-the provider, as before. `auto` cannot detect a usable `/dev/fuse` whose mount is
-still refused by capabilities or AppArmor; select `physical` explicitly there.
-It needs no device, capability, mount helper or privileged process.
+the provider. On Linux the probe checks device access, Docker's default
+AppArmor profile, effective and bounding mount capabilities, `no_new_privs`
+and setuid helper availability. A custom security policy can still refuse a
+mount after the probe; select `physical` explicitly on such hosts. Physical
+mode needs no device, capability, mount helper or privileged process.
 
 Physical mounting is the checkout's existing plain-directory path, applied to
 every task view. The checkout is always a plain directory; its persistent
@@ -83,7 +85,38 @@ Guarantees that differ from native mounting:
 
 The shipping GraphCoder end-to-end matrix runs its checkout, file-tool, Git
 facade, child and resume cases a second time on Linux with
-`--workspace-mounting physical` (the `-physical` case variants).
+`--workspace-mounting physical` (the `-physical` case variants). These host
+variants alone do not prove execution without FUSE or mount privileges.
+
+### Stock Docker acceptance (R27)
+
+Build `graphcoder` and `harness-mock-model` on Linux, then supply a locally
+installed Node image with Git, Python 3 and a compatible glibc (for example
+`node:24-trixie`). The Python dependency belongs to the existing acceptance
+process supervisor; GraphCoder itself needs only the platform shell.
+
+```sh
+docker pull node:24-trixie
+node scripts/qualify-docker-no-fuse.mjs node:24-trixie \
+  /absolute/graphcoder /absolute/harness-mock-model /fresh/absolute/evidence
+```
+
+The qualifier runs a non-root user with Docker's default capabilities, seccomp
+and AppArmor configuration, no devices and no external network. It verifies
+the actual kernel's seccomp filter, absent `/dev/fuse` and mount helpers, and
+absence of `CAP_SYS_ADMIN` in both the effective and bounding sets. No provider
+keys enter the container; the ordinary loopback scripted provider runs inside
+it. The existing file read/write/edit, lossless shell capture, child fork/message/
+merge/archive and reopen/crash-resume assertions execute against the shipping
+binary, with both automatic and explicit physical selection. Automatic mode
+must report its selection reason. The image ID, Docker configuration, executable
+and acceptance-source digests, requests and captures are retained in the fresh
+evidence directory. Cancellation and completion both remove the same container.
+
+Plain directories contain authored files. File tools and filesystem operations
+read their bound volume through the harness API; a shell does not implicitly
+materialize computed views. Selecting physical mode changes execution's host
+projection, not the durable stream or filesystem APIs.
 
 ## Measured lazy customer lifecycle
 
