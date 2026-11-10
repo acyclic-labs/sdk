@@ -391,7 +391,6 @@ impl View {
                     .compact(&id, (!instructions.is_empty()).then_some(instructions))
                     .await?
             }
-            CommandRequest::Rewind {} => conversation.rewind(&id).await?,
             CommandRequest::ClearAll {} => conversation.clear_all(&id).await?,
             _ => {
                 self.notice = Some(format!("{request:?} is not available in this view"));
@@ -644,6 +643,7 @@ enum Next {
     Exit,
     Picker,
     New,
+    HistoryBranch,
 }
 
 pub async fn run(
@@ -667,6 +667,14 @@ pub async fn run(
             Next::Picker => {
                 let (connection, owned) =
                     crate::sessions::picker(conversation.connection().clone(), None, None).await?;
+                conversation = Conversation::open(connection);
+                terminal = owned;
+                resume = true;
+            }
+            Next::HistoryBranch => {
+                let (connection, owned) =
+                    crate::sessions::history_picker(conversation.connection().clone(), None)
+                        .await?;
                 conversation = Conversation::open(connection);
                 terminal = owned;
                 resume = true;
@@ -1036,6 +1044,9 @@ async fn run_current(
                                     Ok(None) => {}
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::New {} })) => {
                                         return Ok(Next::New);
+                                    }
+                                    Ok(Some(CommandResolution::Submit { request: CommandRequest::Rewind {} })) => {
+                                        return Ok(Next::HistoryBranch);
                                     }
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Sessions })) => {
                                         return Ok(Next::Picker);
