@@ -592,7 +592,7 @@ async fn step_replay_key(
             maximum_step_records: super::ExecutionRecordQuery::step_bound(
                 crate::conversation::Limits::default(),
             ),
-            maximum: 1,
+            maximum: Some(1),
             select: &select,
         },
         None,

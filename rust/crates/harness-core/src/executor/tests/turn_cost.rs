@@ -94,7 +94,7 @@ async fn journal_lookups_do_not_replay_prefixes_from_one_to_a_thousand_turns() -
         );
         let before = journal.3.load(Ordering::SeqCst);
         let start = std::time::Instant::now();
-        let (old_tail, old_records, _) = replay_execution(&journal, operation, 1,
+        let (old_tail, old_records, _) = replay_execution(&journal, operation, Some(1),
             |event| matches!(event, ExecutionEvent::ModelStopped { step: observed, .. } if *observed == step), None).await?;
         old_times.push(start.elapsed());
         assert_eq!((old_tail, old_records), (tail, records));
