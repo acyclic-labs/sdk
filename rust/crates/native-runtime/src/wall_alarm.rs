@@ -4,7 +4,7 @@
 //! once from that time misses a forward clock change. Every registration here
 //! shares one index and one thread, which waits on the platform's own
 //! wall-clock primitive: a `CLOCK_REALTIME` absolute timerfd that is cancelled
-//! on clock changes on Linux, a `NOTE_ABSOLUTE` kqueue timer plus the
+//! on clock changes on Linux, a continuous kqueue timer plus the
 //! `com.apple.system.clock_set` notification on Apple platforms, and an
 //! absolute waitable timer, which follows system time changes, on Windows.
 //! Each wake re-reads the clock and fires every elapsed registration, so a
@@ -411,7 +411,7 @@ mod platform {
 )]
 mod platform {
     use std::io;
-    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 
     unsafe extern "C" {
         fn notify_register_file_descriptor(
@@ -428,7 +428,8 @@ mod platform {
 
     pub(super) struct Waiter {
         queue: OwnedFd,
-        clock_set: OwnedFd,
+        // libnotify retains this descriptor and closes it with the token.
+        clock_set: RawFd,
         token: libc::c_int,
     }
 
@@ -467,22 +468,13 @@ mod platform {
                     "clock-change notification registration failed: {status}"
                 )));
             }
-            // SAFETY: the notification system transferred this descriptor.
-            let clock_set = unsafe { OwnedFd::from_raw_fd(fd) };
             let waiter = Self {
                 queue,
-                clock_set,
+                clock_set: fd,
                 token,
             };
             // SAFETY: an owned descriptor; only its status flags change.
-            if unsafe {
-                libc::fcntl(
-                    waiter.clock_set.as_raw_fd(),
-                    libc::F_SETFL,
-                    libc::O_NONBLOCK,
-                )
-            } < 0
-            {
+            if unsafe { libc::fcntl(waiter.clock_set, libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
                 return Err(io::Error::last_os_error());
             }
             waiter.change(&[
@@ -494,7 +486,7 @@ mod platform {
                     0,
                 ),
                 event(
-                    usize::try_from(waiter.clock_set.as_raw_fd()).unwrap_or(usize::MAX),
+                    usize::try_from(waiter.clock_set).unwrap_or(usize::MAX),
                     libc::EVFILT_READ,
                     libc::EV_ADD,
                     0,
@@ -530,25 +522,19 @@ mod platform {
         fn arm(&self, deadline: Option<u64>) -> io::Result<()> {
             match deadline {
                 Some(deadline) => {
-                    // XNU converts calendar milliseconds to u64 nanoseconds.
-                    // Beyond that range, wait one representable interval and
-                    // let the shared driver re-read the original deadline.
-                    // Clock-set events also interrupt this interval.
-                    let (flags, milliseconds) = if deadline <= u64::MAX / 1_000_000 {
-                        (libc::NOTE_ABSOLUTE, deadline)
-                    } else {
-                        (
-                            0,
-                            deadline
-                                .saturating_sub(super::now_unix_ms())
-                                .min((u64::MAX / 2) / 1_000_000),
-                        )
-                    };
+                    // XNU forbids changing an existing timer between absolute
+                    // and relative modes. Use one relative representation for
+                    // every deadline, chunked to fit its nanosecond conversion.
+                    // Clock-set notifications re-read the wall-clock deadline;
+                    // continuous time also includes time spent asleep.
+                    let milliseconds = deadline
+                        .saturating_sub(super::now_unix_ms())
+                        .min((u64::MAX / 2) / 1_000_000);
                     self.change(&[event(
                         TIMER,
                         libc::EVFILT_TIMER,
                         libc::EV_ADD | libc::EV_ONESHOT,
-                        flags,
+                        libc::NOTE_MACH_CONTINUOUS_TIME,
                         isize::try_from(milliseconds).unwrap_or(isize::MAX),
                     )])?;
                 }
@@ -584,13 +570,8 @@ mod platform {
             }
             let mut tokens = [0_u8; 64];
             // SAFETY: drains posted tokens into a live buffer.
-            while unsafe {
-                libc::read(
-                    self.clock_set.as_raw_fd(),
-                    tokens.as_mut_ptr().cast(),
-                    tokens.len(),
-                )
-            } > 0
+            while unsafe { libc::read(self.clock_set, tokens.as_mut_ptr().cast(), tokens.len()) }
+                > 0
             {}
             Ok(())
         }
@@ -605,7 +586,8 @@ mod platform {
 
     #[test]
     fn native_timer_accepts_deadlines_across_its_calendar_range() -> io::Result<()> {
-        let waiter = Waiter::new()?;
+        let waiter = Waiter::new()
+            .map_err(|error| io::Error::new(error.kind(), format!("create wall alarm: {error}")))?;
         let calendar_end = u64::MAX / 1_000_000;
         for deadline in [
             0,
@@ -614,8 +596,12 @@ mod platform {
             calendar_end,
             calendar_end + 1,
             u64::MAX,
+            1,
+            u64::MAX,
         ] {
-            waiter.arm(Some(deadline))?;
+            waiter.arm(Some(deadline)).map_err(|error| {
+                io::Error::new(error.kind(), format!("arm deadline {deadline}: {error}"))
+            })?;
         }
         waiter.arm(None)
     }
