@@ -1,6 +1,6 @@
 # Shared coordination executor performance
 
-C.2 step 16 / R25. Production code and matched measurements: `64b447fc6b8227a3023103dfe68db1823d52577e`; containment base: `c302d2e0b98d2769827a18b1fe180924a045d836`. Main landed the executor and benchmark in `da4f54dd4d8a`, but omitted the CPU-discovery fallback and this report. The follow-up restores those two missing changes on main; its runtime source and benchmark match the measured version.
+C.2 step 16 / R25. Measured source: `64b447fc6b8227a3023103dfe68db1823d52577e`; containment base: `c302d2e0b98d2769827a18b1fe180924a045d836`. Main landed the executor and benchmark in `da4f54dd4d8a`, but omitted the CPU-discovery fallback and this report. The follow-up restores those two missing changes on main; its executor settings and benchmark match the measured version.
 
 The shared runtime now uses Tokio's multi-thread executor with one worker per `available_parallelism()`, worker-local runnable queues, work stealing and the existing OS readiness driver. When CPU discovery is denied, it uses one worker, matching the existing native worker service. The root `block_on` future stays on the calling thread. The blocking slot, persistence service and task cancellation/completion contracts are unchanged. There is no per-agent thread or application readiness loop. This changes async scheduling; it does not claim to replace every native file backend with a per-core proactor.
 
@@ -9,6 +9,8 @@ The shared runtime now uses Tokio's multi-thread executor with one worker per `a
 `cargo run --locked --release -p acyclic-native-runtime --example executor-perf -- 10001 before` retains the exact former constructor in the experiment. Omit `before` for production. Both modes use the same binary, compiler and operations. Each path warms once, then records 10,001 individual monotonic-clock observations and reports the median in nanoseconds. Operations run inside an executor task so children can use its local queue. Each operation includes task submission, its body and joining its result. The body is respectively ready completion, a scheduler yield, a oneshot send/receive, or a stored Notify permit.
 
 The calibration is raw Tokio submission/join of the identical operation on the same executor; the local measurement uses the public owned-task API. It measures scheduler/API overhead, including allocation and timing overhead. This is an executor floor, **not** a hardware I/O, storage API, loaded throughput, TUI paint or model TTFT claim. No latency assertion is imposed on shared CI hosts.
+
+The construction observations below are historical measurements of the recorded source. Current main additionally calls `raise_descriptor_limit()` in the public `coordination_runtime()` factory before building the executor. The benchmark's construction timer includes that initialization when run on current main; the recorded startup observations predate this extra work and do not measure the current startup path.
 
 ## Linux x86_64
 
