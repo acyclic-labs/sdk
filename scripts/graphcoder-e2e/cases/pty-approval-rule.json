@@ -7,8 +7,8 @@
   "extra_args": ["--approval-policy", "{{workspace}}/approval-policy.json"],
   "model": {"steps": [
     {"when": {}, "tools": [
-      {"id": "first", "name": "Write", "arguments": {"file_path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}},
-      {"id": "second", "name": "Write", "arguments": {"file_path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}}
+      {"id": "first", "name": "write", "arguments": {"path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}},
+      {"id": "second", "name": "write", "arguments": {"path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}}
     ]},
     {"when": {"tool_result": "repeat.txt"}, "text": ["RULE_REUSED_DONE"]}
   ]},
