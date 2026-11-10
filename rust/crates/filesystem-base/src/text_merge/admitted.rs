@@ -670,6 +670,27 @@ fn side_end<E>(
     )
 }
 
+fn append_conflict<W: Work>(
+    output: &mut Buffer<u8, W::Allocation>,
+    base: &[Line<'_>],
+    ours: &[Line<'_>],
+    theirs: &[Line<'_>],
+    labels: (&str, &str),
+    work: &mut W,
+) -> Result<(), W> {
+    output.append(b"<<<<<<< ", work)?;
+    output.append(labels.0.as_bytes(), work)?;
+    output.append(b"\n", work)?;
+    append_lines(output, ours, work)?;
+    output.append(b"||||||| original\n", work)?;
+    append_lines(output, base, work)?;
+    output.append(b"=======\n", work)?;
+    append_lines(output, theirs, work)?;
+    output.append(b">>>>>>> ", work)?;
+    output.append(labels.1.as_bytes(), work)?;
+    output.append(b"\n", work)
+}
+
 fn project<W: Work>(
     base: &[Line<'_>],
     ours: &[Line<'_>],
@@ -732,21 +753,14 @@ fn project<W: Work>(
             append_lines(&mut output, our_lines, work)?;
         } else {
             clean = false;
-            output.append(b"<<<<<<< ", work)?;
-            output.append(labels.0.as_bytes(), work)?;
-            output.append(b"\n", work)?;
-            append_lines(&mut output, our_lines, work)?;
-            output.append(b"||||||| original\n", work)?;
-            append_lines(
+            append_conflict(
                 &mut output,
                 base.get(start..end).ok_or(Error::Overflow)?,
+                our_lines,
+                their_lines,
+                labels,
                 work,
             )?;
-            output.append(b"=======\n", work)?;
-            append_lines(&mut output, their_lines, work)?;
-            output.append(b">>>>>>> ", work)?;
-            output.append(labels.1.as_bytes(), work)?;
-            output.append(b"\n", work)?;
         }
         position = end;
         our_position = our_end;
@@ -762,17 +776,18 @@ fn project<W: Work>(
 
 /// Merge on the original work and allocation owner. Scratch is linear in input
 /// lines, every growth admits simultaneous backings, and output keeps its guard.
+/// With no base, only equal sides agree; different additions remain conflicted.
 pub fn merge<W: Work>(
-    base: &str,
+    base: Option<&str>,
     ours: &str,
     theirs: &str,
     ours_label: &str,
     theirs_label: &str,
     work: &mut W,
 ) -> Result<Output<W::Allocation>, W> {
-    let selected = if ours == theirs || base == theirs {
+    let selected = if ours == theirs || base == Some(theirs) {
         Some(ours)
-    } else if base == ours {
+    } else if base == Some(ours) {
         Some(theirs)
     } else {
         None
@@ -787,6 +802,25 @@ pub fn merge<W: Work>(
             allocation,
         });
     }
+    let Some(base) = base else {
+        let ours = lines(ours, work)?;
+        let theirs = lines(theirs, work)?;
+        let mut output = Buffer::new(0, work)?;
+        append_conflict(
+            &mut output,
+            &[],
+            &ours.values,
+            &theirs.values,
+            (ours_label, theirs_label),
+            work,
+        )?;
+        let Buffer { values, allocation } = output;
+        return Ok(Output {
+            clean: false,
+            content: String::from_utf8(values).map_err(|_| Error::Overflow)?,
+            allocation,
+        });
+    };
     let trailing = super::result_has_trailing_newline(base, ours, theirs);
     let base = lines(base, work)?;
     let ours = lines(ours, work)?;
