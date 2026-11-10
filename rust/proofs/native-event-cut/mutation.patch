@@ -1,19 +1,13 @@
 diff --git a/rust/crates/harness/src/local/host_process/children.rs b/rust/crates/harness/src/local/host_process/children.rs
-index ca12a53125b..c6b9f1c71e7 100644
 --- a/rust/crates/harness/src/local/host_process/children.rs
 +++ b/rust/crates/harness/src/local/host_process/children.rs
-@@ -521,13 +521,7 @@ impl NativeChildren {
-                 // original progress edge. Exit cannot truncate a reply still
-                 // behind already captured bytes, nor wait for inherited EOF.
-                 Ok(true) => return Ok(None),
--                Ok(false) => {
--                    if let Some(line) = running.events.finish()
--                        && let Err(error) = running.record_event(line)
--                    {
--                        exited = Err(error.to_string());
--                    }
--                }
-+                Ok(false) => {}
-                 Err(error) => exited = Err(error.to_string()),
-             }
+@@ -707,9 +707,6 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
+         };
+         if count == 0 {
+             // Physical EOF and the sealed exit boundary share this final frame.
+-            if let Some(line) = running.events.finish() {
+-                running.record_event(line)?;
+-            }
+             return Ok(stderr.read_bytes > 0);
          }
+         let bytes = buffer

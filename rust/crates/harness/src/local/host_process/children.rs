@@ -517,13 +517,7 @@ impl NativeChildren {
                 // original progress edge. Exit cannot truncate a reply still
                 // behind already captured bytes, nor wait for inherited EOF.
                 Ok(true) => return Ok(None),
-                Ok(false) => {
-                    if let Some(line) = running.events.finish()
-                        && let Err(error) = running.record_event(line)
-                    {
-                        exited = Err(error.to_string());
-                    }
-                }
+                Ok(false) => {}
                 Err(error) => exited = Err(error.to_string()),
             }
         }
@@ -685,6 +679,7 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
             return Ok(stderr.read_bytes > 0);
         };
         if count == 0 {
+            // Physical EOF and the sealed exit boundary share this final frame.
             if let Some(line) = running.events.finish() {
                 running.record_event(line)?;
             }
