@@ -266,6 +266,9 @@ async fn journal(
             }
         }
         position = next;
+        if query.page.is_none() && query.settled {
+            return Ok(());
+        }
         if query.page.is_none()
             || (!query.settled && query.page.as_ref().is_some_and(|page| page.next.is_none()))
         {

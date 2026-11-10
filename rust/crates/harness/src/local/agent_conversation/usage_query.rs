@@ -17,6 +17,7 @@ pub struct UsageQuery {
     pending: Option<ModelUsageProjection<'static>>,
     totals: ModelUsageTotals,
     synchronized: bool,
+    closed: bool,
 }
 
 /// Where the current page's last uncompleted contribution came from. Keeping
@@ -39,6 +40,7 @@ impl Conversation {
             pending: None,
             totals: ModelUsageTotals::unpriced(),
             synchronized: false,
+            closed: false,
         }
     }
 }
@@ -65,6 +67,9 @@ impl UsageQuery {
     /// Original session/source failure, invalid contribution or exhausted input
     /// cursor. A failure preserves the prior totals, pending call and frontier.
     pub async fn advance(&mut self) -> Result<bool> {
+        if self.closed {
+            return futures::future::pending().await;
+        }
         let reply = self
             .conversation
             .connection
@@ -84,8 +89,8 @@ impl UsageQuery {
             return Err(unexpected());
         };
         let Some(mut page) = page else {
-            // The shared boundary admits None only for a non-waiting inbox-tail
-            // snapshot. The next request parks at this same original input.
+            // A settled inbox tail is the producer's terminal frontier.
+            self.closed = settled;
             let changed = !self.synchronized;
             self.input = input;
             self.synchronized = true;

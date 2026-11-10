@@ -85,13 +85,16 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
         let Delivered::Committed { inbox } = host.send(&root, &user(), &record).await? else {
             return Err("input was refused".into());
         };
-        let (ready, cut) = host.input_progress(&root, inbox).await?;
-        assert!(!ready);
+        let progress = host.input_progress(&root, inbox).await?;
+        assert!(!progress.settled);
+        assert!(!progress.closed);
         assert!(!settled(&provider, &within, &root).await?.settled);
-        let mut changes = acyclic_stream::records_only(provider.follow(cut).await?);
+        let mut changes = acyclic_stream::records_only(provider.follow(progress.follow).await?);
         assert!(host.runtime().drain().await.is_empty());
         assert!(changes.try_next().await?.is_some());
-        assert!(host.input_progress(&root, inbox).await?.0);
+        let progress = host.input_progress(&root, inbox).await?;
+        assert!(progress.settled);
+        assert!(!progress.closed);
         assert_eq!(
             settled(&provider, &within, &root).await?,
             Settlement {

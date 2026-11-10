@@ -494,15 +494,20 @@ pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Re
             .await
             .map_err(agent)?;
         loop {
-            let (settled, cut) = agents
+            let progress = agents
                 .input_progress(root, inbox.saturating_sub(1))
                 .await
                 .map_err(agent)?;
-            if settled {
+            if progress.settled {
                 return records(&**agents.provider(), root.conversation().map_err(agent)?).await;
             }
-            let mut changes =
-                acyclic_stream::records_only(agents.provider().follow(cut).await.map_err(agent)?);
+            let mut changes = acyclic_stream::records_only(
+                agents
+                    .provider()
+                    .follow(progress.follow)
+                    .await
+                    .map_err(agent)?,
+            );
             changes.try_next().await.map_err(agent)?.ok_or_else(|| {
                 Error::Storage("agent state follow ended before settlement".into())
             })?;
