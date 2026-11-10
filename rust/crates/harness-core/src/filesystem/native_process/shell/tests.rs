@@ -454,6 +454,9 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     // The old inheritance choice physically exposes both named credentials and
     // the ambient shell startup hook to exactly the same command.
     let mut broken = prepare(input, &mounts, configured(false), 1)?;
+    // This is the deliberately unconfined old path, not an attempt to make
+    // an authenticated grant accept an ambient environment.
+    broken.execution_grant = None;
     broken.inherit_environment = true;
     let output = capture::capture_with_custody(
         broken,

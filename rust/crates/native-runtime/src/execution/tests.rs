@@ -2,7 +2,7 @@ use super::*;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::{ProcessCommand as Command, ProcessStdio as Stdio, ProcessTree};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 #[allow(
     unsafe_code,
@@ -28,7 +28,11 @@ fn sandbox_denies_outside_write() {
         unsafe { libc::fcntl(inherited.as_raw_fd(), libc::F_SETFD, 0) },
         -1
     );
-    for access in [ExecutionAccess::WorkspaceWrite, ExecutionAccess::ReadOnly] {
+    for (access, primary_write, volume_write) in [
+        (ExecutionAccess::WorkspaceWrite, true, true),
+        (ExecutionAccess::ReadOnly, false, true),
+        (ExecutionAccess::ReadOnly, false, false),
+    ] {
         let grant = ExecutionGrant::composed(
             &workspace,
             access,
@@ -36,9 +40,22 @@ fn sandbox_denies_outside_write() {
             [PathBuf::from("/")],
             ExecutionNetwork::Off,
         )
-        .unwrap()
+        .unwrap();
+        let grant = if volume_write {
+            grant
+        } else {
+            grant.into_read_only()
+        }
         .compile_native()
         .unwrap();
+        let expanded = ExecutionGrant::new(
+            &workspace,
+            ExecutionAccess::WorkspaceWrite,
+            [],
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+        assert_eq!(grant.check_attenuation(&expanded).is_ok(), primary_write);
         let mut bypass = Command::new("/bin/sh");
         bypass
             .args(["-c", "printf leaked"])
@@ -48,7 +65,7 @@ fn sandbox_denies_outside_write() {
             .stdout(inherited.try_clone().unwrap())
             .stderr(Stdio::null());
         let refusal = ProcessTree::spawn_granted(bypass, &grant, None).unwrap_err();
-        assert!(refusal.get_ref().unwrap().is::<ExecutionRefusal>());
+        assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
         let mut command = Command::new("/bin/sh");
         command
             .args([
@@ -85,16 +102,12 @@ fn sandbox_denies_outside_write() {
         );
         assert_eq!(output, "confined");
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "original");
-        assert_eq!(
-            workspace.join("inside").exists(),
-            access == ExecutionAccess::WorkspaceWrite
-        );
-        assert_eq!(
-            volume.join("written").exists(),
-            access == ExecutionAccess::WorkspaceWrite
-        );
-        if access == ExecutionAccess::WorkspaceWrite {
+        assert_eq!(workspace.join("inside").exists(), primary_write);
+        assert_eq!(volume.join("written").exists(), volume_write);
+        if primary_write {
             std::fs::remove_file(workspace.join("inside")).unwrap();
+        }
+        if volume_write {
             std::fs::remove_file(volume.join("written")).unwrap();
         }
     }

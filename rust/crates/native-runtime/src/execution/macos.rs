@@ -54,7 +54,12 @@ impl Prepared {
             rule(&mut profile, "file-read* file-map-executable", root)?;
         }
         if access == ExecutionAccess::WorkspaceWrite {
-            for root in std::iter::once(&grant.workspace).chain(grant.write.entries()) {
+            for root in grant
+                .workspace_write
+                .then_some(&grant.workspace)
+                .into_iter()
+                .chain(grant.write.entries())
+            {
                 rule(&mut profile, "file-write*", root)?;
             }
         }

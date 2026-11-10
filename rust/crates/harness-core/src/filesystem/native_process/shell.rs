@@ -172,9 +172,14 @@ pub fn workspace_grant<T>(
         }
         // Standard temporary-file APIs stay inside the same writable view;
         // this adds no global /tmp allowance or per-agent mount/directory.
+        let temporary = if access == ExecutionAccess::ReadOnly {
+            write.first().unwrap_or(&primary)
+        } else {
+            &primary
+        };
         environment.insert(
             "TMPDIR".into(),
-            primary
+            temporary
                 .to_str()
                 .ok_or_else(|| Error::Invalid("sandbox temporary directory is not UTF-8".into()))?
                 .into(),

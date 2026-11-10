@@ -162,7 +162,7 @@ impl LocalHarness {
             } else {
                 ""
             };
-            let sandbox = if cfg!(target_os = "linux") {
+            let sandbox = if cfg!(any(target_os = "linux", target_os = "macos")) {
                 "Shell commands and lifecycle hooks run in a workspace-write OS sandbox."
             } else {
                 "Shell commands retain the host boundary; native OS confinement is not yet available."

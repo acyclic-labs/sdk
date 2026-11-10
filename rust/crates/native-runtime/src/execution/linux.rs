@@ -251,7 +251,12 @@ impl Policy {
                 0
             };
         // The caller has just bound and verified this original workspace.
-        prepared.path(root, workspace, grant.workspace.is_dir, meter)?;
+        let primary = if grant.workspace_write {
+            workspace
+        } else {
+            READ
+        };
+        prepared.path(root, primary, grant.workspace.is_dir, meter)?;
         for root in grant.write.entries() {
             prepared.path(&root.bind_controlled(meter)?, workspace, root.is_dir, meter)?;
         }

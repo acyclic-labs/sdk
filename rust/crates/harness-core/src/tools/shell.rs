@@ -64,7 +64,7 @@ impl ShellCommand {
 /// The one model-visible `shell` description on every OS. Each target's
 /// command language and path style come from the conversation's roster, so
 /// the tool contract never changes with the host or the target.
-pub const DESCRIPTION: &str = "Run a command on an execution target, in that target's listed shell language and path style. `target` names a target from the roster (the latest targets.json announced in the conversation), or user:<owner> for that user's home device; omitted, the command runs on your home target. The command runs in the calling task's composed workspace view; writes outside it are not captured. On Linux, a workspace-write OS sandbox confines the command and its descendants; approvals do not remove this boundary. Other platforms retain the host boundary";
+pub const DESCRIPTION: &str = "Run a command on an execution target, in that target's listed shell language and path style. `target` names a target from the roster (the latest targets.json announced in the conversation), or user:<owner> for that user's home device; omitted, the command runs on your home target. The command runs in the calling task's composed workspace view; writes outside it are not captured. On Linux and macOS, a workspace-write OS sandbox confines the command and its descendants; approvals do not remove this boundary. Other platforms retain the host boundary";
 /// Prepares the bounded model presentation before a backend commits its output.
 /// A streaming backend uses the resulting omission count to retain a complete
 /// spill even when the wire encoding, rather than the raw tail, needs truncation.
@@ -157,8 +157,8 @@ pub(super) fn presentation(fields: &serde_json::Map<String, serde_json::Value>) 
 }
 
 /// A command in the calling task's view; workspace selection is host-owned.
-/// Linux commands default to workspace-write OS confinement, independently of
-/// approvals. Other platforms currently retain the inherited host boundary.
+/// Linux and macOS commands default to workspace-write OS confinement, independently of
+/// approvals. Windows currently retains the inherited host boundary.
 /// Writes outside the task view are not captured. The cwd must remain in the view.
 #[derive(
     Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,

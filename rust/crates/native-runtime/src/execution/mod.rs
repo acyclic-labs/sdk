@@ -85,6 +85,7 @@ impl std::error::Error for ExecutionRefusal {}
 #[derive(Debug)]
 struct Grant {
     workspace: BoundPath,
+    workspace_write: bool,
     write: acyclic_collections::CompiledPrefixIndex<BoundPath, ()>,
     read: acyclic_collections::CompiledPrefixIndex<BoundPath, ()>,
     network: ExecutionNetwork,
@@ -114,7 +115,7 @@ impl Grant {
                 return Ok(true);
             }
         }
-        if self.workspace.contains(requested, meter)? {
+        if (!writable || self.workspace_write) && self.workspace.contains(requested, meter)? {
             return Ok(true);
         }
         for matches in roots.iter().flatten() {
@@ -385,7 +386,8 @@ impl ExecutionGrant {
 
     /// Binds one composed workspace, including independently writable volumes.
     /// Additional roots are explicit host authority, never command arguments.
-    /// Read-only access removes mutation from every root together. Roots are
+    /// `access` controls the primary root; additional write roots remain
+    /// writable. `into_read_only` removes mutation from every root together. Roots are
     /// pinned and indexed once; no process, mount, thread or watcher is created.
     /// Linux construction makes the host non-dumpable for its remaining
     /// lifetime. Embedders must not re-enable dumpability while guests exist.
@@ -407,11 +409,18 @@ impl ExecutionGrant {
         }
         let write = bind_roots(write)?;
         let read = bind_roots(read)?;
+        let workspace_write = access == ExecutionAccess::WorkspaceWrite;
+        let access = if workspace_write || !write.entries().is_empty() {
+            ExecutionAccess::WorkspaceWrite
+        } else {
+            ExecutionAccess::ReadOnly
+        };
         #[cfg(target_os = "linux")]
         let filter = linux::filter(&network)?;
         Ok(Self {
             policy: Arc::new(Grant {
                 workspace,
+                workspace_write,
                 write,
                 read,
                 network,
@@ -557,15 +566,16 @@ impl ExecutionGrant {
         // Preserve the primary workspace proof before any index work. Apart
         // from avoiding a lookup for the common case, this keeps admission's
         // original operation and examination ordering on its funding ledger.
-        if !self
-            .policy
-            .workspace
-            .contains(&requested.policy.workspace, meter)?
-            && !self.policy.contains(
-                &requested.policy.workspace,
-                requested.access == ExecutionAccess::WorkspaceWrite,
-                meter,
-            )?
+        let writable =
+            requested.access == ExecutionAccess::WorkspaceWrite && requested.policy.workspace_write;
+        if !((!writable || self.policy.workspace_write)
+            && self
+                .policy
+                .workspace
+                .contains(&requested.policy.workspace, meter)?)
+            && !self
+                .policy
+                .contains(&requested.policy.workspace, writable, meter)?
         {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }

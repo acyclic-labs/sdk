@@ -2,12 +2,12 @@
 
 The native process launch owner accepts explicit execution capabilities.
 The shared launch core enforces grants on supported Linux kernels and returns
-typed refusals on unsupported platforms. On Linux, stock workspace shell calls and lifecycle hooks default to
+typed refusals on unsupported platforms. On Linux and macOS, stock workspace shell calls and lifecycle hooks default to
 workspace-write confinement, independently of the approval policy (including
 GraphCoder's accept-all default). An explicitly authenticated execution grant
 continues to select its own boundary. Tool arguments cannot remove confinement.
-macOS and Windows adapters remain pending; those platforms retain their inherited
-host boundary and explicit native grants still refuse as unsupported.
+The Windows adapter remains pending; that platform retains its inherited host
+boundary and explicit native grants still refuse as unsupported.
 
 The default binds the selected primary workspace and its visible volume roots.
 Writable volumes can live outside the primary directory; read-only volume roots
@@ -29,7 +29,9 @@ Unsupported kernels refuse before guest execution, with no unconfined fallback.
 See the [kernel Landlock contract](https://docs.kernel.org/userspace-api/landlock.html).
 
 ExecutionGrant::composed binds additional writable roots in the same policy
-core. They share the existing prefix index, native identity fences, attenuation,
+core. Primary-root write permission is independent of additional writable roots;
+a read-only primary can coexist with writable volumes. `into_read_only` revokes
+all writes together. They share the existing prefix index, native identity fences, attenuation,
 read-only conversion and launch owner. Linux compiles these roots into the same
 Landlock ruleset; retained policies verify every root before launch. Cwd may
 select any granted root and is opened beneath that root's verified object.
