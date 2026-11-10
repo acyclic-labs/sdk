@@ -1831,7 +1831,7 @@ impl MergePreviewFixture {
                 crate::kernel::lookup_tree_entry(
                     fs.objects(),
                     entries,
-                    &LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 255)?,
+                    &LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec())?,
                     limits,
                     WorkBudget::UNBOUNDED,
                     &cancellation,

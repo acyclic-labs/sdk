@@ -142,7 +142,7 @@ async fn verify(
             store,
             before.file_table,
             after.file_table,
-            u32::MAX,
+            None,
             DecodeLimits::for_volume(config()),
             &mut work,
             &cancel,

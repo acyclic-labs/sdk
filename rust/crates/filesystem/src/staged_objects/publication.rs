@@ -17,9 +17,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .wait_for(self.spill_io.write())
             .await
             .map_err(crate::async_storage::object_error)?;
-        let PublicationScope {
-            objects, proven_at, ..
-        } = scope;
+        let PublicationScope { objects, .. } = scope;
         let unswept = self
             .collection
             .admit_held(
@@ -27,7 +25,6 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 &self.inner,
                 scope,
                 |id| self.index().objects.contains_key(id),
-                proven_at,
                 &mut work.accounting(),
             )
             .await

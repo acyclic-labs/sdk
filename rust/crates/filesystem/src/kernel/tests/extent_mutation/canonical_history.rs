@@ -192,7 +192,6 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
         &store,
         (leaf, Some(&0), None),
         &edits,
-        1,
         DecodeLimits::default(),
         &mut unchecked,
         &cancellation,

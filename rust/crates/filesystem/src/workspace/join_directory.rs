@@ -375,7 +375,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             &generation.workspace,
             GenerationSelector::Exact(generation.id),
             &path,
-            self.staging.volume.config.limits.maximum_read_bytes,
+            None,
             &mut scope,
             &cancellation,
         )

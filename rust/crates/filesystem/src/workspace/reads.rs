@@ -13,7 +13,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             self,
             GenerationSelector::Head,
             path,
-            maximum_bytes,
+            maximum_bytes.into(),
             work,
             cancellation,
         )

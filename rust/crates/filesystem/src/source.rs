@@ -568,16 +568,7 @@ async fn rebase_source_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<RebaseDecision, SourceError> {
     session
         .checkout
-        .rebase_head(
-            session
-                .workspace
-                .volume
-                .config()
-                .limits
-                .maximum_directory_page_entries,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .rebase_head(None, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .map(|receipt| receipt.value)
         .map_err(engine)

@@ -223,7 +223,7 @@ mod tests {
             )
             .map_err(|(error, _)| error)?;
             let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-            let (sender, receiver) = bounded::<u8>(8, Some(allocation));
+            let (sender, receiver) = channel::<u8>(Some(allocation));
             for value in 0..4 {
                 sender.try_send(value)?;
             }

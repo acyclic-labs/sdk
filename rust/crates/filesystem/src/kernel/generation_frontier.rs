@@ -104,13 +104,11 @@ async fn replay_frontier<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         {
                             return Err(FsError::VolumeMismatch);
                         }
-                        let maximum = u32::try_from(accounting.remaining()?.items_examined)
-                            .unwrap_or(u32::MAX);
                         let (change, allocation) = super::diff_generation_file_tables(
                             objects,
                             table,
                             root.value.file_table,
-                            maximum,
+                            None,
                             request.limits,
                             accounting,
                             cancellation,

@@ -228,12 +228,8 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
         .unwrap(),
         3 => encode_tree_page(
             &TreePage::Leaf(vec![TreeEntry {
-                name: LogicalName::new(
-                    NameEncoding::Utf8,
-                    format!("n{number:016x}").into_bytes(),
-                    256,
-                )
-                .unwrap(),
+                name: LogicalName::new(NameEncoding::Utf8, format!("n{number:016x}").into_bytes())
+                    .unwrap(),
                 file_id: FileId::from_bytes([2; 16]),
                 kind: FileKind::Regular,
             }]),
@@ -256,7 +252,7 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
         _ => {
             let binding = |parent: u8, name: String| bindings::Binding {
                 parent: FileId::from_bytes([parent; 16]),
-                name: LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 256).unwrap(),
+                name: LogicalName::new(NameEncoding::Utf8, name.into_bytes()).unwrap(),
             };
             let first = binding(2, format!("n{number:016x}"));
             let leaf = [first.clone(), binding(3, format!("p{}", payload.len()))];

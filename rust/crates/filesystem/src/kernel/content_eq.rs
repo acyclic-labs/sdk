@@ -127,19 +127,19 @@ pub(crate) async fn records_match_content<S: AsyncObjectStore>(
     store: &S,
     left: FileRecord,
     right: FileRecord,
-    bounds: (DecodeLimits, u64),
+    limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<bool, FsError> {
     let mut scratch = accounting.allocation_scope()?;
-    compare(store, left, right, bounds, &mut scratch, cancellation).await
+    compare(store, left, right, limits, &mut scratch, cancellation).await
 }
 
 async fn compare<S: AsyncObjectStore>(
     store: &S,
     left: FileRecord,
     right: FileRecord,
-    (limits, maximum_read_bytes): (DecodeLimits, u64),
+    limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<bool, FsError> {

@@ -112,7 +112,6 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .ok_or(MountSourceError::NativeWork(
                     crate::NativeTreeMaterializationError::InvalidLayout,
                 ))?
-                .0
                 .absorb(credit)
                 .map_err(MountSourceError::NativeWork)?;
         }
@@ -186,7 +185,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .cancelled = true;
         prepared.finish();
         if crate::native_mount::lazy::is_current_capture_observer_dispatch(std::ptr::from_ref(
-            self.capture_signal.gate.as_ref(),
+            &self.capture_signal.gate,
         ) as usize)
         {
             return Err(MountSourceError::Stale);
@@ -209,7 +208,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             }
             if gate.producers == 0 {
                 let recorded = if self.native_original.is_some() {
-                    let (poll_credit, final_credit) = self
+                    let final_credit = self
                         .cleanup_credit
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -221,7 +220,6 @@ impl<A, O> CheckoutMountSource<A, O> {
                         items_examined: 1,
                         ..crate::WorkCounters::UNCHARGED
                     });
-                    drop(poll_credit);
                     recorded
                 } else {
                     Ok(())

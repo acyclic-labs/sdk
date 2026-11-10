@@ -158,7 +158,13 @@ async fn disjoint_rebase_adoption_fences_reads_added_during_preparation() -> Tes
         .await?
         .ok_or("independent proposal was not certified")?;
     let (root, prepared) = local
-        .prepare_rebased_head(object, 8, Some(&certificate), &mut accounting, &cancel)
+        .prepare_rebased_head(
+            object,
+            Some(8),
+            Some(&certificate),
+            &mut accounting,
+            &cancel,
+        )
         .await?
         .ok_or("independent merge conflicted")?;
     // This is the actual interleaving of an observing handle: its old-base

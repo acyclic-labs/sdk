@@ -55,9 +55,10 @@ fn fact(input: &[u8], selector: u8) -> SourceFact {
         } else {
             DurableSourceMode::Tracking
         },
-        maximum_paths: u32::from_le_bytes(identity[..4].try_into().unwrap()).max(1),
-        maximum_extent_spans: u32::from_le_bytes(identity[4..8].try_into().unwrap()).max(1),
-        maximum_queued_changes: u32::from_le_bytes(identity[8..12].try_into().unwrap()).max(1),
+        maximum_paths: (selector & 32 == 0)
+            .then(|| u32::from_le_bytes(identity[..4].try_into().unwrap()).max(1)),
+        maximum_extent_spans: (selector & 64 == 0)
+            .then(|| u32::from_le_bytes(identity[4..8].try_into().unwrap()).max(1)),
         capture_policy: Digest::from_bytes(identity),
         state: match (selector / 2) % 11 {
             0 => DurableSourceState::Clean,
@@ -89,7 +90,17 @@ pub fn check(input: &[u8]) {
             "source version admitted"
         );
     }
-    for offset in [domain + 2 + 32, domain + 2 + 32 + 1 + 12 + 32] {
+    let paths = domain + 2 + 32 + 1;
+    let extents = paths + 1 + if value.maximum_paths.is_some() { 4 } else { 0 };
+    let state = extents
+        + 1
+        + if value.maximum_extent_spans.is_some() {
+            4
+        } else {
+            0
+        }
+        + 32;
+    for offset in [domain + 2 + 32, paths, extents, state] {
         let mut changed = bytes.clone();
         changed[offset] = 255;
         assert!(
@@ -97,19 +108,27 @@ pub fn check(input: &[u8]) {
             "unknown source tag admitted"
         );
     }
-    for bound in 0..3 {
+    for bound in 0..2 {
         let mut invalid = value;
         match bound {
             0 => invalid.maximum_paths = Some(0),
             1 => invalid.maximum_extent_spans = Some(0),
-            _ => invalid.maximum_queued_changes = 0,
+            _ => unreachable!(),
         }
         assert!(matches!(
             encode_source_fact(invalid),
             Err(SourceFactError::ZeroBound)
         ));
+        let present = if bound == 0 {
+            value.maximum_paths
+        } else {
+            value.maximum_extent_spans
+        };
+        if present.is_none() {
+            continue;
+        }
         let mut changed = bytes.clone();
-        let offset = domain + 2 + 32 + 1 + bound * 4;
+        let offset = if bound == 0 { paths } else { extents } + 1;
         changed[offset..offset + 4].fill(0);
         assert!(
             matches!(
@@ -121,7 +140,7 @@ pub fn check(input: &[u8]) {
     }
     if matches!(value.state, DurableSourceState::NeedsRescan(_)) {
         let mut changed = bytes;
-        changed[domain + 2 + 32 + 1 + 12 + 32 + 1] = 255;
+        changed[state + 1] = 255;
         assert!(
             decode_source_fact(&changed, 4096).is_err(),
             "unknown source reason admitted"
