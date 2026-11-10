@@ -21,6 +21,8 @@ filesystem confidentiality. Explicit host grants can restrict reads as before.
 The command still receives only the host's ordinary environment, excluding secret
 variables and startup hooks. The default TMPDIR names the primary workspace, so standard temporary-file APIs
 remain inside the writable view without a separate mount or directory.
+Linux grant construction also makes the trusted host process non-dumpable before launch, preventing same-user guests from reading its environment, memory or file-descriptor aliases through procfs. This is process-wide and is not restored at command exit; a concurrent command may still be active. This protects host-owned secrets without claiming confidentiality for arbitrary host files.
+
 The existing seccomp policy also denies filesystem metadata mutation such as
 chmod, including within the workspace; this limitation remains explicit.
 Unsupported kernels refuse before guest execution, with no unconfined fallback.

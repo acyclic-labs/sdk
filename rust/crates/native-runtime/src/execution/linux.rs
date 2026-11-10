@@ -47,6 +47,16 @@ const WRITE: u64 = (1 << 1)
 const FILE: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14);
 const CONNECT_TCP: u64 = 1 << 1;
 
+pub(super) fn protect_owner() -> io::Result<()> {
+    // A read-capable guest must not recover host secrets through procfs
+    // environ/mem/fd aliases. This protects the whole trusted host process,
+    // including its threads, before any guest can be launched. Do not restore
+    // dumpability when a command exits: other confined commands may be active.
+    // SAFETY: PR_SET_DUMPABLE takes an integer mode and no pointer arguments.
+    syscall(|| unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0).into() })?;
+    Ok(())
+}
+
 pub(super) fn open_beneath(
     root: &File,
     relative: &Path,

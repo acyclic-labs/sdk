@@ -391,6 +391,8 @@ impl ExecutionGrant {
         if matches!(&network, ExecutionNetwork::TcpPorts(ports) if ports.contains(&0)) {
             return Err(refused("TCP port zero is not a destination grant"));
         }
+        #[cfg(target_os = "linux")]
+        linux::protect_owner()?;
         let workspace = BoundPath::new(workspace)?;
         if !workspace.is_dir {
             return Err(refused("execution workspace is not a directory"));

@@ -123,6 +123,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
              printf temp > "$TMPDIR/tempfile";
              (printf escaped > escape) 2>/dev/null && exit 10;
              /bin/sh -c 'printf escaped > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11;
+             /bin/cat "/proc/$OWNER/environ" 2>/dev/null && exit 12;
              printf confined"#
                     .into(),
             ),
@@ -141,6 +142,9 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
             "OUTSIDE".into(),
             outside.to_str().expect("fixture path").into(),
         );
+        native
+            .environment
+            .insert("OWNER".into(), std::process::id().to_string());
         let output = run(
             ShellInput {
                 command,
