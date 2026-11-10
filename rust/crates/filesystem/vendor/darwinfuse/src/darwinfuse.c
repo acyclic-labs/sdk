@@ -188,7 +188,9 @@ static int do_mount_nfs(const char *socket_path, const char *mount_point,
         close(err_pipe[0]);
         dup2(err_pipe[1], STDERR_FILENO);
         close(err_pipe[1]);
-        execlp("mount_nfs", "mount_nfs",
+        /* Use the same built-in utility admitted by NativeMountProbe.
+         * Embedders need not include system administration tools in PATH. */
+        execl("/sbin/mount_nfs", "mount_nfs",
                "-o", opts,
                server,
                mount_point,
