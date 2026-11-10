@@ -174,6 +174,9 @@ enum Prompt {
 
 #[derive(Default)]
 struct View {
+    /// Retain one requested merge identity across transport uncertainty and
+    /// conflict resolution; a redraw or repeated command cannot replace it.
+    merge_operation: Option<acyclic_harness::OperationId>,
     transcript: TranscriptRows,
     /// Sent prompts not yet settled, by inbox sequence.
     pending: Vec<(u64, String)>,
@@ -382,6 +385,27 @@ impl View {
         request: CommandRequest,
     ) -> Result<(), Failure> {
         let id = acyclic_harness::OperationId::new().to_string();
+        if matches!(request, CommandRequest::Merge {}) {
+            let operation = *self
+                .merge_operation
+                .get_or_insert_with(acyclic_harness::OperationId::new);
+            match acyclic_harness::local::sessions::merge(
+                conversation.connection(),
+                &operation.to_string(),
+            )
+            .await
+            {
+                Ok(commit) => {
+                    self.merge_operation = None;
+                    self.notice = Some(commit.map_or_else(
+                        || "Session already integrated".into(),
+                        |commit| format!("Merged into checkout: {commit}"),
+                    ));
+                }
+                Err(error) => self.notice = Some(error.to_string()),
+            }
+            return Ok(());
+        }
         if let CommandRequest::Pause { scope } | CommandRequest::Resume { scope } = &request {
             let paused = matches!(request, CommandRequest::Pause { .. });
             match scope {

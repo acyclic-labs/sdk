@@ -165,6 +165,16 @@ pub enum AgentCommand {
         /// True to pause, false to resume.
         paused: bool,
     },
+    /// Integrate this session through the platform's ordinary filesystem
+    /// merge. Conflicts remain files in the destination checkout.
+    MergeSession {
+        /// Independent session selected for integration.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable merge request identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+    },
     /// Snapshot explicit paths in a named client session; wait on its original
     /// filesystem publication producer when `after` is still current.
     ClientFiles {
@@ -674,6 +684,7 @@ impl AgentCommand {
             | Self::Fork { parent: agent, .. }
             | Self::ForkSession { agent, .. }
             | Self::Pause { agent, .. }
+            | Self::MergeSession { agent, .. }
             | Self::Prompt { agent, .. }
             | Self::Cancel { agent, .. }
             | Self::Compact { agent, .. }
@@ -713,6 +724,7 @@ impl AgentCommand {
             Self::NewSession { .. } => "new_session",
             Self::ForkSession { .. } => "fork_session",
             Self::Pause { .. } => "pause",
+            Self::MergeSession { .. } => "merge_session",
             Self::AgentFiles { .. } => "agent_files",
             Self::PublishAgentFiles { .. } => "publish_agent_files",
             Self::Archive { .. } => "archive",

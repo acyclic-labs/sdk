@@ -85,6 +85,21 @@ pub trait Platform: ProviderPlatform + 'static {
         })
     }
 
+    /// Integrate a root through the platform's existing filesystem merge.
+    /// The directory credential and current policy were checked first.
+    fn merge_session<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        operation: crate::OperationId,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<String>>> {
+        let _ = (agent, operation);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "session merge is unavailable".into(),
+            ))
+        })
+    }
+
     /// The current policy for `principal` issuing `command`.
     fn policy<'a>(
         &'a self,
@@ -421,6 +436,7 @@ where
             AgentCommand::Sessions { .. }
                 | AgentCommand::NewSession { .. }
                 | AgentCommand::ForkSession { .. }
+                | AgentCommand::MergeSession { .. }
                 | AgentCommand::LatestSession {}
         ) || command
             .agent()
@@ -536,6 +552,26 @@ where
             AgentCommand::Pause { agent, paused } => {
                 agents.pause(self.within_tree(agent)?, *paused).await?;
                 Ok(AgentReply::Paused { paused: *paused })
+            }
+            AgentCommand::MergeSession { agent, id } => {
+                if !self.platform.sessions() || agent.parent().is_some() {
+                    return Err(Error::Record("session merge requires an independent root"));
+                }
+                let identity = crate::contract::canonical_json_bytes(&(by, id, agent))
+                    .map_err(|_| Error::Record("merge identity cannot encode"))?;
+                let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.session-merge.v1");
+                hash.update(&identity);
+                let mut operation = [0; 16];
+                hash.finalize_xof().fill(&mut operation);
+                let commit = self
+                    .platform
+                    .merge_session(
+                        self.within_tree(agent)?,
+                        crate::OperationId::from_bytes(operation),
+                    )
+                    .await
+                    .map_err(|error| Error::Turn(Box::new(error)))?;
+                Ok(AgentReply::Merged { commit })
             }
             AgentCommand::LatestSession {} => {
                 if !self.platform.sessions() {
@@ -1616,6 +1652,7 @@ where
                 AgentCommand::NewSession { .. }
                 | AgentCommand::ForkSession { .. }
                 | AgentCommand::Pause { .. }
+                | AgentCommand::MergeSession { .. }
                 | AgentCommand::Prompt { .. }
                 | AgentCommand::Cancel { .. }
                 | AgentCommand::Compact { .. }
