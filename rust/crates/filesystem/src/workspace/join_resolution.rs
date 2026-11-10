@@ -186,10 +186,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 return Ok(view);
             }
             if base.is_none()
-                && (self.git_metadata
-                    || ours.zip(theirs).is_some_and(|(ours, theirs)| {
-                        ours.metadata == theirs.metadata && ours.link_count == theirs.link_count
-                    }))
+                && ours.zip(theirs).is_some_and(|(ours, theirs)| {
+                    ours.link_count == theirs.link_count
+                        && (self.git_metadata || ours.metadata == theirs.metadata)
+                })
                 && let Some(view) = self
                     .regular_conflict_view(file_id, records, contents, accounting, cancellation)
                     .await?

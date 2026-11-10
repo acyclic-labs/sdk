@@ -185,12 +185,12 @@ impl<
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
+        let Some(parent) = parent_path(path) else {
+            return Ok(());
+        };
         crate::heap_future::in_borrowed_frame!(
             ctx,
             |ctx| async move {
-                let Some(parent) = parent_path(path) else {
-                    return Ok(());
-                };
                 let parent = self.namespace_path(parent, ctx)?;
                 let result = async {
                     for depth in 1..=parent.value.components().len() {
