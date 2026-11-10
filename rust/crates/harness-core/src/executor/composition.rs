@@ -81,7 +81,6 @@ impl StockExecutor {
         self
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn with_automatic_compaction(mut self) -> Result<Self> {
         if self.compaction.is_none() {
             self.compaction = Some(crate::context::CompactionPolicy::for_output(
