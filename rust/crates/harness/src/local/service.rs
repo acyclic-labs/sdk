@@ -328,6 +328,10 @@ mod tests {
         let result = async {
             let connection =
                 Connection::connect(&readiness.await.map_err(storage)?.map_err(storage)?).await?;
+            assert!(matches!(
+                connection.execute(&AgentCommand::LatestSession {}).await?,
+                AgentReply::LatestSession { agent: None }
+            ));
             let mut roots = std::collections::BTreeSet::from([connection.root().clone()]);
             for index in 0..4 {
                 let create = AgentCommand::NewSession {
@@ -341,6 +345,12 @@ mod tests {
                     return Err(Error::Invalid("missing replay".into()));
                 };
                 assert_eq!(agent, replay);
+                let AgentReply::LatestSession { agent: latest } =
+                    connection.execute(&AgentCommand::LatestSession {}).await?
+                else {
+                    return Err(Error::Invalid("missing latest session".into()));
+                };
+                assert_eq!(latest.as_ref(), Some(&agent));
                 assert!(
                     agent.parent().is_none(),
                     "sessions must be independent roots"

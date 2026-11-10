@@ -69,6 +69,12 @@ pub enum AgentReply {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
     },
+    /// Latest independent root from the placement's directory membership feed.
+    LatestSession {
+        /// No entry means the directory has no independent sessions yet.
+        #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
+        agent: Option<AgentPath>,
+    },
     /// Requested session files at one committed generation.
     ClientFiles {
         /// Exactly the requested paths at the selected committed generation.
@@ -470,6 +476,13 @@ fn validate_reply(
                         })
                     })
                 }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (AgentReply::LatestSession { agent }, AgentCommand::LatestSession {}) => {
+            return if agent.as_ref().is_none_or(|agent| agent.parent().is_none()) {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
