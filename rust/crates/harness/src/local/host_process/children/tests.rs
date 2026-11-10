@@ -580,7 +580,8 @@ fn exercise(host: &str, cwd: &Path) -> Result {
         );
         let file: crate::conversation::FileRef =
             serde_json::from_value(completed["events"].clone())?;
-        file.descriptor().verify(events.as_bytes(), &mut None)?;
+        context.push_str(events);
+        file.descriptor().verify(context.as_bytes(), &mut None)?;
     }
     assert!(failure.ends_with("native-diagnostic"), "{failure}");
     host_files::request(
