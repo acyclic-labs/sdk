@@ -1,6 +1,6 @@
 use super::*;
 
-const AUTHORED: &str = "authored-path-v1:";
+const AUTHORED: &str = "authored-path-v2:";
 
 /// Exercises both real decoders and the original native result custody.
 #[cfg(all(
