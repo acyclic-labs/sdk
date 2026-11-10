@@ -175,12 +175,9 @@ async fn custom_code_executor_preserves_other_native_declarations() -> Result<()
     let requests = model.requests();
     assert!(!requests[0].compose_tools);
     assert_eq!(requests[0].model_tools().count(), 2);
-    assert!(
-        !requests[0]
-            .messages
-            .iter()
-            .any(|message| message.content.notice_parts().is_some())
-    );
+    // Dynamic declarations are announced through the shared source even when
+    // a custom code executor keeps native model calls.
+    assert_eq!(tool_notice_table(&requests[0])[0]["name"], "example.echo");
     assert_eq!(result(&model)["code"], "export default 42");
     assert_eq!(echo.0.load(Ordering::SeqCst), 1);
     let mut forged = requests[0].clone();
