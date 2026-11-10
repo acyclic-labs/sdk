@@ -547,6 +547,7 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
             });
         let state = AgentState::adopted(path, &adopted(id(1))).expect("adopts");
         let input = Queued {
+            steering: false,
             inbox: 0,
             input: request("input")?.1,
         };

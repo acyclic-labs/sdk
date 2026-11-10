@@ -1242,6 +1242,7 @@ mod tests {
             &mut None,
         )?;
         let origin = ConversationEntry {
+            observed_through: 0,
             inbox: 1,
             input: TurnInput::Message {
                 from: Sender::User {
@@ -1260,6 +1261,7 @@ mod tests {
             notices: None,
         };
         let terminal = ConversationEntry {
+            observed_through: 0,
             inbox: 3,
             input: TurnInput::Message {
                 from: Sender::Agent {
@@ -1351,6 +1353,7 @@ mod tests {
             Err(CommandError::Invalid)
         ));
         let ordinary = ConversationEntry {
+            observed_through: 0,
             goal: None,
             ..origin
         };

@@ -140,7 +140,7 @@ mod tests {
         )?;
         let directive = crate::templates::directive(&selected, reader.as_ref()).await?;
         assert_eq!(
-            directive.messages[0].content,
+            directive.context.messages[0].content,
             crate::model::ModelContent::Text("Retain this exact directive.".into())
         );
         // A child reads its original parent-home template by the same exact

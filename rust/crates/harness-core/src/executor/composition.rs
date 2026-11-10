@@ -136,6 +136,23 @@ impl StockExecutor {
             .retain(|grant| !grant.starts_with("tool:call:"));
         self
     }
+
+    /// Intersect an immutable role ceiling with both model and executable
+    /// authority. A missing grant is never supplied by a template's prose.
+    pub(crate) fn with_tool_ceiling(mut self, allowed: &[String]) -> Result<Self> {
+        self.tool_scope.grants.0.retain(|grant| {
+            grant
+                .strip_prefix("tool:call:")
+                .is_none_or(|name| allowed.iter().any(|allowed| allowed == name))
+        });
+        if let Some((context, operation)) = &self.task_context {
+            self.task_context = Some((
+                Arc::new(context.scoped(self.tool_scope.grants().clone(), self.limits)?),
+                *operation,
+            ));
+        }
+        Ok(self)
+    }
 }
 
 impl StockExecutor {

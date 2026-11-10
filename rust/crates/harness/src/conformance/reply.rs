@@ -89,6 +89,7 @@ fn settle(inbox: u64, input: TurnInput) -> std::result::Result<TurnStep, Error> 
     };
     let output = (**body).clone();
     let entry = ConversationEntry {
+        observed_through: 0,
         inbox,
         input,
         output,

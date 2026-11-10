@@ -19,6 +19,7 @@ fn message(name: &str) -> Result<TurnInput> {
 
 fn entry(inbox: u64, input: TurnInput) -> Result<Vec<u8>> {
     Ok(ConversationEntry {
+        observed_through: inbox.saturating_add(1),
         inbox,
         input,
         output: file("output")?,
@@ -140,13 +141,14 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
         submit(&provider, send(&path, &user(), &record)?).await?;
     }
     let mut state = AgentState::adopted(path.clone(), &super::adopted(id(11))).expect("adopts");
-    let selected = select_boundary(&provider, &state, 0, 2, 1, Some(3)).await?;
+    let selected = select_boundary(&provider, &state.path, 2, Some(3)).await?;
     assert_eq!(selected.inputs.len(), 1);
     let mut settled = ConversationEntry::decode(&entry(1, message("initial")?)?)?;
     settled.steering = Some(SteeringTranscript {
         through: selected.through,
         file: file("transcript")?,
     });
+    settled = settled.with_observed_prefix(0);
     append(
         &provider,
         &path,
@@ -154,6 +156,7 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
     )
     .await?;
     state.queued.push_back(Queued {
+        steering: false,
         inbox: 2,
         input: message("steered")?,
     });

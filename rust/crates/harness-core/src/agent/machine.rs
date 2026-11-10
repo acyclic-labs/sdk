@@ -211,10 +211,12 @@ impl AgentState {
             || self
                 .overflow
                 .is_some_and(|first| sequence >= first && !self.taken.contains(&sequence))
-            || self
-                .turn
-                .as_ref()
-                .is_some_and(|turn| turn.inbox == sequence)
+            || self.turn.as_ref().is_some_and(|turn| {
+                turn.inbox == sequence
+                    || (sequence >= self.dropped_before
+                        && turn.inbox < sequence
+                        && sequence < self.steered_through)
+            })
     }
 
     /// Exclusive inbox prefix with no remaining turn or queued work, at the
@@ -720,6 +722,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             }
             let mut state = AgentState::adopted(path.clone(), &adopted)?;
             state.queued.extend(adopted.brief.map(|brief| Queued {
+                steering: false,
                 inbox: adopted.forked_at,
                 input: TurnInput::Brief {
                     brief: Box::new(brief),
@@ -854,10 +857,7 @@ pub(super) fn failed_step(
 // queued inputs retain their own turn and cannot release an input wait.
 fn wake_input(state: &AgentState) -> bool {
     if control(state).input {
-        matches!(
-            state.queued.front().map(|input| &input.input),
-            Some(TurnInput::Message { .. } | TurnInput::Notice { .. })
-        )
+        state.queued.iter().any(|input| input.steering)
     } else {
         !state.queued.is_empty()
     }
@@ -874,19 +874,9 @@ fn finalize_step(
     for out in &outs {
         if let Out::Steered(through) = out {
             state.steered_through = state.steered_through.max(*through);
-            state.queued.retain(|input| {
-                input.inbox >= *through
-                    || !matches!(
-                        input.input,
-                        TurnInput::Message { .. } | TurnInput::Notice { .. }
-                    )
-            });
-            if let Some(range) = &mut state.pending_notices {
-                range.start = range.start.max(*through);
-                if range.start >= range.end {
-                    state.pending_notices = None;
-                }
-            }
+            state
+                .queued
+                .retain(|input| input.inbox >= *through || !input.steering);
         }
     }
     let queued = wake_input(&state) || (!control(&state).input && state.overflow.is_some());
@@ -956,6 +946,21 @@ fn finalize_step(
             | Out::Archive { .. }
             | Out::Spawn { .. }
             | Out::GoalCompleted { .. } => {}
+        }
+    }
+    // Frozen initial notices remain valid while a turn is parked. At its
+    // settlement, consume that exact selection first, then retire any later
+    // notices already admitted at model boundaries.
+    if state.turn.is_none() {
+        for out in &outs {
+            if let Out::Steered(through) = out
+                && let Some(range) = &mut state.pending_notices
+            {
+                range.start = range.start.max(*through);
+                if range.start >= range.end {
+                    state.pending_notices = None;
+                }
+            }
         }
     }
     state.conversation_tail = state

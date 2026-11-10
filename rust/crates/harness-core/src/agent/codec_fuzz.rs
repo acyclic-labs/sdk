@@ -514,6 +514,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             seeds.push((
                 "conversation-restore",
                 written(&ConversationEntry {
+                    observed_through: 0,
                     inbox: 29,
                     input: super::TurnInput::Context {
                         from: Sender::Agent {

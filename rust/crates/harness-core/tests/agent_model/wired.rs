@@ -375,6 +375,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
                     &state,
                     2,
                     Some(Queued {
+                        steering: false,
                         inbox: 1,
                         input: TurnInput::ApprovalRequested {
                             child: parent.clone(),

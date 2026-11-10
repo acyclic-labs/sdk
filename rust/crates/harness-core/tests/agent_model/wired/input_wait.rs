@@ -1,6 +1,7 @@
 //! Successive waits through the production executor, inbox and filesystem journal.
 use super::*;
 use acyclic_harness_core::{
+    conversation::wire::Notice,
     filesystem::{Grants, StockExecutors},
     model::{ModelEvent, ToolCall},
     test_support::ScriptedEvent,
@@ -21,7 +22,7 @@ fn wait(id: &str, timeout: u64) -> ScriptedTurn {
 
 #[tokio::test]
 async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() -> Result {
-    for answer in [true, false] {
+    for (answer, reserved) in [(true, false), (false, false), (true, true)] {
         let path = AgentPath::root(&id(226));
         let stream = Arc::new(MemoryStream::default());
         let (filesystem, binding) = private_in(&stream, &path).await?;
@@ -30,6 +31,8 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             wait("first-input", 10),
             wait("second-input", 20),
             ScriptedTurn::Text("both waits finished".into()),
+            ScriptedTurn::Text("reserved turn finished".into()),
+            ScriptedTurn::Text("follow-up finished".into()),
         ]));
         let executors = StockExecutors::new(
             (
@@ -72,6 +75,21 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         host.create(&intent("input-waits"), adoption).await?;
         deliver(&host, &path, requested("make-body", &path)).await?;
         let body = answer_entry(&*stream, &path).await?;
+        host.send(
+            &path,
+            &super::super::user(),
+            &InboxRecord::Notice {
+                id: intent("quiet-before-wait"),
+                notice: NoticePayload::Quiet(Notice {
+                    source: "filesystem".into(),
+                    kind: "files.changed".into(),
+                    body: serde_json::json!({"paths":["before"]}),
+                    wake: false,
+                    coalesce_key: None,
+                }),
+            },
+        )
+        .await?;
         let first = deliver(&host, &path, requested("start-input-waits", &path)).await?;
         assert_eq!(model.requests().len(), 2);
         assert_eq!(
@@ -89,6 +107,31 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                 attachments: None,
             })
         };
+        if reserved {
+            host.send(
+                &path,
+                &super::super::user(),
+                &requested("independent-before-reply", &path),
+            )
+            .await?;
+            host.send(
+                &path,
+                &super::super::user(),
+                &InboxRecord::FollowUp(Message {
+                    from: super::super::user(),
+                    id: intent("reserved-follow-up"),
+                    body: Box::new(body.clone()),
+                    attachments: None,
+                }),
+            )
+            .await?;
+            host.drain(&path).await?;
+            assert_eq!(
+                model.requests().len(),
+                2,
+                "reserved inputs woke the parked model"
+            );
+        }
         let Delivered::Committed { inbox } = host
             .send(&path, &super::super::user(), &reply("first-reply"))
             .await?
@@ -110,8 +153,12 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             "the old reply released the second wait"
         );
         assert_eq!(second.steered_through, inbox + 1);
+        assert!(matches!(
+            reply(&*stream, &second, inbox + 1, &intent("first-reply"), inbox).await?,
+            Reply::Pending
+        ));
         assert!(
-            second.queued.is_empty(),
+            second.queued.len() == if reserved { 2 } else { 0 },
             "already admitted reply remained wakeable"
         );
         assert_eq!(
@@ -136,12 +183,17 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         }
         host.drain(&path).await?;
         let settled = host.state(&path).await?;
+        assert!(matches!(
+            reply(&*stream, &settled, inbox + 1, &intent("first-reply"), inbox).await?,
+            Reply::Answered { sequence: 1, .. }
+        ));
         assert_eq!(settled.phase, Phase::Idle);
         assert_eq!(
-            settled.conversation_tail, 2,
+            settled.conversation_tail,
+            if reserved { 4 } else { 2 },
             "resuming a wait invented another turn"
         );
-        assert_eq!(model.requests().len(), 4);
+        assert_eq!(model.requests().len(), if reserved { 6 } else { 4 });
     }
     Ok(())
 }

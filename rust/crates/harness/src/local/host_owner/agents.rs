@@ -500,6 +500,7 @@ impl HostDriver {
             .stage(agent, snapshot(agent, inbox), &bytes, bytes.len() as u64)
             .await?;
         let entry = ConversationEntry {
+            observed_through: agent.steered_through.max(inbox.saturating_add(1)),
             inbox,
             input,
             output,

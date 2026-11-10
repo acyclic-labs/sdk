@@ -388,6 +388,7 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
         notice: file.clone(),
     };
     let entry = ConversationEntry {
+        observed_through: 0,
         inbox: 1,
         input: input.clone(),
         output: file.as_ref().clone(),

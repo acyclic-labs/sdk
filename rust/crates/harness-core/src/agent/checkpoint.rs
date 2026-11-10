@@ -42,7 +42,7 @@ fn identity() -> &'static CodecIdentity {
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
             // V3 retains whether an actor wait also accepts inbox input.
-            version: "3".into(),
+            version: "4".into(),
         });
     &IDENTITY
 }
@@ -661,6 +661,7 @@ mod tests {
         }
         for input in turn_inputs() {
             ConversationEntry {
+                observed_through: 0,
                 inbox: u64::MAX,
                 input,
                 output: file(),
@@ -865,7 +866,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Failed { message: widest_text(MAX_MESSAGE_BYTES) }, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
+                let record = ConversationEntry { observed_through: u64::MAX, inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Failed { message: widest_text(MAX_MESSAGE_BYTES) }, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);

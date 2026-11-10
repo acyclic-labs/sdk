@@ -46,7 +46,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 18 settles a definitive turn failure as a failed conversation entry.
 /// Version 19 (retired) scoped status addresses by complete ancestry.
 /// Version 20 carries child settlement-to-wake measurements in status records.
-pub const RECORD_VERSION: u32 = 21;
+/// Version 21 adds input selection to actor waits.
+/// Version 22 indexes admitted replies across queued independent turns.
+pub const RECORD_VERSION: u32 = 22;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.

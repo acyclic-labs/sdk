@@ -82,14 +82,12 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
 ) -> Result<Reply, Error> {
     let conversation = state.path.conversation()?;
     let (mut low, mut high) = (state.conversation_base, state.conversation_tail);
-    let mut preceding = None;
     while low < high {
         let middle = low + (high - low) / 2;
         let entry = entry(provider, &conversation, middle).await?;
         match entry.inbox.cmp(&inbox) {
             std::cmp::Ordering::Less => {
                 low = middle + 1;
-                preceding = Some((middle, entry));
             }
             std::cmp::Ordering::Greater => high = middle,
             std::cmp::Ordering::Equal => {
@@ -104,21 +102,36 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
             }
         }
     }
-    if let Some((sequence, entry)) = preceding
+    // Independent turns can precede a steering reply in the inbox while the
+    // reply joins an earlier running turn. Its first admitting entry is found
+    // by this second monotonic key, never a backwards history scan.
+    let (mut low, mut high) = (state.conversation_base, state.conversation_tail);
+    let mut admitted = None;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        let value = entry(provider, &conversation, middle).await?;
+        if value.observed_through <= inbox {
+            low = middle + 1;
+        } else {
+            high = middle;
+            admitted = Some((middle, value));
+        }
+    }
+    if let Some((sequence, entry)) = admitted
         && entry
             .steering
             .as_ref()
             .is_some_and(|steering| inbox < steering.through)
     {
-        // Every Message before this admitted cursor passed the same boundary;
-        // controls are not messages and a FollowUp stops that boundary. Read
+        // Every ordinary Message before this cursor passed a boundary;
+        // reserved follow-ups and controls retain their own turns. Read
         // exactly the requested immutable source record, never the transcript.
         let record = inbox_record(provider, state.path.inbox()?, inbox)
             .await?
             .ok_or(Error::Record("admitted steering input is missing"))?;
-        return match record {
+        match record {
             InboxRecord::Message(message) if &message.id == id => {
-                goal_reply(
+                return goal_reply(
                     provider,
                     state,
                     sequence,
@@ -128,12 +141,15 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
                         id: message.id,
                     }),
                 )
-                .await
+                .await;
             }
-            _ => Err(Error::Conflict(
-                "the inbox sequence admitted another request",
-            )),
-        };
+            InboxRecord::Message(_) => {
+                return Err(Error::Conflict(
+                    "the inbox sequence admitted another request",
+                ));
+            }
+            _ => {}
+        }
     }
     if !state.input_pending(cursor, inbox) {
         return Ok(Reply::Dropped);

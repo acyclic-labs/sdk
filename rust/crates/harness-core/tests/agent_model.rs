@@ -1075,6 +1075,7 @@ impl TurnDriver for ToolSpawner {
 async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> Result {
     let (root, mut state) = one_below_the_child_limit()?;
     state.queued.push_back(Queued {
+        steering: false,
         inbox: 1,
         input: TurnInput::Approval { id: intent("q") },
     });
