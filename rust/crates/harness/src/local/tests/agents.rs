@@ -43,7 +43,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let connection = harness.connect().await?;
     let AgentReply::Spawned {
         agent: worker,
-        delivery: crate::agent::Delivered::Committed { inbox: ready },
+        delivery: crate::agent::Delivered::Committed { .. },
     } = connection
         .execute(&AgentCommand::Spawn {
             parent: connection.root().clone(),
@@ -58,11 +58,10 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     eprintln!("approval stage: worker spawned {worker:?}");
     let client = Conversation::open(connection.select(worker.clone()).await?);
     eprintln!("approval stage: worker selected");
-    let mut startup = ObservedConversation::observe(Arc::clone(&client), Some(0)).await?;
-    eprintln!("approval stage: startup observer opened");
-    startup.settled(ready).await?;
+    // Spawn's receipt names the parent's inbox. Join the worker's own
+    // committed input frontier rather than treating that receipt as its input.
+    settled(&harness, &worker).await?;
     eprintln!("approval stage: startup settled");
-    drop(startup);
     let opened_calls = provider.request_count();
     provider.extend([
         ScriptedTurn::Events(vec![
