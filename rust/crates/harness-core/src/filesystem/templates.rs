@@ -409,14 +409,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
                 None,
             )?;
             crate::templates::admit_child(creation, reader.as_ref(), name, ceiling).await?;
-            crate::templates::select(
+            let mut selected = crate::templates::select(
                 reader.as_ref(),
                 &home.volume,
                 &seed,
                 name,
                 crate::conversation::ContentAccess { ceiling, io: None },
             )
-            .await
+            .await?;
+            selected.model = selected.model.or_else(|| creation.model.clone());
+            Ok(selected)
         })
     }
 }

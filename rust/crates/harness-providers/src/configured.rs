@@ -1,8 +1,5 @@
 use crate::Registry;
-use acyclic_harness::{
-    local::{LocalHarnessConfig, ModelResolver},
-    preset::Preset,
-};
+use acyclic_harness::{local::LocalHarnessConfig, preset::Preset};
 use std::{path::PathBuf, sync::Arc};
 
 impl Registry {
@@ -37,10 +34,7 @@ impl Registry {
                 .collect(),
         })
         .map_err(|_| crate::invalid("cannot encode public model catalog"))?;
-        let models = ModelResolver::new(self.default_model().to_owned(), move |selection| {
-            let provider = Arc::new(self.resolve(selection)?);
-            Ok((provider.model().clone(), provider as _))
-        });
+        let models = self.into_model_resolver();
         Ok(
             LocalHarnessConfig::resolving(workspace, Arc::new(models), selection)
                 .system_file("sys/models/catalog.json", bytes.into())

@@ -79,6 +79,19 @@ impl StockExecutor {
         self.compaction = Some(policy);
         self
     }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn with_automatic_compaction(mut self) -> Result<Self> {
+        if self.compaction.is_none() {
+            self.compaction = Some(crate::context::CompactionPolicy::for_output(
+                None,
+                &self.model,
+                self.provider.as_ref(),
+                self.max_output_tokens,
+            )?);
+        }
+        Ok(self)
+    }
     /// Appends one validated context stage to the existing ordered pipeline.
     pub fn with_context_stage(
         mut self,

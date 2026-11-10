@@ -27,7 +27,6 @@ mod agent_settings;
 mod agents;
 #[cfg(any(test, feature = "native-execution"))]
 mod checkout_tools;
-mod compaction;
 mod config;
 pub(crate) mod context;
 pub mod continuation;
@@ -109,6 +108,7 @@ pub struct LocalHarness {
     approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     /// Absent for passive native-host coordination.
     agent: Option<(Model, Arc<dyn ModelProvider>)>,
+    models: Option<Arc<crate::model::ModelResolver>>,
     /// The sampling `agent.ts` selected for every model call.
     sampling: Option<crate::config::Sampling>,
     /// The verifier of a served tree's caller and clients; see
@@ -126,7 +126,7 @@ pub struct LocalHarness {
     context_read_observer:
         Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
     limits: Limits,
-    compaction: crate::context::CompactionPolicy,
+    compaction: Option<crate::context::CompactionPolicy>,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     mcp_diagnostics: Vec<crate::mcp::McpServerFailure>,
     goal_continuations: Option<crate::goal::GoalContinuationPolicy>,

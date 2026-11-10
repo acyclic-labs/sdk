@@ -15,6 +15,7 @@ mod publication_tests;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", not(loom)))]
 mod recovery_tests;
+pub(super) mod seed;
 
 #[cfg(target_os = "linux")]
 pub(super) fn recover_after_crash(root: &acyclic_fs::HeldRoot) -> Result<()> {
