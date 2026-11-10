@@ -174,10 +174,14 @@ async fn custom_code_executor_preserves_other_native_declarations() -> Result<()
     executor.execute(input(), &Journal::default()).await?;
     let requests = model.requests();
     assert!(!requests[0].compose_tools);
-    assert_eq!(requests[0].model_tools().count(), 2);
-    // Dynamic declarations are announced through the shared source even when
-    // a custom code executor keeps native model calls.
-    assert_eq!(tool_notice_table(&requests[0])[0]["name"], "example.echo");
+    // These fixed registrations are exposed directly to the model.
+    assert_eq!(
+        requests[0]
+            .model_tools()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["code", "example.echo"],
+    );
     assert_eq!(result(&model)["code"], "export default 42");
     assert_eq!(echo.0.load(Ordering::SeqCst), 1);
     let mut forged = requests[0].clone();
