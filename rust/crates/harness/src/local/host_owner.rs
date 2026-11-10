@@ -7,11 +7,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod agents;
 mod events;
+mod native_events;
 mod sessions;
 /// Exercises the production native session storage codecs.
 #[cfg(feature = "test-support")]
 pub use agents::validation::check_native_session_storage;
 pub use agents::{Control, TurnClaim};
+/// Exercises resume selection on the production streamed event source.
+#[cfg(any(test, feature = "test-support"))]
+pub use native_events::check_native_event_resume;
 pub use sessions::SessionAction;
 /// The production closed-log selector, exposed only for validation.
 #[cfg(feature = "test-support")]

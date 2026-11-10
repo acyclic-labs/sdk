@@ -132,7 +132,14 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
             corrupted[0] = if recovered { 0xff } else { b'!' };
             writer.write_all(&captured[..boundary])?;
             writer.write_all(&corrupted)?;
-            writer.write_all(&captured[boundary..])?;
+            // The original terminal is complete JSON without its final delimiter.
+            // Direct-child exit supplies the capture cut while this writer keeps
+            // the pipe open, so EOF is not needed to finish that frame.
+            writer.write_all(
+                captured[boundary..]
+                    .strip_suffix(b"\n")
+                    .ok_or("captured terminal delimiter absent")?,
+            )?;
             sessions.children.insert(reference.into(), running);
             sessions.ready.push(reference);
             // Small scratch pages force both real output passes to spend all
@@ -178,8 +185,8 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
                 .ok_or("captured child is still running")?;
             if recovered {
                 assert_eq!(
-                    completed["results"][0]["outcome"]["Succeeded"]["text"],
-                    "PAIRED_NATIVE_DONE"
+                    completed["results"][0]["outcome"]["Succeeded"]["text"], "PAIRED_NATIVE_DONE",
+                    "exited native terminal without LF was discarded"
                 );
             } else {
                 let failure = completed["results"][0]["outcome"]["Failed"]["message"]
@@ -229,7 +236,9 @@ async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
         )),
         ready = readiness => ready.map_err(|cause| failed("start native child workspace", cause)),
     };
-    let result = readiness.and_then(|()| body(host, &cwd));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        readiness.and_then(|()| body(host, &cwd))
+    }));
     let _ = shutdown.send(());
     let retirement = server.await;
     assert!(
@@ -237,10 +246,13 @@ async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
         "{}",
         failed(
             "retire native child workspace",
-            format!("owner={retirement:?}; fixture={result:?}")
+            format!("owner={retirement:?}")
         )
     );
-    result
+    match result {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 /// A root session for `host` and its children, as the root's native host
@@ -320,7 +332,16 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
             assert_eq!(running.claim.turn, previous.turn + 1);
             assert_eq!(fs::read(view.join("nested.txt"))?, b"turn");
         }
-        let mut command = completed_write(&view, &format!("turn-{turn}"));
+        let events = include_str!("../fixtures/codex-completed.jsonl");
+        let events = if turn == 0 {
+            events
+        } else {
+            events
+                .strip_suffix('\n')
+                .ok_or("captured terminal delimiter absent")?
+        };
+        crate::local::host_owner::check_native_event_resume(events.as_bytes());
+        let mut command = completed_write(&view, &format!("turn-{turn}"), events);
         let operation = running.claim.operation;
         running.process.spawn(&mut command, operation, None)?;
         wait_exit(&mut running)?;
@@ -346,7 +367,11 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
                 Some(running.claim.agent.clone())
             );
             assert_eq!(fs::read(inner_view.join("turn-0"))?, b"turn");
-            let mut command = completed_write(&inner_view, "nested.txt");
+            let mut command = completed_write(
+                &inner_view,
+                "nested.txt",
+                include_str!("../fixtures/codex-completed.jsonl"),
+            );
             inner
                 .process
                 .spawn(&mut command, inner.claim.operation, None)?;
@@ -399,12 +424,16 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
     Ok(())
 }
 
-fn completed_write(view: &Path, file: &str) -> acyclic_native_runtime::ProcessCommand {
+fn completed_write(
+    view: &Path,
+    file: &str,
+    events: &str,
+) -> acyclic_native_runtime::ProcessCommand {
     let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
     command
         .args(["-c", "printf turn > \"$1\" || { printf 'step=write native fixture: write failed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf '%s' \"$2\"", "fixture"])
         .arg(file)
-        .arg(include_str!("../fixtures/codex-completed.jsonl"))
+        .arg(events)
         .current_dir(view)
         .stdin(ProcessStdio::null())
         .stdout(ProcessStdio::piped())
