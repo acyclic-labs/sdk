@@ -482,13 +482,9 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
         };
         let cancel = acyclic_actors::guest::CancellationToken::new;
         let first = step(&driver, &path, Some(state), (2, 0), wake(1), cancel()).await?;
-        // An Idle -> Idle turn must announce creation of its conversation, while
-        // later appends already have the conversation follow as their event.
-        assert_eq!(first.status.is_some(), initial_tail == 0);
-        if let Some(status) = &first.status {
-            assert_eq!(status.conversation, initial_tail + 2);
-            assert_eq!(status.phase, Phase::Idle);
-        }
+        // The original actor checkpoint publishes the first conversation cut.
+        // Same-phase turns use that event rather than an extra status append.
+        assert!(first.status.is_none());
         assert_eq!(first.state.checkpoint, Some(initial_tail + 1));
         assert_eq!(first.state.conversation_tail, initial_tail + 2);
         let later = step(&driver, &path, Some(first.state), (3, 0), wake(2), cancel()).await?;
@@ -938,14 +934,37 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| "corpus name")?;
         let data = std::fs::read(entry.path())?;
-        assert_eq!(
-            Some(&data),
-            generated.get(name.as_str()),
-            "stale corpus seed {name}; recovery: bun scripts/generate-contracts.mjs write harness"
-        );
-        let Some((selector, bytes)) = data.split_first() else {
+        let (selector, bytes) = data.split_first().ok_or("empty agent corpus input")?;
+        if let Some(expected) = generated.get(name.as_str()) {
+            assert_eq!(
+                &data, expected,
+                "stale current corpus seed {name}; recovery: bun scripts/generate-contracts.mjs write harness"
+            );
+        } else {
+            // Historical production bytes remain immutable. Their original
+            // version is refused before the current payload reader runs.
+            let header = bytes
+                .get(..4)
+                .ok_or("historical agent frame has no version")?;
+            let version = u32::from_be_bytes(header.try_into()?);
+            assert_ne!(
+                version, RECORD_VERSION,
+                "unattributed current corpus seed {name}"
+            );
+            let refusal = match selector % 4 {
+                0 => InboxRecord::decode(bytes).map(drop),
+                1 => StatusRecord::decode(bytes).map(drop),
+                2 => Closed::decode(bytes).map(drop),
+                _ => return Err("historical agent corpus input is not a record".into()),
+            };
+            assert!(
+                matches!(refusal,
+                Err(acyclic_harness_core::agent::Error::UnsupportedRecordVersion(found))
+                    if found.found == version && found.expected == RECORD_VERSION),
+                "historical writer {name} lost its typed version refusal"
+            );
             continue;
-        };
+        }
         let accepted = match selector % 4 {
             0 => InboxRecord::decode(bytes)
                 .map(|record| record.encode().map(drop))
