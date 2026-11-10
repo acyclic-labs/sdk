@@ -3348,3 +3348,82 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn archive_reactivates_paused_roots_and_open_descendants_for_closing() -> Result<()> {
+    use crate::agent::{Delivered, InboxRecord, IntentId, Sender, SpawnOutcome, SpawnRequest};
+    use crate::client::{AgentCommand, AgentReply};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted(std::iter::empty::<super::ScriptedTurn>());
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?.without_default_tools(),
+        )
+        .await?,
+    );
+    let (agents, root) = harness.agents().await?;
+    let connection = harness.connect().await?;
+    let profile = harness
+        .agents
+        .get()
+        .ok_or_else(|| Error::Invalid("missing host".into()))?
+        .server()
+        .bound()
+        .child_profile(root, "worker")
+        .await
+        .map_err(agent)?;
+    let by = Sender::User {
+        principal: "archive-control".into(),
+    };
+    let record = InboxRecord::Spawn(SpawnRequest {
+        by: by.clone(),
+        id: IntentId::try_from("idle-child").map_err(agent)?,
+        brief: None,
+        profile,
+        history: None,
+    });
+    let Delivered::Committed { inbox } = agents.send(root, &by, &record).await.map_err(agent)?
+    else {
+        return Err(Error::Invalid("parent was closed".into()));
+    };
+    let (intent, _) = crate::agent::requested_child(root, inbox).map_err(agent)?;
+    let SpawnOutcome::Spawned { child } =
+        agents.spawned(root, inbox, &intent).await.map_err(agent)?
+    else {
+        return Err(Error::Invalid("child was refused".into()));
+    };
+    agents.pause(&child, true).await.map_err(agent)?;
+    agents.pause(root, true).await.map_err(agent)?;
+    let parent = Conversation::open(connection.clone());
+    let descendant = Conversation::open(connection.select(child.clone()).await?);
+    let mut parent_events = parent.observe(None).await?;
+    let mut child_events = descendant.observe(None).await?;
+    assert!(matches!(
+        connection
+            .execute(&AgentCommand::Archive {
+                agent: root.clone(),
+                id: IntentId::try_from("archive-paused-tree").map_err(agent)?
+            })
+            .await?,
+        AgentReply::Delivered { .. }
+    ));
+    for events in [&mut parent_events, &mut child_events] {
+        loop {
+            if let crate::local::Event::Status(status) = events.next().await?
+                && let crate::agent::Phase::Done { outcome } = status.phase
+            {
+                assert_eq!(outcome, crate::agent::AgentOutcome::Archived);
+                break;
+            }
+        }
+    }
+    assert!(agents.state(root).await.map_err(agent)?.closed);
+    assert!(agents.state(&child).await.map_err(agent)?.closed);
+    assert_eq!(
+        provider.request_count(),
+        0,
+        "closing a paused tree must never start its model"
+    );
+    Ok(())
+}
