@@ -429,6 +429,8 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             .map_err(agent)?
             .open_children
             .contains(&original_child)
+            .await
+            .map_err(agent)?
     );
     assert_eq!(
         workspace
