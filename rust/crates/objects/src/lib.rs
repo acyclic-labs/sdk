@@ -11,10 +11,8 @@ pub mod authorization {
     include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
 }
 pub use authorization::{AUTHORIZATION, ObjectsMethod};
-
 mod availability;
 pub mod batch;
-#[cfg(feature = "binary")]
 pub mod binary;
 mod blob;
 mod error;
@@ -22,7 +20,6 @@ mod error;
 #[doc(hidden)]
 pub use blob::codec_fuzz;
 pub mod conformance;
-#[cfg(any(objects_client, objects_server))]
 mod convert;
 #[cfg(feature = "conformance")]
 mod counted;
@@ -44,7 +41,6 @@ mod observation;
 mod operation;
 mod ownership;
 mod provider;
-#[cfg(objects_server)]
 pub mod route;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod s3;

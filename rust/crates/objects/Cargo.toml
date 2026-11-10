@@ -23,11 +23,8 @@ name = "objects-rpc-inventory"
 path = "src/bin/objects-rpc-inventory.rs"
 test = false
 [features]
-# Canonical binary messages over an already admitted account transport, both
-# as a client and as the route dispatch serving one.
-binary = []
 # The original JavaScript request owner over canonical binary messages.
-javascript = ["binary", "acyclic-auth/javascript", "acyclic-stream/js-bytes", "dep:wasm-bindgen"]
+javascript = ["acyclic-auth/javascript", "acyclic-stream/js-bytes", "dep:wasm-bindgen"]
 # Request accounting over `acyclic_stream::testing::Counted`.
 conformance = ["acyclic-stream/conformance"]
 test-support = ["acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
