@@ -22,7 +22,9 @@ impl CheckoutPublisher {
                             match change {
                                 ContentChange::CreateAbsent { .. } => Action::Create,
                                 ContentChange::UpdateExpected { .. } => Action::Write,
-                                ContentChange::DeleteExpected { .. } => Action::Delete,
+                                ContentChange::DeleteExpected { .. }
+                                | ContentChange::DeleteAt { .. }
+                                | ContentChange::Delete { .. } => Action::Delete,
                             },
                             change.path(),
                             self.tools.clock.now_unix_millis() / 1000,
