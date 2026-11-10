@@ -5,27 +5,40 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub(super) enum Source {
+    Cost,
     Diff(Option<String>),
     History(Option<String>),
+    /// One bounded range of the original immutable approval request file.
+    Approval {
+        status: u64,
+        offset: u64,
+    },
 }
 
 impl Source {
     pub(super) fn title(&self) -> &'static str {
         match self {
+            Self::Cost => "Subtree cost",
             Self::Diff(_) => "Diff",
             Self::History(_) => "History",
+            Self::Approval { .. } => "Approval",
         }
     }
 
     pub(super) fn newest(&self) -> Self {
         match self {
+            Self::Cost => Self::Cost,
             Self::Diff(_) => Self::Diff(None),
             Self::History(_) => Self::History(None),
+            Self::Approval { status, .. } => Self::Approval {
+                status: *status,
+                offset: 0,
+            },
         }
     }
 
     pub(super) fn follows_tail(&self) -> bool {
-        matches!(self, Self::Diff(None) | Self::History(None))
+        matches!(self, Self::Cost | Self::Diff(None) | Self::History(None))
     }
 }
 
@@ -37,9 +50,68 @@ pub(super) async fn load(
     conversation: Arc<Conversation>,
     rows: u32,
     source: Source,
+    prices: Arc<acyclic_harness::executor::ModelPrices>,
 ) -> Result<Panel, Failure> {
     match source {
+        Source::Cost => {
+            let totals = conversation
+                .usage_totals(
+                    acyclic_harness::local::agent_conversation::UsageScope::Tree(&|_| false),
+                    &prices,
+                )
+                .await?;
+            Ok(Panel::new(
+                vec![
+                    Line::raw("This agent and descendants · observed original calls"),
+                    Line::raw(format!(
+                        "{} calls · {} completed",
+                        totals.calls, totals.completed
+                    )),
+                    acyclic_harness::tui::usage_summary(&totals),
+                    Line::raw("/cost refreshes · Esc closes"),
+                ],
+                None,
+                false,
+            ))
+        }
         Source::Diff(cursor) => diff::query(conversation, rows, cursor).await,
+        Source::Approval { status, offset } => {
+            let (bytes, length) = conversation.approval_request(status, offset).await?;
+            // Read ranges can split a UTF-8 character. Leave its partial bytes
+            // at the next offset, rather than replacing or losing the action.
+            let text = match std::str::from_utf8(&bytes) {
+                Ok(text) => text,
+                Err(error)
+                    if error.error_len().is_none() && offset + (bytes.len() as u64) < length =>
+                {
+                    std::str::from_utf8(&bytes[..error.valid_up_to()])?
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let end = offset + text.len() as u64;
+            if end == offset && end < length {
+                return Err("approval request range made no progress".into());
+            }
+            let mut lines = vec![Line::raw(
+                "Original action · y once · r exact rule · n deny · Esc cancels",
+            )];
+            lines.push(Line::raw(
+                "r: same tool, arguments and target in this agent and policy",
+            ));
+            lines.extend(
+                text.lines()
+                    .map(|line| Line::raw(acyclic_harness::tui::display_text(line).into_owned())),
+            );
+            lines.push(Line::raw("PgDn: more · PgUp: start"));
+            Ok(Panel::new(
+                lines,
+                (end < length).then_some(Source::Approval {
+                    status,
+                    offset: end,
+                }),
+                offset != 0,
+            ))
+        }
         Source::History(cursor) => {
             let continued = cursor.is_some();
             let history = conversation
@@ -80,8 +152,13 @@ mod tests {
 
     fn page(source: &Source) -> Panel {
         let next = match source {
+            Source::Cost => Source::Cost,
             Source::Diff(_) => Source::Diff(Some("original-diff-cut".into())),
             Source::History(_) => Source::History(Some("original-history-cut".into())),
+            Source::Approval { status, .. } => Source::Approval {
+                status: *status,
+                offset: 32,
+            },
         };
         Panel::new(vec![Line::raw("original source row")], Some(next), false)
     }

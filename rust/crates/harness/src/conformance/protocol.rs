@@ -194,7 +194,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
                     operation_id,
                     action_digest: digest,
                 },
-                approved: true,
+                verdict: true.into(),
                 reason: None,
             };
             if call(endpoint, &decision(wrong)).await?.is_ok() || endpoint.effects().await? != 0 {

@@ -2,7 +2,10 @@
 use super::{Conversation, failed, unexpected};
 use crate::{
     Error, Result,
-    executor::{ModelCostEstimate, ModelUsageProjection, ModelUsageRecord, ModelUsageTotals},
+    executor::{
+        ContextUsage, ModelCostEstimate, ModelPrices, ModelPurpose, ModelUsageProjection,
+        ModelUsageRecord, ModelUsageTotals,
+    },
 };
 use acyclic_harness_client::{AgentCommand, AgentReply};
 use std::{borrow::Cow, sync::Arc};
@@ -18,6 +21,10 @@ pub struct UsageQuery {
     totals: ModelUsageTotals,
     synchronized: bool,
     closed: bool,
+    context: Option<ContextUsage>,
+    model: Option<(String, String)>,
+    open_children: Option<u64>,
+    prices: Arc<ModelPrices>,
 }
 
 /// Where the current page's last uncompleted contribution came from. Keeping
@@ -33,14 +40,34 @@ impl Conversation {
     /// is inferred from a model, catalog, account or incoming row.
     #[must_use]
     pub fn usage_query(self: &Arc<Self>) -> UsageQuery {
+        self.usage_projection(Arc::default(), ModelUsageTotals::unpriced())
+    }
+
+    /// Start a fresh projection against one admitted immutable price file.
+    /// Repricing is an explicit new query; no price lookup or timer is added
+    /// to the original journal follow, and original usage remains unchanged.
+    pub fn usage_query_with_prices(self: &Arc<Self>, prices: Arc<ModelPrices>) -> UsageQuery {
+        let totals = prices.totals();
+        self.usage_projection(prices, totals)
+    }
+
+    fn usage_projection(
+        self: &Arc<Self>,
+        prices: Arc<ModelPrices>,
+        totals: ModelUsageTotals,
+    ) -> UsageQuery {
         UsageQuery {
             conversation: Arc::clone(self),
             input: 0,
             end: 0,
             pending: None,
-            totals: ModelUsageTotals::unpriced(),
+            totals,
             synchronized: false,
             closed: false,
+            context: None,
+            model: None,
+            open_children: None,
+            prices,
         }
     }
 }
@@ -50,6 +77,26 @@ impl UsageQuery {
     #[must_use]
     pub const fn totals(&self) -> &ModelUsageTotals {
         &self.totals
+    }
+
+    /// Latest original prepared-context accounting at this query's frontier.
+    #[must_use]
+    pub const fn context(&self) -> Option<ContextUsage> {
+        self.context
+    }
+
+    /// Direct open-child count from the same actor cut that fences this page.
+    #[must_use]
+    pub const fn open_children(&self) -> Option<u64> {
+        self.open_children
+    }
+
+    /// Latest response-model admission, independent of a provider response label.
+    #[must_use]
+    pub fn model(&self) -> Option<(&str, &str)> {
+        self.model
+            .as_ref()
+            .map(|(provider, model)| (provider.as_str(), model.as_str()))
     }
 
     /// The initial bounded replay has reached a quiet live input or inbox tail.
@@ -78,21 +125,25 @@ impl UsageQuery {
                 input: self.input,
                 after: self.end,
                 wait: self.synchronized,
+                observed_children: self.open_children,
             })
             .await?;
         let AgentReply::Usage {
             input,
             page,
             settled,
+            open_children,
         } = reply
         else {
             return Err(unexpected());
         };
         let Some(mut page) = page else {
-            // A settled inbox tail is the producer's terminal frontier.
             self.closed = settled;
-            let changed = !self.synchronized;
+            // An idle tail still carries the original actor's metadata. The
+            // next request parks on both inbox and actor continuations.
+            let changed = !self.synchronized || self.open_children != Some(open_children);
             self.input = input;
+            self.open_children = Some(open_children);
             self.synchronized = true;
             return Ok(changed);
         };
@@ -105,14 +156,23 @@ impl UsageQuery {
             input
         };
         let synchronized = self.synchronized || (!settled && page.next.is_none());
-        let changed = !page.items.is_empty() || synchronized != self.synchronized;
+        let changed = !page.items.is_empty()
+            || page.context.is_some()
+            || self.open_children != Some(open_children)
+            || synchronized != self.synchronized;
+        let model = page
+            .items
+            .iter()
+            .rev()
+            .find(|row| row.purpose == ModelPurpose::Response)
+            .map(|row| (row.provider.clone(), row.model.clone()));
         if !page.items.is_empty() {
             // One fixed-size copy makes contribution admission atomic. Empty
             // pages advance only their frontier, without copying any totals.
             let mut totals = self.totals.clone();
             let mut pending = Pending::Existing;
             for (index, row) in page.items.iter().enumerate() {
-                let projection = row.estimate(None).map_err(failed)?;
+                let projection = row.estimate(self.prices.price(row)).map_err(failed)?;
                 if row.completed {
                     match pending {
                         Pending::Existing => totals.replace(
@@ -120,7 +180,9 @@ impl UsageQuery {
                             &projection,
                         ),
                         Pending::Row(previous) => totals.replace(
-                            &page.items[previous].estimate(None).map_err(failed)?,
+                            &page.items[previous]
+                                .estimate(self.prices.price(&page.items[previous]))
+                                .map_err(failed)?,
                             &projection,
                         ),
                         Pending::None => return Err(missing_admission()),
@@ -137,7 +199,7 @@ impl UsageQuery {
                     Pending::Existing => {}
                     Pending::None => self.pending = None,
                     Pending::Row(index) => {
-                        self.pending = Some(unpriced(page.items.swap_remove(index))?);
+                        self.pending = Some(owned(page.items.swap_remove(index), &self.prices)?);
                     }
                 }
             }
@@ -145,6 +207,13 @@ impl UsageQuery {
         }
         if finished {
             self.pending = None;
+        }
+        self.open_children = Some(open_children);
+        if let Some(context) = page.context {
+            self.context = Some(context);
+        }
+        if let Some(model) = model {
+            self.model = Some(model);
         }
         self.input = next_input;
         self.end = if finished { 0 } else { page.end };
@@ -160,12 +229,12 @@ fn missing_admission() -> Error {
 /// Transfer the original row into its shared projection without cloning the
 /// row. Only the shared estimator defines values and provenance. With no price
 /// selected, neither optional provenance string allocates.
-fn unpriced(row: ModelUsageRecord) -> Result<ModelUsageProjection<'static>> {
+fn owned(row: ModelUsageRecord, prices: &ModelPrices) -> Result<ModelUsageProjection<'static>> {
     let ModelUsageProjection {
         version,
         estimated_cost,
         ..
-    } = row.estimate(None).map_err(failed)?;
+    } = row.estimate(prices.price(&row)).map_err(failed)?;
     let ModelCostEstimate {
         price_revision,
         effective_at,

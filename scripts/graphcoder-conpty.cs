@@ -23,14 +23,18 @@ public static class GraphcoderConPty {
             RequireNativeCustody();
             step = "arguments";
             // Typed options only; the caller's owner holds the one deadline.
-            const string usage = "usage: conpty BINARY WORKSPACE CATALOG SETTINGS MODEL [--resume] [--operation ID] [--diagnostic-records N] [--diagnostic-record-bytes B]";
+            const string usage = "usage: conpty BINARY WORKSPACE CATALOG SETTINGS MODEL [--resume] [--operation ID] [--approval-policy PATH] [--prices PATH] [--diagnostic-records N] [--diagnostic-record-bytes B]";
             if (args.Length < 5) throw new ArgumentException(usage);
             var options = new StringBuilder(); bool resume = false, operation = false;
+            var paths = new System.Collections.Generic.HashSet<string>();
             var diagnostics = new System.Collections.Generic.HashSet<string>();
             for (int index = 5; index < args.Length; index++) {
                 if (args[index] == "--resume" && !resume) { resume = true; options.Append(" --resume"); }
                 else if (args[index] == "--operation" && !operation && index + 1 < args.Length && args[index + 1].Length != 0) {
                     operation = true; options.Append(" --operation " + Quote(args[++index]));
+                } else if ((args[index] == "--approval-policy" || args[index] == "--prices")
+                    && paths.Add(args[index]) && index + 1 < args.Length && Path.IsPathRooted(args[index + 1])) {
+                    options.Append(" " + args[index] + " " + Quote(args[++index]));
                 } else if ((args[index] == "--diagnostic-records" || args[index] == "--diagnostic-record-bytes")
                     && diagnostics.Add(args[index]) && index + 1 < args.Length) {
                     ulong value;

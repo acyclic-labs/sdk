@@ -46,6 +46,8 @@ test("ConPTY launch contract carries the shared terminal arguments and refuses o
   assert.deepEqual(conptyArgs("B", ["--operation", "id", ...args, "--resume"]).slice(5), ["--resume", "--operation", "id"]);
   assert.deepEqual(conptyArgs("B", [...args, "--diagnostic-records", "16", "--diagnostic-record-bytes", "4096"]).slice(5),
     ["--diagnostic-records", "16", "--diagnostic-record-bytes", "4096"]);
+  assert.deepEqual(conptyArgs("B", [...args, "--approval-policy", "P"]).slice(5), ["--approval-policy", "P"]);
+  assert.deepEqual(conptyArgs("B", [...args, "--prices", "P"]).slice(5), ["--prices", "P"]);
   // Negative controls: the native host has no channel for these.
   assert.throws(() => conptyArgs("B", [...args, "--operation", "a", "--operation", "b"]), /cannot launch argument --operation/);
   assert.throws(() => conptyArgs("B", [...args, "--operation"]), /cannot launch argument --operation/);

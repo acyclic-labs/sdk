@@ -973,6 +973,8 @@ async fn spawn_and_archive() -> Result {
     assert_eq!(observed.path, child);
     assert_eq!(observed.parent.as_ref(), Some(&root));
 
+    assert_eq!(host.input_progress(&root, 0).await?.open_children, 1);
+
     let by = intent("archive");
     assert!(matches!(
         host.archive(&root, &user(), &by).await?,

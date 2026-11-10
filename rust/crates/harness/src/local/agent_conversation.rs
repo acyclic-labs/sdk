@@ -28,7 +28,7 @@ use crate::{
     },
     conversation::FileRef,
     executor::TurnOutput,
-    interaction::{ApprovalBinding, Interaction},
+    interaction::{ApprovalBinding, ApprovalVerdict, Interaction},
     model::ModelContent,
 };
 pub use acyclic_harness_client::ExecutionQuery;
@@ -308,13 +308,13 @@ impl Conversation {
         &self,
         request: &IntentId,
         binding: ApprovalBinding,
-        approved: bool,
+        verdict: ApprovalVerdict,
     ) -> Result<()> {
         self.committed(&AgentCommand::Decide {
             agent: self.agent().clone(),
             id: request.clone(),
             binding,
-            approved,
+            verdict,
             reason: None,
         })
         .await
@@ -483,6 +483,25 @@ impl Conversation {
             }
             UsageScope::Agent => usage::visit_agent(&self.connection, self.agent(), visit).await,
         }
+    }
+
+    /// Fold one explicitly selected agent or subtree's original usage. Uses
+    /// the same bounded visitor and shared estimator as the JSONL exporter;
+    /// retains only fixed totals and the active traversal path. Missing usage
+    /// or price observations remain unknown, including after provider failure.
+    pub async fn usage_totals(
+        &self,
+        scope: UsageScope<'_>,
+        prices: &crate::executor::ModelPrices,
+    ) -> Result<crate::executor::ModelUsageTotals> {
+        let mut totals = prices.totals();
+        self.visit_usage(scope, &mut |row| {
+            totals
+                .push(&row.estimate(prices.price(row)).map_err(failed)?)
+                .map_err(failed)
+        })
+        .await?;
+        Ok(totals)
     }
 
     /// A settled turn as a view shows it: its prompt, its tool calls and its
