@@ -93,7 +93,10 @@ async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Res
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
             None,
         );
-        client.register_credential(0, credential(&server.session_resource()))?;
+        client.register_credential(
+            0,
+            credentials(&[server.resource(), &server.session_resource()]),
+        )?;
         let before = stream.requests();
         let Ok(AgentReply::Children { items, next }) = call(
             &client,

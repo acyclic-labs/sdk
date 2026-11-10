@@ -16,6 +16,7 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
     writer
         .create(
             AuthoredMutation::CreateSymbolicLink {
+                file_id: None,
                 path: path("link")?,
                 target: OwnedBytes::from_static(b"first"),
                 metadata: FileMetadata::default(),
@@ -44,6 +45,7 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
         writer
             .create(
                 AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: path_parts(&[directory, name])?,
                     bytes: OwnedBytes::copy_from_slice(bytes),
                     metadata: FileMetadata::default(),

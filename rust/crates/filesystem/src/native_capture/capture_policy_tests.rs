@@ -147,6 +147,7 @@ async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
     let file = path("/file")?;
     let mutations = vec![
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: file.clone(),
             bytes: acyclic_stream::OwnedBytes::from_static(b"a"),
             metadata: FileMetadata::default(),

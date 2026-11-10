@@ -73,6 +73,7 @@ pub(super) fn kernel_bench(args: &[String]) -> Result<(), Failure> {
             let created = checkout
                 .apply_authored_transaction(
                     vec![AuthoredMutation::CreateFile {
+                        file_id: None,
                         path: file_path(index)?,
                         bytes: acyclic_stream::OwnedBytes::new(),
                         metadata: FileMetadata::default(),

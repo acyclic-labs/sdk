@@ -211,6 +211,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             }
         } else {
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path,
                 bytes: acyclic_stream::OwnedBytes::new(),
                 metadata: FileMetadata::default(),

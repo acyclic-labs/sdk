@@ -327,6 +327,7 @@ fn folded_collisions_leave_unrelated_files_and_descendants_accessible() -> TestR
                 metadata: FileMetadata::default(),
             },
             crate::AuthoredMutation::CreateFile {
+                file_id: None,
                 path: path("/Nested/inside")?,
                 bytes: acyclic_stream::OwnedBytes::new(),
                 metadata: FileMetadata::default(),

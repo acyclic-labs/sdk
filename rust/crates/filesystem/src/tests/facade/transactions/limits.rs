@@ -15,6 +15,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     let file = path("bounded")?;
     let failure = (checkout.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: file.clone(),
             bytes: OwnedBytes::from_static(b"12345"),
             metadata: FileMetadata::default(),
@@ -33,6 +34,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
 
     let file_id = (checkout.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: file.clone(),
             bytes: OwnedBytes::from_static(b"1234"),
             metadata: FileMetadata::default(),
@@ -145,6 +147,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
 
     let symbolic = (checkout.create(
         AuthoredMutation::CreateSymbolicLink {
+            file_id: None,
             path: path("link")?,
             target: OwnedBytes::from_static(b"12345"),
             metadata: FileMetadata::default(),
@@ -314,6 +317,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     let mut manual_checkout = open_checkout(&first, writable_manual(), &cancellation).await?;
     (manual_checkout.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("dirty")?,
             bytes: OwnedBytes::from_static(b"dirty"),
             metadata: FileMetadata::default(),

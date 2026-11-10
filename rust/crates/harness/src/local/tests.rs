@@ -120,7 +120,11 @@ async fn request_text(
             }
         }
         for (file, policy) in message.content.file_parts() {
-            if matches!(policy, crate::model::FileProjectionPolicy::BoundedFull) {
+            if matches!(
+                policy,
+                crate::model::FileProjectionPolicy::BoundedFull
+                    | crate::model::FileProjectionPolicy::ProjectInstructions(_)
+            ) {
                 let bytes = reader
                     .read(file, file.descriptor().byte_length(), None, None)?
                     .await?;

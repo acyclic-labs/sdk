@@ -32,6 +32,7 @@ pub(super) async fn create(
     Ok(checkout
         .create(
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: path(name)?,
                 bytes,
                 metadata: FileMetadata::default(),

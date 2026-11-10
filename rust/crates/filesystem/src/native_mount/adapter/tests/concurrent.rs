@@ -345,6 +345,7 @@ fn native_create_adoption_compares_exact_names_without_coalescing_identities()
                 apply_authored(
                     &mut candidate.checkout,
                     &AuthoredMutation::CreateFile {
+                        file_id: None,
                         path: name.clone(),
                         metadata: metadata(),
                         bytes: OwnedBytes::new(),

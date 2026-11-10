@@ -72,13 +72,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     path,
                     bytes: content,
                     metadata,
+                    file_id,
                 } => {
-                    let file_id = self.authored_file_id(
-                        FileKind::Regular,
-                        &path,
-                        operations.value.len(),
-                        accounting,
-                    )?;
+                    let file_id = match file_id {
+                        Some(id) => id,
+                        None => self.authored_file_id(
+                            FileKind::Regular,
+                            &path,
+                            operations.value.len(),
+                            accounting,
+                        )?,
+                    };
                     return self
                         .compile_create_file_with_accounting(
                             path,
@@ -135,7 +139,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 | AuthoredMutation::CreateEmptySpecial { .. }
                 | AuthoredMutation::CreateDevice { .. }
                 | AuthoredMutation::CreateReparsePoint { .. }) => {
-                    let (path, kind, payload, metadata) = match create {
+                    let (path, kind, payload, metadata, file_id) = match create {
                         AuthoredMutation::CreateDirectory { path, metadata } => {
                             let entries = self
                                 .stage_empty_tree_with_accounting(accounting, cancellation)
@@ -145,12 +149,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                                 FileKind::Directory,
                                 FilePayload::Directory { entries },
                                 metadata,
+                                None,
                             )
                         }
                         AuthoredMutation::CreateSymbolicLink {
                             path,
                             target,
                             metadata,
+                            file_id,
                         } => {
                             let content = self
                                 .stage_authored_blob_with_accounting(
@@ -167,12 +173,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                                     target: content.root,
                                 },
                                 metadata,
+                                file_id,
                             )
                         }
                         AuthoredMutation::CreateEmptySpecial {
                             path,
                             kind,
                             metadata,
+                            file_id,
                         } => {
                             if !matches!(
                                 kind,
@@ -183,7 +191,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                             if !kind.is_supported_by_profile(self.volume.config.profile) {
                                 return Err(FsError::UnsupportedFileKind);
                             }
-                            (path, kind, FilePayload::Empty, metadata)
+                            (path, kind, FilePayload::Empty, metadata, file_id)
                         }
                         AuthoredMutation::CreateDevice {
                             path,
@@ -191,6 +199,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                             major,
                             minor,
                             metadata,
+                            file_id,
                         } => {
                             if !matches!(kind, FileKind::CharacterDevice | FileKind::BlockDevice) {
                                 return Err(FsError::InvalidSpecialKind);
@@ -198,12 +207,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                             if !kind.is_supported_by_profile(self.volume.config.profile) {
                                 return Err(FsError::UnsupportedFileKind);
                             }
-                            (path, kind, FilePayload::Device { major, minor }, metadata)
+                            (
+                                path,
+                                kind,
+                                FilePayload::Device { major, minor },
+                                metadata,
+                                file_id,
+                            )
                         }
                         AuthoredMutation::CreateReparsePoint {
                             path,
                             payload,
                             metadata,
+                            file_id,
                         } => {
                             if !FileKind::ReparsePoint
                                 .is_supported_by_profile(self.volume.config.profile)
@@ -225,6 +241,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                                     payload: content.root,
                                 },
                                 metadata,
+                                file_id,
                             )
                         }
                         _ => unreachable!("record creation kinds are exhausted"),
@@ -235,7 +252,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                             path,
                             kind,
                             payload,
-                            metadata,
+                            (metadata, file_id),
                             &mut allocation,
                             &mut bytes,
                             staged_metadata,
@@ -470,13 +487,13 @@ pub(super) fn clone_borrowed_authored_descriptor(
         }
         Ok::<_, FsError>(copy_descriptor! {
             Reidentify { path; file_id },
-            CreateFile { path; bytes, metadata },
+            CreateFile { path; bytes, metadata, file_id },
             CreateFileFromContent { path; content, metadata, file_id },
             CreateDirectory { path; metadata },
-            CreateSymbolicLink { path; target, metadata },
-            CreateEmptySpecial { path; kind, metadata },
-            CreateDevice { path; kind, major, minor, metadata },
-            CreateReparsePoint { path; payload, metadata },
+            CreateSymbolicLink { path; target, metadata, file_id },
+            CreateEmptySpecial { path; kind, metadata, file_id },
+            CreateDevice { path; kind, major, minor, metadata, file_id },
+            CreateReparsePoint { path; payload, metadata, file_id },
             Remove { path; expected_file_id },
             Rename { source, destination; replace },
             HardLink { source, destination; },

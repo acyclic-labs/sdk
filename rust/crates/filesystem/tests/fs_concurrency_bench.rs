@@ -154,6 +154,7 @@ async fn seed_volume(
             metadata: FileMetadata::default(),
         });
         authored.push(AuthoredMutation::CreateFile {
+            file_id: None,
             path: path(parts)?,
             bytes: OwnedBytes::from_static(&[0; 2]),
             metadata: FileMetadata::default(),

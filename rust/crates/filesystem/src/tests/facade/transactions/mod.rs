@@ -12,6 +12,7 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions() -> Test
                     metadata: FileMetadata::default(),
                 },
                 AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: path("file.txt")?,
                     bytes: OwnedBytes::from_static(b"initial"),
                     metadata: FileMetadata::default(),
@@ -47,6 +48,7 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions() -> Test
             .apply_authored_transaction(
                 vec![
                     AuthoredMutation::CreateFile {
+                        file_id: None,
                         path: path("orphan")?,
                         bytes: OwnedBytes::from_static(b"never-visible"),
                         metadata: FileMetadata::default()
@@ -172,6 +174,7 @@ async fn bound_operation_recreates_a_renamed_away_name_with_replayable_ids() -> 
     let (_, checkout) = fixture(config(), &cancel).await?;
     let operation = OperationId::new();
     let lock = AuthoredMutation::CreateFile {
+        file_id: None,
         path: path("lock")?,
         bytes: OwnedBytes::from_static(b"lock"),
         metadata: FileMetadata::default(),
@@ -289,6 +292,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds() -> Te
                     bytes: OwnedBytes::new()
                 },
                 AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: path("ordered")?,
                     bytes: OwnedBytes::new(),
                     metadata: FileMetadata::default()
@@ -396,6 +400,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds() -> Te
         checkout
             .apply_authored_transaction(
                 vec![AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: path("large")?,
                     bytes: vec![1; crate::kernel::MAXIMUM_INLINE_FILE_BYTES + 1].into(),
                     metadata: FileMetadata::default()
@@ -422,6 +427,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds() -> Te
     let (_, mut checkout) = fixture(limited, &cancel).await?;
     for mutation in [
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("created-file")?,
             bytes: OwnedBytes::from_static(b"xx"),
             metadata: FileMetadata::default(),
@@ -432,6 +438,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds() -> Te
             bytes: OwnedBytes::from_static(b"xx"),
         },
         AuthoredMutation::CreateSymbolicLink {
+            file_id: None,
             path: path("link")?,
             target: OwnedBytes::from_static(b"xx"),
             metadata: FileMetadata::default(),
@@ -451,6 +458,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds() -> Te
         checkout
             .create(
                 AuthoredMutation::CreateSymbolicLink {
+                    file_id: None,
                     path: path("direct-link")?,
                     target: OwnedBytes::from_static(b"xx"),
                     metadata: FileMetadata::default()
@@ -498,6 +506,7 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
         checkout
             .create(
                 crate::AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: requested.clone(),
                     bytes: (bytes::Bytes::copy_from_slice(body)).into(),
                     metadata: crate::kernel::FileMetadata::default(),
@@ -600,16 +609,19 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
                 metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: source.clone(),
                 bytes: OwnedBytes::from_static(b"abcdefgh"),
                 metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: destination.clone(),
                 bytes: OwnedBytes::from_static(b"................"),
                 metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: path("large")?,
                 bytes: large.clone(),
                 metadata: FileMetadata::default(),
@@ -621,6 +633,7 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
                 file_id: Some(streamed_identity),
             },
             AuthoredMutation::CreateSymbolicLink {
+                file_id: None,
                 path: path("symbolic")?,
                 target: OwnedBytes::from_static(b"../source"),
                 metadata: FileMetadata::default(),

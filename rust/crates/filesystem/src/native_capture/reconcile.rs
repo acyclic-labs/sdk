@@ -296,17 +296,33 @@ impl CaptureBatch<'_> {
         } else {
             None
         };
-        let reidentify = if let Some(namespace) = self
+        let source_file_id = if let Some(namespace) = self
             .source_namespace
             .filter(|_| !exists_with_kind && host_kind != FileKind::Directory)
         {
-            let identity = crate::demand::native::file_identity(&metadata);
+            // Linux's metadata-only capture stat omits generation cookies.
+            // One metered identity stat for a new source-backed object buys
+            // the same inode-reuse protection and identity as lazy reads.
+            #[cfg(target_os = "linux")]
+            let identity_metadata = {
+                let observed = self
+                    .source_root
+                    .stat(&host_path, &mut self.meter.clone())
+                    .map_err(capture_demand_error)?;
+                ensure_same_host_node(&metadata, &observed)?;
+                observed
+            };
+            #[cfg(target_os = "linux")]
+            let identity_metadata = &identity_metadata;
+            #[cfg(not(target_os = "linux"))]
+            let identity_metadata = &metadata;
+            let identity = crate::demand::native::file_identity(identity_metadata);
             let file_id = crate::demand::source_file_id(
                 &namespace,
                 &identity,
                 &mut crate::kernel::KernelAccounting::native(self.meter, self.meter.cancellation()),
             )?;
-            Some((clone_capture_path(&path, self.meter)?, file_id))
+            Some(file_id)
         } else {
             None
         };
@@ -328,6 +344,7 @@ impl CaptureBatch<'_> {
                 (
                     current.filter(|_| exists_with_kind),
                     !linked_regular && prior_metadata == Some(canonical_metadata),
+                    source_file_id,
                 ),
             )
             .await?
@@ -338,17 +355,15 @@ impl CaptureBatch<'_> {
                 &metadata,
                 host_kind,
                 canonical_metadata,
-                current
-                    .filter(|_| exists_with_kind)
-                    .map(|record| record.file_id),
+                (
+                    current
+                        .filter(|_| exists_with_kind)
+                        .map(|record| record.file_id),
+                    source_file_id,
+                ),
             )?;
             true
         };
-        if let Some((path, file_id)) = reidentify {
-            capture_reserve(&mut self.mutations, 1, self.meter)?;
-            self.mutations
-                .push(AuthoredMutation::Reidentify { path, file_id });
-        }
         if changed {
             self.receipt.changed_paths = checked_increment(self.receipt.changed_paths)?;
         }
@@ -439,7 +454,7 @@ impl CaptureBatch<'_> {
         host_path: CaptureHostPath,
         metadata: &HostStat,
         canonical_metadata: FileMetadata,
-        existing: (Option<FileRecord>, bool),
+        existing: (Option<FileRecord>, bool, Option<crate::FileId>),
     ) -> Result<bool, CaptureError> {
         // Staging opens the file once and proves it is still the observed node before reading a byte.
         let staged = stage_regular_body(
@@ -457,7 +472,7 @@ impl CaptureBatch<'_> {
         let ranges = staged.ranges;
         let ranges_bytes =
             ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-        let unchanged = if let (Some(record), true) = existing
+        let unchanged = if let (Some(record), true, _) = existing
             && record.link_count == 1
             && let crate::kernel::FilePayload::InlineRegular(data) = record.payload
         {
@@ -547,6 +562,7 @@ impl CaptureBatch<'_> {
             });
         } else {
             self.mutations.push(AuthoredMutation::CreateFile {
+                file_id: existing.2,
                 path: clone_capture_path(&path, self.meter)?,
                 bytes: acyclic_stream::OwnedBytes::new(),
                 metadata: canonical_metadata,
@@ -583,8 +599,9 @@ impl CaptureBatch<'_> {
         metadata: &HostStat,
         host_kind: FileKind,
         canonical_metadata: FileMetadata,
-        existing_file_id: Option<crate::FileId>,
+        identities: (Option<crate::FileId>, Option<crate::FileId>),
     ) -> Result<(), CaptureError> {
+        let (existing_file_id, file_id) = identities;
         let exists_with_kind = existing_file_id.is_some();
         capture_reserve(
             &mut self.mutations,
@@ -614,6 +631,7 @@ impl CaptureBatch<'_> {
                 }
                 let target = capture_link_target(target, self.meter)?;
                 self.mutations.push(AuthoredMutation::CreateSymbolicLink {
+                    file_id,
                     path,
                     target: target.into(),
                     metadata: canonical_metadata,
@@ -626,6 +644,7 @@ impl CaptureBatch<'_> {
                 }
             } else {
                 AuthoredMutation::CreateEmptySpecial {
+                    file_id,
                     path,
                     kind: host_kind,
                     metadata: canonical_metadata,
@@ -640,6 +659,7 @@ impl CaptureBatch<'_> {
                     });
                 }
                 self.mutations.push(AuthoredMutation::CreateDevice {
+                    file_id,
                     path,
                     kind: host_kind,
                     major,

@@ -197,6 +197,7 @@ fn abandoning_a_blocked_change_never_applies_and_leaves_other_callers_live()
     let kept = native_test_path("kept");
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let create = |path| AuthoredMutation::CreateFile {
+        file_id: None,
         path,
         metadata: metadata(),
         bytes: OwnedBytes::new(),
