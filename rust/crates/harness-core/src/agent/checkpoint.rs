@@ -1,5 +1,5 @@
 //! Agent checkpoint: persistent membership roots and raw turn bytes.
-use super::{AgentState, Error};
+use super::{AgentRecord as _, AgentState, Error};
 use acyclic_actors::guest::{Checkpoint, CodecIdentity};
 use prost::Message as _;
 
@@ -157,10 +157,11 @@ pub(super) fn check_wire(bytes: &[u8]) {
 mod tests {
     use super::*;
     use crate::agent::{
-        AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
-        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH, MAX_INTENT_BYTES,
-        MAX_MESSAGE_BYTES, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message,
-        NoticePayload, Phase, Sender, SpawnRequest, StatusRecord, TurnInput, VolumeBinding,
+        AgentId, AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control,
+        ConversationEntry, ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH,
+        MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
+        Message, NoticePayload, Phase, Sender, SpawnRequest, StatusRecord, TurnInput,
+        VolumeBinding,
     };
     use crate::conversation::{
         FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES,
@@ -168,6 +169,7 @@ mod tests {
     };
     use crate::resources::ProviderRef;
     use acyclic_actors::local::{SUBSCRIPTION_OVERHEAD, State};
+    use std::collections::BTreeSet;
 
     fn id(n: u64) -> AgentId {
         let mut bytes = [0xff; 16];
@@ -560,7 +562,7 @@ mod tests {
                     assert!(
                         bytes.len() + 2 * 20 <= MAX_CHECKPOINT_BYTES,
                         "{} > {MAX_CHECKPOINT_BYTES}",
-                        bytes.len() + TAIL_SLACK
+                        bytes.len() + 2 * 20
                     );
                     assert_eq!(decode(&bytes).expect("decodes"), state);
                     // Retired tag 1 cannot override Actors' committed cut. Keep
