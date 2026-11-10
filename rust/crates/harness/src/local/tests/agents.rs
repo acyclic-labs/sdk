@@ -1417,6 +1417,12 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
             return Err(Error::Invalid("spawn did not return its child".into()));
         };
         let history = settled(&harness, &child).await?;
+        let entry = ConversationEntry::decode(&history[0]).map_err(agent)?;
+        assert_eq!(
+            entry.outcome,
+            crate::agent::TurnOutcome::Completed,
+            "child {name} must complete its original model turn before archive: {entry:?}"
+        );
         let state = agents.state(&child).await.map_err(agent)?;
         let project = state
             .volumes
@@ -1460,10 +1466,16 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
         *history
     );
     let entry = ConversationEntry::decode(&history[0]).map_err(agent)?;
-    let output =
-        Conversation::read(&connection, child, ReadTarget::File { file: entry.output }).await?;
+    let output = Conversation::read(
+        &connection,
+        child,
+        ReadTarget::File {
+            file: entry.output.clone(),
+        },
+    )
+    .await?;
     let output: crate::executor::TurnOutput = serde_json::from_slice(&output).map_err(agent)?;
-    assert_eq!(output.text, "first");
+    assert_eq!(output.text, "first", "{entry:?}; {output:?}");
     assert_eq!(
         std::fs::read(children[1].1.join("kept.txt")).map_err(agent)?,
         b"inherited"
