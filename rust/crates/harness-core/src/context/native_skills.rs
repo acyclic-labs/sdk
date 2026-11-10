@@ -768,7 +768,7 @@ impl SkillReader for ProjectCatalog<'_> {
                     &self.sources.journal,
                     RetainedSource::Shadow(Box::new(ShadowSource {
                         volume: self.sources.journal.clone(),
-                        cut: *cut,
+                        cut: cut.clone(),
                         file_id: record.file_id,
                     })),
                 )?,
