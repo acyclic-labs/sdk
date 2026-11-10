@@ -1,12 +1,13 @@
---- a/rust/crates/harness-core/src/tool/files/authorization.rs
-+++ b/rust/crates/harness-core/src/tool/files/authorization.rs
-@@ -205,6 +205,9 @@
-                 "file path exceeds original task bound",
-             ));
+diff --git a/rust/crates/harness-core/src/tool/files/read.rs b/rust/crates/harness-core/src/tool/files/read.rs
+index 0f1c7ab04fd..6bf886046ba 100644
+--- a/rust/crates/harness-core/src/tool/files/read.rs
++++ b/rust/crates/harness-core/src/tool/files/read.rs
+@@ -39,7 +39,7 @@ impl FileTool {
+                 };
+             }
+             if let Some(FileReadSource::Content(file)) = &source.source {
+-                context.authorize_tool_file_read(&input.0.path, file, io)?;
++                let _ = file;
+             }
          }
-+        if matches!(self, Self::Read) && path.starts_with(crate::layers::EFFECTIVE_PATH) {
-+            return Ok((None, None));
-+        }
-         version.map_or(Ok((None, None)), |version| {
-             // Validate original token metadata and grants during preflight.
-             // The selected physical layer later establishes its volume match.
+         if let Some(original) = &source.source {
