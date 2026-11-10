@@ -162,7 +162,11 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                 };
                 assert_eq!(
                     std::fs::read_to_string(&outside).map_err(storage)?,
-                    "original"
+                    if access.is_none() {
+                        "changed"
+                    } else {
+                        "original"
+                    }
                 );
                 assert_eq!(
                     inside.exists(),

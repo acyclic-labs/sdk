@@ -120,9 +120,6 @@ pub fn prepare<T>(
     invocation.argv = arguments;
     invocation.standard_input =
         standard_input.map(acyclic_native_runtime::OwnedCaptureInput::Literal);
-    if invocation.execution_grant.is_none() {
-        invocation.execution_grant = workspace_grant(mounts, &invocation.environment)?;
-    }
     super::invocation::validate(
         &invocation.executable,
         &invocation.cwd,
@@ -131,85 +128,6 @@ pub fn prepare<T>(
         &invocation.argv,
     )?;
     Ok(invocation)
-}
-
-/// Host-owned workspace boundary shared by shell and lifecycle hooks. Explicit
-/// execution grants retain their existing, separately authenticated authority.
-/// Linux refuses missing kernel support at launch, never retries unconfined.
-/// Other OS adapters remain pending and retain their inherited host boundary.
-#[doc(hidden)]
-pub fn workspace_grant<T>(
-    mounts: &MountTable<T>,
-    environment: &std::collections::BTreeMap<String, String>,
-) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
-    #[cfg(target_os = "linux")]
-    {
-        use acyclic_native_runtime::execution::{
-            ExecutionAccess, ExecutionGrant, ExecutionNetwork,
-        };
-        let mut read = Vec::new();
-        let mut write = Vec::new();
-        let mut access = ExecutionAccess::ReadOnly;
-        let io = Error::process_io;
-        let mut primary = mounts.root.clone();
-        for (relative, mount) in mounts.mounts() {
-            let root = mount
-                .native_root
-                .clone()
-                .unwrap_or_else(|| mounts.root.join(relative));
-            if relative.is_empty() {
-                primary = root;
-                if !mount.mode.read_only() {
-                    access = ExecutionAccess::WorkspaceWrite;
-                }
-            } else if mount.mode.read_only() {
-                read.push(root);
-            } else {
-                write.push(root);
-            }
-        }
-        // Computation/runtime data only: never implicitly admit home, /tmp,
-        // procfs, the host state directory or the filesystem root. PATH comes
-        // from the host's closed ordinary environment, never tool arguments.
-        for path in [
-            "/usr",
-            "/bin",
-            "/sbin",
-            "/lib",
-            "/lib64",
-            "/etc/ld.so.cache",
-            "/etc/ssl/certs",
-            "/etc/resolv.conf",
-            "/etc/hosts",
-            "/etc/nsswitch.conf",
-        ]
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .chain(
-            environment
-                .get("PATH")
-                .into_iter()
-                .flat_map(std::env::split_paths),
-        ) {
-            match std::fs::metadata(&path) {
-                Ok(_) if path.is_absolute() && path.parent().is_some() => read.push(path),
-                Ok(_) => return Err(Error::Unauthorized(
-                    "sandbox runtime root must be absolute and narrower than the filesystem root"
-                        .into(),
-                )),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(io(error)),
-            }
-        }
-        ExecutionGrant::composed(&primary, access, write, read, ExecutionNetwork::On)
-            .map(Some)
-            .map_err(io)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (mounts, environment);
-        Ok(None)
-    }
 }
 
 #[cfg(test)]

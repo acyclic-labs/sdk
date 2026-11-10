@@ -2,35 +2,8 @@
 
 The native process launch owner accepts explicit execution capabilities.
 The shared launch core enforces grants on supported Linux kernels and returns
-typed refusals on unsupported platforms. On Linux, stock workspace shell calls and lifecycle hooks default to
-workspace-write confinement, independently of the approval policy (including
-GraphCoder's accept-all default). An explicitly authenticated execution grant
-continues to select its own boundary. Tool arguments cannot remove confinement.
-macOS and Windows adapters remain pending; those platforms retain their inherited
-host boundary and explicit native grants still refuse as unsupported.
-
-The default binds the selected primary workspace and its visible volume roots.
-Writable volumes can live outside the primary directory; read-only volume roots
-receive no additional write authority. Native volume callbacks still enforce
-path-level permissions. Landlock's additive rules do not subtract permissions
-from a read-only alias inside an otherwise writable primary tree; such a binding
-requires the native volume provider's existing checks.
-Only system runtime paths (/usr, /bin, /sbin, /lib, /lib64), loader data, CA
-certificates, DNS configuration and host-selected PATH directories are implicitly
-readable. Missing optional runtime paths are omitted. Host home, state, /tmp,
-procfs and filesystem root are not implicitly granted. Tools needing temporary
-files must select a directory in their workspace (for example TMPDIR=$PWD).
-The existing seccomp policy also denies filesystem metadata mutation such as
-chmod, including within the workspace; this limitation remains explicit.
-Unsupported kernels refuse before guest execution, with no unconfined fallback.
-See the [kernel Landlock contract](https://docs.kernel.org/userspace-api/landlock.html).
-
-ExecutionGrant::composed binds additional writable roots in the same policy
-core. They share the existing prefix index, native identity fences, attenuation,
-read-only conversion and launch owner. Linux compiles these roots into the same
-Landlock ruleset; retained policies verify every root before launch. Cwd may
-select any granted root and is opened beneath that root's verified object.
-There are no per-agent processes, threads, mounts, scans, timers or new limits.
+typed refusals on unsupported platforms. Existing shell calls acquire physical
+confinement only when their authenticated host selects an execution grant.
 
 `ToolPolicy::execution_grant` selects an optional, already authorized physical
 grant after the exact invocation's policy and approval allow it, before its
@@ -74,12 +47,12 @@ unauthorized or unsupported instead of becoming an unknown process outcome.
 The original signed scope, volume access checks and approval path still apply.
 This input neither grants volume authority nor restricts the executor's file
 facade or publication tools. It is not a read-only role preset. Stock root and
-child bindings use the default Linux workspace boundary when no explicit grant
-is selected; an embedded host must bind each executor under its own approved
+child bindings still explicitly select no static grant until their original admission
+issues one; an embedded host must bind each executor under its own approved
 ceiling. No configuration file or tool argument can populate this input.
 
 The authenticated host decides an `ExecutionGrant` after Auth and the existing
-approval chain. A grant binds one primary workspace, writable volume roots, read-only roots, workspace write
+approval chain. A grant binds one workspace, read-only roots, workspace write
 or read-only access, and network authority. It is not a model tool parameter,
 environment override, additional configuration hierarchy or sandbox service.
 The existing approval/decision files remain authoritative. No separate system
@@ -225,8 +198,8 @@ environment across the selected commands. Granted hooks clear the ambient
 environment, retain the original workspace variable, and enter the same native
 launch boundary before their original capture. Hook configuration and output
 cannot select a grant. A refusal follows the existing hook failure policy;
-the runner never retries without the grant. Stock workspace hooks on Linux select the same default boundary as shell calls
-when authenticated admission supplies no explicit grant. Hook matching,
+the runner never retries without the grant. Stock hook callers explicitly
+select no grant until authenticated admission supplies one. Hook matching,
 output budgets, cancellation, capture and cleanup retain their original owners.
 
 Network `Off` denies new sockets. `On` admits Internet networking subject to
