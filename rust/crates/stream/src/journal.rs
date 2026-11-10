@@ -6,7 +6,9 @@ use crate::wire_codec;
 use crate::{MemoryStream, StreamError, StreamProvider, WriteOutcome, WriteRequest};
 use prost::Message;
 
-const MAGIC: &[u8] = b"ACYCLIC-STREAM-COMMAND-V1\0";
+/// Version 2: commits carry ordered effects. Version 1 journals are refused
+/// as unsupported, never reread as corrupt.
+const MAGIC: &[u8] = b"ACYCLIC-STREAM-COMMAND-V2\0";
 
 pub(crate) struct CanonicalCommand {
     pub(crate) command: WriteRequest,
@@ -35,7 +37,19 @@ pub(crate) async fn replay(
 }
 
 impl WriteRequest {
-    pub(crate) fn validated(mut self) -> Result<Self, StreamError> {
+    pub(crate) fn validated(self) -> Result<Self, StreamError> {
+        self.canonicalized_with(|request| {
+            crate::request::normalize_commit(request)?;
+            Ok(None)
+        })
+        .map(|canonical| canonical.command)
+    }
+
+    pub(crate) fn canonicalized_with(
+        mut self,
+        mut commit: impl FnMut(&mut crate::CommitRequest) -> Result<Option<[u8; 32]>, StreamError>,
+    ) -> Result<CanonicalCommand, StreamError> {
+        let mut digest = None;
         match &mut self {
             Self::Append(request) => {
                 crate::request::validate_records(&request.records)?;
@@ -43,14 +57,16 @@ impl WriteRequest {
             }
             Self::Fork(request) => crate::request::validate_fork_size(request)?,
             Self::Commit(request) | Self::CommitAccepted(request) => {
-                crate::request::normalize_commit(request)?;
-                crate::request::validate_commit_shape(request)?;
+                digest = commit(request)?;
             }
         }
         if self.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        Ok(self)
+        Ok(CanonicalCommand {
+            command: self,
+            digest,
+        })
     }
 
     pub(crate) fn encoded_len(&self) -> usize {
@@ -88,7 +104,7 @@ impl WriteRequest {
 }
 
 pub(crate) fn decode_command(encoded: &[u8]) -> Result<WriteRequest, StreamError> {
-    let payload = crate::persistence::header(encoded, b"ACYCLIC-STREAM-COMMAND-V", b"1\0")?;
+    let payload = crate::persistence::header(encoded, b"ACYCLIC-STREAM-COMMAND-V", b"2\0")?;
     let journal = JournalCommand::decode(payload).map_err(|_| StreamError::InvalidArgument)?;
     let command = match journal.operation.ok_or(StreamError::InvalidArgument)? {
         journal_command::Operation::Append(request) => {
@@ -134,7 +150,7 @@ mod journal_command {
 )]
 mod tests {
     use super::*;
-    use crate::{AppendRequest, CommitRequest, ForkRequest, StreamProviderExt};
+    use crate::{AppendRequest, CommitEffect, CommitRequest, ForkRequest, StreamProviderExt};
 
     #[test]
     fn current_writer_roundtrips_and_rejects_noncanonical_payloads() -> Result<(), StreamError> {
@@ -153,14 +169,16 @@ mod tests {
         });
         let commit = WriteRequest::Commit(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![crate::CommitCondition::Tail {
-                path: crate::StreamPath::new("codec/events")?,
-                expected: 2,
-            }],
-            mutations: vec![crate::CommitMutation::Append {
-                path: crate::StreamPath::new("codec/events")?,
-                records: vec![(Bytes::from_static(b"two")).into()],
-            }],
+            effects: vec![CommitEffect::hard(
+                vec![crate::CommitCondition::Tail {
+                    path: crate::StreamPath::new("codec/events")?,
+                    expected: 2,
+                }],
+                vec![crate::CommitMutation::Append {
+                    path: crate::StreamPath::new("codec/events")?,
+                    records: vec![(Bytes::from_static(b"two")).into()],
+                }],
+            )],
             idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"commit"))?,
         });
         for command in [append, fork, commit] {
@@ -169,6 +187,12 @@ mod tests {
             for end in 0..encoded.len() {
                 assert!(decode_command(&encoded[..end]).is_err());
             }
+            let mut previous = encoded.clone();
+            previous[b"ACYCLIC-STREAM-COMMAND-V".len()] = b'1';
+            assert!(matches!(
+                decode_command(&previous),
+                Err(StreamError::Unsupported)
+            ));
             let mut unknown = encoded.clone();
             unknown.extend_from_slice(&[0x78, 0]);
             assert!(decode_command(&unknown).is_err());

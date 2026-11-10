@@ -53,13 +53,19 @@ fn admit(
     let mut vectors = 0;
     let (mut bytes, mut count) = (0, 0);
     if let Some(io) = quota.work().as_deref_mut() {
-        vectors = (request.conditions.capacity()
-            * std::mem::size_of::<acyclic_stream::CommitCondition>()
-            + request.mutations.capacity() * std::mem::size_of::<acyclic_stream::CommitMutation>())
-            as u64;
-        for mutation in &request.mutations {
+        vectors = (request.effects.capacity() * std::mem::size_of::<acyclic_stream::CommitEffect>()
+            + request
+                .effects
+                .iter()
+                .map(|effect| {
+                    effect.conditions.capacity()
+                        * std::mem::size_of::<acyclic_stream::CommitCondition>()
+                        + effect.mutations.capacity()
+                            * std::mem::size_of::<acyclic_stream::CommitMutation>()
+                })
+                .sum::<usize>()) as u64;
+        for mutation in request.mutations() {
             let (acyclic_stream::CommitMutation::Append { records, .. }
-            | acyclic_stream::CommitMutation::SoftAppend { records, .. }
             | acyclic_stream::CommitMutation::Fork { records, .. }) = mutation;
             vectors +=
                 (records.capacity() * std::mem::size_of::<acyclic_stream::AppendRecord>()) as u64;

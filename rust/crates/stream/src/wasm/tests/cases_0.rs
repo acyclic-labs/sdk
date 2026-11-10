@@ -1,7 +1,9 @@
 use crate::OwnedBytes as Bytes;
 
 use super::*;
-use crate::{CommitCondition, CommitMutation, CommitRequest, IdempotencyKey, StreamPath};
+use crate::{
+    CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey, StreamPath,
+};
 
 #[test]
 fn stream_error_codes_are_closed_and_stable() {
@@ -90,11 +92,13 @@ fn commit_normalization_is_canonical_and_shape_checked() -> Result<(), StreamErr
     let key = IdempotencyKey::new(Bytes::from_static(b"request"))?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent { path: path.clone() }],
-        mutations: vec![CommitMutation::Append {
-            path,
-            records: vec![Bytes::from_static(b"value").into()],
-        }],
+        effects: vec![CommitEffect::hard(
+            vec![CommitCondition::Absent { path: path.clone() }],
+            vec![CommitMutation::Append {
+                path,
+                records: vec![Bytes::from_static(b"value").into()],
+            }],
+        )],
         idempotency_key: key,
     };
     let wire = wire_codec::commit_to_wire(&request);

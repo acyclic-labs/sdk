@@ -1,6 +1,6 @@
 //! Failed inputs and their terminal dispositions are ordinary Stream records.
 use super::{Error, PreparedPublish, Snapshot, Store};
-use crate::guest::{Effect, GuestError, Trigger};
+use crate::guest::{GuestError, Trigger};
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitId, CommitMutation, IdempotencyKey, Record, RecordHeaders,
     StreamPath, StreamProvider, wire_codec,
@@ -307,27 +307,27 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         });
         let mut prepared = self.prepare(previous, state, Vec::new(), key)?;
         for effect in [
-            Effect {
-                conditions: vec![CommitCondition::Absent {
+            acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Absent {
                     path: status.clone(),
                 }],
-                mutation: CommitMutation::Append {
+                vec![CommitMutation::Append {
                     path: status,
                     records: vec![bytes.into()],
-                },
-            },
-            Effect {
-                conditions: vec![CommitCondition::Absent {
+                }],
+            ),
+            acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Absent {
                     path: input_path.clone(),
                 }],
-                mutation: CommitMutation::Append {
+                vec![CommitMutation::Append {
                     path: input_path,
                     records: vec![AppendRecord {
                         value: input.value.clone(),
                         headers: input.headers.clone(),
                     }],
-                },
-            },
+                }],
+            ),
         ] {
             prepared.join_host(effect)?;
         }
@@ -371,13 +371,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let mut prepared = PreparedPublish::foreign(key);
         prepared.failure_owner = Some(failed.state.clone());
         let status = status_path(&failed.path)?;
-        prepared.join_host(Effect {
-            conditions: vec![CommitCondition::Head {
+        prepared.join_host(acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Head {
                 path: status.clone(),
                 expected: 1,
                 commit_id: failed.commit,
             }],
-            mutation: CommitMutation::Append {
+            vec![CommitMutation::Append {
                 path: status,
                 records: vec![
                     encode(&EntryV1 {
@@ -389,19 +389,19 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     })
                     .into(),
                 ],
-            },
-        })?;
+            }],
+        ))?;
         if let Some(input) = replay {
-            prepared.join(Effect {
-                conditions: Vec::new(),
-                mutation: CommitMutation::Append {
+            prepared.join(acyclic_stream::CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
                     path: failed.source.clone(),
                     records: vec![AppendRecord {
                         value: input.value,
                         headers: input.headers,
                     }],
-                },
-            })?;
+                }],
+            ))?;
             prepared.join(self.activation(actor))?;
         }
         Ok(prepared)

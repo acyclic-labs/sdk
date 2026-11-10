@@ -504,17 +504,33 @@ fn extend_transaction(
 // merge. The caller's original key is retained; a group's key is folded above.
 pub(in crate::distributed) fn merge_transaction(
     prefix: &mut CommitRequest,
-    next: CommitRequest,
+    mut next: CommitRequest,
     work: &mut AuthorityWork<'_>,
 ) -> Result<(), AuthorityStoreError> {
+    // Generated authority parts contain one hard effect. Caller-owned soft
+    // groups in the prefix must never acquire authority writes or fences.
+    if !matches!(next.effects.as_slice(), [effect] if !effect.soft) {
+        return Err(AuthorityStoreError::RejectedStatic(
+            "authority part is not one hard effect",
+        ));
+    }
+    super::super::composition::hard_effect(prefix, work)?;
+    let hard = prefix
+        .effects
+        .iter()
+        .position(|effect| !effect.soft)
+        .ok_or(AuthorityStoreError::RejectedStatic(
+            "authority hard effect is missing",
+        ))?;
     let view = AppendView {
         cursor: None,
         projection: None,
         transaction: Some(prefix),
     };
-    let mut conditions = work.vec(prefix.conditions.len() + next.conditions.len())?;
-    for condition in next.conditions {
-        let path = super::super::policy::condition_path(&condition);
+    let mut conditions =
+        work.vec(prefix.effects[hard].conditions.len() + next.effects[0].conditions.len())?;
+    for condition in std::mem::take(&mut next.effects[0].conditions) {
+        let path = acyclic_stream::CommitCondition::path(&condition);
         if let Some((anchor, records)) = view.staged(path, work)? {
             let tail = anchor
                 .checked_add(crate::foundation::usize_to_u64(records.len()))
@@ -528,18 +544,19 @@ pub(in crate::distributed) fn merge_transaction(
             conditions.push(condition);
         }
     }
-    let mut merged = work.vec(prefix.conditions.len() + conditions.len())?;
-    merged.append(&mut prefix.conditions);
+    let mut merged = work.vec(prefix.effects[hard].conditions.len() + conditions.len())?;
+    merged.append(&mut prefix.effects[hard].conditions);
     for condition in conditions {
         super::super::policy::merge_condition(&mut merged, condition, work)?;
     }
-    prefix.conditions = merged;
-    let mut mutations = work.vec(prefix.mutations.len() + next.mutations.len())?;
-    mutations.append(&mut prefix.mutations);
-    for mutation in next.mutations {
+    prefix.effects[hard].conditions = merged;
+    let mut mutations =
+        work.vec(prefix.effects[hard].mutations.len() + next.effects[0].mutations.len())?;
+    mutations.append(&mut prefix.effects[hard].mutations);
+    for mutation in std::mem::take(&mut next.effects[0].mutations) {
         merge_append(&mut mutations, mutation, work)?;
     }
-    prefix.mutations = mutations;
+    prefix.effects[hard].mutations = mutations;
     prefix.deadline_unix_millis = match (prefix.deadline_unix_millis, next.deadline_unix_millis) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),

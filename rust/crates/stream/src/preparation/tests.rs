@@ -120,7 +120,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
     let identity = commit_identity(73, [19; 32]);
     let tail_reads = Cell::new(0);
     let output = facts(
-        &mutations,
+        &mutations.iter().collect::<Vec<_>>(),
         |path| {
             assert_eq!(path, &source);
             tail_reads.set(tail_reads.get() + 1);
@@ -172,7 +172,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
     );
     // Seeding a fresh per-operation state would assign sequence zero to append.
     let reset = facts(
-        &mutations,
+        &mutations.iter().collect::<Vec<_>>(),
         |_| Ok(None),
         |origin, start, bodies, exclude| {
             records(
@@ -190,7 +190,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
     assert_ne!(reset, output);
     assert_eq!(
         facts(
-            &mutations,
+            &mutations.iter().collect::<Vec<_>>(),
             |_| Ok(Some(4)),
             |_, _, _, _| Err(StreamError::Unavailable),
             Vec::new()
@@ -210,32 +210,28 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
 fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Result<(), StreamError>
 {
     let source = StreamPath::new("source")?;
-    let request = CommitRequest {
-        deadline_unix_millis: None,
-        conditions: Vec::new(),
-        mutations: vec![CommitMutation::Fork {
-            exclude: Vec::new(),
-            source: source.clone(),
-            destination: StreamPath::new("destination")?,
-            at_tail: 3,
-            records: Vec::new(),
-        }],
-        idempotency_key: crate::IdempotencyKey::new(vec![1])?,
+    let fork = CommitMutation::Fork {
+        exclude: Vec::new(),
+        source: source.clone(),
+        destination: StreamPath::new("destination")?,
+        at_tail: 3,
+        records: Vec::new(),
     };
+    let request = [&fork];
     assert_eq!(
-        authority(&request, |_| Err(StreamError::Unavailable)),
+        authority(&request[..], |_| Err(StreamError::Unavailable)),
         Err(StreamError::Unavailable)
     );
     assert_eq!(
-        authority(&request, |_| Ok(None)),
+        authority(&request[..], |_| Ok(None)),
         Err(StreamError::NotFound)
     );
     assert_eq!(
-        authority(&request, |_| Ok(Some(2))),
+        authority(&request[..], |_| Ok(Some(2))),
         Err(StreamError::PrefixNotRetained)
     );
     assert_eq!(
-        authority(&request, |path| {
+        authority(&request[..], |path| {
             assert_eq!(path, &source);
             Ok(Some(3))
         }),
@@ -243,157 +239,200 @@ fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Resu
     );
     // The missing-on-error control would disguise a disk failure as NotFound.
     assert_ne!(
-        authority(&request, |_| Err(StreamError::Unavailable)),
-        authority(&request, |_| Ok(None))
+        authority(&request[..], |_| Err(StreamError::Unavailable)),
+        authority(&request[..], |_| Ok(None))
     );
     Ok(())
 }
 
 #[test]
-fn settling_copies_only_admitted_skipped_paths_and_views_the_rest_in_place()
+fn settling_reports_hard_conflicts_or_skips_soft_effects_and_views_the_rest_in_place()
 -> Result<(), StreamError> {
-    let [closed, gone, live, marker] = ["a", "b", "c", "c-closed"].map(StreamPath::new);
-    let (closed, gone, live, marker) = (closed?, gone?, live?, marker?);
-    let mutation = |path: &StreamPath, closed: Option<&StreamPath>| CommitMutation::SoftAppend {
+    let [a, b, c, d, marker] = ["a", "b", "c", "d", "d-closed"].map(StreamPath::new);
+    let (a, b, c, d, marker) = (a?, b?, c?, d?, marker?);
+    let append = |path: &StreamPath| CommitMutation::Append {
         path: path.clone(),
         records: vec![AppendRecord::from(vec![1])],
-        closed: closed.cloned(),
     };
-    let request = CommitRequest {
+    let present = |path: &StreamPath| CommitCondition::Present { path: path.clone() };
+    let soft_effect = |conditions, mutations| crate::CommitEffect {
+        conditions,
+        mutations,
+        soft: true,
+    };
+    let mut request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: Vec::new(),
-        mutations: vec![
-            mutation(&closed, Some(&marker)),
-            mutation(&gone, None),
-            mutation(&live, None),
+        effects: vec![
+            // Skipped: `b` is absent.
+            soft_effect(vec![present(&b)], vec![append(&c), append(&b)]),
+            crate::CommitEffect::hard(vec![present(&a)], vec![append(&a)]),
+            // Skipped: `d` is closed.
+            soft_effect(
+                vec![
+                    present(&d),
+                    CommitCondition::Absent {
+                        path: marker.clone(),
+                    },
+                ],
+                vec![append(&d)],
+            ),
         ],
         idempotency_key: crate::IdempotencyKey::new(bytes::Bytes::from_static(b"settle"))?,
     };
-    // `a` exists but is closed, `b` is absent, `c` is open.
-    let tail = |path: &StreamPath| -> Result<Option<u64>, StreamError> {
-        Ok([&closed, &marker, &live].contains(&path).then_some(1))
+    crate::request::validate_commit(&mut request)?;
+    let tail = |path: &StreamPath| [&a, &c, &d, &marker].contains(&path).then_some(1);
+    let conflict = |condition: &CommitCondition| {
+        condition_conflict(
+            condition,
+            tail(crate::CommitCondition::path(condition)),
+            || Err(StreamError::Unavailable),
+        )
     };
     // Negative control: an under-admitted output is refused, never grown.
     assert!(matches!(
-        settle(&request, tail, Vec::with_capacity(2)),
+        settle(&request, conflict, Vec::new(), Vec::with_capacity(1)),
         Err(StreamError::InvalidArgument)
     ));
-    let skipped = settle(&request, tail, Vec::with_capacity(soft(&request)))?;
-    assert_eq!(skipped, [closed.clone(), gone.clone()]);
-    let applied: Vec<_> = applied(&request, &skipped)
-        .map(crate::CommitMutation::path)
+    let (conflicts, skipped) = settle(
+        &request,
+        conflict,
+        Vec::with_capacity(hard_conditions(&request)),
+        Vec::with_capacity(soft(&request)),
+    )?;
+    assert!(conflicts.is_empty());
+    assert_eq!(skipped, [0, 2]);
+    let applied = applied(
+        &request,
+        &skipped,
+        Vec::with_capacity(applied_len(&request, &skipped)),
+    )?;
+    let paths: Vec<_> = applied
+        .iter()
+        .map(|mutation| crate::CommitMutation::path(mutation))
         .collect();
-    assert_eq!(applied, [&live]);
-    let mut repeated_shape_visits = [0_usize; 2];
-    for count in [0, 1, 2, 7, 31, 127] {
-        for pattern in 0..128_u32 {
-            let mixed = pattern & 64 != 0;
-            let anchor = StreamPath::new(if mixed { "anchor" } else { "zz-anchor" })?;
+    assert_eq!(paths, [&a]);
+    // A failed hard condition conflicts, and no soft condition is evaluated.
+    request.effects[1].conditions = vec![present(&b)];
+    let (conflicts, skipped) = settle(
+        &request,
+        conflict,
+        Vec::with_capacity(hard_conditions(&request)),
+        Vec::with_capacity(soft(&request)),
+    )?;
+    assert_eq!(
+        conflicts,
+        [crate::CommitConflict::Missing { path: b.clone() }]
+    );
+    assert!(skipped.is_empty());
+    Ok(())
+}
+
+#[test]
+fn effect_selection_and_condition_membership_walk_the_original_slices_once()
+-> Result<(), StreamError> {
+    for count in [1, 2, 7, 31, 127] {
+        for pattern in 0..32_u32 {
+            let mut effects = Vec::new();
+            for group in 0..count {
+                let mut effect = crate::CommitEffect::hard(Vec::new(), Vec::new());
+                effect.soft = group % 3 != 0;
+                effect.conditions.push(CommitCondition::Present {
+                    path: StreamPath::new(format!("item/{group:03}/a-unused"))?,
+                });
+                effect.conditions.push(CommitCondition::Present {
+                    path: StreamPath::new(format!("item/{group:03}/z-unused"))?,
+                });
+                for slot in 0..4 {
+                    let path = StreamPath::new(format!("item/{group:03}/m-{slot}"))?;
+                    let records = vec![AppendRecord::from(vec![1])];
+                    effect.mutations.push(if slot % 2 == 0 {
+                        effect
+                            .conditions
+                            .push(CommitCondition::Absent { path: path.clone() });
+                        CommitMutation::Fork {
+                            source: StreamPath::new("source")?,
+                            destination: path,
+                            at_tail: 0,
+                            records,
+                            exclude: Vec::new(),
+                        }
+                    } else {
+                        CommitMutation::Append { path, records }
+                    });
+                }
+                effects.push(effect);
+            }
             let mut request = CommitRequest {
+                effects,
                 deadline_unix_millis: None,
-                conditions: vec![
-                    CommitCondition::Absent {
-                        path: anchor.clone(),
-                    },
-                    CommitCondition::Present {
-                        path: StreamPath::new("a-unused")?,
-                    },
-                    CommitCondition::Present {
-                        path: StreamPath::new("unused")?,
-                    },
-                ],
-                mutations: vec![CommitMutation::Append {
-                    path: anchor,
-                    records: vec![AppendRecord::from(vec![1])],
-                }],
                 idempotency_key: crate::IdempotencyKey::new(vec![1])?,
             };
-            for index in 0..count {
-                let path = StreamPath::new(format!("item/{index:03}"))?;
-                let record = vec![AppendRecord::from(vec![1])];
-                request.mutations.push(if mixed && index % 5 == 1 {
-                    CommitMutation::Append {
-                        path,
-                        records: record,
-                    }
-                } else if mixed && index % 5 == 3 {
-                    request
-                        .conditions
-                        .push(CommitCondition::Absent { path: path.clone() });
-                    CommitMutation::Fork {
-                        source: StreamPath::new("source")?,
-                        destination: path,
-                        at_tail: 0,
-                        records: record,
-                        exclude: Vec::new(),
-                    }
-                } else {
-                    CommitMutation::SoftAppend {
-                        path,
-                        records: record,
-                        closed: None,
-                    }
-                });
-            }
-            crate::request::normalize_commit(&mut request)?;
-            crate::request::validate_commit_shape(&request)?;
-            let mut conditions = 0_usize;
-            let mut carriers = 0_usize;
-            crate::request::validate_commit_shape_with(&request, |visit| match visit {
-                crate::request::ShapeVisit::Condition => conditions += 1,
-                crate::request::ShapeVisit::Carrier => carriers += 1,
-            })?;
-            repeated_shape_visits[0] =
-                repeated_shape_visits[0].max(carriers.saturating_sub(request.mutations.len()));
-            repeated_shape_visits[1] = repeated_shape_visits[1]
-                .max(conditions.saturating_sub(request.mutations.len() + request.conditions.len()));
-            let skipped = settle(
-                &request,
-                |path| {
-                    let index = path.as_str().strip_prefix("item/").unwrap();
-                    let index: u32 = index.parse().unwrap();
-                    Ok((pattern & (1 << (index % 6)) == 0).then_some(0))
-                },
-                Vec::with_capacity(soft(&request)),
-            )?;
-            let expected: Vec<_> = request
-                .mutations
+            crate::request::validate_commit(&mut request)?;
+            let skipped: Vec<_> = request
+                .effects
                 .iter()
-                .filter(|mutation| {
-                    !matches!(mutation, CommitMutation::SoftAppend { path, .. } if skipped.contains(path))
-                })
+                .enumerate()
+                .filter(|(index, effect)| effect.soft && pattern & (1 << (index % 5)) != 0)
+                .map(|(index, _)| u32::try_from(index).unwrap())
                 .collect();
-            assert!(super::applied(&request, &skipped).eq(expected.iter().copied()));
-            let mut selected = super::applied(&request, &skipped);
-            for (position, mutation) in expected.iter().copied().enumerate() {
-                if position == expected.len() / 2 {
-                    assert!(selected.clone().eq(expected[position..].iter().copied()));
-                }
-                let actual = selected.next().unwrap();
-                assert!(std::ptr::eq(actual, mutation));
-            }
-            assert!(selected.next().is_none());
-            assert!(selected.next().is_none());
-            // A repeated search grows with the skipped population. Selection
-            // may compare at most once per soft append across its whole walk.
-            let comparisons = Cell::new(0_usize);
-            let selected = applied_with(&request, &skipped, |left, right| {
+            let comparisons = Cell::new(0);
+            let selected = settled_effects_with(&request, &skipped, |index, skip| {
                 comparisons.set(comparisons.get() + 1);
-                left.cmp(right)
+                u32::try_from(index).unwrap().cmp(&skip)
             });
             assert_eq!(comparisons.get(), 0, "selection must stay lazy");
-            assert!(selected.eq(super::applied(&request, &skipped)));
+            let expected: Vec<_> = request
+                .effects
+                .iter()
+                .enumerate()
+                .map(|(index, effect)| (skipped.contains(&u32::try_from(index).unwrap()), effect))
+                .collect();
+            for ((omitted, original), (expected_skip, expected)) in selected.zip(&expected) {
+                assert_eq!(omitted, *expected_skip);
+                assert!(std::ptr::eq(original, *expected));
+            }
             assert!(
-                comparisons.get() <= soft(&request),
-                "selection searched settled history again: {count} mutations, {} comparisons",
-                comparisons.get()
+                comparisons.get() <= request.effects.len(),
+                "selection searched settled history again"
+            );
+            let mut selected = settled_effects(&request, &skipped);
+            for position in 0..expected.len() {
+                if position == expected.len() / 2 {
+                    assert!(selected.clone().zip(&expected[position..]).all(
+                        |((skip, actual), (expected_skip, expected))| skip == *expected_skip
+                            && std::ptr::eq(actual, *expected)
+                    ));
+                }
+                let (skip, actual) = selected.next().unwrap();
+                assert_eq!(skip, expected[position].0);
+                assert!(std::ptr::eq(actual, expected[position].1));
+            }
+            assert!(selected.next().is_none());
+            let mut condition_comparisons = 0;
+            crate::request::validate_commit_shape_with(&request, || condition_comparisons += 1)?;
+            assert!(
+                condition_comparisons <= request.conditions().count() + request.mutations().count(),
+                "shape validation repeated condition searches"
+            );
+            let mut expected_mutations: Vec<_> = expected
+                .iter()
+                .filter(|(skip, _)| !skip)
+                .flat_map(|(_, effect)| effect.mutations.iter())
+                .collect();
+            expected_mutations
+                .sort_unstable_by_key(|mutation| crate::CommitMutation::path(mutation));
+            let actual = applied(
+                &request,
+                &skipped,
+                Vec::with_capacity(expected_mutations.len()),
+            )?;
+            assert!(
+                actual
+                    .iter()
+                    .zip(expected_mutations)
+                    .all(|(actual, expected)| std::ptr::eq(*actual, expected))
             );
         }
     }
-    assert_eq!(
-        repeated_shape_visits,
-        [0, 0],
-        "shape validation repeated scans: carrier and condition excess"
-    );
     Ok(())
 }

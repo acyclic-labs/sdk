@@ -57,10 +57,10 @@ try {
   assertFields("ChildrenPageResponse", [["hierarchy_version", 1], ["children", 2], ["next_after", 3]]);
   assertFields("TailRequest", [["path", 1], ["accepted", 2], ["durable_through", 3], ["at_least", 4]]);
   assertFields("HeadRequest", [["path", 1]]);
-  assertFields("HeadsRequest", [["paths", 1], ["children", 2], ["limit", 3], ["at_least", 4], ["projection", 5], ["durable_through", 6]]);
+  assertFields("HeadsRequest", [["paths", 1], ["children", 2], ["limit", 3], ["at_least", 4], ["projection", 5], ["durable_through", 6], ["retained", 7]]);
   assertFields("HeadObservation", [["head", 1]]);
-  assertFields("HeadsResponse", [["snapshot", 1], ["heads", 2], ["children", 3], ["projection", 4]]);
-  assertFields("FollowRequest", [["path", 1], ["from", 2], ["filter", 3], ["progress", 4], ["at_least", 5], ["when_absent", 6]]);
+  assertFields("HeadsResponse", [["snapshot", 1], ["heads", 2], ["children", 3], ["projection", 4], ["retained", 5]]);
+  assertFields("FollowRequest", [["path", 1], ["from", 2], ["filter", 3], ["progress", 4], ["at_least", 5], ["when_absent", 6], ["bootstrap_head", 7], ["until", 8]]);
   assertFields("PathHead", [["tail", 1], ["last", 2], ["durable", 3], ["origin", 4], ["retained_through", 5]]);
   assertFields("ForkOrigin", [["source", 1], ["forked_at", 2], ["commit_id", 3]]);
   assertFields("TailResponse", [["tail", 1], ["durable", 3], ["applied", 4]]);
@@ -71,9 +71,14 @@ try {
   assertFields("RecordBatch", [["records", 1]]);
   assertFields("Record", [["sequence", 1], ["value", 2], ["commit_id", 3], ["committed_at_micros", 4], ["keys", 5], ["attributes", 6], ["origin", 7]]);
   assertReserved("TailResponse", [[2, 3]], ["trim_point"]);
-  assertFields("CommitMutation", [["append", 1], ["fork", 2], ["soft_append", 5]]);
-  assertFields("SoftAppendMutation", [["path", 1], ["records", 2], ["closed", 3]]);
-  assertReserved("CommitMutation", [[3, 4], [4, 5]], ["trim", "delete"]);
+  assertFields("CommitMutation", [["append", 1], ["fork", 2]]);
+  assertReserved("CommitMutation", [[3, 4], [4, 5], [5, 6]], ["trim", "delete", "soft_append"]);
+  assert.ok(!messages.has("SoftAppendMutation"), "SoftAppendMutation was removed");
+  assertFields("CommitEffect", [["conditions", 1], ["mutations", 2], ["soft", 3]]);
+  assertFields("CommitRequest", [["idempotency_key", 3], ["deadline_unix_millis", 4], ["include_envelope", 5], ["effects", 6]]);
+  assertReserved("CommitRequest", [[1, 2], [2, 3]], ["conditions", "mutations"]);
+  assertFields("CommitReceipt", [["commit_id", 1], ["committed_at_micros", 2], ["appends", 3], ["forks", 4], ["revision", 5], ["skipped_effects", 7]]);
+  assertReserved("CommitReceipt", [[6, 7]], ["skipped"]);
   assertFields("CommittedMutation", [["append", 1], ["fork", 2]]);
   assertReserved("CommittedMutation", [[3, 4], [4, 5]], ["trim", "delete"]);
   assertFields("CommitCondition", [["tail", 1], ["absent", 2], ["head", 3], ["present", 4]]);
@@ -94,8 +99,8 @@ try {
   const sessionMessages = new Map(session.messageType.map(message => [message.name, message]));
   const sessionService = session.service.find(item => item.name === "StreamSessionService");
   assert.deepEqual(sessionService.method.map(method => [method.name, method.clientStreaming, method.serverStreaming]), [["Session", true, true]]);
-  assertFields("SessionFollow", [["resource", 1], ["delivery", 2], ["preceding_commit_id", 3], ["until", 4], ["at_least", 5], ["when_absent", 6], ["bootstrap_head", 7], ["key", 8], ["read_limit", 9]], sessionMessages);
-  assertFields("SessionOpened", [["resume", 1], ["preceding_commit_id", 2], ["applied", 3]], sessionMessages);
+  assertFields("SessionFollow", [["resource", 1], ["delivery", 2], ["preceding_commit_id", 3], ["until", 4], ["at_least", 5], ["when_absent", 6], ["bootstrap_head", 7], ["key", 8], ["read_limit", 9], ["opening_cut", 10]], sessionMessages);
+  assertFields("SessionOpened", [["resume", 1], ["preceding_commit_id", 2], ["applied", 3], ["selection", 4]], sessionMessages);
   assertFields("SessionCursor", [["next", 1], ["opaque", 2]], sessionMessages);
   assertFields("SessionSubscription", [
     ["channel", 1], ["resume", 2], ["credential", 3], ["filter", 4], ["follow", 10], ["actor_socket", 13], ["actor_call", 14], ["children_page", 15], ["heads", 16],

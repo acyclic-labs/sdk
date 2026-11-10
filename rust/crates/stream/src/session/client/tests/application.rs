@@ -124,17 +124,19 @@ async fn crash_before_application_commit_replays_despite_returned_credit() -> Te
     let decided = provider
         .commit(crate::CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: vec![
-                crate::CommitMutation::Append {
-                    path: StreamPath::new("consumer/effects")?,
-                    records: vec!["effect".into()],
-                },
-                crate::CommitMutation::Append {
-                    path: StreamPath::new("consumer/checkpoint")?,
-                    records: vec![OwnedBytes::from(checkpoint).into()],
-                },
-            ],
+            effects: vec![crate::CommitEffect::hard(
+                Vec::new(),
+                vec![
+                    crate::CommitMutation::Append {
+                        path: StreamPath::new("consumer/effects")?,
+                        records: vec!["effect".into()],
+                    },
+                    crate::CommitMutation::Append {
+                        path: StreamPath::new("consumer/checkpoint")?,
+                        records: vec![OwnedBytes::from(checkpoint).into()],
+                    },
+                ],
+            )],
             idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;

@@ -34,7 +34,7 @@ impl MemoryStream {
     }
 
     /// The receipt a retry of `request` replays from its retained `envelope`:
-    /// the original receipt, skipped soft appends included. Every replay
+    /// the original receipt, skipped soft effects included. Every replay
     /// goes through here.
     fn replayed(
         &self,

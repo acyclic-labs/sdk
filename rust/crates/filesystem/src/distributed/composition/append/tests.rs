@@ -11,13 +11,15 @@ fn caller(key: &'static [u8]) -> Result<FilesystemCommit, acyclic_stream::Stream
     let path = StreamPath::new("caller/observation")?;
     Ok(FilesystemCommit::new(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent { path: path.clone() }],
-        mutations: vec![CommitMutation::Append {
-            path,
-            records: vec![AppendRecord::from(OwnedBytes::from_static(
-                b"original result",
-            ))],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent { path: path.clone() }],
+            vec![CommitMutation::Append {
+                path,
+                records: vec![AppendRecord::from(OwnedBytes::from_static(
+                    b"original result",
+                ))],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(key))?,
     }))
 }

@@ -2,7 +2,7 @@
 use super::{Checkpoint, CodecIdentity, GuestError, GuestFuture};
 use crate::{addressing::ActorReference, domain};
 use acyclic_stream::{
-    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, Record, StreamError,
+    CommitCondition, CommitEffect, CommitId, CommitOutcome, CommitRequest, Record, StreamError,
     StreamPath,
 };
 use bytes::Bytes;
@@ -156,17 +156,6 @@ pub enum AlarmChange {
     Clear,
 }
 
-/// One mutation published in the same transaction as the consumed input.
-/// Conditions are explicit, so a send can be `Absent{<to>/closed}` plus an
-/// append to `<to>`, and a spawn can carry a `Fork`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Effect {
-    /// Exact admitted cuts, retained unchanged for request replay.
-    pub conditions: Vec<CommitCondition>,
-    /// Append or Fork; nothing executes before the checkpoint commit.
-    pub mutation: CommitMutation,
-}
-
 /// One indivisible logical result. Physical execution may repeat after a crash.
 /// It is plain data, so it crosses a guest boundary through [`super::wire`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,8 +168,11 @@ pub struct Transition {
     pub checkpoint: Checkpoint,
     /// Alarm mutation, including clear-generation fencing.
     pub alarm: AlarmChange,
-    /// Committed effects, never an independent best-effort dispatch path.
-    pub effects: Vec<Effect>,
+    /// Effects published in the same commit as the consumed input, never an
+    /// independent best-effort dispatch path. A hard effect joins the actor's
+    /// own writes; a soft one (a send guarded by `Present{to}` and
+    /// `Absent{<to>/closed}`, say) applies or is skipped on its own.
+    pub effects: Vec<CommitEffect>,
     /// One participant to join to the publication, as a request the host's
     /// [`Composer`] validates and composes; never guest-held custody.
     pub participant: Option<Participant>,

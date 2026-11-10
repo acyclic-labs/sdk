@@ -77,7 +77,7 @@ async fn authority_batches_reject_a_changed_record_identity_without_publishing()
                 return Err("group was rejected before CAS".into());
             };
             let records = work.path(&AuthorityPlacement::default(), authority, "/records", None)?;
-            for condition in &mut group.transaction.conditions {
+            for condition in &mut group.transaction.effects[0].conditions {
                 if let CommitCondition::Head {
                     path, commit_id, ..
                 } = condition
@@ -137,6 +137,100 @@ async fn authority_conflict_recovery_rejects_a_lost_record_identity_without_a_pr
             work.spent().backend_read_operations,
             reads,
             "identity rejection performed a head probe"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn authority_append_merge_keeps_soft_first_effects_separate() -> TestResult {
+    crate::initialize_test_native_io();
+    for native in [false, true] {
+        let provider = acyclic_stream::MemoryStream::default();
+        let path = StreamPath::new("hard/records")?;
+        let optional = StreamPath::new("soft/records")?;
+        acyclic_stream::StreamProvider::append(
+            &provider,
+            acyclic_stream::AppendRequest {
+                path: path.clone(),
+                records: (0..7)
+                    .map(|_| acyclic_stream::OwnedBytes::from_static(b"seed").into())
+                    .collect(),
+                if_tail: Some(0),
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+            },
+        )
+        .await?;
+        let append = |value: &'static [u8]| CommitMutation::Append {
+            path: path.clone(),
+            records: vec![acyclic_stream::OwnedBytes::from_static(value).into()],
+        };
+        let soft = acyclic_stream::CommitEffect {
+            soft: true,
+            conditions: vec![CommitCondition::Present {
+                path: optional.clone(),
+            }],
+            mutations: vec![CommitMutation::Append {
+                path: optional.clone(),
+                records: vec![acyclic_stream::OwnedBytes::from_static(b"optional").into()],
+            }],
+        };
+        let mut prefix = CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+            effects: vec![
+                soft.clone(),
+                acyclic_stream::CommitEffect::hard(
+                    vec![CommitCondition::Tail {
+                        path: path.clone(),
+                        expected: 7,
+                    }],
+                    vec![append(b"first")],
+                ),
+            ],
+        };
+        let next = CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 8,
+                }],
+                vec![append(b"second")],
+            )],
+        };
+        let cancel = CancellationToken::new();
+        let original =
+            crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
+                .map_err(|(error, _)| error)?;
+        let mut work = work(native, &original, &cancel);
+        merge_transaction(&mut prefix, next, &mut work)?;
+        assert_eq!(prefix.effects.first(), Some(&soft));
+        let view = AppendView {
+            cursor: None,
+            projection: None,
+            transaction: Some(&prefix),
+        };
+        let (anchor, rows) = view
+            .staged(&path, &mut work)?
+            .ok_or("hard append not staged")?;
+        assert_eq!(anchor, 7);
+        assert_eq!(rows.len(), 2);
+        assert!(view.staged(&optional, &mut work)?.is_none());
+        let acyclic_stream::CommitOutcome::Committed(receipt) =
+            acyclic_stream::StreamProvider::commit(&provider, prefix).await?
+        else {
+            return Err("hard append was refused".into());
+        };
+        assert_eq!(receipt.skipped, [0]);
+        assert_eq!(
+            acyclic_stream::StreamProviderExt::tail(&provider, path).await?,
+            9
+        );
+        assert_eq!(
+            acyclic_stream::StreamProviderExt::tail(&provider, optional).await,
+            Err(acyclic_stream::StreamError::NotFound)
         );
     }
     Ok(())

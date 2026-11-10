@@ -216,8 +216,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             .commit(
                 CommitRequest {
                     deadline_unix_millis: None,
-                    conditions,
-                    mutations,
+                    effects: vec![acyclic_stream::CommitEffect::hard(conditions, mutations)],
                     idempotency_key,
                 },
                 None,
