@@ -343,8 +343,13 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
         panic!("authored home")
     };
     let version = format!(
-        "authored-file-v1:{}",
-        serde_json::to_string(&home_selected).map_err(|error| Error::Invalid(error.to_string()))?
+        "authored-path-v2:{}",
+        serde_json::to_string(&crate::conversation::PathSelection {
+            volume: home_selected.volume,
+            path: home_selected.path,
+            generation: home_selected.generation,
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))?
     );
     write(&harness, "notes.txt", "off: true").await?;
     let reread = run(
