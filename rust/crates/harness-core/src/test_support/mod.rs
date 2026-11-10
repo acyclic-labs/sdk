@@ -23,8 +23,12 @@ pub(crate) mod accounted;
 #[doc(hidden)]
 pub mod crash_cuts;
 mod policy;
+#[cfg(not(target_arch = "wasm32"))]
+mod replay;
 mod scripted;
 pub use policy::FixedToolPolicy;
+#[cfg(not(target_arch = "wasm32"))]
+pub use replay::assert_replay_admission;
 
 pub use scripted::{
     ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn, read_request_files,

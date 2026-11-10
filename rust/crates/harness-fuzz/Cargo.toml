@@ -16,6 +16,14 @@ doctest = false
 bench = false
 
 [[bin]]
+name = "recorded_replay"
+path = "fuzz_targets/recorded_replay.rs"
+required-features = ["replay"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ui_blocks"
 path = "fuzz_targets/ui_blocks.rs"
 required-features = ["client"]
@@ -119,6 +127,7 @@ default = ["runtime"]
 mcp-stdio-codec = ["dep:acyclic-mcp", "dep:bytes", "dep:rmcp", "dep:tokio-util"]
 reader = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
+replay = ["core"]
 bounded-json = ["core", "dep:acyclic-native-runtime"]
 oidc = ["core", "dep:bytes", "dep:acyclic-stream", "dep:p256", "dep:ed25519-dalek"]
 native-answer = ["native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime"]
