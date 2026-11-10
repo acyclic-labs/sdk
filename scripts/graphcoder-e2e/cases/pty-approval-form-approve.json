@@ -49,6 +49,7 @@
               "approved.txt"
             ]
           },
+          "reject": {"contains": ["APPROVAL_E2E_DONE"]},
           "prompt": "/feedback "
         },
         {
@@ -69,6 +70,7 @@
               "Enter saves locally"
             ]
           },
+          "reject": {"contains": ["APPROVAL_E2E_DONE"]},
           "send": "y\r"
         },
         {
