@@ -16,7 +16,7 @@ use thiserror::Error;
 pub(super) const DOMAIN: &[u8] = b"acyclic-fs-source-state-v1\0";
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 const ID_DOMAIN: &[u8] = b"acyclic-fs-source-authority-v1\0";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DurableSourceMode {

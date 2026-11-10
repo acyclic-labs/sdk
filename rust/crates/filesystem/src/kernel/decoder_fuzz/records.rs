@@ -82,11 +82,11 @@ pub fn check(input: &[u8]) {
         |value| encode_source_fact(*value),
     );
     let domain = DOMAIN.len();
-    for version in [0_u16, 2, u16::MAX] {
+    for version in [0_u16, 1, u16::MAX] {
         let mut changed = bytes.clone();
         changed[domain..domain + 2].copy_from_slice(&version.to_le_bytes());
         assert!(
-            matches!(decode_source_fact(&changed, 4096), Err(SourceFactError::Decode(CanonicalDecodeError::UnsupportedVersion {found, expected: 1})) if found == version),
+            matches!(decode_source_fact(&changed, 4096), Err(SourceFactError::Decode(CanonicalDecodeError::UnsupportedVersion {found, expected: 2})) if found == version),
             "source version admitted"
         );
     }
