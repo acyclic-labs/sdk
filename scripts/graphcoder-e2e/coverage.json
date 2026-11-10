@@ -42,7 +42,8 @@
         "topology-debate-ring",
         "topology-group-chat",
         "topology-blackboard",
-        "topology-hierarchy"
+        "topology-hierarchy",
+        "pty-tree-sidebar"
       ]
     },
     "A4": {
@@ -209,7 +210,8 @@
         "pty-image-attach",
         "pty-notification",
         "pty-slash",
-        "pty-cancel-ctrl-c"
+        "pty-cancel-ctrl-c",
+        "pty-tree-sidebar"
       ]
     },
     "A18": {

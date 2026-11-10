@@ -711,6 +711,7 @@ pub async fn run(
     let mut overlay_top = 0usize;
     let start = Instant::now();
     loop {
+        let navigation = sidebar.navigation();
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let size: Size = size()?;
         let shown = ui.tree.unwrap_or_else(|| sidebar.has_children());
@@ -960,10 +961,21 @@ pub async fn run(
                     .collect();
                 output_rows.reverse();
             }
-            batch = keys.next() => {
+            batch = async {
+                if let Some(agent) = navigation {
+                    Some(Ok((Some(agent), Vec::new())))
+                } else {
+                    keys.next().await.map(|batch| batch.map(|events| (None, events)))
+                }
+            } => {
                 let mut selection_changed = false;
-                for event in batch.ok_or("terminal input ended")?? {
-                    if let Some(intent) = sidebar.event(&event, &input.keymap, ui.tree.unwrap_or(tree_shown), areas.tree) {
+                let (navigation, batch) = batch.ok_or("terminal input ended")??;
+                for event in navigation.into_iter().map(Err).chain(batch.into_iter().map(Ok)) {
+                    let intent = match &event {
+                        Err(agent) => Some(tree::Intent::Attach(agent.clone())),
+                        Ok(event) => sidebar.event(event, &input.keymap, ui.tree.unwrap_or(tree_shown), areas.tree),
+                    };
+                    if let Some(intent) = intent {
                         let attach = match intent {
                             tree::Intent::Toggle => {
                                 let shown = !ui.tree.unwrap_or(tree_shown);
@@ -976,16 +988,33 @@ pub async fn run(
                             tree::Intent::Parent => conversation.agent().parent()
                                 .filter(|agent| root.agent().contains(agent)).map(|agent| (agent, None)),
                             tree::Intent::History(direction) => sidebar.history_target(direction),
+                            tree::Intent::Sibling(forward) => {
+                                sidebar.sibling(conversation.agent(), forward);
+                                None
+                            }
                             tree::Intent::Input | tree::Intent::Consumed => None,
                         };
                         if let Some((agent, history)) = attach {
-                            let selected = root.select(agent.clone()).await?;
+                            let opening = async {
+                                let selected = root.select(agent.clone()).await?;
+                                let from = selected.settled().await?.saturating_sub(1);
+                                let events = selected.observe(Some(from)).await?;
+                                let session = session::Session::open(&selected).await?;
+                                Ok::<_, Failure>((selected, events, session))
+                            }.await;
+                            let (selected, selected_events, session) = match opening {
+                                Ok(opened) => opened,
+                                Err(error) => {
+                                    sidebar.cancel_navigation();
+                                    view.notice = refusal(format_args!("Attach unavailable: {error}"));
+                                    continue;
+                                }
+                            };
                             sidebar.attached(&agent, history);
-                            let from = selected.settled().await?.saturating_sub(1);
-                            events = selected.observe(Some(from)).await?;
+                            events = selected_events;
                             conversation = selected;
                             view = View { top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
-                            ui = session::Session::open(&conversation).await?;
+                            ui = session;
                             queries.close(query_future.as_mut());
                             overlay = None;
                             older_future.set(None);
@@ -1000,6 +1029,7 @@ pub async fn run(
                         }
                         continue;
                     }
+                    let Ok(event) = event else { continue };
                     let effects = areas
                         .event(&mut input, event, &mut viewport, now, &mut |_| None)
                         .collect::<Vec<_>>();

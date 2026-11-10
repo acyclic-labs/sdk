@@ -3,7 +3,7 @@ use super::*;
 use acyclic_harness::{
     agent::AgentPath,
     client::{
-        explorer::{LiveExplorer, Row},
+        explorer::{LiveExplorer, Row, SiblingNavigation},
         ui::{AgentRow, ReaderCut, View as UiView},
     },
     local::agent_conversation::VisibleFiles,
@@ -20,6 +20,7 @@ pub(super) enum Intent {
     Attach(AgentPath),
     Parent,
     History(isize),
+    Sibling(bool),
     Consumed,
 }
 
@@ -31,6 +32,8 @@ pub(super) struct Sidebar {
     pub files: VisibleFiles,
     history: Vec<AgentPath>,
     history_at: usize,
+    navigation: Option<SiblingNavigation>,
+    navigated: Option<AgentPath>,
 }
 
 impl Sidebar {
@@ -49,6 +52,8 @@ impl Sidebar {
             ),
             history: vec![conversation.agent().clone()],
             history_at: 0,
+            navigation: None,
+            navigated: None,
         })
     }
 
@@ -59,12 +64,39 @@ impl Sidebar {
 
     /// Only a successfully attached node enters the navigation history.
     pub fn attached(&mut self, agent: &AgentPath, history: Option<usize>) {
+        self.cancel_navigation();
         if let Some(at) = history {
             self.history_at = at;
         } else if self.history[self.history_at] != *agent {
             self.history.truncate(self.history_at + 1);
             self.history.push(agent.clone());
             self.history_at += 1;
+        }
+    }
+
+    pub fn cancel_navigation(&mut self) -> bool {
+        let pending = self.navigation.take().is_some();
+        let ready = self.navigated.take().is_some();
+        pending || ready
+    }
+
+    pub fn sibling(&mut self, agent: &AgentPath, forward: bool) {
+        self.navigated = None;
+        self.navigation = self.source.view.sibling_navigation(agent, forward);
+    }
+
+    pub fn navigation(&mut self) -> Option<AgentPath> {
+        if let Some(agent) = &self.navigated {
+            return Some(agent.clone());
+        }
+        let navigation = self.navigation.as_mut()?;
+        match self.source.view.navigate_sibling(navigation) {
+            std::task::Poll::Pending => None,
+            std::task::Poll::Ready(agent) => {
+                self.navigation = None;
+                self.navigated = agent;
+                self.navigated.clone()
+            }
         }
     }
 
@@ -215,6 +247,14 @@ impl Sidebar {
         }
         match decoded {
             Some(DecodedKey::Action {
+                action: Action::App(AppAction::SiblingPrevious),
+                ..
+            }) => return Some(Intent::Sibling(false)),
+            Some(DecodedKey::Action {
+                action: Action::App(AppAction::SiblingNext),
+                ..
+            }) => return Some(Intent::Sibling(true)),
+            Some(DecodedKey::Action {
                 action: Action::App(AppAction::NavigationBack),
                 ..
             }) => return Some(Intent::History(-1)),
@@ -223,6 +263,11 @@ impl Sidebar {
                 ..
             }) => return Some(Intent::History(1)),
             _ => {}
+        }
+        if key.code == KeyCode::Esc {
+            if self.cancel_navigation() {
+                return Some(Intent::Consumed);
+            }
         }
         if !shown || !self.focused {
             return None;

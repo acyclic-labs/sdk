@@ -95,6 +95,17 @@ pub enum Pos {
     },
 }
 
+/// One explicit sibling navigation, resumed by the same Reader's page events.
+/// It retains a cursor, never a list of siblings or a second tree collector.
+pub struct SiblingNavigation {
+    agent: AgentPath,
+    parent: StreamPath,
+    page: u32,
+    forward: bool,
+    neighbor: bool,
+    seek_forward: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,7 +150,7 @@ mod tests {
             for first in (0..count).step_by(100) {
                 let mut mutations = Vec::new();
                 for number in first..(first + 100).min(count) {
-                    let id = AgentId::try_from(format!("{:032x}", number + 2))?;
+                    let id = AgentId::try_from(format!("{:032x}", (number + 1) * 2))?;
                     let child = root.child(&id)?;
                     mutations.push(CommitMutation::Append {
                         path: StreamPath::new(child.as_str())?,
@@ -195,6 +206,27 @@ mod tests {
         }
         let (small, small_work) = open(10).await?;
         let (mut large, large_work) = open(10_000).await?;
+        let snapshot = |view: &Explorer| -> Result<String, crate::ui::Error> {
+            let projection = crate::ui::View::new(1)?;
+            let mut text = String::new();
+            for (_, row) in view.rows() {
+                let Row::Agent { path, .. } = row else {
+                    return Err(crate::ui::Error::Pending);
+                };
+                let cut = crate::ui::ReaderCut {
+                    reader: view.reader_ref(),
+                    agent: path,
+                    file: &|_| None,
+                };
+                let row = projection.row(&cut, |_| None)?;
+                text.push_str(&format!(
+                    "{} {} · {} · {} · {}\n",
+                    row.glyph, row.title, row.model, row.cost, row.age
+                ));
+            }
+            Ok(text)
+        };
+        let mut golden = snapshot(&large.view)?;
         assert_eq!(
             small.view.reader_ref().issued(),
             large.view.reader_ref().issued()
@@ -226,6 +258,49 @@ mod tests {
             "post-scroll requests: {}",
             large.view.reader_ref().issued() - before
         );
+        golden.push_str("after one page\n");
+        golden.push_str(&snapshot(&large.view)?);
+        assert_eq!(golden, include_str!("ui/golden/tree-10000.txt"));
+        let Row::Agent { path: selected, .. } = &large.view.rows()[0].1 else {
+            return Err("selected child missing".into());
+        };
+        let selected = selected.clone();
+        let before = large.view.reader_ref().issued();
+        for (forward, expected) in [(false, 128u128), (true, 132)] {
+            let mut navigation = large
+                .view
+                .sibling_navigation(&selected, forward)
+                .ok_or("sibling cursor")?;
+            let adjacent = loop {
+                if let Poll::Ready(adjacent) = large.view.navigate_sibling(&mut navigation) {
+                    break adjacent.ok_or("adjacent child")?;
+                }
+                large.view.frame(0);
+                futures::future::poll_fn(|cx| large.poll_changed(0, cx)).await;
+            };
+            assert_eq!(adjacent.id().to_bytes(), expected.to_be_bytes());
+            assert_eq!(adjacent.parent(), selected.parent());
+        }
+        let missing = selected
+            .parent()
+            .ok_or("parent")?
+            .child(&AgentId::from_bytes(129u128.to_be_bytes()))?;
+        let mut navigation = large
+            .view
+            .sibling_navigation(&missing, true)
+            .ok_or("missing cursor")?;
+        loop {
+            if let Poll::Ready(adjacent) = large.view.navigate_sibling(&mut navigation) {
+                assert!(
+                    adjacent.is_none(),
+                    "a gap identity is not an existing sibling"
+                );
+                break;
+            }
+            large.view.frame(0);
+            futures::future::poll_fn(|cx| large.poll_changed(0, cx)).await;
+        }
+        assert!(large.view.reader_ref().issued() - before <= 16);
         Ok(())
     }
 
@@ -790,6 +865,145 @@ impl Explorer {
             && let Some(at) = self.locate(agent)
         {
             self.anchor = at;
+        }
+    }
+
+    /// Navigate adjacent direct children, including across unloaded pages.
+    /// The original cached location is reused; an evicted location is sought
+    /// lazily through the same listing pages, under the ordinary read credit.
+    pub fn sibling_navigation(
+        &self,
+        agent: &AgentPath,
+        forward: bool,
+    ) -> Option<SiblingNavigation> {
+        let parent = parent_listing(agent)?;
+        if parent != self.root
+            && !parent
+                .as_str()
+                .strip_prefix(self.root.as_str())
+                .is_some_and(|suffix| suffix.starts_with('/'))
+        {
+            return None;
+        }
+        let page = match self.locate(agent) {
+            Some(Pos::Row { page, .. }) => page,
+            _ => self.expanded.get(agent).copied().unwrap_or(0),
+        };
+        Some(SiblingNavigation {
+            agent: agent.clone(),
+            parent,
+            page,
+            forward,
+            neighbor: false,
+            seek_forward: None,
+        })
+    }
+
+    /// Consume resident pages, or anchor one missing page for `frame` to plan.
+    /// Pending means await `LiveExplorer::poll_changed`, never a timer/probe.
+    pub fn navigate_sibling(
+        &mut self,
+        navigation: &mut SiblingNavigation,
+    ) -> Poll<Option<AgentPath>> {
+        loop {
+            let Some(listing) = self
+                .reader
+                .cache()
+                .listing(&navigation.parent, navigation.page)
+            else {
+                self.anchor = Pos::Gap {
+                    parent: navigation.parent.clone(),
+                    page: navigation.page,
+                };
+                return Poll::Pending;
+            };
+            let target = if navigation.neighbor {
+                if navigation.forward {
+                    listing.children.first()
+                } else {
+                    listing.children.last()
+                }
+            } else {
+                match listing
+                    .children
+                    .binary_search_by(|path| path.as_str().cmp(navigation.agent.as_str()))
+                {
+                    Ok(offset) => {
+                        navigation.neighbor = true;
+                        if navigation.forward {
+                            listing.children.get(offset + 1)
+                        } else {
+                            offset
+                                .checked_sub(1)
+                                .and_then(|offset| listing.children.get(offset))
+                        }
+                    }
+                    Err(offset) => {
+                        if !listing.children.is_empty()
+                            && offset < listing.children.len()
+                            && offset != 0
+                        {
+                            return Poll::Ready(None);
+                        }
+                        // The target can move to an earlier page after a
+                        // membership publication. Compare identities, never
+                        // assume a formerly cached ordinal remains current.
+                        if offset == 0 && !listing.children.is_empty() {
+                            if navigation.seek_forward == Some(true) {
+                                return Poll::Ready(None);
+                            }
+                            navigation.seek_forward = Some(false);
+                            let Some(page) = navigation.page.checked_sub(1) else {
+                                return Poll::Ready(None);
+                            };
+                            navigation.page = page;
+                            continue;
+                        }
+                        if listing.next.is_none() {
+                            return Poll::Ready(None);
+                        }
+                        if navigation.seek_forward == Some(false) {
+                            return Poll::Ready(None);
+                        }
+                        navigation.seek_forward = Some(true);
+                        let Some(page) = navigation.page.checked_add(1) else {
+                            return Poll::Ready(None);
+                        };
+                        navigation.page = page;
+                        continue;
+                    }
+                }
+            };
+            if let Some(path) = target {
+                let agent = agent_of(path);
+                if let Some(offset) = listing
+                    .children
+                    .binary_search(path)
+                    .ok()
+                    .and_then(|offset| u32::try_from(offset).ok())
+                {
+                    self.anchor = Pos::Row {
+                        parent: navigation.parent.clone(),
+                        page: navigation.page,
+                        offset,
+                    };
+                }
+                return Poll::Ready(agent);
+            }
+            navigation.page = if navigation.forward {
+                if listing.next.is_none() {
+                    return Poll::Ready(None);
+                }
+                let Some(page) = navigation.page.checked_add(1) else {
+                    return Poll::Ready(None);
+                };
+                page
+            } else {
+                let Some(page) = navigation.page.checked_sub(1) else {
+                    return Poll::Ready(None);
+                };
+                page
+            };
         }
     }
 

@@ -1,5 +1,12 @@
 Cases launch the shipping GraphCoder binary with an ordinary provider catalog and isolated settings. Build GraphCoder and harness-mock-model and install scripts/graphcoder-pty dependencies before timing. Run `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [CASE ...]`.
 
+`pty-tree-sidebar` creates a real worker, authors its private `ui/` row files,
+toggles the automatically visible tree, attaches, and observes a live rename.
+Parent and attachment-history navigation must return to the original views
+without dispatching another model request. The shared Explorer's 10,000-child
+control separately checks the row golden and request counts across a page and
+sibling boundary, including an absent identity between pages.
+
 `pty-conversation` submits its first prompt and terminal-query replies together on the first terminal output bytes, before admitting a rendered frame, then checks both conversational turns. `pty-cancel-preparation` holds the acknowledged token-count request, observes two distinct thinking highlights, then cancels before any model dispatch and requires the animation to stop. Resume cases use the public text/JSONL and explicit terminal-resume contracts.
 
 `topology-blackboard` selects the embedded role file through native `spawn`.
