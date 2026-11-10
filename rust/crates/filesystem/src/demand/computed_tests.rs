@@ -663,7 +663,11 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
         )
         .await
         .unwrap();
-    let root_hash = (b"acyclic:routed:directory:v1".len() + 32 + 32 + b"ui".len()) as u64;
+    // Root versions include every component of the held cut, even when the
+    // providers' directory metadata versions themselves did not change.
+    let root_hash =
+        (b"acyclic:routed:directory:v1".len() + source.encoded_len() + 32 + 32 + b"ui".len())
+            as u64;
     assert_eq!(
         root.work.bytes_hashed,
         direct_root.work.bytes_hashed + 48 + root_hash
@@ -672,25 +676,25 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
         root_page.work.bytes_hashed,
         direct_root.work.bytes_hashed + 48 + root_hash
     );
-    for lookup in [true, false] {
-        let limit = if lookup {
-            file.work.bytes_hashed
-        } else {
-            page.work.bytes_hashed
-        } - 1;
+    for (lookup, requested, hashed) in [
+        (true, "/ui/index.md", file.work.bytes_hashed),
+        (false, "/ui", page.work.bytes_hashed),
+        (true, "/", root.work.bytes_hashed),
+        (false, "/", root_page.work.bytes_hashed),
+    ] {
         let budget = WorkBudget {
-            bytes_hashed: limit,
+            bytes_hashed: hashed - 1,
             ..WorkBudget::UNBOUNDED
         };
         let error = if lookup {
             routed
-                .lookup(source.clone(), &path("/ui/index.md"), budget, &cancel)
+                .lookup(source.clone(), &path(requested), budget, &cancel)
                 .await
                 .unwrap_err()
                 .error
         } else {
             routed
-                .list_page(source.clone(), &path("/ui"), None, 1, budget, &cancel)
+                .list_page(source.clone(), &path(requested), None, 1, budget, &cancel)
                 .await
                 .unwrap_err()
                 .error
