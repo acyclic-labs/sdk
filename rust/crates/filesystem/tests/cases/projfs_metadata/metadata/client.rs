@@ -10,29 +10,6 @@ pub(crate) const MODE: &str = "ACYCLIC_PROJFS_METADATA_CLIENT";
 const PATH: &str = "ACYCLIC_PROJFS_METADATA_PATH";
 const READY: &str = "ACYCLIC_METADATA_READY";
 
-pub(in super::super) fn run(
-    mode: &str,
-    path: &Path,
-    before_action: impl FnOnce() -> Result<(), Box<dyn std::error::Error>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let module = module_path!()
-        .split_once("::")
-        .expect("client belongs to a test crate")
-        .1
-        .strip_suffix("::client")
-        .expect("client is nested beneath its metadata tests");
-    run_with_release(
-        &format!("{module}::external_metadata_only_change_survives_remount"),
-        mode,
-        path,
-        |mut release| {
-            before_action()?;
-            release.write_all(b"g")?;
-            Ok(())
-        },
-    )
-}
-
 pub(crate) fn run_with_release(
     test: &str,
     mode: &str,

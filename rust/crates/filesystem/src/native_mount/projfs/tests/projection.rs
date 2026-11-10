@@ -253,9 +253,18 @@ async fn a_projected_directory_link_leads_into_its_directory()
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn sharing_denied_entries_are_retired_only_after_the_original_handle_closes()
+#[test]
+fn sharing_denied_entries_are_retired_only_after_the_original_handle_closes()
 -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(mode) = std::env::var_os(super::metadata_client::MODE) {
+        return super::metadata_client::execute(&mode);
+    }
+    held_entry_workload()
+}
+
+#[tokio::main(flavor = "multi_thread")]
+async fn held_entry_workload() -> Result<(), Box<dyn std::error::Error>> {
+    const TEST: &str = "native_mount::projfs::tests::projection::sharing_denied_entries_are_retired_only_after_the_original_handle_closes";
     #[derive(Clone, Copy, Debug)]
     enum Replacement {
         Removed,
@@ -287,63 +296,73 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
             })?;
             let projected = destination.join("name");
             let mut released_at = 0;
-            super::metadata::client::run("held-entry", &projected, || {
-                let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
-                let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
-                let context = driver.context.ok_or("missing ProjFS context")?;
-                let tree = lock_recover(&runtime.projector.tree);
-                source.remove(&name, None, &work)?;
-                match replacement {
-                    Replacement::Removed => {}
-                    Replacement::File => {
-                        source.create_file(&name, FileMetadata::default(), None, &work)?;
-                        source.write_range(&name, 0, Bytes::from_static(b"newer"))?;
+            // ProjFS suppresses the provider's own handle notifications, so an
+            // external client holds the real sharing-denied handle.
+            super::metadata_client::run_with_release(
+                TEST,
+                "held-entry",
+                &projected,
+                |mut release| {
+                    let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+                    let runtime =
+                        Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
+                    let context = driver.context.ok_or("missing ProjFS context")?;
+                    let tree = lock_recover(&runtime.projector.tree);
+                    source.remove(&name, None, &work)?;
+                    match replacement {
+                        Replacement::Removed => {}
+                        Replacement::File => {
+                            source.create_file(&name, FileMetadata::default(), None, &work)?;
+                            source.write_range(&name, 0, Bytes::from_static(b"newer"))?;
+                        }
+                        Replacement::Directory => {
+                            source.create_directory(&name, FileMetadata::default(), &work)?;
+                            let inner = name.child(windows_name("inner.txt"));
+                            source.create_file(&inner, FileMetadata::default(), None, &work)?;
+                            source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+                        }
                     }
-                    Replacement::Directory => {
-                        source.create_directory(&name, FileMetadata::default(), &work)?;
-                        let inner = name.child(windows_name("inner.txt"));
-                        source.create_file(&inner, FileMetadata::default(), None, &work)?;
-                        source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+                    runtime.projector.materialize_locked(
+                        Projection {
+                            runtime: &runtime,
+                            work: &work,
+                            context,
+                            starting: false,
+                        },
+                        vec![MountPath::root()],
+                    )?;
+                    let target = {
+                        let state = lock_recover(&runtime.projector.state);
+                        assert!(
+                            state.processed < state.notified,
+                            "the changed view must await its original worker"
+                        );
+                        state.notified
+                    };
+                    drop(tree);
+                    let mut state = lock_recover(&runtime.projector.state);
+                    while state.processed < target && state.failure.is_none() && !state.stopping {
+                        state = runtime
+                            .projector
+                            .changed
+                            .wait(state)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                     }
-                }
-                runtime.projector.materialize_locked(
-                    Projection {
-                        runtime: &runtime,
-                        work: &work,
-                        context,
-                        starting: false,
-                    },
-                    vec![MountPath::root()],
-                )?;
-                let target = {
-                    let state = lock_recover(&runtime.projector.state);
                     assert!(
-                        state.processed < state.notified,
-                        "the changed view must await its original worker"
+                        state.failure.is_none() && !state.stopping,
+                        "the original worker must complete"
                     );
-                    state.notified
-                };
-                drop(tree);
-                let mut state = lock_recover(&runtime.projector.state);
-                while state.processed < target && state.failure.is_none() && !state.stopping {
-                    state = runtime
-                        .projector
-                        .changed
-                        .wait(state)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
-                assert!(
-                    state.failure.is_none() && !state.stopping,
-                    "the original worker must complete"
-                );
-                assert!(state.processed >= target);
-                assert!(
-                    state.pending.contains_key(&name),
-                    "the worker must retain the held incarnation"
-                );
-                released_at = state.releases;
-                Ok(())
-            })
+                    assert!(state.processed >= target);
+                    assert!(
+                        state.pending.contains_key(&name),
+                        "the worker must retain the held incarnation"
+                    );
+                    released_at = state.releases;
+                    drop(state);
+                    std::io::Write::write_all(&mut release, b"g")?;
+                    Ok(())
+                },
+            )
             .map_err(|error| {
                 format!("hold and change entry, link={link}, {replacement:?}: {error}")
             })?;

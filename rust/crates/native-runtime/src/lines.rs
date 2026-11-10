@@ -80,6 +80,16 @@ impl LineBuffer {
         lines
     }
 
+    /// Completes the last frame at the original source's EOF or capture cut.
+    /// Uses the same trailing-line, CRLF and error semantics as [`AsyncLines`].
+    /// Consumed bytes cannot produce a second frame on a later call.
+    pub fn finish(&mut self) -> Option<io::Result<String>> {
+        self.codec
+            .decode_eof(&mut self.bytes)
+            .map_err(invalid)
+            .transpose()
+    }
+
     /// Retained incomplete frame bytes, for resource accounting and diagnostics.
     #[must_use]
     pub fn buffered_bytes(&self) -> usize {
@@ -150,6 +160,41 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn incremental_eof_matches_async_lines_at_every_split() -> io::Result<()> {
+        for bytes in [
+            b"last".as_slice(),
+            b"first\r\nsecond\nlast\r",
+            b"\n\r\nlast",
+            b"",
+        ] {
+            let mut original = AsyncLines::new(bytes, 64);
+            let mut expected = Vec::new();
+            while let Some(line) = original.next_line().await.map_err(invalid)? {
+                expected.push(line);
+            }
+            for chunk in 1..=bytes.len().max(1) {
+                let mut lines = LineBuffer::new(64);
+                let mut actual = Vec::new();
+                for page in bytes.chunks(chunk) {
+                    actual.extend(
+                        lines
+                            .push(page)
+                            .into_iter()
+                            .collect::<io::Result<Vec<_>>>()?,
+                    );
+                }
+                actual.extend(lines.finish().transpose()?);
+                assert_eq!(
+                    actual, expected,
+                    "incremental EOF lost the original final frame"
+                );
+                assert!(lines.finish().is_none(), "EOF emitted the same frame twice");
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn oversize_and_invalid_frames_cannot_hide_the_next_complete_line() -> io::Result<()> {
         let mut bounded = LineBuffer::new(64);
@@ -163,6 +208,13 @@ mod tests {
         let mut lines = lines.into_iter();
         assert!(lines.next().ok_or(io::ErrorKind::UnexpectedEof)?.is_err());
         assert_eq!(lines.next().ok_or(io::ErrorKind::UnexpectedEof)??, "valid");
+        assert!(bounded.push(b"recovered").is_empty());
+        assert_eq!(
+            bounded.finish().transpose()?.as_deref(),
+            Some("recovered"),
+            "EOF discarded the recovered final frame"
+        );
+        assert!(bounded.finish().is_none());
         // Removing the bound accepts the same peer's entire oversized frame.
         let mut unbounded = LineBuffer::new(usize::MAX);
         assert!(unbounded.push(&oversized).is_empty());
