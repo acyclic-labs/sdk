@@ -67,7 +67,7 @@ try {
       } }));
       const { run: result } = await withOwnedCase({ processes, signal: cancellation.signal, run: async () => {
         running = terminal ? processes.startTerminal(binary, args, { cwd: workspace, env })
-          : processes.startOwned(binary, args, { cwd: workspace, env });
+          : processes.start(binary, args, { cwd: workspace, env });
         // Device-query replies come from the actual terminal parser.
         const replies = screen.onData(data => running.input.write(data));
         try {
