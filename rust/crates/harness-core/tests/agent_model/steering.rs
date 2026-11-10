@@ -75,10 +75,10 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
         // The actual same append lands if its original close condition is removed.
         step.state.status_tail += 1;
         let mut unguarded = lower(&step, 1, intent_key("unguarded", &[])?)?;
-        for mutation in &mut unguarded.mutations {
-            if let CommitMutation::SoftAppend { closed, .. } = mutation {
-                *closed = None;
-            }
+        for effect in unguarded.effects.iter_mut().filter(|effect| effect.soft) {
+            effect
+                .conditions
+                .retain(|condition| !matches!(condition, CommitCondition::Absent { .. }));
         }
         assert!(matches!(
             stream.commit(unguarded).await?,
@@ -110,26 +110,54 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
     ] {
         submit(&stream, send(&path, &user(), &record)?).await?;
     }
-    let first = select_boundary(&stream, &state.path, 1, None).await?;
+    let first = select_boundary(
+        &stream,
+        &state.path,
+        1,
+        acyclic_harness_core::agent::BoundaryEnd::Open,
+    )
+    .await?;
     assert_eq!((first.from, first.through, first.inputs.len()), (1, 5, 3));
     // An explicitly started follow-up can admit steering that arrived after it.
-    let next = select_boundary(&stream, &state.path, 4, None).await?;
+    let next = select_boundary(
+        &stream,
+        &state.path,
+        4,
+        acyclic_harness_core::agent::BoundaryEnd::Open,
+    )
+    .await?;
     assert_eq!((next.through, next.inputs.len()), (5, 1));
     assert_eq!(
-        select_boundary(&stream, &state.path, 5, None)
-            .await?
-            .through,
+        select_boundary(
+            &stream,
+            &state.path,
+            5,
+            acyclic_harness_core::agent::BoundaryEnd::Open
+        )
+        .await?
+        .through,
         5
     );
     // The frozen range cannot absorb records that arrived after preparation.
     assert_eq!(
-        select_boundary(&stream, &state.path, 1, Some(first.through)).await?,
+        select_boundary(
+            &stream,
+            &state.path,
+            1,
+            acyclic_harness_core::agent::BoundaryEnd::Exact(first.through)
+        )
+        .await?,
         first
     );
     assert!(
-        select_boundary(&stream, &state.path, 1, Some(6))
-            .await
-            .is_err()
+        select_boundary(
+            &stream,
+            &state.path,
+            1,
+            acyclic_harness_core::agent::BoundaryEnd::Exact(6)
+        )
+        .await
+        .is_err()
     );
     // Independent turns retain their entries, but cannot block a later reply.
     let approval = InboxRecord::ApprovalRequested(ApprovalRequested {
@@ -141,10 +169,22 @@ async fn steering_keeps_reserved_turns_and_stops_at_interrupts() -> Result {
     for record in [notice(5, false), approval, notice(6, true)] {
         submit(&stream, send(&other, &user(), &record)?).await?;
     }
-    let selected = select_boundary(&stream, &other_state.path, 1, None).await?;
+    let selected = select_boundary(
+        &stream,
+        &other_state.path,
+        1,
+        acyclic_harness_core::agent::BoundaryEnd::Open,
+    )
+    .await?;
     assert_eq!((selected.through, selected.inputs.len()), (4, 2));
     assert_eq!(
-        select_boundary(&stream, &other_state.path, 1, Some(4)).await?,
+        select_boundary(
+            &stream,
+            &other_state.path,
+            1,
+            acyclic_harness_core::agent::BoundaryEnd::Exact(4)
+        )
+        .await?,
         selected
     );
     Ok(())

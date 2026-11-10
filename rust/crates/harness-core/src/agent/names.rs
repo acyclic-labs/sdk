@@ -96,13 +96,13 @@ impl<P: StreamProvider + ?Sized + 'static> NameIndex<P> {
         if value.len() > MAX_RECORD_BYTES {
             return Err(Error::Record("agent name binding exceeds the record frame"));
         }
-        request
-            .conditions
-            .push(CommitCondition::Absent { path: path.clone() });
-        request.mutations.push(CommitMutation::Append {
-            path,
-            records: vec![value.into()],
-        });
+        request.effects.push(acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent { path: path.clone() }],
+            vec![CommitMutation::Append {
+                path,
+                records: vec![value.into()],
+            }],
+        ));
         Ok(())
     }
 }

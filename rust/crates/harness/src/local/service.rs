@@ -439,6 +439,7 @@ mod tests {
             }
             assert_eq!(listed, roots);
             let mut projects = Vec::new();
+            let mut shared = Vec::new();
             for root in &roots {
                 let state = local.agents().await?.0.state(root).await.map_err(storage)?;
                 let binding = state
@@ -451,6 +452,41 @@ mod tests {
                     binding.volume.provider().clone(),
                     &binding.volume.storage_name(&mut None)?,
                 )?);
+                let binding = state
+                    .volumes
+                    .iter()
+                    .find(|binding| binding.name == super::super::SHARED_VOLUME)
+                    .ok_or_else(|| Error::Invalid("missing shared binding".into()))?;
+                shared.push(crate::filesystem::workspace_ref(
+                    binding.volume.provider().clone(),
+                    &binding.volume.storage_name(&mut None)?,
+                )?);
+            }
+            for (index, text) in [(0, "first board"), (1, "second board")] {
+                local
+                    .files
+                    .apply(
+                        &shared[index],
+                        None,
+                        &[crate::filesystem::WorkspaceMutation::PutFile {
+                            path: "/board.txt".into(),
+                            bytes: acyclic_stream::OwnedBytes::copy_from_slice(text.as_bytes()),
+                        }],
+                        &crate::IdempotencyKey::new(format!("shared-isolation-{index}"))?,
+                    )
+                    .await?;
+            }
+            for (workspace, expected) in [(&shared[0], "first board"), (&shared[1], "second board")]
+            {
+                assert_eq!(
+                    local
+                        .files
+                        .read(workspace, None, "/board.txt", 1024, None)
+                        .await?
+                        .as_ref(),
+                    expected.as_bytes(),
+                    "independent sessions must not share writable boards"
+                );
             }
             for (index, text) in [(0, "first session"), (1, "second session")] {
                 local
@@ -859,8 +895,19 @@ mod tests {
         .map_err(storage)?;
         let provider = Arc::new(
             ScriptedModelProvider::new([
+                super::super::tests::checked_commands::call(
+                    0,
+                    crate::tools::shell::PLATFORM.name,
+                    "echo parent > parent.txt",
+                ),
                 ScriptedTurn::Text("child ready".into()),
                 ScriptedTurn::Text("grandchild ready".into()),
+                super::super::tests::checked_commands::call(
+                    1,
+                    crate::tools::shell::PLATFORM.name,
+                    "cp nested.txt observed.txt",
+                ),
+                ScriptedTurn::Text("parent read merged checkout".into()),
             ])
             .with_context_capacity(crate::context::ModelContextCapacity {
                 context_tokens: 32_768,
@@ -877,8 +924,7 @@ mod tests {
                     ),
                 )?
                 .state_directory(storage_dir.path())
-                .workspace_mounting(WorkspaceMounting::Physical)
-                .without_default_tools(),
+                .workspace_mounting(WorkspaceMounting::Physical),
             )
             .await?,
         );
@@ -1018,6 +1064,89 @@ mod tests {
                 .await?;
             descendants.push(selected.clone());
         }
+        let parent_state = local
+            .agents()
+            .await?
+            .0
+            .state(descendants[0].root())
+            .await
+            .map_err(storage)?;
+        let binding = |name: &str| {
+            parent_state
+                .volumes
+                .iter()
+                .find(|binding| binding.name == name)
+                .unwrap()
+                .volume
+                .clone()
+        };
+        let (signed, verifier) = local
+            .agents
+            .get()
+            .unwrap()
+            .server()
+            .bound()
+            .volume_scope(descendants[0].root())
+            .await
+            .map_err(storage)?;
+        let parent_workspace = local
+            .project_workspace(
+                local.workspace.as_ref().unwrap(),
+                descendants[0].root(),
+                &binding("project"),
+                &binding(super::super::HOME_VOLUME),
+                &signed,
+                &verifier,
+            )
+            .await?;
+        assert!(
+            std::fs::read_to_string(parent_workspace.path.join("parent.txt"))
+                .map_err(storage)?
+                .contains("parent"),
+            "the parent's shell must have bound its checkout before merging"
+        );
+        let grandchild_state = local
+            .agents()
+            .await?
+            .0
+            .state(descendants[1].root())
+            .await
+            .map_err(storage)?;
+        let grandchild_shared = &grandchild_state
+            .volumes
+            .iter()
+            .find(|binding| binding.name == super::super::SHARED_VOLUME)
+            .unwrap()
+            .volume;
+        let shared = binding(super::super::SHARED_VOLUME);
+        let shared = crate::filesystem::workspace_ref(
+            shared.provider().clone(),
+            &shared.storage_name(&mut None)?,
+        )?;
+        local
+            .files
+            .apply(
+                &shared,
+                None,
+                &[crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/board.txt".into(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"tree board"),
+                }],
+                &crate::IdempotencyKey::new("descendant-board")?,
+            )
+            .await?;
+        let shared = crate::filesystem::workspace_ref(
+            grandchild_shared.provider().clone(),
+            &grandchild_shared.storage_name(&mut None)?,
+        )?;
+        assert_eq!(
+            local
+                .files
+                .read(&shared, None, "/board.txt", 1024, None)
+                .await?
+                .as_ref(),
+            b"tree board"
+        );
         let state = local
             .agents()
             .await?
@@ -1064,6 +1193,15 @@ mod tests {
             diff.iter().any(|file| file.path.ends_with("nested.txt")),
             "the direct parent must own the merged edit"
         );
+        parent
+            .send("read-merged-checkout", "read the merged file using shell")
+            .await?;
+        parent.wait_current_input().await?;
+        assert_eq!(
+            std::fs::read(parent_workspace.path.join("observed.txt")).map_err(storage)?,
+            b"nested\n",
+            "a later parent shell must see the merged file"
+        );
         sessions::merge(&descendants[0], "merge-child").await?;
         assert_eq!(
             std::fs::read(checkout.path().join("nested.txt")).map_err(storage)?,
@@ -1085,7 +1223,7 @@ mod tests {
         ));
         assert_eq!(
             provider.request_count(),
-            2,
+            5,
             "human filesystem actions must not dispatch a model"
         );
         Ok(())

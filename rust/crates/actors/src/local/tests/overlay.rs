@@ -274,15 +274,18 @@ async fn branch_escrow_is_zero_unless_allocated_and_never_double_spent() -> Test
     let commit = provider
         .commit(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Absent {
-                path: copy_path.clone(),
-            }],
-            mutations: vec![CommitMutation::Fork {
-                exclude: Vec::new(),
-                source: forker_cut.path().clone(),
-                destination: copy_path,
-                at_tail: forker_cut.tail,
-                records: Vec::new(),
+            effects: vec![acyclic_stream::CommitEffect {
+                soft: false,
+                conditions: vec![CommitCondition::Absent {
+                    path: copy_path.clone(),
+                }],
+                mutations: vec![CommitMutation::Fork {
+                    exclude: Vec::new(),
+                    source: forker_cut.path().clone(),
+                    destination: copy_path,
+                    at_tail: forker_cut.tail,
+                    records: Vec::new(),
+                }],
             }],
             idempotency_key: key("blind/fork")?,
         })

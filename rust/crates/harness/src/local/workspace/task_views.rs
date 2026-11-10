@@ -58,6 +58,26 @@ impl LocalWorkspace {
             .map_err(storage)
     }
 
+    /// Whether a project already has a physical checkout whose local edits
+    /// must participate in human Git actions, just as they do in model tools.
+    pub(in crate::local) fn has_physical_task_source(
+        &self,
+        view: &workspace::View,
+    ) -> Result<bool> {
+        if self.mounting != WorkspaceMounting::Physical {
+            return Ok(false);
+        }
+        self.physical_task_path(view.workspace().id())
+            .try_exists()
+            .map_err(storage)
+    }
+
+    fn physical_task_path(&self, project: acyclic_fs::WorkspaceId) -> PathBuf {
+        self.mount_directory
+            .join(super::PHYSICAL_VIEW_ROOT)
+            .join(hex::encode(project.into_bytes()))
+    }
+
     /// The physical counterpart of [`Self::mount_task_source`]: `view`'s
     /// complete visible tree as a plain directory below the checkout's
     /// reserved view root, needing no native provider. Its first binding
@@ -74,8 +94,7 @@ impl LocalWorkspace {
             .map_err(storage)?;
         // The binding owns this directory. Selecting another Git workspace
         // must neither share another agent's directory nor orphan this one.
-        let name = hex::encode(self.view().workspace().id().into_bytes());
-        let path = parent.path().join(name);
+        let path = self.physical_task_path(self.view().workspace().id());
         if !path.try_exists().map_err(storage)? {
             let cancellation = CancellationToken::new();
             // Promote every lazily inherited entry first, so the

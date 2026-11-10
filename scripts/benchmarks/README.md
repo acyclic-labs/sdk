@@ -20,7 +20,7 @@ production registry with empty explicit credentials, and rejects the old
 incomplete feature declaration. It never sends a request.
 
 Build the Linux GraphCoder artifact from the selected source commit with
-`cargo build --locked --release -p graphcoder`. Preserve its source commit and
+`cargo build --locked --release -p acyclic-plugin`. Preserve its source commit and
 SHA256 digest with the plan; the artifact alone does not satisfy run readiness.
 
 Inventory an already available public dataset checkout at its immutable Git
@@ -39,7 +39,7 @@ Generate a plan with an explicitly supplied, unauthenticated Responses endpoint:
 ```sh
 python3 -m scripts.benchmarks.plan plan \
   --stage tb2-20 --manifest /path/to/tb2-manifest.json \
-  --binary /path/to/graphcoder --binary-sha256 FULL_BINARY_SHA256 \
+  --binary /path/to/acyclic --binary-sha256 FULL_BINARY_SHA256 \
   --source-sha FULL_QUALIFIED_MAIN_COMMIT \
   --model openai/MODEL --base-url http://EXPLICIT_ENDPOINT/v1 \
   --context-tokens MODEL_CONTEXT_CAPACITY --output-tokens MODEL_OUTPUT_CAPACITY \

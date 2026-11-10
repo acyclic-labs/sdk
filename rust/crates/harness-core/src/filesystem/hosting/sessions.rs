@@ -126,8 +126,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         let directory = self.session_directory()?;
         let mut request = acyclic_stream::CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![acyclic_stream::CommitCondition::Present { path: member }],
-            mutations: Vec::new(),
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![acyclic_stream::CommitCondition::Present { path: member }],
+                Vec::new(),
+            )],
             idempotency_key: crate::agent::intent_key(
                 "name-session",
                 &[directory.as_str(), agent.as_str(), name, id.as_str()],
@@ -182,30 +184,30 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     ) -> Result<(), Error> {
         self.admit_sessions()?;
         let path = self.session_directory()?;
-        request
-            .conditions
-            .push(acyclic_stream::CommitCondition::Present { path: path.clone() });
         let value = serde_json::to_vec(&Entry::Root {
             version: 1,
             agent: agent.clone(),
         })
         .map_err(|_| Error::Record("directory membership cannot encode"))?;
         let entry = self.session_member(agent)?;
-        request
-            .conditions
-            .push(acyclic_stream::CommitCondition::Absent {
-                path: entry.clone(),
-            });
-        request.mutations.extend([
-            acyclic_stream::CommitMutation::Append {
-                path,
-                records: vec![value.clone().into()],
-            },
-            acyclic_stream::CommitMutation::Append {
-                path: entry,
-                records: vec![value.into()],
-            },
-        ]);
+        request.effects.push(acyclic_stream::CommitEffect::hard(
+            vec![
+                acyclic_stream::CommitCondition::Present { path: path.clone() },
+                acyclic_stream::CommitCondition::Absent {
+                    path: entry.clone(),
+                },
+            ],
+            vec![
+                acyclic_stream::CommitMutation::Append {
+                    path,
+                    records: vec![value.clone().into()],
+                },
+                acyclic_stream::CommitMutation::Append {
+                    path: entry,
+                    records: vec![value.into()],
+                },
+            ],
+        ));
         Ok(())
     }
 
@@ -346,11 +348,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         .map_err(|_| Error::Record("session selection cannot encode"))?;
         let request = acyclic_stream::CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![acyclic_stream::CommitCondition::Present { path: member }],
-            mutations: vec![acyclic_stream::CommitMutation::Append {
-                path: directory.clone(),
-                records: vec![value.into()],
-            }],
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![acyclic_stream::CommitCondition::Present { path: member }],
+                vec![acyclic_stream::CommitMutation::Append {
+                    path: directory.clone(),
+                    records: vec![value.into()],
+                }],
+            )],
             idempotency_key: crate::agent::intent_key(
                 "select-session",
                 &[directory.as_str(), id.as_str()],

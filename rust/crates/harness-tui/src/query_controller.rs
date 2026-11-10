@@ -4,14 +4,14 @@ use std::pin::Pin;
 
 /// Shared query selection and refresh state. The caller pins its original
 /// future in place; the controller adds no allocation, task or source reader.
-pub struct QueryController<S> {
+pub struct QueryController<S, M = ()> {
     source: Option<S>,
     /// The one admitted page, retained while a refresh is pending.
-    pub page: Option<QueryPage<S>>,
+    pub page: Option<QueryPage<S, M>>,
     dirty: bool,
 }
 
-impl<S> Default for QueryController<S> {
+impl<S, M> Default for QueryController<S, M> {
     fn default() -> Self {
         Self {
             source: None,
@@ -21,7 +21,7 @@ impl<S> Default for QueryController<S> {
     }
 }
 
-impl<S> QueryController<S> {
+impl<S, M> QueryController<S, M> {
     /// Current selection, including its original opaque continuation.
     pub fn source(&self) -> Option<&S> {
         self.source.as_ref()
@@ -110,7 +110,7 @@ impl<S> QueryController<S> {
     /// Returns the original source error unchanged, without retrying it.
     pub fn finish<F, E>(
         &mut self,
-        result: Result<QueryPage<S>, E>,
+        result: Result<QueryPage<S, M>, E>,
         mut pending: Pin<&mut Option<F>>,
     ) -> Result<(), E> {
         pending.set(None);

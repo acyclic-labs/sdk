@@ -11,9 +11,9 @@
         "tools": [
           {
             "id": "bash",
-            "name": "shell",
+            "name": "code",
             "arguments": {
-              "command": "node \"{{support}}/capture.mjs\""
+              "code": "await tools.shell({\"command\":\"node \\\"{{support}}/capture.mjs\\\"\"});"
             }
           }
         ]
@@ -37,7 +37,10 @@
   ],
   "assert": {
     "requests": 2,
-    "tool_contains": ["bytes omitted from this preview", "complete output:"],
+    "tool_contains": [
+      "bytes omitted from this preview",
+      "complete output:"
+    ],
     "files": {
       "bash.txt": "BASH_E2E_CONTENT\n"
     }

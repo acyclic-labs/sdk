@@ -59,6 +59,21 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
             .await,
         Err(StreamError::AccessDenied)
     );
+    let directory_connection = harness.connect_sessions().await?;
+    let session = super::super::sessions::create(&directory_connection, "reader-session").await?;
+    let page = session
+        .session
+        .read_provider()
+        .children_page(acyclic_stream::ChildrenPageRequest {
+            parent: Some(session.root.children().map_err(exchange)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 16,
+            tail_stream: Some(StreamPath::new("conversation").map_err(exchange)?),
+        })
+        .await
+        .map_err(exchange)?;
+    assert!(page.children.is_empty());
     Ok(())
 }
 impl PersistenceCut for Cut {

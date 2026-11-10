@@ -20,11 +20,10 @@ proptest! {
             provider.append(AppendRequest { path: StreamPath::new("tree/items-suffix/keep")?, records: vec![Bytes::from_static(b"keep").into()], if_tail: Some(0), idempotency_key: crate::IdempotencyKey::unique() }).await?;
             provider.commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Tail { path: root.clone(), expected: 1 },
-                    CommitCondition::Absent { path: StreamPath::new("tree/children/new")? }],
-                mutations: vec![CommitMutation::Fork { source: root.clone(), destination: StreamPath::new("tree/children/new")?, at_tail: root_cut, records: Vec::new(),
+                effects: vec![crate::CommitEffect::hard(vec![CommitCondition::Tail { path: root.clone(), expected: 1 },
+                    CommitCondition::Absent { path: StreamPath::new("tree/children/new")? }], vec![CommitMutation::Fork { source: root.clone(), destination: StreamPath::new("tree/children/new")?, at_tail: root_cut, records: Vec::new(),
                     exclude: if exclude_items { vec![StreamPath::new("items")?] } else { Vec::new() } },
-                    CommitMutation::Append { path: root, records: vec![Bytes::from_static(b"later").into()] }],
+                    CommitMutation::Append { path: root, records: vec![Bytes::from_static(b"later").into()] }])],
                 idempotency_key: IdempotencyKey::new(b"fork".to_vec())?,
             }).await?;
             assert_eq!(provider.tail(StreamPath::new("tree/children/new")?).await?, root_cut);
@@ -99,14 +98,16 @@ async fn rejected_conditions_retain_no_key_or_namespace_state() -> Result<(), St
             provider
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![CommitCondition::Tail {
-                        path: StreamPath::new("absent")?,
-                        expected: 1
-                    }],
-                    mutations: vec![CommitMutation::Append {
-                        path: StreamPath::new("absent")?,
-                        records: vec![Bytes::from_static(b"intent").into()]
-                    }],
+                    effects: vec![crate::CommitEffect::hard(
+                        vec![CommitCondition::Tail {
+                            path: StreamPath::new("absent")?,
+                            expected: 1
+                        }],
+                        vec![CommitMutation::Append {
+                            path: StreamPath::new("absent")?,
+                            records: vec![Bytes::from_static(b"intent").into()]
+                        }]
+                    )],
                     idempotency_key: key.clone(),
                 })
                 .await?,

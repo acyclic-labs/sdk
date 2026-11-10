@@ -23,6 +23,7 @@ pub fn check_metadata(metadata: &Value) {
         (
             &[
                 "/usage/cache_read_input_tokens",
+                "/usage/cached_input_tokens",
                 "/usage/input_tokens_details/cached_tokens",
                 "/usage/prompt_tokens_details/cached_tokens",
                 "/usage/cachedContentTokenCount",
@@ -32,6 +33,7 @@ pub fn check_metadata(metadata: &Value) {
         (
             &[
                 "/usage/cache_creation_input_tokens",
+                "/usage/cache_write_input_tokens",
                 "/usage/input_tokens_details/cache_write_tokens",
                 "/usage/prompt_tokens_details/cache_write_tokens",
             ],
@@ -47,7 +49,9 @@ pub fn check_metadata(metadata: &Value) {
         ),
         (
             &[
+                "/usage/reasoning_output_tokens",
                 "/usage/output_tokens_details/reasoning_tokens",
+                "/usage/output_tokens_details/thinking_tokens",
                 "/usage/completion_tokens_details/reasoning_tokens",
                 "/usage/thoughtsTokenCount",
             ],

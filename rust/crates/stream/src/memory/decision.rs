@@ -79,16 +79,7 @@ impl MemoryStream {
         &self,
         command: crate::WriteRequest,
     ) -> Result<crate::journal::CanonicalCommand, StreamError> {
-        use crate::WriteRequest;
-        use crate::journal::CanonicalCommand;
-        let mut command = command.validated()?;
-        let digest = match &mut command {
-            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
-                Some(self.commit_request_digest(request)?)
-            }
-            _ => None,
-        };
-        Ok(CanonicalCommand { command, digest })
+        command.canonicalized_with(|request| self.commit_request_digest(request).map(Some))
     }
 
     pub(crate) fn apply_durable(

@@ -109,6 +109,13 @@ async fn request_text(
     )?;
     let mut text = String::new();
     for message in &request.messages {
+        if let Some((notices, _)) = message.content.notice_parts() {
+            text.push_str(
+                &serde_json::to_string(notices)
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+            );
+            text.push('\n');
+        }
         if let crate::model::ModelContent::Text(body) = &message.content {
             text.push_str(body);
             text.push('\n');
@@ -148,14 +155,14 @@ fn checkout_config(
         .compaction(crate::context::CompactionPolicy::Disabled))
 }
 
-mod checked_commands {
+pub(super) mod checked_commands {
     use crate::{
         model::{ModelEvent, ToolCall},
         test_support::{ScriptedEvent, ScriptedTurn},
     };
 
     /// One scripted command call on the named shell tool.
-    pub(super) fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
+    pub(in crate::local) fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                 format!("checkout-{index}"),

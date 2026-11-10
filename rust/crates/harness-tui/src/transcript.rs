@@ -14,7 +14,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use std::{borrow::Cow, collections::VecDeque};
+use std::collections::VecDeque;
 use unicode_width::UnicodeWidthStr;
 
 /// What a transcript block is, and so how it shows.
@@ -35,6 +35,47 @@ pub enum BlockKind {
 struct Block {
     kind: BlockKind,
     text: String,
+    parsed: Option<(usize, acyclic_markdown::Markdown)>,
+}
+
+impl Block {
+    fn wrap(
+        &mut self,
+        width: usize,
+        theme: &ThemeStyles,
+        cache: &acyclic_markdown::CodeCache,
+    ) -> Wrapped {
+        if self.kind == BlockKind::Answer {
+            if self.parsed.is_none() {
+                let mut parser = acyclic_markdown::Markdown::with_deferred_code_in(
+                    u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
+                    cache.clone(),
+                );
+                parser.push(&self.text);
+                self.parsed = Some((width, parser));
+            }
+            if let Some((columns, parser)) = &mut self.parsed {
+                if *columns != width {
+                    parser.set_width(
+                        u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
+                    );
+                    *columns = width;
+                }
+            }
+            let parsed = self
+                .parsed
+                .as_ref()
+                .map(|(_, parser)| parser.lines())
+                .unwrap_or_default();
+            return wrap_rendered(
+                self.kind,
+                crate::markdown::render_lines(parsed, theme),
+                width,
+                theme,
+            );
+        }
+        wrap(self.kind, &self.text, width, theme)
+    }
 }
 
 /// The transcript shared by terminal applications: settled blocks, then the
@@ -43,12 +84,16 @@ struct Block {
 pub struct TranscriptRows {
     blocks: VecDeque<Block>,
     lines: Vec<Line<'static>>,
+    links: Vec<Vec<crate::RowLink>>,
+    code: Vec<Option<crate::CodeRow>>,
     width: usize,
     theme: ThemeStyles,
     /// Rows of the pending prompts, after the settled rows.
     pending_rows: usize,
     /// Rows of the streaming tail, after the pending prompts.
     tail_rows: usize,
+    tail_parser: Option<(usize, acyclic_markdown::Markdown)>,
+    code_cache: acyclic_markdown::CodeCache,
 }
 
 impl Default for TranscriptRows {
@@ -56,10 +101,14 @@ impl Default for TranscriptRows {
         Self {
             blocks: VecDeque::new(),
             lines: Vec::new(),
+            links: Vec::new(),
+            code: Vec::new(),
             width: 80,
             theme: ThemeStyles::default(),
             pending_rows: 0,
             tail_rows: 0,
+            tail_parser: None,
+            code_cache: acyclic_markdown::CodeCache::default(),
         }
     }
 }
@@ -73,9 +122,16 @@ impl TranscriptRows {
     }
 
     fn push_owned(&mut self, kind: BlockKind, text: String) {
-        self.lines
-            .extend(wrap(kind, &text, self.width.max(1), &self.theme));
-        self.blocks.push_back(Block { kind, text });
+        let mut block = Block {
+            kind,
+            text,
+            parsed: None,
+        };
+        let wrapped = block.wrap(self.width.max(1), &self.theme, &self.code_cache);
+        self.lines.extend(wrapped.lines);
+        self.links.extend(wrapped.links);
+        self.code.extend(wrapped.code);
+        self.blocks.push_back(block);
     }
 
     /// Insert older settled blocks, oldest first, before every row, and
@@ -84,17 +140,29 @@ impl TranscriptRows {
     pub fn prepend(&mut self, blocks: impl IntoIterator<Item = (BlockKind, String)>) -> usize {
         let width = self.width.max(1);
         let mut rows = Vec::new();
+        let mut links = Vec::new();
+        let mut code = Vec::new();
         let mut added = Vec::new();
         for (kind, text) in blocks {
             let text = settled(&text).to_owned();
-            rows.extend(wrap(kind, &text, width, &self.theme));
-            added.push(Block { kind, text });
+            let mut block = Block {
+                kind,
+                text,
+                parsed: None,
+            };
+            let wrapped = block.wrap(width, &self.theme, &self.code_cache);
+            rows.extend(wrapped.lines);
+            links.extend(wrapped.links);
+            code.extend(wrapped.code);
+            added.push(block);
         }
         for block in added.into_iter().rev() {
             self.blocks.push_front(block);
         }
         let count = rows.len();
         self.lines.splice(0..0, rows);
+        self.links.splice(0..0, links);
+        self.code.splice(0..0, code);
         count
     }
 
@@ -120,20 +188,41 @@ impl TranscriptRows {
         }
     }
 
+    /// The already laid out rows and their link metadata, borrowed together.
+    /// Call `rows` first when changing width; no rendering or I/O happens here.
+    pub fn presentation(
+        &self,
+    ) -> (
+        &[Line<'static>],
+        &[Vec<crate::RowLink>],
+        &[Option<crate::CodeRow>],
+    ) {
+        (&self.lines, &self.links, &self.code)
+    }
+
     /// Remove every block, keeping the width and theme.
     pub fn clear(&mut self) {
         self.blocks.clear();
         self.lines.clear();
+        self.links.clear();
+        self.code.clear();
         self.pending_rows = 0;
         self.tail_rows = 0;
+        self.tail_parser = None;
+        self.code_cache = acyclic_markdown::CodeCache::default();
     }
 
     fn rewrap(&mut self) {
         self.pending_rows = 0;
         self.tail_rows = 0;
         self.lines.clear();
-        for block in std::mem::take(&mut self.blocks) {
-            self.push_owned(block.kind, block.text);
+        self.links.clear();
+        self.code.clear();
+        for block in &mut self.blocks {
+            let wrapped = block.wrap(self.width.max(1), &self.theme, &self.code_cache);
+            self.lines.extend(wrapped.lines);
+            self.links.extend(wrapped.links);
+            self.code.extend(wrapped.code);
         }
     }
 
@@ -145,8 +234,10 @@ impl TranscriptRows {
         let width = self.width.max(1);
         for text in prompts {
             let rows = wrap(BlockKind::Prompt, settled(text), width, &self.theme);
-            self.pending_rows += rows.len();
-            self.lines.extend(rows);
+            self.pending_rows += rows.lines.len();
+            self.lines.extend(rows.lines);
+            self.links.extend(rows.links);
+            self.code.extend(rows.code);
         }
     }
 
@@ -155,16 +246,50 @@ impl TranscriptRows {
     pub fn tail(&mut self, text: Option<&str>) {
         self.lines
             .truncate(self.lines.len().saturating_sub(self.tail_rows));
+        self.links.truncate(self.lines.len());
+        self.code.truncate(self.lines.len());
         self.tail_rows = 0;
         if let Some(text) = text.filter(|text| !text.is_empty()) {
-            let rows = wrap(
-                BlockKind::Answer,
-                settled(text),
-                self.width.max(1),
-                &self.theme,
-            );
-            self.tail_rows = rows.len();
-            self.lines.extend(rows);
+            let width = self.width.max(1);
+            let text = settled(text);
+            if let Some((columns, parser)) = &mut self.tail_parser {
+                if *columns != width {
+                    parser.set_width(
+                        u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
+                    );
+                    *columns = width;
+                }
+            }
+            if self.tail_parser.as_ref().is_none_or(|(columns, parser)| {
+                *columns != width || !text.starts_with(parser.source())
+            }) {
+                self.tail_parser = Some((
+                    width,
+                    acyclic_markdown::Markdown::with_deferred_code_in(
+                        u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX),
+                        self.code_cache.clone(),
+                    ),
+                ));
+            }
+            let rows = match &mut self.tail_parser {
+                Some((_, parser)) => {
+                    let end = parser.source().len();
+                    parser.push(&text[end..]);
+                    wrap_rendered(
+                        BlockKind::Answer,
+                        crate::markdown::render_lines(parser.lines(), &self.theme),
+                        width,
+                        &self.theme,
+                    )
+                }
+                None => wrap(BlockKind::Answer, text, width, &self.theme),
+            };
+            self.tail_rows = rows.lines.len();
+            self.lines.extend(rows.lines);
+            self.links.extend(rows.links);
+            self.code.extend(rows.code);
+        } else {
+            self.tail_parser = None;
         }
     }
 
@@ -206,6 +331,8 @@ impl TranscriptRows {
         );
         self.pending_rows = 0;
         self.tail_rows = 0;
+        self.links.truncate(self.lines.len());
+        self.code.truncate(self.lines.len());
     }
 }
 
@@ -216,26 +343,57 @@ fn settled(text: &str) -> &str {
 
 /// A prompt is shown bold as typed after an accent marker; an answer is
 /// rendered markdown; a tool card is one row.
-fn wrap(kind: BlockKind, text: &str, width: usize, theme: &ThemeStyles) -> Vec<Line<'static>> {
+struct Wrapped {
+    lines: Vec<Line<'static>>,
+    links: Vec<Vec<crate::RowLink>>,
+    code: Vec<Option<crate::CodeRow>>,
+}
+
+fn wrap(kind: BlockKind, text: &str, width: usize, theme: &ThemeStyles) -> Wrapped {
     let prompt = match kind {
         BlockKind::Prompt => true,
         BlockKind::Answer => false,
-        BlockKind::Tool { failed } => return vec![card(text, failed, width, theme)],
+        BlockKind::Tool { failed } => {
+            return Wrapped {
+                lines: vec![card(text, failed, width, theme)],
+                links: vec![Vec::new()],
+                code: vec![None],
+            };
+        }
     };
-    let marked = width > 2;
-    let columns = if marked { width - 2 } else { width };
-    let (text, styles) = if prompt {
-        (
-            Cow::Borrowed(text),
-            vec![(0..text.len(), Style::default().add_modifier(Modifier::BOLD))],
-        )
+    let marked = width > 1;
+    let columns = if marked { width - 1 } else { width };
+    let rendered = if prompt {
+        crate::markdown::Rendered {
+            text: text.to_owned(),
+            styles: vec![(0..text.len(), Style::default().add_modifier(Modifier::BOLD))],
+            links: Vec::new(),
+            bands: Vec::new(),
+            code: Vec::new(),
+        }
     } else {
-        let (text, styles) = crate::markdown::render(text, columns, theme);
-        (Cow::Owned(text), styles)
+        crate::markdown::render(text, columns, theme)
     };
-    let mut style_at = crate::styled_cells::ordered_styles(styles);
-    let layout = Layout::from_text(&text, columns);
+    wrap_rendered(kind, rendered, width, theme)
+}
+
+fn wrap_rendered(
+    kind: BlockKind,
+    rendered: crate::markdown::Rendered,
+    width: usize,
+    theme: &ThemeStyles,
+) -> Wrapped {
+    let prompt = kind == BlockKind::Prompt;
+    let marked = width > 1;
+    let columns = if marked { width - 1 } else { width };
+    let mut style_at = crate::styled_cells::ordered_styles(rendered.styles);
+    let layout = Layout::from_text(&rendered.text, columns);
     let mut rows = Vec::new();
+    let mut links = Vec::new();
+    let mut code = Vec::new();
+    let mut syntax = rendered.code.iter().peekable();
+    let mut destinations = rendered.links.iter().peekable();
+    let mut bands = rendered.bands.iter().peekable();
     let mut previous_end = None;
     for (index, row) in layout.rows.into_iter().enumerate() {
         let joins_previous = previous_end.replace(row.end) == Some(row.start);
@@ -245,18 +403,84 @@ fn wrap(kind: BlockKind, text: &str, width: usize, theme: &ThemeStyles) -> Vec<L
         let marker = if !marked {
             ""
         } else if prompt && index == 0 {
-            "› "
+            "›"
+        } else if index == 0 {
+            "●"
         } else {
-            "  "
+            " "
         };
         let mut spans: Vec<Span<'static>> = Vec::new();
         if !marker.is_empty() {
-            let mut style = style_at(row.start);
-            if prompt && index == 0 {
-                style = style.patch(theme.token(Token::Accent));
-            }
+            let style = theme.token(if index == 0 {
+                Token::Accent
+            } else {
+                Token::Muted
+            });
             spans.push(Span::styled(marker, style));
         }
+        while bands.peek().is_some_and(|band| band.end < row.start) {
+            bands.next();
+        }
+        let band = bands
+            .peek()
+            .is_some_and(|band| band.start <= row.start && row.start <= band.end);
+        let mut row_links: Vec<crate::RowLink> = Vec::new();
+        for cell in &row.cells {
+            while destinations
+                .peek()
+                .is_some_and(|(range, _)| range.end <= cell.source.start)
+            {
+                destinations.next();
+            }
+            if let Some((_, target)) = destinations
+                .peek()
+                .filter(|(range, _)| range.contains(&cell.source.start))
+            {
+                let start = cell.column + usize::from(marked);
+                if let Some(previous) = row_links
+                    .last_mut()
+                    .filter(|link| link.columns.end == start && link.target == *target)
+                {
+                    previous.columns.end += cell.width;
+                } else {
+                    row_links.push(crate::RowLink {
+                        columns: start..start + cell.width,
+                        target: std::sync::Arc::clone(target),
+                    });
+                }
+            }
+        }
+        while syntax
+            .peek()
+            .is_some_and(|(range, _)| range.end <= row.start)
+        {
+            syntax.next();
+        }
+        let decoration = syntax
+            .peek()
+            .filter(|(range, _)| {
+                row.cells
+                    .iter()
+                    .any(|cell| range.contains(&cell.source.start))
+            })
+            .map(|(range, source)| {
+                let mut at = marker.len();
+                let mut cells = Vec::new();
+                for cell in &row.cells {
+                    if range.contains(&cell.source.start) {
+                        cells.push((
+                            at..at + cell.symbol.len(),
+                            cell.source.start - range.start..cell.source.end - range.start,
+                        ));
+                    }
+                    at += cell.symbol.len();
+                }
+                crate::CodeRow {
+                    source: source.clone(),
+                    cells,
+                }
+            });
+        code.push(decoration);
         // The marker span stays its own, borrowed; text cells of one style join.
         crate::styled_cells::append(
             &mut spans,
@@ -265,10 +489,22 @@ fn wrap(kind: BlockKind, text: &str, width: usize, theme: &ThemeStyles) -> Vec<L
                 .map(|cell| (cell.source.start, cell.symbol)),
             &mut style_at,
         );
-        rows.push(Line::from(spans));
+        let line = Line::from(spans).style(if band {
+            theme.token(Token::Fg).patch(theme.code())
+        } else {
+            theme.token(Token::Fg)
+        });
+        rows.push(line);
+        links.push(row_links);
     }
     rows.push(Line::default());
-    rows
+    links.push(Vec::new());
+    code.push(None);
+    Wrapped {
+        lines: rows,
+        links,
+        code,
+    }
 }
 
 /// A collapsed tool card's one row: a muted marker and the call's first
@@ -382,7 +618,7 @@ mod tests {
         let rows = text(transcript.rows(20));
         assert_eq!(rows.len(), tail.len() + added);
         assert_eq!(&rows[added..], &tail[..]);
-        assert!(rows[0].starts_with("› older prompt"), "{rows:?}");
+        assert!(rows[0].starts_with("›older prompt"), "{rows:?}");
         // A resize rewraps settled blocks in order: the page, then the push.
         transcript.rows(40);
         let rows = text(transcript.rows(40));

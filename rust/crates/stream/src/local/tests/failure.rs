@@ -163,14 +163,16 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                 Box::pin(
                     stream
                         .commit(CommitRequest {
-                            conditions: vec![crate::CommitCondition::Tail {
-                                path: path.clone(),
-                                expected: 1,
-                            }],
-                            mutations: vec![crate::CommitMutation::Append {
-                                path: path.clone(),
-                                records: vec!["queued".into()],
-                            }],
+                            effects: vec![crate::CommitEffect::hard(
+                                vec![crate::CommitCondition::Tail {
+                                    path: path.clone(),
+                                    expected: 1,
+                                }],
+                                vec![crate::CommitMutation::Append {
+                                    path: path.clone(),
+                                    records: vec!["queued".into()],
+                                }],
+                            )],
                             deadline_unix_millis: None,
                             idempotency_key: IdempotencyKey::unique(),
                         })

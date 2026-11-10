@@ -165,8 +165,7 @@ mod tests {
                 let committed = memory
                     .commit(CommitRequest {
                         deadline_unix_millis: None,
-                        conditions: Vec::new(),
-                        mutations,
+                        effects: vec![acyclic_stream::CommitEffect::hard(Vec::new(), mutations)],
                         idempotency_key: IdempotencyKey::new(first.to_be_bytes().to_vec())?,
                     })
                     .await?;

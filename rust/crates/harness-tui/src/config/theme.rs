@@ -47,7 +47,7 @@ impl ThemeRole {
 /// Each token's style for one terminal: its colour at the terminal's depth.
 /// Without colour, `muted` is dim text and the rest are plain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ThemeStyles([Style; Token::ALL.len()]);
+pub struct ThemeStyles([Style; Token::ALL.len()], Style);
 
 /// The shipped dark set at full colour, before a terminal is probed.
 static SHIPPED: LazyLock<ThemeStyles> = LazyLock::new(|| {
@@ -67,6 +67,11 @@ impl Default for ThemeStyles {
 }
 
 impl ThemeStyles {
+    /// Code's background band, derived from the terminal background and muted
+    /// token. It follows the same file overrides and colour-depth fallback.
+    pub fn code(&self) -> Style {
+        self.1
+    }
     /// A token's resolved style.
     pub fn token(&self, token: Token) -> Style {
         self.0.get(token as usize).copied().unwrap_or_default()
@@ -250,13 +255,36 @@ fn is_light(value: &Value, background: Option<[u8; 3]>) -> bool {
 pub(super) fn resolve(value: &Value, profile: &Capabilities) -> ThemeStyles {
     let light = is_light(value, profile.background);
     let tokens = &value[if light { "light" } else { "dark" }];
-    ThemeStyles(Token::ALL.map(|token| {
-        let text = tokens[token.name()].as_str().unwrap_or("default");
-        let style = Style::new().fg(color(text, profile.colour, light));
-        if profile.colour == ColourDepth::Monochrome && token == Token::Muted {
-            style.add_modifier(Modifier::DIM)
-        } else {
-            style
-        }
-    }))
+    let background = profile
+        .background
+        .unwrap_or(if light { [255; 3] } else { [0; 3] });
+    let muted = tokens["muted"].as_str().and_then(rgb).unwrap_or(background);
+    let band = std::array::from_fn(|i| {
+        u8::try_from((7 * u16::from(background[i]) + u16::from(muted[i])) / 8)
+            .unwrap_or(background[i])
+    });
+    let [red, green, blue] = band;
+    let code = match profile.colour {
+        ColourDepth::Monochrome => Style::new().add_modifier(Modifier::REVERSED),
+        ColourDepth::Ansi16 => Style::new()
+            .fg(if light { Color::Black } else { Color::White })
+            .bg(if light { Color::White } else { Color::Black }),
+        depth => Style::new().bg(color(
+            &format!("#{red:02x}{green:02x}{blue:02x}"),
+            depth,
+            light,
+        )),
+    };
+    ThemeStyles(
+        Token::ALL.map(|token| {
+            let text = tokens[token.name()].as_str().unwrap_or("default");
+            let style = Style::new().fg(color(text, profile.colour, light));
+            if profile.colour == ColourDepth::Monochrome && token == Token::Muted {
+                style.add_modifier(Modifier::DIM)
+            } else {
+                style
+            }
+        }),
+        code,
+    )
 }

@@ -158,11 +158,7 @@ impl MemoryStream {
                     let index = envelope
                         .mutations
                         .binary_search_by(|mutation| {
-                            let destination = match mutation {
-                                CommittedMutation::Append(append) => &append.path,
-                                CommittedMutation::Fork(fork) => &fork.destination,
-                            };
-                            destination.cmp(&selected.path)
+                            crate::request::fact_path(mutation).cmp(&selected.path)
                         })
                         .ok()?;
                     let (start, records) = match &envelope.mutations[index] {
@@ -321,7 +317,7 @@ fn last_record(stream: &PathState) -> Option<Record> {
     match last_record_with(
         stream,
         |_| Ok::<_, std::convert::Infallible>(()),
-        |record| Ok(record.clone()),
+        |batch, index| Ok(batch.record(index)),
     ) {
         Ok(record) => record,
         Err(error) => match error {},
@@ -331,24 +327,20 @@ fn last_record(stream: &PathState) -> Option<Record> {
 fn last_record_with<E>(
     stream: &PathState,
     examine: impl FnMut(u64) -> Result<(), E>,
-    retain: impl FnOnce(&Record) -> Result<Record, E>,
+    retain: impl FnOnce(&RecordBatch, usize) -> Result<Option<Record>, E>,
 ) -> Result<Option<Record>, E> {
     let Some(from) = stream.tail.checked_sub(1) else {
         return Ok(None);
     };
     if let Some(window) = stream.prefix_window(from, stream.tail) {
-        return window
-            .records
-            .records
-            .get(window.start)
-            .map(retain)
-            .transpose();
+        return retain(&window.records, window.start);
     }
     let mut history = PinnedHistory::new(stream, stream.tail);
     let window = history.page(from, 1, examine)?;
-    window
-        .and_then(|window| window.records.records.get(window.start).map(retain))
-        .transpose()
+    match window {
+        Some(window) => retain(&window.records, window.start),
+        None => Ok(None),
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -356,7 +348,11 @@ fn native_last_record(stream: &PathState, work: &Work) -> Result<Option<Record>,
     work.record(last_record_with(
         stream,
         |items| work.meter.examine(items, 0),
-        |record| {
+        |batch, index| {
+            let record = batch
+                .values
+                .get(index)
+                .ok_or(std::io::ErrorKind::InvalidData)?;
             let mut bytes = acyclic_native_runtime::NativeByteReservation::new(
                 Arc::clone(&work.meter),
                 NativeOperationKind::Read,
@@ -364,12 +360,12 @@ fn native_last_record(stream: &PathState, work: &Work) -> Result<Option<Record>,
             )?;
             let copied = std::mem::size_of::<Record>() as u64;
             work.meter.admit_examination(1, copied)?;
-            let output = record.clone();
+            let output = batch.record(index).ok_or(std::io::ErrorKind::InvalidData)?;
             let read = bytes.record(record.payload_bytes());
             let examined = work.meter.record_examination(1, copied);
             read?;
             examined?;
-            Ok(output)
+            Ok(Some(output))
         },
     ))
 }
@@ -840,11 +836,9 @@ impl MemoryStream {
                                 return Err(E::from(StreamError::PrefixNotRetained));
                             }
                             let bytes = request
-                                .mutations
-                                .iter()
+                                .mutations()
                                 .map(|mutation| match mutation {
                                     CommitMutation::Append { records, .. }
-                                    | CommitMutation::SoftAppend { records, .. }
                                     | CommitMutation::Fork { records, .. } => records
                                         .iter()
                                         .map(AppendRecord::payload_bytes)

@@ -1,0 +1,115 @@
+{
+  "id": "shell-background-job",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "START_JOBS"
+        },
+        "tools": [
+          {
+            "id": "jobs",
+            "name": "code",
+            "arguments": {
+              "code": "const one = await tools.shell({command:'node \"{{support}}/shell-job.mjs\" one', background:true}); const two = await tools.shell({command:'node \"{{support}}/shell-job.mjs\" two', background:true}); for (const job of [one,two]) { const started=JSON.parse((await tools.read({path:'.volumes/output/'+job.output_directory+'/started.json'})).text); if (!started.background || started.output_directory!==job.output_directory || started.cancel!==job.cancel) throw Error('original admission changed'); } let refused=false; try { await tools.edit({path:'.volumes/output/'+one.output_directory+'/started.json',old_text:'true',new_text:'false'}); } catch(error) { refused=String(error).includes('read-only'); } if(!refused) throw Error('private output edit was accepted'); ({one,two})"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "START_JOBS",
+          "tool_result": "Background shell started"
+        },
+        "text": [
+          "{{tool_result:}}"
+        ]
+      },
+      {
+        "when": {
+          "user": "FOREGROUND"
+        },
+        "tools": [
+          {
+            "arguments": {
+              "code": "const foreground=await tools.shell({command:'echo FOREGROUND_PROGRESS'}); ({one:{{tool_result:/one}},two:{{tool_result:/two}},foreground:foreground.text})"
+            },
+            "name": "code",
+            "id": "foreground"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "FOREGROUND",
+          "tool_result": "FOREGROUND_PROGRESS"
+        },
+        "text": [
+          "{{tool_result:}}"
+        ]
+      },
+      {
+        "when": {
+          "user": "INSPECT_JOBS"
+        },
+        "tools": [
+          {
+            "id": "inspect",
+            "name": "code",
+            "arguments": {
+              "code": "async function readJson(path) { let page=await tools.read({path,wait:true}); const source=page.file.authored??page.file.content; const version=page.file.authored?'authored-file-v1:'+JSON.stringify(source):JSON.stringify(source); const length=page.file.authored?source.byte_length:source.descriptor.byte_length; let text=page.text; while(page.page?.next!=null) { const start=page.page.next; page=await tools.read({path,version,range:{start,end:length}}); if(page.page?.next!=null && page.page.next<=start) throw Error('private file page did not advance'); text+=page.text; } return JSON.parse(text); } const one=await readJson('.volumes/output/{{tool_result:/one/output_directory}}/result.json'); const two=await readJson('.volumes/output/{{tool_result:/two/output_directory}}/result.json'); const verified=await tools.shell({command:['node','{{support}}/shell-job.mjs','verify',two.spill]}); ({one:{stop:one.stop},two:{success:two.success,exit_code:two.exit_code,stop:two.stop,omitted_bytes:two.omitted_bytes},verified:verified.text})"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "INSPECT_JOBS",
+          "tool_result": "COMPLETE_SPILL_AND_NEGATIVE_CONTROL"
+        },
+        "text": [
+          "{{tool_result:}}"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "qualification",
+      "format": "shell-jobs",
+      "operation": "00000000-0000-0000-0000-000000000001",
+      "turns": [
+        {
+          "id": "start",
+          "text": "START_JOBS"
+        },
+        {
+          "id": "foreground",
+          "text": "FOREGROUND"
+        },
+        {
+          "id": "inspect",
+          "text": "INSPECT_JOBS"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 6,
+    "tool_contains": [
+      "FOREGROUND_PROGRESS",
+      "COMPLETE_SPILL_AND_NEGATIVE_CONTROL"
+    ],
+    "absent_files": [
+      "one.completed"
+    ],
+    "files": {
+      "two.completed": "committed\n"
+    }
+  },
+  "physical": true
+}

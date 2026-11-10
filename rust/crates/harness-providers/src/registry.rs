@@ -3,16 +3,14 @@ use acyclic_harness_core::{Result, model::Model};
 use std::{collections::BTreeMap, sync::Arc};
 mod catalog_update;
 mod selection;
-mod snapshot;
+use crate::credentials::{Credential, CredentialInputs};
 use catalog_update::Changes;
-use selection::Credential;
 
 /// Registry of protocol endpoints addressed by `provider/model`.
 pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     default_model: Option<String>,
-    credentials: Credentials,
-    selection: snapshot::Snapshot<selection::Observations>,
+    inputs: Arc<CredentialInputs>,
     transport: Arc<dyn HttpTransport>,
     resolver: Option<Arc<dyn crate::CredentialResolver>>,
     files: crate::files::Files,
@@ -35,8 +33,7 @@ impl Registry {
         Self {
             providers,
             default_model: None,
-            credentials,
-            selection: snapshot::Snapshot::default(),
+            inputs: Arc::new(CredentialInputs::new(credentials)),
             transport,
             resolver: None,
             files: crate::files::Files::default(),
@@ -170,6 +167,7 @@ impl Registry {
             .map(|entry| (entry.capacity, entry.tool_profile, entry.thinking_levels))
             .ok_or_else(|| invalid("register the selected model context capacity"))?;
         let credential = self.selected_credential(provider, &config)?;
+        let credential_config = config.clone();
         let key = match &credential {
             Credential::Key(key) => Some(key.clone()),
             _ => None,
@@ -232,6 +230,12 @@ impl Registry {
         )?;
         let transport = crate::deadline::Bounded::new(transport, config.timeouts);
         Ok(ResolvedModel {
+            #[cfg(not(target_arch = "wasm32"))]
+            account_pin: codex_login
+                .as_ref()
+                .map_or_else(|| Arc::new(std::sync::OnceLock::new()), |login| login.pin()),
+            inputs: Some(self.inputs.clone()),
+            credential_config: Some(credential_config),
             files: self.files.clone(),
             accounting: crate::resolved::Accounting::new(config.adapter),
             model,
@@ -245,6 +249,8 @@ impl Registry {
             transport,
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
+            #[cfg(not(target_arch = "wasm32"))]
+            explicit_codex_login: self.codex_login.clone(),
         })
     }
 }
@@ -255,7 +261,7 @@ mod credential_tests;
 
 /// The built-in Responses route that a native Codex CLI login may replace.
 #[cfg(not(target_arch = "wasm32"))]
-fn codex_route(config: &ProviderSpec) -> bool {
+pub(crate) fn codex_route(config: &ProviderSpec) -> bool {
     config.adapter == crate::Adapter::Responses && config.base_url == "https://api.openai.com/v1"
 }
 
@@ -351,4 +357,17 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
         }
     }
     Ok(())
+}
+
+impl Registry {
+    /// Retains one shared cached resolver for every agent in this composition.
+    pub fn into_model_resolver(self) -> acyclic_harness_core::model::ModelResolver {
+        acyclic_harness_core::model::ModelResolver::new(
+            self.default_model().to_owned(),
+            move |selection| {
+                let provider = Arc::new(self.resolve(selection)?);
+                Ok((provider.model().clone(), provider))
+            },
+        )
+    }
 }

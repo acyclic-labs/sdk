@@ -100,7 +100,7 @@ async function checkTree(test) {
 }
 async function prepare(test, gitOrigin) {
   const begin = performance.now();
-  const fixture = { id: test.id, workspace: join(test.root, test.id, "workspace"), settings: join(test.root, test.id, "settings"), catalog: join(test.root, test.id, "catalog.json") };
+  const fixture = { id: test.id, signal: cancellation.signal, workspace: join(test.root, test.id, "workspace"), settings: join(test.root, test.id, "settings"), catalog: join(test.root, test.id, "catalog.json") };
   const artifact = join(output, test.id); await mkdir(artifact, { recursive: true });
   fixture.url = `http://127.0.0.1:${port}/${test.id}/v1`;
   fixture.binary = binary;

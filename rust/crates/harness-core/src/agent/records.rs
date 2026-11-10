@@ -256,6 +256,10 @@ pub struct CreationConfig {
     /// labels its parent conferred at spawn over its own children.
     #[serde(default, skip_serializing_if = "crate::Capabilities::is_empty")]
     pub peers: crate::Capabilities,
+    /// Durable provider/model selection. Absent only for externally owned loops
+    /// or compositions that do not bind models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// A host's original template reader, shared by direct and model spawns.
@@ -832,6 +836,7 @@ impl AgentRecord for InboxRecord {
     fn check(&self) -> Result<(), Error> {
         match self {
             Self::ForkAdopted(adopted) => {
+                check_model(adopted.profile.as_ref())?;
                 check_volumes(adopted.volumes.iter())?;
                 Ok(())
             }
@@ -878,6 +883,7 @@ impl AgentRecord for InboxRecord {
             }
             Self::Hook(hook) => check_text(&hook.host),
             Self::Spawn(spawn) => {
+                check_model(Some(&spawn.profile))?;
                 check_sender(&spawn.by)?;
                 // Refused before the parent's inbox admits it: once queued, a
                 // request its spawn cannot apply would block the parent.
@@ -892,6 +898,14 @@ impl AgentRecord for InboxRecord {
             | Self::ChildSettled(_) => Ok(()),
         }
     }
+}
+
+fn check_model(profile: Option<&CreationConfig>) -> Result<(), Error> {
+    if let Some(model) = profile.and_then(|profile| profile.model.as_deref()) {
+        crate::model::selection::validate(model)
+            .map_err(|_| Error::Record("invalid model selection"))?;
+    }
+    Ok(())
 }
 
 fn check_sender(sender: &Sender) -> Result<(), Error> {

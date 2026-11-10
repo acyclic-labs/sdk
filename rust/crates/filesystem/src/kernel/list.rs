@@ -35,7 +35,7 @@ pub async fn list_tree_entries<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<DirectoryPage, DirectoryReadFailure> {
-    persistent_pagination::paginate::<S, TreeFormat>(
+    persistent_pagination::paginate::<TreeFormat>(
         store,
         (
             root,
@@ -65,7 +65,7 @@ pub(crate) async fn list_tree_entries_async_with_accounting<
     cancellation: &'a CancellationToken,
     data_custody: Option<&'a super::ProofDataCustody>,
 ) -> Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    persistent_pagination::paginate_with_accounting::<S, TreeFormat>(
+    persistent_pagination::paginate_with_accounting::<TreeFormat>(
         store,
         (root, page.0, page.1, page.2),
         limits,

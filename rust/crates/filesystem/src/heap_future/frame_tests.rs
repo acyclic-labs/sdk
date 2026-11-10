@@ -2,6 +2,7 @@ use super::{AdmittedFrame, FrameContext, in_heap_admitted};
 use crate::kernel::allocation::{AllocationLedger, KernelAccounting};
 use crate::{CancellationToken, FsError, WorkBudget, WorkCounters};
 use futures::FutureExt;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
@@ -41,7 +42,7 @@ fn erasing_a_funded_future_preserves_its_address_and_original_charge() {
 fn borrowed_phase_wrapper_retires_storage_after_its_body_on_every_exit() {
     for exit in 0..4 {
         let cancellation = CancellationToken::new();
-        let destroyed = std::cell::Cell::new(false);
+        let destroyed = AtomicBool::new(false);
         let mut context = OrderedContext {
             accounting: KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
             destroyed: &destroyed,
@@ -69,7 +70,7 @@ fn borrowed_phase_wrapper_retires_storage_after_its_body_on_every_exit() {
             }
         }
         drop(operation);
-        assert!(destroyed.get());
+        assert!(destroyed.load(Ordering::Acquire));
         assert_eq!(
             context
                 .accounting
@@ -221,15 +222,15 @@ fn old_manual_frame_retirement_leaks_a_borrowed_claim_on_cancellation() {
     assert_eq!(ledger.live_bytes(), 0, "frame retained after cancellation");
 }
 
-struct FutureDestroyed<'a>(&'a std::cell::Cell<bool>);
+struct FutureDestroyed<'a>(&'a AtomicBool);
 impl Drop for FutureDestroyed<'_> {
     fn drop(&mut self) {
-        self.0.set(true);
+        self.0.store(true, Ordering::Release);
     }
 }
 struct OrderedContext<'a> {
     accounting: KernelAccounting<'a>,
-    destroyed: &'a std::cell::Cell<bool>,
+    destroyed: &'a AtomicBool,
 }
 impl FrameContext for OrderedContext<'_> {
     fn claim_frame(
@@ -244,7 +245,7 @@ impl FrameContext for OrderedContext<'_> {
         bytes: u64,
     ) -> Result<(), FsError> {
         assert!(
-            self.destroyed.get(),
+            self.destroyed.load(Ordering::Acquire),
             "storage retired before the future was destroyed"
         );
         self.accounting.retire_frame(allocation, bytes)
@@ -254,7 +255,7 @@ impl FrameContext for OrderedContext<'_> {
 fn frame_owner_outlives_its_future_on_every_exit() {
     for exit in 0..4 {
         let cancellation = CancellationToken::new();
-        let destroyed = std::cell::Cell::new(false);
+        let destroyed = AtomicBool::new(false);
         let mut context = OrderedContext {
             accounting: KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
             destroyed: &destroyed,
@@ -288,7 +289,7 @@ fn frame_owner_outlives_its_future_on_every_exit() {
             Some(result) => assert_eq!(frame.finish(result).is_ok(), exit == 2),
             None => drop(frame),
         }
-        assert!(destroyed.get());
+        assert!(destroyed.load(Ordering::Acquire));
         assert_eq!(
             context
                 .accounting

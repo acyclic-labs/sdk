@@ -8,6 +8,12 @@ without dispatching another model request. The shared Explorer's 10,000-child
 control separately checks the row golden and request counts across a page and
 sibling boundary, including an absent identity between pages.
 
+`pty-code-highlight` streams a Rust fence, checks real cell foregrounds and a
+code background band, retains the OSC 8 destination, and switches the same
+settled answer through light and dark with `/theme`. Styling is asserted at the
+settled frame, so lost highlighting fails directly. The shared cell oracle has
+negative controls for unchanged text without syntax colour or background.
+
 `pty-conversation` submits its first prompt and terminal-query replies together on the first terminal output bytes, before admitting a rendered frame, then checks both conversational turns. `pty-cancel-preparation` holds the acknowledged token-count request, observes two distinct thinking highlights, then cancels before any model dispatch and requires the animation to stop. Resume cases use the public text/JSONL and explicit terminal-resume contracts.
 
 `topology-blackboard` selects the embedded role file through native `spawn`.

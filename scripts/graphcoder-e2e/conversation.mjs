@@ -2,17 +2,32 @@ import assert from "node:assert/strict";
 import { Spool } from "./process.mjs";
 import { executionSucceeded, messageReply } from "./assertions.mjs";
 
+export async function waitFor(promise, signal) {
+  signal.throwIfAborted();
+  let abort;
+  const cancelled = new Promise((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try { return await Promise.race([promise, cancelled]); }
+  finally { signal.removeEventListener("abort", abort); }
+}
+
 // Keep the shipping JSONL connection open across turns. Each next prompt follows
 // the previous turn's committed reply.
-export async function conversation(processes, binary, fixture, input, capture, beforeTurn = async () => {}) {
+export async function conversation(processes, binary, fixture, input, capture, beforeTurn = async () => {}, afterTurn = async () => {}) {
   const active = await processes.startReported(binary, [...fixture.args, "--operation", input.operation,
     "--input-format", "jsonl"], { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
   // One reply per turn, keyed by the turn's id: a repeated id fails the spool.
   const replies = new Spool(active.child.stdout, active.closed, { key: event => [event.id], unique: true });
+  const lifetime = new AbortController();
+  active.closed.then(result => lifetime.abort(new Error(`conversation exited: ${JSON.stringify(result)}`)),
+    error => lifetime.abort(error));
+  const signal = fixture.signal ? AbortSignal.any([fixture.signal, lifetime.signal]) : lifetime.signal;
   let result, failures, ended;
   try {
     for (const turn of input.turns) {
-      await beforeTurn(turn, active);
+      await waitFor(beforeTurn(turn, active, signal), signal);
       if (turn.after_request) await Promise.race([
         fixture.waitRequest(turn.after_request),
         ended ??= active.closed.then(result => {
@@ -26,6 +41,7 @@ export async function conversation(processes, binary, fixture, input, capture, b
       const reply = messageReply(await replies.keyed(turn.id), turn.id);
       assert.equal(reply.error, undefined, `failed JSONL turn ${turn.id}: ${reply.error}`);
       if (turn.answer !== undefined) assert.equal(reply.text, turn.answer);
+      await waitFor(afterTurn(turn, reply, signal), signal);
     }
   } catch (error) {
     failures = [error];

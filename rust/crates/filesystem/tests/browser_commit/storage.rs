@@ -152,12 +152,7 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         store.read(associated, 1_024, &mut associated_work).await,
         Err(ObjectStoreError::Missing)
     ));
-    assert_eq!(
-        read.retention,
-        ObjectReadRetention::Owned {
-            logical_bytes: bytes.len() as u64
-        }
-    );
+    assert_eq!(read.retention, ObjectReadRetention::Shared);
     let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert!(
         store

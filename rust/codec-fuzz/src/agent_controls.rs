@@ -452,14 +452,16 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
     let path = StreamPath::new("agent/inbox")?;
     let original = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: path.clone(),
-            expected: 7,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path,
-            records: vec![AppendRecord::from("original payload")],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: 7,
+            }],
+            vec![CommitMutation::Append {
+                path,
+                records: vec![AppendRecord::from("original payload")],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"original-key"))?,
     };
     for (name, error) in [

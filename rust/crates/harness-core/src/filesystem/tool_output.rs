@@ -141,14 +141,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             grants.push((calls, false, invoke));
         }
         let directory_streams = [
-            acyclic_stream::wire_codec::session::stream_resource(crate::agent::AGENTS),
-            acyclic_stream::wire_codec::session::stream_resource(crate::agent::STATUSES),
-            acyclic_stream::wire_codec::session::stream_resource("harness/membership"),
+            (
+                acyclic_stream::wire_codec::session::stream_resource(crate::agent::AGENTS),
+                explore,
+            ),
+            (
+                acyclic_stream::wire_codec::session::stream_resource(crate::agent::STATUSES),
+                observe,
+            ),
+            (
+                acyclic_stream::wire_codec::session::stream_resource("harness/membership"),
+                observe,
+            ),
         ];
         if let Some(directory) = directory {
             grants.push((directory, false, invoke));
-            for stream in &directory_streams {
-                grants.push((stream.as_str(), true, observe));
+            for (stream, actions) in &directory_streams {
+                grants.push((stream.as_str(), true, actions));
             }
             grants.push(("fs:/", true, read));
         }

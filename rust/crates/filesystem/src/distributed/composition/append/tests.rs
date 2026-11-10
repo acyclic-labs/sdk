@@ -11,13 +11,15 @@ fn caller(key: &'static [u8]) -> Result<FilesystemCommit, acyclic_stream::Stream
     let path = StreamPath::new("caller/observation")?;
     Ok(FilesystemCommit::new(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Absent { path: path.clone() }],
-        mutations: vec![CommitMutation::Append {
-            path,
-            records: vec![AppendRecord::from(OwnedBytes::from_static(
-                b"original result",
-            ))],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent { path: path.clone() }],
+            vec![CommitMutation::Append {
+                path,
+                records: vec![AppendRecord::from(OwnedBytes::from_static(
+                    b"original result",
+                ))],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(key))?,
     }))
 }
@@ -270,5 +272,84 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
             .await?,
         1
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn append_group_remains_required_when_the_callers_soft_prefix_is_skipped() -> TestResult {
+    use crate::distributed::append::group_tests::requests;
+    for (key, hard) in [
+        (&b"soft-only-group"[..], false),
+        (&b"soft-hard-group"[..], true),
+    ] {
+        let provider = Arc::new(MemoryStream::default());
+        let store = StreamAuthorityStore::new(provider.clone());
+        let authority = AuthorityId::from_bytes([91; 16]);
+        let cancellation = CancellationToken::new();
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        store
+            .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
+            .await?;
+        let members = requests(authority, 4)?;
+        let mut publication = caller(key)?;
+        if !hard {
+            publication.request.effects.clear();
+        }
+        let absent = StreamPath::new("caller/missing-recipient")?;
+        publication.request.effects.insert(
+            0,
+            acyclic_stream::CommitEffect {
+                conditions: vec![CommitCondition::Present {
+                    path: absent.clone(),
+                }],
+                mutations: vec![CommitMutation::Append {
+                    path: absent.clone(),
+                    records: vec![OwnedBytes::from_static(b"skipped").into()],
+                }],
+                soft: true,
+            },
+        );
+        let FilesystemAppendPreparation::Ready(mut prepared) = store
+            .contribute_append_group(&mut publication, &members, &[], &mut work)
+            .await?
+        else {
+            return Err("append group was refused".into());
+        };
+        store.seal(&mut publication, &mut work)?;
+        let outcome = provider.commit(publication.request().clone()).await?;
+        let CommitOutcome::Committed(envelope) = &outcome else {
+            return Err("required publication did not commit".into());
+        };
+        assert_eq!(envelope.skipped, [0]);
+        let records = work.path(store.placement(), authority, "/records", None)?;
+        assert_eq!(
+            provider.tail(records).await?,
+            5,
+            "required authority records were skipped"
+        );
+        assert_eq!(
+            provider.tail(absent).await,
+            Err(acyclic_stream::StreamError::NotFound)
+        );
+        let AppendGroupOutcome::Published { receipts, .. } =
+            prepared.confirm(&store, &outcome, &mut work).await?
+        else {
+            return Err("required records did not confirm".into());
+        };
+        assert_eq!(receipts.len(), members.len());
+        assert_eq!(store.head(authority, &mut work).await?.sequence.get(), 4);
+        assert!(matches!(
+            store.settle(publication, outcome, &mut work).await?,
+            FilesystemCommitOutcome::Committed(_)
+        ));
+        if hard {
+            assert_eq!(
+                provider
+                    .tail(StreamPath::new("caller/observation")?)
+                    .await?,
+                1
+            );
+        }
+    }
     Ok(())
 }

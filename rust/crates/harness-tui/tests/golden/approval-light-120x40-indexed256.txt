@@ -1,0 +1,41 @@
+120x40
+«Indexed(243)/Named(Background)/Flags(0x0)/»○ GraphCoder · project · main
+«Named(Foreground)/Named(Background)/Flags(0x0)/»┌approval──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│shell  cargo test -p tui                                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│principal: user · device: local                                                                                       │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│workspace: /project                                                                                                   │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│y: allow once · a: allow rule · n: deny · e: edit                                                                     │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+«Indexed(26)/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(26)/Named(Background)/Flags(0x0)/»●«Indexed(26)/Named(Background)/Flags(BOLD)/»# Review«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(243)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(243)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(BOLD)/»Bold«Named(Foreground)/Named(Background)/Flags(0x0)/», «Named(Foreground)/Named(Background)/Flags(ITALIC)/»emphasis«Named(Foreground)/Named(Background)/Flags(0x0)/», «Indexed(243)/Named(Background)/Flags(STRIKEOUT)/»removed«Named(Foreground)/Named(Background)/Flags(0x0)/» and «Indexed(94)/Named(Background)/Flags(0x0)/»code«Named(Foreground)/Named(Background)/Flags(0x0)/».
+«Indexed(243)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(243)/Named(Background)/Flags(0x0)/» 1. «Named(Foreground)/Named(Background)/Flags(0x0)/»first
+«Indexed(243)/Named(Background)/Flags(0x0)/»────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» Follow up
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                                                           model · 24% (2400/10000) · $0.12 · 2 children
+«Indexed(243)/Named(Background)/Flags(0x0)/»                                                                                 Enter: send · Tab: queue · Ctrl-D: quit

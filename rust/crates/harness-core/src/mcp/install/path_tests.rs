@@ -95,7 +95,7 @@ proptest! {
         let revision = |command| {
             let binding = native::command_binding(command, &config);
             let (tools, _) = register("fixture".into(), &config, Connected {
-                transport: Arc::new(Remote::default()), tools: advertised(&["read"]), binding,
+                transport: Arc::new(Remote::default()), tools: advertised(&["read"]), binding, generation: 0,
             }, McpClientLimits::default(), &|| Ok(())).unwrap();
             tools.get("mcp.fixture.read", None, None).unwrap().unwrap().definition.revision.clone()
         };

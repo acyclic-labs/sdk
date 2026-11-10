@@ -114,7 +114,7 @@ async fn indexed_operation(
     let mut records = store
         .provider
         .read(ReadRequest {
-            key: Some(acyclic_stream::ReadKeySeek { key, before }),
+            key: Some(acyclic_stream::ReadKeySeek::exact(key, before)),
             path: stream_path(authority, "/records")?,
             from: 1,
             limit: 1,
@@ -856,8 +856,10 @@ async fn operation_locators_reject_corruption_and_separately_published_records()
         stream
             .commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutations: vec![CommitMutation::Append { path, records }],
+                effects: vec![acyclic_stream::CommitEffect::hard(
+                    vec![CommitCondition::Absent { path: path.clone() }],
+                    vec![CommitMutation::Append { path, records }],
+                )],
                 idempotency_key: stream_key(b"forged-locator", &[invalid])?,
             })
             .await?;

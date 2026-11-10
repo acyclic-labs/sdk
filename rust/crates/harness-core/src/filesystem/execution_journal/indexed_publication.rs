@@ -38,11 +38,14 @@ fn add_records(
     path: &StreamPath,
     input: &[OwnedBytes],
 ) -> Result<()> {
-    custody.reserve(request.mutations.len() + 1, &mut request.mutations)?;
+    custody.reserve(
+        request.effects[0].mutations.len() + 1,
+        &mut request.effects[0].mutations,
+    )?;
     let mut records = Vec::new();
     custody.reserve(input.len(), &mut records)?;
     records.extend(input.iter().cloned().map(Into::into));
-    request.mutations.push(CommitMutation::Append {
+    request.effects[0].mutations.push(CommitMutation::Append {
         path: path.clone(),
         records,
     });

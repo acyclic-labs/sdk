@@ -1,7 +1,5 @@
 use super::console_owner::Owner;
-use super::{
-    Capabilities, Decoder, Environment, PROBE_TIMEOUT, ProbeIo, RestoreGuard, ScreenMode, detect,
-};
+use super::{Capabilities, Decoder, Environment, ProbeIo, RestoreGuard, ScreenMode, detect};
 use crate::key_event::InputEvent;
 use acyclic_native_runtime::terminal as ffi;
 use std::fs::{File, OpenOptions};
@@ -77,11 +75,7 @@ pub struct Tty {
 pub struct Output {
     owner: Arc<ConsoleOwner>,
 }
-/// Bytes per console call. Each call runs under its own write deadline
-/// (PROBE_TIMEOUT, 100 ms). Measured on the local console: one 4 MiB call
-/// times out (110 ms); 256 KiB calls take 10-17 ms at worst and lose no
-/// throughput (4 MiB in 256 KiB calls 99 ms, 1 MiB calls 98 ms, 64 KiB calls
-/// 114 ms, 4 KiB calls 289 ms). Frames up to 256 KiB are one call.
+/// Bytes per console call, allowing close cancellation between frame chunks.
 pub(crate) const CONSOLE_CHUNK: usize = 256 * 1024;
 
 impl super::Present for Output {
@@ -91,14 +85,10 @@ impl super::Present for Output {
     fn present(&mut self, frame: &mut Vec<u8>, effects: super::FrameEffects) -> io::Result<()> {
         let owner = &self.owner;
         let presented = super::frame::present_parts(frame, CONSOLE_CHUNK, |part| {
-            Owner::run(owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-                part.apply(guard, effects)
-            })
+            Owner::run(owner, None, move |guard| part.apply(guard, effects))
         });
         if presented.is_err() {
-            let _ = Owner::run(owner, Instant::now() + PROBE_TIMEOUT, |guard| {
-                guard.abort_frame()
-            });
+            let _ = Owner::run(owner, None, |guard| guard.abort_frame());
         }
         presented
     }
@@ -118,7 +108,7 @@ impl super::Present for Output {
             if rejected {
                 return Ok(());
             }
-            let accepted = Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
+            let accepted = Owner::run(&self.owner, None, move |guard| {
                 let count = super::Present::outside_writes(guard);
                 if observed.is_some() && count != observed {
                     return if began {
@@ -136,9 +126,7 @@ impl super::Present for Output {
             Ok(())
         });
         if presented.is_err() {
-            let _ = Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
-                guard.abort_frame()
-            });
+            let _ = Owner::run(&self.owner, None, |guard| guard.abort_frame());
         }
         presented.map(|()| if rejected { None } else { observed })
     }
@@ -154,14 +142,10 @@ impl Write for Output {
             .get(..end)
             .ok_or(io::ErrorKind::InvalidInput)?
             .to_vec();
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-            guard.writer().write(&bytes)
-        })
+        Owner::run(&self.owner, None, move |guard| guard.writer().write(&bytes))
     }
     fn flush(&mut self) -> io::Result<()> {
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
-            guard.writer().flush()
-        })
+        Owner::run(&self.owner, None, |guard| guard.writer().flush())
     }
 }
 impl Drop for Output {
@@ -175,7 +159,7 @@ impl Tty {
     pub fn size_reader(&self) -> impl Fn() -> io::Result<ratatui::layout::Size> + use<> {
         let owner = Arc::clone(&self.owner);
         move || {
-            Owner::run(&owner, Instant::now() + PROBE_TIMEOUT, |guard| {
+            Owner::run(&owner, None, |guard| {
                 let (width, height) =
                     ffi::console_size(guard.writer().output.as_raw_handle() as usize)?;
                 Ok(ratatui::layout::Size::new(width, height))
@@ -214,9 +198,7 @@ impl Tty {
             .set(Arc::clone(&owner))
             .map_err(|_| io::ErrorKind::AlreadyExists)?;
         ffi::console_register(console_control)?;
-        if let Err(error) = Owner::run(&owner, Instant::now() + PROBE_TIMEOUT, |guard| {
-            guard.writer().reapply()
-        }) {
+        if let Err(error) = Owner::run(&owner, None, |guard| guard.writer().reapply()) {
             let _ = Owner::close(&owner, ConsoleIo::restore);
             return Err(error);
         }
@@ -241,15 +223,11 @@ impl Tty {
     }
     /// Enable known mutable modes, with all I/O waits outside owner state.
     pub fn setup(&mut self, screen: ScreenMode) -> io::Result<()> {
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-            guard.setup(screen)
-        })
+        Owner::run(&self.owner, None, move |guard| guard.setup(screen))
     }
     /// Enable one known mutable mode under the same journal.
     pub fn enable_mode(&mut self, mode: u16) -> io::Result<()> {
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-            guard.enable_mode(mode)
-        })
+        Owner::run(&self.owner, None, move |guard| guard.enable_mode(mode))
     }
     /// Fence the worker, then restore DEC/console modes and code pages.
     pub fn restore(&mut self) -> io::Result<()> {
@@ -278,7 +256,7 @@ impl Tty {
     }
     fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
         let bytes = bytes.to_vec();
-        Owner::run(&self.owner, deadline, move |guard| {
+        Owner::run(&self.owner, Some(deadline), move |guard| {
             guard.writer().write(&bytes)
         })
     }
@@ -318,19 +296,16 @@ impl ProbeIo for Tty {
     }
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
         let caps = caps.clone();
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-            guard.detected(&caps)
-        })
+        Owner::run(&self.owner, None, move |guard| guard.detected(&caps))
     }
 }
 impl Write for Tty {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.write_until(bytes, Instant::now() + PROBE_TIMEOUT)
+        let bytes = bytes.to_vec();
+        Owner::run(&self.owner, None, move |guard| guard.writer().write(&bytes))
     }
     fn flush(&mut self) -> io::Result<()> {
-        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
-            guard.writer().flush()
-        })
+        Owner::run(&self.owner, None, |guard| guard.writer().flush())
     }
 }
 impl Drop for Tty {
@@ -414,6 +389,21 @@ mod tests {
         assert_ne!(raw.input_mode & 512, 0);
         assert_ne!(raw.output_mode & 4, 0);
         assert_eq!((raw.input_page, raw.output_page), (65001, 65001));
+        if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("output-completion") {
+            let ready = path.with_extension("output-ready");
+            let start = Instant::now();
+            Owner::run(&tty.owner, None, move |guard| {
+                // The host observes this worker's entry, holds its actual
+                // ConPTY output pipe past the probe deadline, then drains it.
+                std::fs::write(ready, b"ordinary output entered")?;
+                guard.writer().write_all(&vec![b'B'; 1024 * 1024])
+            })?;
+            assert!(start.elapsed() >= super::super::PROBE_TIMEOUT);
+            // Success above must precede close, which may cancel output.
+            drop(tty);
+            std::fs::write(path, b"ordinary output completed before close")?;
+            return Ok(());
+        }
         if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("input-close") {
             let (mut tty, output_half) = tty.split();
             let closing = std::thread::spawn(move || drop(output_half));
@@ -500,9 +490,7 @@ mod tests {
             }
             let setting_up = Arc::clone(&tty.owner);
             let setup = std::thread::spawn(move || {
-                let _ = Owner::run(&setting_up, Instant::now() + PROBE_TIMEOUT, |guard| {
-                    guard.enable_mode(1003)
-                });
+                let _ = Owner::run(&setting_up, None, |guard| guard.enable_mode(1003));
             });
             let start = Instant::now();
             let result = tty.send(b"\x1b[c", start + Duration::from_millis(2));

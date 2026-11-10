@@ -15,8 +15,10 @@
 use super::{Alarm, Error, Snapshot, State, Store, Subscription, disposition};
 use crate::addressing::ActorReference;
 use crate::escrow::Escrow;
-use crate::guest::{Checkpoint, Effect};
-use acyclic_stream::{CommitCondition, CommitMutation, RelativePath, StreamPath, StreamProvider};
+use crate::guest::Checkpoint;
+use acyclic_stream::{
+    CommitCondition, CommitEffect, CommitMutation, RelativePath, StreamPath, StreamProvider,
+};
 use std::collections::BTreeMap;
 
 /// Subtree of an actor's state stream that a creation never inherits.
@@ -70,7 +72,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         template: Option<&Snapshot>,
         actor: &ActorReference,
         creation: Creation,
-    ) -> Result<Effect, Error> {
+    ) -> Result<CommitEffect, Error> {
         self.create_with_pause(template, actor, creation, false)
     }
 
@@ -81,7 +83,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         template: Option<&Snapshot>,
         actor: &ActorReference,
         creation: Creation,
-    ) -> Result<Effect, Error> {
+    ) -> Result<CommitEffect, Error> {
         self.create_with_pause(template, actor, creation, true)
     }
 
@@ -91,7 +93,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         actor: &ActorReference,
         creation: Creation,
         paused: bool,
-    ) -> Result<Effect, Error> {
+    ) -> Result<CommitEffect, Error> {
         let path = self.path(actor)?;
         if creation
             .subscriptions
@@ -126,12 +128,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             journal_tail: 0,
         };
         match template {
-            None => Ok(Effect {
+            None => Ok(CommitEffect {
+                soft: false,
                 conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutation: CommitMutation::Append {
+                mutations: vec![CommitMutation::Append {
                     path,
                     records: vec![state.encode().into()],
-                },
+                }],
             }),
             Some(template) => fork(template, path, vec![StreamPath::new(JOURNAL)?], &state),
         }
@@ -148,7 +151,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         cut: &Snapshot,
         child: &ActorReference,
         branch: Branch,
-    ) -> Result<Effect, Error> {
+    ) -> Result<CommitEffect, Error> {
         let state = cut
             .state
             .as_ref()
@@ -179,7 +182,7 @@ fn fork(
     destination: StreamPath,
     mut exclude: Vec<RelativePath>,
     overlay: &State,
-) -> Result<Effect, Error> {
+) -> Result<CommitEffect, Error> {
     let commit_id = source
         .anchor
         .ok_or(Error::Invalid("actor state was never created"))?;
@@ -189,7 +192,8 @@ fn fork(
     // The host's failure custody stays at its original actor for both kinds
     // of overlay. The Streams fork remains actor-blind.
     exclude.extend(disposition::fork_exclusions()?);
-    Ok(Effect {
+    Ok(CommitEffect {
+        soft: false,
         conditions: vec![
             CommitCondition::Head {
                 path: source.path.clone(),
@@ -200,12 +204,12 @@ fn fork(
                 path: destination.clone(),
             },
         ],
-        mutation: CommitMutation::Fork {
+        mutations: vec![CommitMutation::Fork {
             exclude,
             source: source.path.clone(),
             destination,
             at_tail: source.tail,
             records: vec![overlay.encode().into()],
-        },
+        }],
     })
 }

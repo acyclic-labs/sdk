@@ -22,8 +22,8 @@ use super::{
     Phase, Sender, StatusRecord, layout,
 };
 use acyclic_stream::{
-    CommitCondition, CommitConflict, CommitMutation, CommitOutcome, CommitReceipt, CommitRequest,
-    IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    CommitCondition, CommitConflict, CommitEffect, CommitMutation, CommitOutcome, CommitReceipt,
+    CommitRequest, IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 
 /// Domain-separated idempotency key; one stable key per intent.
@@ -74,14 +74,16 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
     let intent = intent_of(record);
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Absent { path: to.closed()? },
-            CommitCondition::Present { path: to.inbox()? },
-        ],
-        mutations: vec![CommitMutation::Append {
-            path: to.inbox()?,
-            records: vec![record.encode()?.into()],
-        }],
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Absent { path: to.closed()? },
+                CommitCondition::Present { path: to.inbox()? },
+            ],
+            vec![CommitMutation::Append {
+                path: to.inbox()?,
+                records: vec![record.encode()?.into()],
+            }],
+        )],
         idempotency_key: intent_key(kind, &[to.as_str(), &sender_text(sender), &intent])?,
     })
 }
@@ -130,31 +132,33 @@ pub fn archive(target: &AgentPath, by: &Sender, id: &IntentId) -> Result<CommitR
     let closed = target.closed()?;
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Absent {
-                path: closed.clone(),
-            },
-            CommitCondition::Present {
-                path: target.inbox()?,
-            },
-        ],
-        mutations: vec![
-            CommitMutation::Append {
-                path: target.inbox()?,
-                records: vec![InboxRecord::Archive(control).encode()?.into()],
-            },
-            CommitMutation::Append {
-                path: closed,
-                records: vec![
-                    Closed {
-                        by: by.clone(),
-                        id: id.clone(),
-                    }
-                    .encode()?
-                    .into(),
-                ],
-            },
-        ],
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Absent {
+                    path: closed.clone(),
+                },
+                CommitCondition::Present {
+                    path: target.inbox()?,
+                },
+            ],
+            vec![
+                CommitMutation::Append {
+                    path: target.inbox()?,
+                    records: vec![InboxRecord::Archive(control).encode()?.into()],
+                },
+                CommitMutation::Append {
+                    path: closed,
+                    records: vec![
+                        Closed {
+                            by: by.clone(),
+                            id: id.clone(),
+                        }
+                        .encode()?
+                        .into(),
+                    ],
+                },
+            ],
+        )],
         idempotency_key: intent_key("archive", &[target.as_str(), &sender_text(by), id.as_str()])?,
     })
 }
@@ -247,8 +251,7 @@ pub(super) fn spawn_at(
     Ok(Spawn {
         request: CommitRequest {
             deadline_unix_millis: None,
-            conditions,
-            mutations,
+            effects: vec![CommitEffect::hard(conditions, mutations)],
             idempotency_key: intent_key("spawn", &[parent.as_str(), intent.as_str()])?,
         },
         child,
@@ -334,39 +337,36 @@ pub(super) fn create_root_at(
     adopted.forked_at = 0;
     let conversation = adopted.conversation_tail;
     let inbox = child.inbox()?;
-    let mut request = CommitRequest {
-        deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Absent {
-                path: inbox.clone(),
-            },
-            CommitCondition::Absent {
-                path: child.status()?,
-            },
-            CommitCondition::Absent {
-                path: child.membership()?,
-            },
-        ],
-        mutations: vec![
-            CommitMutation::Append {
-                path: inbox,
-                records: vec![InboxRecord::ForkAdopted(Box::new(adopted)).encode()?.into()],
-            },
-            first_status(&child, 0, conversation)?,
-            membership(&child.membership()?, &child)?,
-        ],
-        idempotency_key: intent_key("create", &[child.as_str(), intent.as_str()])?,
-    };
+    let mut conditions = vec![
+        CommitCondition::Absent {
+            path: inbox.clone(),
+        },
+        CommitCondition::Absent {
+            path: child.status()?,
+        },
+        CommitCondition::Absent {
+            path: child.membership()?,
+        },
+    ];
+    let mut mutations = vec![
+        CommitMutation::Append {
+            path: inbox,
+            records: vec![InboxRecord::ForkAdopted(Box::new(adopted)).encode()?.into()],
+        },
+        first_status(&child, 0, conversation)?,
+        membership(&child.membership()?, &child)?,
+    ];
     if let Some((source, history)) = history {
-        select_history(
-            source,
-            &child,
-            history,
-            &mut request.conditions,
-            &mut request.mutations,
-        )?;
+        select_history(source, &child, history, &mut conditions, &mut mutations)?;
     }
-    Ok(Spawn { request, child })
+    Ok(Spawn {
+        request: CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(conditions, mutations)],
+            idempotency_key: intent_key("create", &[child.as_str(), intent.as_str()])?,
+        },
+        child,
+    })
 }
 
 /// Result of submitting one agent commit.

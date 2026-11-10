@@ -25,6 +25,7 @@ fuzz_target!(|input: &str| {
         assert_eq!(agent_diff(&restored), agent_diff(&arguments));
     }
     if let Ok(parsed) = parse_fs_command(input) {
+        let parsed: acyclic_harness::tools::FsCommand = parsed;
         let mut arguments = parsed.arguments.clone();
         if let Some(volume) = &parsed.volume {
             arguments.splice(0..0, ["--volume".into(), volume.clone()]);

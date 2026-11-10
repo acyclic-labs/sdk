@@ -17,6 +17,10 @@ pub struct Screen<'a> {
     pub header: Line<'a>,
     /// Already rendered transcript rows, including the current streaming tail.
     pub transcript: &'a [Line<'a>],
+    /// Link columns for the same transcript rows, produced by its shared layout.
+    pub links: &'a [Vec<crate::RowLink>],
+    /// Deferred syntax for those same rows. Only painted rows request styles.
+    pub code: &'a [Option<crate::CodeRow>],
     /// Independently cached tool tail, following the answer rows without copies.
     pub tools: &'a [Line<'a>],
     /// Visible current reasoning, folded from the same agent stream.
@@ -179,6 +183,49 @@ fn take_top(area: &mut Rect, height: u16) -> Rect {
 }
 
 impl Screen<'_> {
+    /// Visible transcript link cells, clipped around docked and completion
+    /// panels. Return these from `FrameTerminal::draw_linked` with the painted frame.
+    pub fn hyperlinks(&self, areas: &ScreenAreas, scroll: usize) -> crate::Hyperlinks {
+        let mut links = crate::Hyperlinks::default();
+        if self.feedback {
+            return links;
+        }
+        for row in 0..usize::from(areas.transcript.height) {
+            let index = scroll + row;
+            let Some(index) = index.checked_sub(self.reasoning.len()) else {
+                continue;
+            };
+            let Some(source) = self.links.get(index) else {
+                continue;
+            };
+            let y = areas.transcript.y + cells(row);
+            // Split around a popup rather than making its text clickable.
+            let area = Rect::new(areas.transcript.x, y, areas.transcript.width, 1);
+            let covered = area.intersection(areas.completions);
+            if covered.is_empty() {
+                links.row(area, source);
+            } else {
+                let left = usize::from(covered.x - area.x);
+                let right = usize::from(covered.right() - area.x);
+                let mut visible = Vec::new();
+                for link in source {
+                    for columns in [
+                        link.columns.start..link.columns.end.min(left),
+                        link.columns.start.max(right)..link.columns.end,
+                    ] {
+                        if !columns.is_empty() {
+                            visible.push(crate::RowLink {
+                                columns,
+                                target: std::sync::Arc::clone(&link.target),
+                            });
+                        }
+                    }
+                }
+                links.row(area, &visible);
+            }
+        }
+        links
+    }
     fn transcript_len(&self) -> usize {
         self.transcript.len() + self.tools.len()
     }
@@ -361,6 +408,10 @@ impl Screen<'_> {
         now_ms: u64,
     ) -> ScreenAreas {
         let mut areas = self.areas(frame.area(), input);
+        let frame_area = frame.area();
+        frame
+            .buffer_mut()
+            .set_style(frame_area, input.theme.token(crate::config::Token::Fg));
         if !self.feedback
             && let Some((visible, total)) = &self.scrollbar
         {
@@ -379,7 +430,11 @@ impl Screen<'_> {
                 areas.scrollbar,
             );
         }
-        frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
+        frame.render_widget(
+            Paragraph::new(self.header.clone())
+                .style(input.theme.token(crate::config::Token::Muted)),
+            areas.header,
+        );
         let thinking = self.thinking_line(input, &areas, transcript_scroll, now_ms);
         areas.animation = thinking.is_some() && !input.editor.settings().reduced_motion;
         if self.feedback {
@@ -404,7 +459,11 @@ impl Screen<'_> {
                 } else if index < self.reasoning.len() + self.transcript_len() {
                     let index = index - self.reasoning.len();
                     if let Some(line) = self.transcript.get(index) {
-                        frame.render_widget(line, area);
+                        if let Some(code) = self.code.get(index).and_then(Option::as_ref) {
+                            frame.render_widget(code.paint(line, &input.theme), area);
+                        } else {
+                            frame.render_widget(line, area);
+                        }
                     } else if let Some(line) = self.tools.get(index - self.transcript.len()) {
                         frame.render_widget(line, area);
                     }
@@ -428,7 +487,13 @@ impl Screen<'_> {
         rows(frame, self.terminal, areas.terminal, 0);
         rows(frame, self.notifications, areas.notifications, 0);
         rows(frame, self.usage, areas.usage, 0);
-        frame.render_widget(&self.status, areas.status);
+        frame.render_widget(
+            self.status
+                .clone()
+                .right_aligned()
+                .style(input.theme.token(crate::config::Token::Muted)),
+            areas.status,
+        );
         if !self.tree.is_empty() {
             let block = Block::default().borders(Borders::ALL).title("Agents");
             rows(frame, self.tree, block.inner(areas.tree), 0);

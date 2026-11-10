@@ -132,6 +132,9 @@ fn spawned_volume(
     let source = &binding.volume;
     let owner = match source.owner() {
         VolumeOwner::Agent(_) => VolumeOwner::Agent(crate::AgentId::from_bytes(child.id_bytes())),
+        VolumeOwner::Session(_) if source.class() == VolumeClass::SessionShared => {
+            VolumeOwner::Session(child.id().to_string())
+        }
         other => other.clone(),
     };
     let destination = VolumeRef::new(
@@ -152,10 +155,14 @@ fn spawned_volume(
 /// # Errors
 /// When the derived volume reference is invalid.
 pub fn spawned_binding(child: &AgentPath, binding: &VolumeBinding) -> Result<VolumeRef, Error> {
-    if binding.volume.class() == VolumeClass::SessionShared {
+    if retains_shared(child, &binding.volume) {
         return Ok(binding.volume.clone());
     }
     Ok(spawned_volume(child, binding)?.0)
+}
+
+fn retains_shared(child: &AgentPath, source: &VolumeRef) -> bool {
+    child.parent().is_some() && source.class() == VolumeClass::SessionShared
 }
 
 /// The child's binding of `parent`'s volume `binding`, and how it comes to exist.
@@ -164,11 +171,12 @@ fn plan(
     binding: &VolumeBinding,
 ) -> Result<(VolumeBinding, Option<Planned>), Error> {
     let source = &binding.volume;
-    if source.class() == VolumeClass::SessionShared {
+    if retains_shared(child, source) {
         return Ok((binding.clone(), None));
     }
     let (destination, key) = spawned_volume(child, binding)?;
-    let fork = binding.name != super::PRIVATE_VOLUME;
+    let fork =
+        binding.name != super::PRIVATE_VOLUME && source.class() != VolumeClass::SessionShared;
     Ok((
         VolumeBinding {
             name: binding.name.clone(),

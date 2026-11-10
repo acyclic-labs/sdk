@@ -1,12 +1,12 @@
 use super::*;
 
 /// A no-follow directory capability for metadata and relative lookup, without
-/// requesting directory-list access: O_PATH on Linux and O_EVTONLY on Darwin.
+/// requesting directory-list access: O_PATH on Linux and O_SEARCH on Darwin.
 pub(super) const fn directory_metadata_flags() -> i32 {
     #[cfg(target_os = "linux")]
     let access = libc::O_PATH;
     #[cfg(target_os = "macos")]
-    let access = libc::O_EVTONLY;
+    let access = libc::O_SEARCH;
     access | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW
 }
 

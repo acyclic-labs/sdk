@@ -4,7 +4,7 @@ use crate::filesystem::FilesystemContentVerifier;
 impl LocalHarness {
     /// An authorized fork uses the tools' shared Git facade and request receipt.
     /// Host checkout merges retain native capture and publication; retained
-    /// parent volumes need no OS projection or additional native authority.
+    /// unbound parent volumes need no OS projection or additional authority.
     #[cfg(any(test, feature = "native-execution"))]
     pub(super) async fn merge_session(
         &self,
@@ -54,6 +54,32 @@ impl LocalHarness {
                 signed.copy(&mut None)?,
             );
             let view = workspace.spawned_project_view(&project.volume).await?;
+            if workspace.has_physical_task_source(&view)? {
+                let home = parent_state
+                    .volumes
+                    .iter()
+                    .find(|binding| binding.name == super::HOME_VOLUME)
+                    .ok_or_else(|| Error::Invalid("parent has no home binding".into()))?;
+                let bound = self
+                    .project_workspace(
+                        workspace,
+                        &parent,
+                        &project.volume,
+                        &home.volume,
+                        &signed,
+                        &verifier,
+                    )
+                    .await?;
+                return self
+                    .merge_checkout(
+                        &bound,
+                        &signed,
+                        parent,
+                        operation,
+                        (branch, source.workspace().id()),
+                    )
+                    .await;
+            }
             // A volume join needs no OS projection. Keep the same selected
             // checkout and original authority without minting a native grant.
             let logical = workspace.context_task_view(view, &project.volume, &authority)?;
@@ -108,15 +134,33 @@ impl LocalHarness {
             return merge_commit(output);
         }
         let signed = self.signed.copy(&mut None)?;
+        self.merge_checkout(
+            workspace,
+            &signed,
+            agent.parent().unwrap_or_else(|| agent.clone()),
+            operation,
+            (branch, source.workspace().id()),
+        )
+        .await
+    }
+
+    #[cfg(any(test, feature = "native-execution"))]
+    async fn merge_checkout(
+        &self,
+        workspace: &Arc<super::workspace::LocalWorkspace>,
+        signed: &crate::core::Scope,
+        owner: crate::agent::AgentPath,
+        operation: OperationId,
+        (branch, source): (String, acyclic_fs::WorkspaceId),
+    ) -> Result<Option<String>> {
         let scope =
             crate::runtime::RuntimeScope::new(signed.capabilities().clone(), Default::default())?;
-        let owner =
-            super::workspace::owner::AgentOwner(agent.parent().unwrap_or_else(|| agent.clone()));
+        let owner = super::workspace::owner::AgentOwner(owner);
         let command = format!("merge {branch}");
         let configuration = super::checkout_tools::capture::configuration(workspace)?;
         let commands = super::workspace::git::Commands {
             workspace,
-            signed: &signed,
+            signed,
             clock: self.clock.as_ref(),
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
@@ -138,7 +182,7 @@ impl LocalHarness {
                         workspace.view().workspace().id(),
                         workspace.store.clone(),
                     )
-                    .register_branch_workspace(branch, source.workspace().id(), None, false)
+                    .register_branch_workspace(branch, source, None, false)
                     .await
                     .map_err(storage)
                 }),

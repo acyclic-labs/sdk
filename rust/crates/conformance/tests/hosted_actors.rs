@@ -207,6 +207,7 @@ fn composition_at(
             },
         ),
         Execution {
+            models: None,
             model: (
                 Model::new("conformance".into(), "scripted".into(), "1".into())?,
                 model,

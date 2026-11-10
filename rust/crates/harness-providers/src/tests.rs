@@ -354,6 +354,10 @@ pub(super) fn provider_with(
     transport: Arc<dyn HttpTransport>,
 ) -> ResolvedModel {
     ResolvedModel {
+        #[cfg(not(target_arch = "wasm32"))]
+        account_pin: Arc::new(std::sync::OnceLock::new()),
+        inputs: None,
+        credential_config: None,
         credential_scope: None,
         files: crate::files::Files::default(),
         accounting: crate::resolved::Accounting::new(adapter),
@@ -390,6 +394,8 @@ pub(super) fn provider_with(
         transport: crate::deadline::Bounded::new(transport, crate::TimeoutSpec::DEFAULT),
         #[cfg(not(target_arch = "wasm32"))]
         codex_login: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        explicit_codex_login: None,
     }
 }
 
@@ -445,6 +451,7 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
         let original = projection::body(&provider, &request)?;
         let mut late = code.clone();
         late.name = "late".into();
+        let table = serde_json::to_string(&vec![late.clone()]).unwrap();
         request.tools.push(late);
         request.messages.push(ModelMessage {
             role: ModelRole::User,
@@ -452,7 +459,7 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
                 notices: vec![acyclic_model_render::Notice {
                     source: "tools".into(),
                     kind: "tools.changed".into(),
-                    body: json!({"tools":[{"name":"late", "input_schema":{"type":"object"}}]}),
+                    body: json!({"offset":0,"json":table,"complete":true,"removed":[]}),
                     wake: false,
                     coalesce_key: None,
                 }],

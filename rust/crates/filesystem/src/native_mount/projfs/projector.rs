@@ -11,6 +11,19 @@ use super::{
     with_creating_name, write_entry,
 };
 
+/// Retain a failed pass until every control already waiting on it has returned.
+struct Settling<'a>(&'a Projector);
+
+impl Drop for Settling<'_> {
+    fn drop(&mut self) {
+        let mut state = lock_recover(&self.0.state);
+        state.settlers -= 1;
+        if state.settlers == 0 && state.failure_observed {
+            state.failure = None;
+            state.failure_observed = false;
+        }
+    }
+}
 impl Projector {
     /// The existing projector owns the initial listing, just as it owns
     /// subsequent listings. Its original startup ledger remains live until
@@ -574,7 +587,7 @@ impl Projector {
         let work = match runtime.native_work(false) {
             Ok(work) => work,
             Err(error) => {
-                state.failure = Some(error.to_string());
+                state.failure.get_or_insert_with(|| error.to_string());
                 state.processed = state.notified;
                 state.retry = false;
                 self.changed.notify_all();
@@ -737,7 +750,10 @@ impl Projector {
     }
 
     pub(super) fn settle(&self) -> Result<(), NativeMountError> {
+        // Drop owner state before retiring this control's failure observation.
+        let _settling = Settling(self);
         let mut state = lock_recover(&self.state);
+        state.settlers += 1;
         let target = state.notified;
         let mut deadline = None;
         // A previous failed cache clear is retried by this explicit control,
@@ -761,7 +777,7 @@ impl Projector {
             // path custody; its caller can then safely end the work scope.
             if !state.relisting
                 && state.processed >= target
-                && let Some(failure) = state.failure.take()
+                && let Some(failure) = state.report_failure()
             {
                 return Err(NativeMountError::Driver(failure));
             }
@@ -797,7 +813,7 @@ impl Projector {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
-        if let Some(failure) = state.failure.take() {
+        if let Some(failure) = state.report_failure() {
             return Err(NativeMountError::Driver(failure));
         }
         if state.stopping {

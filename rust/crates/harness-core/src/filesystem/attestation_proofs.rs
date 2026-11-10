@@ -37,10 +37,9 @@ proptest::proptest! {
                 };
                 let commit = super::CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![acyclic_stream::CommitCondition::Tail { path: path.clone(), expected: 0 }],
-                    mutations: vec![acyclic_stream::CommitMutation::Append {
+                    effects: vec![acyclic_stream::CommitEffect::hard(vec![acyclic_stream::CommitCondition::Tail { path: path.clone(), expected: 0 }], vec![acyclic_stream::CommitMutation::Append {
                         path, records: vec![bytes::Bytes::copy_from_slice(&payload).into()],
-                    }],
+                    }])],
                     idempotency_key: super::IdempotencyKey::new(identity.clone()).expect("key"),
                 };
                 let cancellation = acyclic_fs::CancellationToken::new();

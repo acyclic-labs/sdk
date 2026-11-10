@@ -144,7 +144,7 @@ pub(crate) fn frame(command: &WriteRequest) -> Result<Vec<u8>, StreamError> {
 #[cfg(test)]
 pub(crate) fn repeated_command_frame(command: &WriteRequest) -> Result<Vec<u8>, StreamError> {
     let encoded = command.encode_to_vec();
-    let payload = crate::persistence::header(&encoded, b"ACYCLIC-STREAM-COMMAND-V", b"1\0")?;
+    let payload = crate::journal::command_payload(&encoded)?;
     // Repeat the real writer's protobuf operation, then frame it with the
     // production checksum writer. A valid frame need not be a canonical command.
     let mut frame = Vec::new();

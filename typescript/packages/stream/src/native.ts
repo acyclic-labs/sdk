@@ -169,16 +169,16 @@ export class NativeStreamProvider implements StreamProvider {
     catch (error) { throw invalidResponse("tail", error); }
   }
 
-  async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> {
+  async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
     const records = values.map(value => value.slice());
-    const authored = options === undefined ? undefined : structuredClone(options);
+    const authored = structuredClone(options);
     const input = await validateAppend(path, records, authored);
     const value = await this.operation("append", this.request(client => client.appendResult(Buffer.from(input))));
     return this.project("append", value) as AppendResult;
   }
 
-  async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> {
-    const request = { kind: "fork" as const, source, destination, ...(options === undefined ? {} : { options: structuredClone(options) }) };
+  async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
+    const request = { kind: "fork" as const, source, destination, options: structuredClone(options) };
     await validateWireRequest(request);
     const value = await this.operation("fork", this.request(client => client.forkResult(Buffer.from(wireRequest(request)))));
     return this.project("fork", value) as ForkReceipt;

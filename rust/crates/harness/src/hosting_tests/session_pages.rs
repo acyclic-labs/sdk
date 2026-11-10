@@ -76,8 +76,10 @@ async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Res
                     stream
                         .commit(CommitRequest {
                             deadline_unix_millis: None,
-                            conditions: Vec::new(),
-                            mutations: std::mem::take(&mut mutations),
+                            effects: vec![acyclic_stream::CommitEffect::hard(
+                                Vec::new(),
+                                std::mem::take(&mut mutations)
+                            )],
                             idempotency_key: IdempotencyKey::unique(),
                         })
                         .await?,

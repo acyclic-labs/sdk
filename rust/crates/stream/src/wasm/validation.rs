@@ -112,7 +112,6 @@ fn normalize_commit_bytes(input: &[u8]) -> Result<Vec<u8>, &'static str> {
     let mut request =
         wire_codec::commit_from_wire(request).map_err(|error| error_code_str(&error))?;
     crate::request::normalize_commit(&mut request).map_err(|error| error_code_str(&error))?;
-    crate::request::validate_commit_shape(&request).map_err(|error| error_code_str(&error))?;
     let mut normalized = wire_codec::commit_to_wire(&request);
     normalized.deadline_unix_millis = deadline_unix_millis;
     normalized.include_envelope = include_envelope;
@@ -484,13 +483,21 @@ mod http {
                 "forks",
                 &array_js(field(item, "forks")?, fork_receipt_js)?,
             )?;
-            // Every receipt carries `skipped`; the wire omits it when empty.
+            // Every receipt carries the indices of its skipped soft effects,
+            // empty when the wire omits them.
             let empty = Value::Array(Vec::new());
             let skipped = item.get("skipped").unwrap_or(&empty);
-            for skipped in array(skipped)? {
-                path(skipped)?;
-            }
-            set(&result, "skipped", &array_js(skipped, string_js)?)?;
+            set(
+                &result,
+                "skipped",
+                &array_js(skipped, |index| {
+                    let index = index
+                        .as_u64()
+                        .and_then(|index| u32::try_from(index).ok())
+                        .ok_or("skipped must list effect indices")?;
+                    Ok(JsValue::from(index))
+                })?,
+            )?;
         } else {
             if string(field(item, "code")?)? != "conflict" {
                 return Err("invalid commit conflict code");

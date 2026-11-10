@@ -117,6 +117,7 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
                     transport,
                     tools: advertised(&["read", "write", "other"]),
                     binding: [1; 32],
+                    generation: 0,
                 })
             })
         })
@@ -143,7 +144,7 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
     assert!(original.hook_names.is_empty());
     let tool = installed
         .tools
-        .get("mcp.configured.read", None, None)?
+        .resolve("mcp.configured.read", None)?
         .expect("MCP tool");
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
@@ -192,14 +193,14 @@ async fn reinstall_restores_saved_tool_revisions_and_approval_digests() -> Resul
                 if reverse {
                     tools.reverse();
                 }
-                Ok(Connected { transport: Arc::new(Remote::default()), tools, binding })
+                Ok(Connected { transport: Arc::new(Remote::default()), tools, binding, generation: 0 })
             })
         }).await
     }
     let first = install([1; 32], false, false).await?;
     let saved = first
         .tools
-        .get("mcp.configured.read", None, None)?
+        .resolve("mcp.configured.read", None)?
         .expect("initial tool")
         .definition
         .clone();
@@ -208,7 +209,7 @@ async fn reinstall_restores_saved_tool_revisions_and_approval_digests() -> Resul
     let reopened = install([1; 32], true, false).await?;
     let restored = reopened
         .tools
-        .get(&saved.name, Some(&saved.revision), None)?
+        .resolve(&format!("{}@{}", saved.name, saved.revision), None)?
         .expect("saved revision after restart");
     assert_eq!(restored.definition, saved);
     assert_eq!(restored.definition.digest()?, pending_approval);
@@ -230,13 +231,13 @@ async fn reinstall_restores_saved_tool_revisions_and_approval_digests() -> Resul
         assert!(
             changed
                 .tools
-                .get(&saved.name, Some(&saved.revision), None)?
+                .resolve(&format!("{}@{}", saved.name, saved.revision), None)?
                 .is_none()
         );
         assert_ne!(
             changed
                 .tools
-                .get(&saved.name, None, None)?
+                .resolve(&saved.name, None)?
                 .expect("changed tool")
                 .definition
                 .digest()?,
@@ -367,6 +368,7 @@ async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect()
                     transport: Arc::new(Remote::default()),
                     tools: advertised(&["read"]),
                     binding: [1; 32],
+                    generation: 0,
                 })
             })
         })
@@ -670,7 +672,7 @@ IFS= read -r input
     );
     let tool = installed
         .tools
-        .get("mcp.configured.echo", None, None)?
+        .resolve("mcp.configured.echo", None)?
         .expect("installed stdio tool");
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
