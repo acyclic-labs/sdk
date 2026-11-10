@@ -282,7 +282,18 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
                     Some(b"spawned") => step(
                         b"waiting",
                         Vec::new(),
-                        Wait::Until(Until::all(agent.open_children.clone()).within(Some(TIMEOUT))),
+                        Wait::Until(
+                            Until::all(
+                                agent
+                                    .open_children
+                                    .page(None, CHILDREN)
+                                    .await?
+                                    .iter()
+                                    .map(|id| agent.path.child(id))
+                                    .collect::<std::result::Result<_, _>>()?,
+                            )
+                            .within(Some(TIMEOUT)),
+                        ),
                     ),
                     Some(_) => {
                         self.0
@@ -323,7 +334,15 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     });
     host.send(&root, &user(), &start).await?;
     host.drain_event(&root).await?;
-    let children = host.state(&root).await?.open_children;
+    let children = host
+        .state(&root)
+        .await?
+        .open_children
+        .page(None, CHILDREN)
+        .await?
+        .iter()
+        .map(|id| root.child(id))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     assert_eq!(children.len(), CHILDREN);
     for child in &children {
         host.send(child, &user(), &start).await?;
