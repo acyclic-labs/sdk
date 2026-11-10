@@ -17,6 +17,12 @@ pub struct Mutex<T> {
     poisoned: AtomicBool,
 }
 
+// As with std's mutex, an unwind publishes poison before releasing the value.
+// The public guard therefore retains the original failure across catch_unwind,
+// even when the protected value itself contains interior mutability.
+impl<T> std::panic::UnwindSafe for Mutex<T> {}
+impl<T> std::panic::RefUnwindSafe for Mutex<T> {}
+
 impl<T> Mutex<T> {
     /// Creates a mutex without allocating its lock storage separately.
     pub const fn new(value: T) -> Self {

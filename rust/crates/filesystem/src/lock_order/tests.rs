@@ -9,7 +9,7 @@ fn healthy<T>(result: LockResult<T>) -> T {
     result.unwrap_or_else(|error| std::panic::resume_unwind(Box::new(error.to_string())))
 }
 
-fn dynamic_lock(rank: u8, mutex: &std::sync::Mutex<()>) -> MutexGuard<'_, ()> {
+fn dynamic_lock(rank: u8, mutex: &crate::sync::Mutex<()>) -> MutexGuard<'_, ()> {
     healthy(match rank {
         0 => lock::<_, 0>(mutex),
         1 => lock::<_, 1>(mutex),
@@ -25,7 +25,7 @@ proptest! {
     fn every_acquire_and_out_of_order_drop_matches_held_ranks(
         operations in prop::collection::vec((any::<bool>(), 0u8..5), 0..48)
     ) {
-        let locks: [_; 5] = std::array::from_fn(|_| std::sync::Mutex::new(()));
+        let locks: [_; 5] = std::array::from_fn(|_| crate::sync::Mutex::new(()));
         let mut held = Vec::new();
         for (acquire, rank) in operations {
             if !acquire {

@@ -18,8 +18,7 @@ struct ProofDataWorkReport {
     live_future_bytes: u64,
     live_cache_bytes: u64,
     original_cache_bytes: u64,
-    original_cache_ledger:
-        Option<std::sync::Weak<std::sync::Mutex<super::allocation::SharedAllocationBytes>>>,
+    original_cache_ledger: Option<std::sync::Weak<super::allocation::SharedAllocationState>>,
     #[cfg(not(target_arch = "wasm32"))]
     native_accounting: Option<Arc<crate::demand::NativeAllocationAccounting>>,
     #[cfg(not(target_arch = "wasm32"))]
