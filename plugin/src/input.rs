@@ -1,5 +1,5 @@
 //! Native stdin and selected-task admission, before any workspace operation.
-use acyclic_harness::agent::AgentPath;
+use acyclic_harness::{agent::AgentPath, local::host_owner::HostAction};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use std::io::{self, Read as _};
@@ -42,4 +42,66 @@ pub fn read_json<T: DeserializeOwned>(input: impl io::Read, maximum: Option<u64>
         );
     }
     Ok(serde_json::from_slice(&bytes)?)
+}
+
+#[derive(Debug)]
+enum InvalidWorkspaceCommand {
+    Usage,
+    Agent(acyclic_harness::agent::Error),
+}
+
+impl std::fmt::Display for InvalidWorkspaceCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("step=admit native command: ")?;
+        match self {
+            Self::Usage => formatter.write_str("expected fs COMMAND..., discard REF..., agents, log, capture or reopen ID; recovery: run acyclic --help"),
+            Self::Agent(cause) => write!(formatter, "{cause}; recovery: run acyclic reopen harness/agents/AGENT_ID"),
+        }
+    }
+}
+
+impl std::error::Error for InvalidWorkspaceCommand {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Usage => None,
+            Self::Agent(cause) => Some(cause),
+        }
+    }
+}
+
+/// Admits a native workspace command before resolving its selected agent.
+///
+/// `resolve` runs at most once, only for a valid command needing the current
+/// agent. Reopen already names its agent and never invokes the resolver.
+///
+/// # Errors
+/// Refuses invalid command shapes and retains the original task or resolver error.
+pub fn workspace_action(
+    arguments: &[String],
+    resolve: impl FnOnce() -> Result<AgentPath>,
+) -> Result<HostAction> {
+    let (command, rest) = arguments
+        .split_first()
+        .ok_or(InvalidWorkspaceCommand::Usage)?;
+    Ok(match (command.as_str(), rest) {
+        ("fs" | "discard", [_, ..]) => HostAction::Fs {
+            task: resolve()?,
+            command: arguments
+                .iter()
+                .skip(usize::from(command == "fs"))
+                .map(|arg| format!("'{}'", arg.replace('\'', "'\"'\"'")))
+                .collect::<Vec<_>>()
+                .join(" "),
+        },
+        ("agents", []) => HostAction::Agents { task: resolve()? },
+        ("log", []) => HostAction::Fs {
+            task: resolve()?,
+            command: "log".into(),
+        },
+        ("reopen", [task]) => HostAction::Reopen {
+            task: AgentPath::try_from(task.clone()).map_err(InvalidWorkspaceCommand::Agent)?,
+        },
+        ("capture", []) => HostAction::Capture { task: resolve()? },
+        _ => return Err(InvalidWorkspaceCommand::Usage.into()),
+    })
 }

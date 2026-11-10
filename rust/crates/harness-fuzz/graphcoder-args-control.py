@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 root = Path(__file__).resolve().parents[3]
 recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
@@ -352,11 +353,11 @@ def require(condition, step):
 def run(target, seed, witness, *, capture=False, runs=0):
     options = {
         "native_input": ["--no-default-features", "--features", "native-input"],
-        "command_result": ["--no-default-features", "--features", "core"],
-        "native_workspace": ["--no-default-features"],
+        "command_result": ["--no-default-features", "--features", "command-result"],
+        "native_workspace": ["--no-default-features", "--features", "native-settings"],
         "native_settings": ["--no-default-features", "--features", "native-settings"],
         "event_projection": ["--no-default-features", "--features", "client"],
-        "native_model_selection": ["--no-default-features"],
+        "native_model_selection": ["--no-default-features", "--features", "native-settings"],
         "native_marketplace": ["--no-default-features", "--features", "native-input"],
     }.get(target, [])
     environment = os.environ.copy()
@@ -519,6 +520,17 @@ def selection(argv=None):
     arguments = parser.parse_args(argv)
     arguments.targets = arguments.targets or ["graphcoder_args"]
     require(all(target in controls for target in arguments.targets), "admit known control targets")
+    manifest = tomllib.loads((root / "rust/crates/harness-fuzz/Cargo.toml").read_text())
+    binaries = {binary["name"]: binary for binary in manifest["bin"]}
+    for target in arguments.targets:
+        mutations = [controls[target], *additional_controls.get(target, [])]
+        require(all((root / mutation[0]).is_file() for mutation in mutations),
+                f"admit available production sources for {target}")
+        if target != "native_stdin_binary":
+            binary = binaries.get(target)
+            require(binary is not None
+                    and (root / "rust/crates/harness-fuzz" / binary["path"]).is_file(),
+                    f"admit available fuzz target {target}")
     require(arguments.runs >= 0, "admit finite nonnegative campaign units")
     if arguments.control is not None:
         require(len(set(arguments.control)) == len(arguments.control), "admit unique mutation indices")
