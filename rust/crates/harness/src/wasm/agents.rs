@@ -237,6 +237,20 @@ impl WasmAgentRegistry {
         compaction: CompactionPolicy,
     ) -> Result<()> {
         model.validate()?;
+        let selection = format!("{}/{}", model.provider, model.name);
+        let initial;
+        let models = match &self.models {
+            Some(models) => models.as_ref(),
+            None => {
+                initial = crate::model::ModelResolver::new(selection, |_| {
+                    Err(Error::Invalid("model is not registered".into()))
+                });
+                &initial
+            }
+        };
+        self.models = Some(Arc::new(
+            models.with_binding((model.clone(), provider.clone()))?,
+        ));
         self.model = Some((model, provider, compaction));
         Ok(())
     }
@@ -290,7 +304,10 @@ impl WasmAgentRegistry {
         Ok(())
     }
 
-    /// Selects the model of every turn. `generate` receives the canonical
+    /// Registers a model and selects it as the root default. Configure alternate
+    /// models first, then the root; every retained selection stays available.
+    /// Already opened hosts retain their original catalog snapshot.
+    /// `generate` receives the canonical
     /// request bytes, its dispatch identity, an `AbortSignal` and the verified
     /// bytes of each file the request projects in full, and returns an async
     /// iterator; `reconcile` receives the exact retained attempt and never
@@ -441,7 +458,15 @@ impl WasmAgents {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let providers = Providers::indexed_db(&options).await?;
         let handler = providers.handler(&options, owner, registry, &owner.admission()?)?;
-        Self::host(options, owner, providers, Arc::new(handler), report, true)
+        Self::host(
+            options,
+            owner,
+            registry,
+            providers,
+            Arc::new(handler),
+            report,
+            true,
+        )
     }
 
     /// Hosts every agent of `providers` (shared with the guest) whose turns run in an agent
@@ -453,6 +478,7 @@ impl WasmAgents {
         providers: &WasmAgentProviders,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
         owner: &WasmAgentAuthority,
+        registry: &WasmAgentRegistry,
         manifest: &[u8],
         #[wasm_bindgen(
             unchecked_param_type = "(delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => Promise<Uint8Array>"
@@ -470,6 +496,7 @@ impl WasmAgents {
         Self::host(
             options,
             owner,
+            registry,
             providers.providers.clone(),
             Arc::new(handler),
             report,
@@ -515,6 +542,7 @@ impl WasmAgents {
     fn host(
         options: WasmBrowserAgentOptions,
         owner: &WasmAgentAuthority,
+        registry: &WasmAgentRegistry,
         providers: Providers,
         handler: Arc<dyn Handler>,
         report: Option<Function>,
@@ -535,11 +563,18 @@ impl WasmAgents {
         .map_err(agent_error)?;
         // Both spawn entrances use the same admitted template reader.
         let agents = Arc::new(if options.children {
-            agents.with_templates(Arc::new(crate::filesystem::Templates::new(
-                Arc::clone(&filesystem),
-                owner.issuer.clone(),
-                owner.admission()?,
-            )))
+            let model = registry
+                .model
+                .as_ref()
+                .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
+            agents.with_templates(Arc::new(
+                crate::filesystem::Templates::new(
+                    Arc::clone(&filesystem),
+                    owner.issuer.clone(),
+                    owner.admission()?,
+                )
+                .with_model(Some(format!("{}/{}", model.0.provider, model.0.name))),
+            ))
         } else {
             agents
         });

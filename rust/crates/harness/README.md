@@ -25,6 +25,12 @@ Scoped tool installation asks a `ToolApprovalVerifier` to read a resolved journa
 
 Durable scheduler declarations pin initial process state by `FileRef`, not inline JSON. Opening the Stream-backed coordinator requires an authority-scoped content verifier; it checks declared state and successful result bytes on replay and before new publication. New operations must enter through `declare_operation` with a signed, matching owner scope and `operation:declare`; generic event submission cannot publish a declaration or an orchestration decision. Successful worker outcomes are JSON `FileRef`s. Joins, quorums, and reducers stage their result through an owner-bound `SchedulerPayloadStore` before publishing a ref-only event. Malformed or missing bytes leave no new event and prevent reopening an affected history, while an exact in-process retry reconciles by idempotency key. Placement is bounded exact-match worker label metadata, enforced when leasing, and durable inbox items carry `FileRef` payloads.
 
+Browser JavaScript hosts register alternate models with `configureModel` (or
+`WasmModelProvider.install`) before selecting the root model last. Pass that
+same registry to `WasmAgents.open` or `openHosting`. Each opened host retains
+its original catalog snapshot; reopening with another default preserves the
+model addresses already recorded in root and child streams.
+
 Root model selection lives in the shared `agent.ts` settings or the host's
 explicit binding. A child role can choose another provider and model in its
 home volume's `templates/worker/AGENT.md`:

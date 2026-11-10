@@ -93,7 +93,7 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
         ).with_models(Arc::new(ModelResolver::new("recorded/model", {
             let routes = routes.clone();
             move |selection| routes.resolve(selection)
-        }))).with_agent_tools(&selected).with_templates()))
+        }).with_binding(routes.resolve("workers/luna")?)?)).with_agent_tools(&selected).with_templates()))
     };
     let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;

@@ -11,7 +11,7 @@ pub type ModelBinding = (Model, Arc<dyn ModelProvider>);
 /// or a new resolver over a changed catalog, resolves anew.
 pub struct ModelResolver {
     default: String,
-    resolve: Box<Resolve>,
+    resolve: Arc<Resolve>,
     resolved: std::sync::Mutex<std::collections::BTreeMap<String, ModelBinding>>,
 }
 
@@ -33,9 +33,29 @@ impl ModelResolver {
     ) -> Self {
         Self {
             default: default.into(),
-            resolve: Box::new(resolve),
+            resolve: Arc::new(resolve),
             resolved: Default::default(),
         }
+    }
+
+    /// A new immutable catalog snapshot containing an explicitly bound model.
+    /// Existing compositions retain their original bindings and calibration.
+    pub fn with_binding(&self, binding: ModelBinding) -> Result<Self> {
+        binding.0.validate()?;
+        let mut resolved = self
+            .resolved
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        resolved.insert(
+            format!("{}/{}", binding.0.provider, binding.0.name),
+            binding,
+        );
+        Ok(Self {
+            default: self.default.clone(),
+            resolve: self.resolve.clone(),
+            resolved: std::sync::Mutex::new(resolved),
+        })
     }
 
     /// Reuses the original protected provider binding for this selection.
