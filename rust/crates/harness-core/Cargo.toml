@@ -129,6 +129,7 @@ prost-build.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["native-watch"] }
+notify.workspace = true
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "futures", "parallel"] }
 oxc_allocator = "=0.156.0"
 oxc_codegen = { version = "=0.156.0", default-features = false }

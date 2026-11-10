@@ -68,6 +68,32 @@ impl<F: Send + Sync> ObserverControl for Observer<F> {
     }
 }
 
+use notify::{
+    EventKind,
+    event::{ModifyKind, RemoveKind, RenameMode},
+};
+
+/// The change kind of one ReadDirectoryChangesW action, so consumers can tell
+/// names from in-place changes.
+#[cfg(windows)]
+fn windows_kind(action: u32) -> EventKind {
+    use notify::event::CreateKind;
+    // FILE_ACTION_* values of FILE_NOTIFY_INFORMATION.
+    const ADDED: u32 = 1;
+    const REMOVED: u32 = 2;
+    const MODIFIED: u32 = 3;
+    const RENAMED_OLD_NAME: u32 = 4;
+    const RENAMED_NEW_NAME: u32 = 5;
+    match action {
+        ADDED => EventKind::Create(CreateKind::Any),
+        REMOVED => EventKind::Remove(RemoveKind::Any),
+        MODIFIED => EventKind::Modify(ModifyKind::Any),
+        RENAMED_OLD_NAME => EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+        RENAMED_NEW_NAME => EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+        _ => EventKind::Any,
+    }
+}
+
 impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> Observer<F> {
     fn report(&self, event: notify::Result<notify::Event>) {
         if !self.retired.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire) {
@@ -81,7 +107,12 @@ impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> Observer<F> {
         }
     }
 
-    fn path(&self, relative: &Path, work: &mut DemandWork) -> Result<(), DemandError> {
+    fn path(
+        &self,
+        relative: &Path,
+        kind: notify::EventKind,
+        work: &mut DemandWork,
+    ) -> Result<(), DemandError> {
         let bytes = relative.as_os_str().len() as u64;
         let slots = std::mem::size_of::<PathBuf>() as u64;
         let allocation = bytes
@@ -95,7 +126,7 @@ impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> Observer<F> {
                 ..WorkCounters::UNCHARGED
             },
         )?;
-        let mut event = notify::Event::new(notify::EventKind::Any);
+        let mut event = notify::Event::new(kind);
         event.paths = vec![relative.to_path_buf()];
         let delivered =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.report(Ok(event))));
@@ -126,11 +157,23 @@ impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> HostChangeSink for Obse
         work.check()?;
         for change in changes {
             match change {
-                HostChange::Departed(path)
-                | HostChange::Rebound(path)
-                | HostChange::Altered(path) => self.path(path, work)?,
+                HostChange::Departed(path) => {
+                    self.path(path, EventKind::Remove(RemoveKind::Any), work)?;
+                }
+                HostChange::Rebound(path) => {
+                    self.path(
+                        path,
+                        EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+                        work,
+                    )?;
+                }
+                HostChange::Altered(path) => {
+                    self.path(path, EventKind::Modify(ModifyKind::Any), work)?;
+                }
                 #[cfg(windows)]
-                HostChange::Observed { path, .. } => self.path(path, work)?,
+                HostChange::Observed { action, path, .. } => {
+                    self.path(path, windows_kind(*action), work)?;
+                }
                 HostChange::Everything => self.rescan(),
                 #[cfg(any(windows, target_os = "macos"))]
                 HostChange::Unconfirmed => self.rescan(),
@@ -156,10 +199,10 @@ impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> HostChangeSink for Obse
         work.check()?;
         for change in changes {
             match change {
-                HostChangeWide::Path { path, .. } => {
+                HostChangeWide::Path { action, path, .. } => {
                     let (path, allocation) = crate::native_host::decode_windows_name(path, work)?;
                     let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        self.path(Path::new(&path), work)
+                        self.path(Path::new(&path), windows_kind(*action), work)
                     }));
                     drop(path);
                     work.release(allocation)?;
@@ -249,5 +292,36 @@ fn original_callback_failure_and_producer_panic_settle_once()
             "one producer has one terminal cause"
         );
     }
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn windows_held_root_watch_tells_names_from_in_place_changes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write as _;
+    crate::watch::initialize_native_watch_services()?;
+    let directory = tempfile::tempdir()?;
+    let (a, b) = (directory.path().join("a"), directory.path().join("b"));
+    std::fs::write(&a, b"x")?;
+    let (sender, kinds) = std::sync::mpsc::channel();
+    let _watch = crate::hold_root(directory.path())?.watch_changes(move |event| {
+        let _ = sender.send(event.map(|event| event.kind));
+    })?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&a)?
+        .write_all(b"y")?;
+    assert_eq!(kinds.recv()??, EventKind::Modify(ModifyKind::Any));
+    std::fs::rename(&a, &b)?;
+    // Further in-place reports of the append may precede the rename.
+    let mut kind = kinds.recv()??;
+    while kind == EventKind::Modify(ModifyKind::Any) {
+        kind = kinds.recv()??;
+    }
+    assert!(
+        matches!(kind, EventKind::Modify(ModifyKind::Name(_))),
+        "{kind:?}"
+    );
     Ok(())
 }

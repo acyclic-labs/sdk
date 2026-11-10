@@ -6,35 +6,40 @@ use flatbuffers::FlatBufferBuilder;
 
 pub(super) fn encode(grant: &Grant, access: ExecutionAccess) -> io::Result<Vec<u8>> {
     let mut builder = FlatBufferBuilder::new();
+    let writable = access == ExecutionAccess::WorkspaceWrite;
+    // PSEC applies the most specific listed path, and a path listed both ways
+    // is read-only. The grant core lets every write root win, so a root at or
+    // below one is listed once, as writable.
+    let written = |path: &Path| -> io::Result<bool> {
+        if !writable {
+            return Ok(false);
+        }
+        let roots = Grant::roots(&grant.write, path, None)?;
+        Ok(
+            (grant.workspace_write && path.starts_with(&grant.workspace.path))
+                || roots.exact.is_some()
+                || roots.shortest.is_some(),
+        )
+    };
     let mut read = Vec::new();
     for root in std::iter::once(&grant.workspace)
         .chain(grant.write.entries())
         .chain(grant.read.entries())
     {
-        read.push(
-            builder.create_string(
-                root.path
-                    .to_str()
-                    .ok_or_else(|| refused("PSEC path is not UTF-8"))?,
-            ),
-        );
+        if !written(&root.path)? {
+            read.push(builder.create_string(&policy_path(&root.path)?));
+        }
     }
     let read = builder.create_vector(&read);
     let mut write = Vec::new();
-    if access == ExecutionAccess::WorkspaceWrite {
+    if writable {
         for root in grant
             .workspace_write
             .then_some(&grant.workspace)
             .into_iter()
             .chain(grant.write.entries())
         {
-            write.push(
-                builder.create_string(
-                    root.path
-                        .to_str()
-                        .ok_or_else(|| refused("PSEC path is not UTF-8"))?,
-                ),
-            );
+            write.push(builder.create_string(&policy_path(&root.path)?));
         }
     }
     let write = builder.create_vector(&write);
@@ -64,4 +69,29 @@ pub(super) fn encode(grant: &Grant, access: ExecutionAccess) -> io::Result<Vec<u
     let specification = builder.end_table(table);
     builder.finish(specification, Some("PSEC"));
     Ok(builder.finished_data().to_vec())
+}
+
+/// PSEC resolves policy paths in the Win32 namespace and rejects verbatim
+/// spellings on some volumes (a ReFS Dev Drive reports `ERROR_INVALID_DRIVE`).
+/// Bound roots are canonical verbatim paths, so the policy carries their drive
+/// or UNC spelling. That spelling is admitted only when Win32 normalisation
+/// maps it back to itself; a trailing dot or space can never widen a grant.
+pub(super) fn policy_path(path: &Path) -> io::Result<String> {
+    let plain = crate::paths::strip_verbatim(path);
+    let text = plain
+        .to_str()
+        .ok_or_else(|| refused("PSEC path is not UTF-8"))?;
+    if text.starts_with(r"\\?\") {
+        return Err(unavailable(format!(
+            "Windows sandbox policy needs a drive-letter or UNC path for {}; assign the volume a drive letter",
+            path.display()
+        )));
+    }
+    if std::path::absolute(&plain).map_err(refused)?.as_os_str() != plain.as_os_str() {
+        return Err(refused(format!(
+            "{} has no exact Win32 spelling for the Windows sandbox policy",
+            path.display()
+        )));
+    }
+    Ok(text.to_owned())
 }

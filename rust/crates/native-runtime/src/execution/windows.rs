@@ -98,8 +98,14 @@ impl Policy {
         let status =
             unsafe { (api.create)(specification.as_ptr().cast(), size, 0, &raw mut environment) };
         if status < 0 {
+            // FACILITY_WIN32 results carry the Win32 code naming the cause.
+            let cause = if status.cast_unsigned() & 0xffff_0000 == 0x8007_0000 {
+                io::Error::from_raw_os_error(status & 0xffff).to_string()
+            } else {
+                format!("HRESULT {status:#x}")
+            };
             return Err(refused(format!(
-                "Windows policy creation failed: HRESULT {status:#x}"
+                "Windows sandbox policy creation failed: {cause}"
             )));
         }
         if environment.is_null() {
@@ -202,6 +208,27 @@ fn available_read_roots(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_paths_use_the_exact_win32_spelling() {
+        let spell = |path: &str| specification::policy_path(Path::new(path));
+        assert_eq!(spell(r"\\?\Q:\work\tree").unwrap(), r"Q:\work\tree");
+        assert_eq!(spell(r"\\?\UNC\host\share\x").unwrap(), r"\\host\share\x");
+        // Win32 normalisation would strip these, granting a different object.
+        for widened in [r"\\?\C:\work\tree.", r"\\?\C:\work\tree ", r"\\?\C:\a\..\b"] {
+            assert_eq!(
+                spell(widened).unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied,
+                "{widened}"
+            );
+        }
+        assert_eq!(
+            spell(r"\\?\Volume{785bdbce-c5b4-4576-8bdc-900d9a61e547}\x")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
 
     #[test]
     fn unavailable_ambient_roots_do_not_weaken_explicit_root_checks() {
