@@ -43,6 +43,7 @@ pub(in crate::local::workspace) async fn bind(
         return Ok(());
     }
     let options = CaptureOptions {
+        source_namespace: None,
         source_root: root.path().to_path_buf(),
         expected_root_identity: root.identity(),
         maximum_paths: u32::try_from(paths.len()).map_err(storage)?,

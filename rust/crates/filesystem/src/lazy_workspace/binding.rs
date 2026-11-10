@@ -162,8 +162,8 @@ impl<
         accept_receipt(result, ctx)
     }
 
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn source_reference(&self) -> SourceReference {
+    /// This view's original demand source namespace and current epoch; no IO.
+    pub fn source_reference(&self) -> SourceReference {
         self.source.reference()
     }
 

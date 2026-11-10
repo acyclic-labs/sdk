@@ -172,6 +172,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             HostCaptureScope::Subtree => MAX_NATIVE_SUBTREE_CAPTURE_PATHS,
         };
         let options = CaptureOptions {
+            source_namespace: None,
             source_root,
             expected_root_identity,
             maximum_paths,

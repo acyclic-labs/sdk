@@ -10,6 +10,7 @@ pub(super) async fn capture_observed_paths_from_root<
     maximum_extent_spans: u32,
     source_root: &HostRoot,
     baseline: Option<&NativeViewBaseline>,
+    source_namespace: Option<[u8; 16]>,
     meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
     let states = lookup_capture_states(checkout, observed, batch_size, meter).await?;
@@ -19,6 +20,7 @@ pub(super) async fn capture_observed_paths_from_root<
         source_root,
         watch_epoch: None,
         baseline,
+        source_namespace,
         maximum_extent_spans,
         meter,
         host_links: Vec::new(),
@@ -134,6 +136,7 @@ pub(super) struct CaptureBatch<'a> {
     pub(super) source_root: &'a HostRoot,
     pub(super) watch_epoch: Option<u64>,
     pub(super) baseline: Option<&'a NativeViewBaseline>,
+    pub(super) source_namespace: Option<[u8; 16]>,
     pub(super) maximum_extent_spans: u32,
     pub(super) meter: &'a NativeMaterializationWork,
     pub(super) host_links: Vec<([u8; 16], NamespacePath)>,
@@ -293,6 +296,19 @@ impl CaptureBatch<'_> {
         } else {
             None
         };
+        let reidentify = if let Some(namespace) =
+            self.source_namespace.filter(|_| !exists_with_kind)
+        {
+            let identity = crate::demand::native::file_identity(&metadata);
+            let file_id = crate::demand::source_file_id(
+                &namespace,
+                &identity,
+                &mut crate::kernel::KernelAccounting::native(self.meter, self.meter.cancellation()),
+            )?;
+            Some((clone_capture_path(&path, self.meter)?, file_id))
+        } else {
+            None
+        };
         let changed = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
             self.metadata_only(
                 path,
@@ -327,6 +343,11 @@ impl CaptureBatch<'_> {
             )?;
             true
         };
+        if let Some((path, file_id)) = reidentify {
+            capture_reserve(&mut self.mutations, 1, self.meter)?;
+            self.mutations
+                .push(AuthoredMutation::Reidentify { path, file_id });
+        }
         if changed {
             self.receipt.changed_paths = checked_increment(self.receipt.changed_paths)?;
         }

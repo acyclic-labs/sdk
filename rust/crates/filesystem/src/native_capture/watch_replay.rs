@@ -308,6 +308,7 @@ pub async fn capture_watch_batch<
         // Hydration preserves ancestor depth order, so parents precede every rename.
         let rename_mutations = std::mem::take(&mut mutations);
         let mut batch = CaptureBatch {
+            source_namespace: options.source_namespace,
             source_root: &source_root,
             watch_epoch: Some(epoch),
             baseline: None,

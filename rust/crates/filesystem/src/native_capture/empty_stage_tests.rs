@@ -340,6 +340,7 @@ fn empty_finalization(length: u64) -> Result<(), Box<dyn std::error::Error>> {
                 sparse_file(&file, length);
                 side_data(&file, &attribute);
                 let options = CaptureOptions {
+                    source_namespace: None,
                     source_root: source.path().to_owned(),
                     expected_root_identity: capture_root_identity(source.path())
                         .map_err(|error| TestCaseError::fail(format!("{error:?}")))?,
