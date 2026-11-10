@@ -111,7 +111,7 @@ pub(in crate::local::workspace) async fn adopt_home(
     .await
     .map_err(storage)?;
     let committed = checkout
-        .commit(
+        .checkpoint(
             acyclic_fs::OperationId::from_bytes(key),
             None,
             None,
@@ -146,6 +146,39 @@ pub(in crate::local::workspace) async fn adopt_home(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn empty_precreated_home_records_completion_and_does_not_reimport() -> Result<()> {
+        let project = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        std::fs::create_dir_all(project.path().join(HOME_PATH)).map_err(storage)?;
+        let config = || -> Result<LocalHarnessConfig> {
+            Ok(crate::test_support::local_harness_config(
+                project.path(),
+                (
+                    crate::model::Model::new("scripted".into(), "test".into(), "1".into())?,
+                    crate::local::tests::text(),
+                ),
+            )?
+            .state_directory(state.path())
+            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+            .compaction(crate::context::CompactionPolicy::Disabled))
+        };
+        let harness = LocalHarness::open(config()?).await?;
+        assert_eq!(harness.sampling, None);
+        drop(harness);
+        std::fs::write(
+            project.path().join(SOURCE).join("agent.ts"),
+            "export default { sampling: { temperature: 0.9 } };",
+        )
+        .map_err(storage)?;
+        let harness = LocalHarness::open(config()?).await?;
+        assert_eq!(
+            harness.sampling, None,
+            "completed empty seed must not be replayed"
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn precreated_home_is_admitted_before_settings_and_is_not_reimported() -> Result<()> {
