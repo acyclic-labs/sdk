@@ -112,14 +112,7 @@ impl<'io> StockExecution<'io> {
             Ok(None)
         };
         // A settled refusal is a durable result, independent of today's catalog.
-        if matches!(
-            recorded,
-            RecordedCall::Failed {
-                started: None,
-                reason: ToolFailureKind::Removed | ToolFailureKind::Unavailable,
-                ..
-            }
-        ) {
+        if matches!(recorded, RecordedCall::Failed { started: None, .. }) {
             if let RecordedCall::Failed { reason, cause, .. } = recorded {
                 let content = tool_failure_content(reason, cause, self.io)?;
                 return self.push_tool_result(&invocation, content, None, prior_messages);

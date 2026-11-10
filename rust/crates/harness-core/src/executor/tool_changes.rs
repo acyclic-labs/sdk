@@ -6,8 +6,10 @@ impl StockExecution<'_> {
         &self,
         context: &mut crate::context::Context,
         tools: &[crate::tool::ToolDefinition],
+        retained_tables: bool,
     ) -> Result<()> {
-        if !self.stock.tools.has_sources()
+        if !retained_tables
+            && !self.stock.tools.has_sources()
             && !self.code_composition(tools)?
             && !context.messages.iter().any(|message| {
                 message.content.notice_parts().is_some_and(|(notices, _)| {
