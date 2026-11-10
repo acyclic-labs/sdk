@@ -638,7 +638,6 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
             drop(
                 watch
                     .fenced
-                    .fenced
                     .wait_while(state, |state| !state.source_lost)
                     .map_err(|_| "watch delivery wait poisoned")?,
             );

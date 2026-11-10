@@ -1331,7 +1331,9 @@ async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
         let previous = store.collection.begin().await;
         previous.sweeping();
         drop(previous);
-        let pin_gate = store.collection.unswept().await;
+        let mut pin_accounting =
+            crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
+        let pin_gate = store.collection.unswept(&mut pin_accounting).await?;
         let mut collector = std::pin::pin!(store.collection.begin());
         let mut context = Context::from_waker(Waker::noop());
         assert!(matches!(
