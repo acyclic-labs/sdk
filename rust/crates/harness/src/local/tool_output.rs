@@ -29,7 +29,7 @@ pub(super) struct OutputTail {
     /// before it is drained, so a reopen reads only the newest call.
     replayed: Option<u64>,
     /// `tools/{turn}/{operation}` of the newest call, or
-    /// `tools/{turn}/{dispatch}/{reply|reasoning}` of the newest model text.
+    /// `tools/{turn}/{dispatch}` of the newest model text.
     call: Option<String>,
     kind: LiveKind,
     text: String,
@@ -75,10 +75,7 @@ impl OutputTail {
             for path in paths {
                 // A dispatch's answer and reasoning are separate displays:
                 // their owner includes the stream's own directory.
-                let model = |label: &str, kind| {
-                    path.find(label)
-                        .map(|at| (at + label.len() - 1, false, kind))
-                };
+                let model = |label: &str, kind| path.find(label).map(|at| (at, false, kind));
                 if let Some((owner, stderr, chunk)) = path
                     .split_once("/stdout/")
                     .map(|(owner, _)| (owner.len(), false, LiveKind::Output))
@@ -91,7 +88,7 @@ impl OutputTail {
                 {
                     call = Some(path[..owner].to_owned());
                     kind = chunk;
-                    chunks.push((owner, path, stderr));
+                    chunks.push((owner, path, stderr, chunk));
                 } else if let Some(owner) = path.strip_suffix("/request.json") {
                     // A new call starts its display even before it writes.
                     call = Some(owner.to_owned());
@@ -99,10 +96,24 @@ impl OutputTail {
                 }
             }
         }
+        // Answer and reasoning belong to one dispatch. Prefer its answer
+        // regardless of the order in an atomic change list, and never switch
+        // back to reasoning after the answer started. Otherwise coalescing
+        // changes (or a late reasoning chunk) silently loses answer chunks.
+        if kind != LiveKind::Output
+            && ((call == self.call && self.kind == LiveKind::Answer)
+                || chunks.iter().any(|(owner, path, _, chunk)| {
+                    *chunk == LiveKind::Answer && call.as_deref() == Some(&path[..*owner])
+                }))
+        {
+            kind = LiveKind::Answer;
+        }
         let reads = chunks
             .into_iter()
-            .filter(|(owner, path, _)| call.as_deref() == Some(&path[..*owner]))
-            .map(|(_, path, stderr)| (path, stderr))
+            .filter(|(owner, path, _, chunk)| {
+                *chunk == kind && call.as_deref() == Some(&path[..*owner])
+            })
+            .map(|(_, path, stderr, _)| (path, stderr))
             .collect();
         Some(Plan {
             end,
@@ -118,7 +129,7 @@ impl OutputTail {
     /// failed or cancelled absorb changes nothing, so a retry reads the same
     /// announcements exactly once.
     pub(super) fn apply(&mut self, plan: Plan, bytes: Vec<Vec<u8>>, cut: bool) {
-        let switched = plan.call.is_some() && plan.call != self.call;
+        let switched = plan.call.is_some() && (plan.call != self.call || plan.kind != self.kind);
         if switched {
             self.call = plan.call;
             self.kind = plan.kind;
@@ -370,6 +381,59 @@ mod tests {
         let call = (2, paths(&["tools/t/c/request.json", "tools/t/c/stdout/0"]));
         assert!(absorb(&mut tail, vec![call], 3, 3, &[b"ran"]).is_some());
         assert_eq!((tail.kind(), tail.text()), (LiveKind::Output, "ran"));
+    }
+
+    #[test]
+    fn coalesced_and_late_reasoning_never_replace_a_dispatch_answer() {
+        for paths_in_record in [
+            ["tools/t/d/reply/0", "tools/t/d/reasoning/0"],
+            ["tools/t/d/reasoning/0", "tools/t/d/reply/0"],
+        ] {
+            let mut tail = OutputTail::default();
+            assert_eq!(
+                absorb(
+                    &mut tail,
+                    vec![(0, paths(&paths_in_record))],
+                    1,
+                    1,
+                    &[b"answer \xc3"],
+                ),
+                Some(paths(&["tools/t/d/reply/0"]))
+            );
+            // A separate delivery of reasoning must neither erase the answer
+            // nor reset its incomplete UTF-8 character.
+            assert_eq!(
+                absorb(
+                    &mut tail,
+                    vec![(1, paths(&["tools/t/d/reasoning/1"]))],
+                    2,
+                    2,
+                    &[],
+                ),
+                Some(Vec::new())
+            );
+            assert_eq!((tail.kind(), tail.text()), (LiveKind::Answer, "answer "));
+            absorb(
+                &mut tail,
+                vec![(2, paths(&["tools/t/d/reply/1"]))],
+                3,
+                3,
+                &[b"\xa9"],
+            );
+            assert_eq!(tail.text(), "answer é");
+            // A different dispatch must still be able to show reasoning.
+            absorb(
+                &mut tail,
+                vec![(3, paths(&["tools/t/new/reasoning/0"]))],
+                4,
+                4,
+                &[b"new reasoning"],
+            );
+            assert_eq!(
+                (tail.kind(), tail.text()),
+                (LiveKind::Reasoning, "new reasoning")
+            );
+        }
     }
 
     #[test]
