@@ -80,16 +80,43 @@ export function enabled(item, features) {
   return declaredFeatures(item, features).join(" ");
 }
 
-export function featureSets(item, eachFeature = false) {
-  if (!eachFeature) return [["check", "--locked", "--manifest-path", item.manifest_path, "--lib", "--all-features"]];
+function featureCandidates(item) {
   const own = Object.keys(item.features).filter(name => name !== "default").sort();
   const defaults = Object.hasOwn(item.features, "default") ? ["default"] : [];
-  const sets = [
+  return [
     [["--no-default-features"], []],
     [[], defaults],
     [["--all-features"], Object.keys(item.features)],
     ...own.map(feature => [["--no-default-features", "--features", feature], [feature]]),
   ];
+}
+
+// Check the feature groups requested by dependents too, including forwarding
+// through renamed/optional dependencies. Target-specific declarations remain
+// separate requests; Cargo decides their applicability on each checked target.
+export function featureSets(item, consumers = []) {
+  const sets = featureCandidates(item);
+  for (const consumer of consumers) {
+    for (const dependency of consumer.dependencies ?? []) {
+      if (dependency.name !== item.name || !dependency.path) continue;
+      const alias = dependency.rename ?? dependency.name;
+      for (const [, roots] of featureCandidates(consumer)) {
+        const closure = declaredFeatures(consumer, roots);
+        const active = !dependency.optional || closure.includes(alias) || closure.includes(`dep:${alias}`)
+          || closure.some(token => token.startsWith(`${alias}/`));
+        if (!active) continue;
+        const forwarded = closure.filter(token => token.startsWith(`${alias}/`) || token.startsWith(`${alias}?/`))
+          .map(token => token.split("/")[1]);
+        const features = [...new Set([...dependency.features, ...forwarded])].sort();
+        const defaults = dependency.uses_default_features && Object.hasOwn(item.features, "default") ? ["default"] : [];
+        sets.push([
+          [...(dependency.uses_default_features ? [] : ["--no-default-features"]),
+            ...(features.length ? ["--features", features.join(",")] : [])],
+          [...defaults, ...features],
+        ]);
+      }
+    }
+  }
   const checked = new Set();
   return sets.filter(([, features]) => {
     const key = enabled(item, features);
