@@ -884,6 +884,71 @@ async fn competing_revision_claims_return_the_original_conflict()
 }
 
 #[tokio::test]
+async fn a_revival_losing_both_conditional_writes_returns_conflict()
+-> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::default();
+    let first = Store::new(medium.clone()).account(b"twice-contended")?;
+    let second = Store::new(medium.clone()).account(b"twice-contended")?;
+    let body = OwnedBytes::from(vec![37; 64]);
+    let digest = first
+        .put(body.clone(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("initial publication was not acknowledged")?
+        .digest;
+    second.flush(None).await?;
+    assert_eq!(first.collect().await?.swept, 0);
+
+    let (mut observed, release) = medium.park("read", "/e/");
+    let put = first.put(body.clone(), Vec::new());
+    tokio::pin!(put);
+    drive_to_park(put.as_mut(), &mut observed).await;
+    // Another real put revives the observed envelope, then collection stamps
+    // it again. The original observation loses CAS to a condemned successor.
+    assert!(matches!(
+        second.put(body.clone(), Vec::new()).await?,
+        Put::AlreadyExists { .. }
+    ));
+    assert_eq!(second.collect().await?.swept, 0);
+    // Skip the first attempt's winner read; park the retry's own observation.
+    let (mut observed_again, release_again) = medium.park_after("read", "/e/", 1);
+    release.send(()).expect("first revival remains alive");
+    drive_to_park(put.as_mut(), &mut observed_again).await;
+    assert_eq!(medium.lost.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        second.put(body.clone(), Vec::new()).await?,
+        Put::AlreadyExists { .. }
+    ));
+    assert_eq!(second.collect().await?.swept, 0);
+    let hex = digest.to_hex();
+    let key = format!(
+        "{}/e/{}/{hex}",
+        Digest::of(b"twice-contended").to_hex(),
+        &hex[..2]
+    );
+    let winner = medium.inner.read(&key, None).await?;
+    // Let the second stale CAS finish, but witness any third conditional
+    // write directly. Removing the retry limit must fail here, without a timer.
+    let (third, _third_release) = medium.park_after("replace", "/e/", 1);
+    release_again
+        .send(())
+        .expect("second revival remains alive");
+    tokio::select! {
+        result = put.as_mut() => assert_eq!(
+            result.map_err(|error| error.code),
+            Err(ErrorCode::Conflict),
+        ),
+        reached = third => {
+            reached.expect("third conditional write lost its producer");
+            panic!("revival attempted a third conditional write");
+        }
+    }
+    assert_eq!(medium.lost.load(Ordering::SeqCst), 2);
+    assert_eq!(medium.inner.read(&key, None).await?, winner);
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_disappearing_payload_returns_without_recreating_an_orphan()
 -> Result<(), Box<dyn std::error::Error>> {
     let medium = Shared::default();
