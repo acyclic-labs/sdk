@@ -185,7 +185,7 @@ impl StockExecution<'_> {
         // Summaries retain the selected source, including its existing notices.
         // Only the transient instruction is appended; tools cannot be invoked.
         if self.summary.is_none() {
-            self.tools_notice(&mut context, &tools)?;
+            self.tools_notice(&mut context, &tools, false)?;
         }
         let message_count = context.messages.len();
         let request =
