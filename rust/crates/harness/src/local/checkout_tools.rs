@@ -50,8 +50,8 @@ pub(in crate::local) struct State {
     pub(in crate::local) active: Option<workspace::View>,
     pub(in crate::local) initial_view: acyclic_fs::WorkspaceId,
     pub(in crate::local) workspace: Option<(acyclic_fs::WorkspaceId, Arc<LocalWorkspace>)>,
-    pub(in crate::local) allocated_mounts:
-        std::collections::BTreeMap<String, std::sync::Weak<workspace::Mounts>>,
+    pub(in crate::local) allocated_workspaces:
+        std::collections::BTreeMap<String, std::sync::Weak<LocalWorkspace>>,
     pub(in crate::local) watcher: Option<capture::Cursor>,
     pub(in crate::local) mounts: Arc<workspace::Mounts>,
     pub(in crate::local) initialized: bool,
@@ -69,7 +69,7 @@ impl State {
             active: None,
             initial_view,
             workspace: None,
-            allocated_mounts: Default::default(),
+            allocated_workspaces: Default::default(),
             watcher: None,
             mounts,
             initialized: false,
