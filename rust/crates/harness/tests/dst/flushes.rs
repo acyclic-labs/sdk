@@ -148,12 +148,26 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
                     eprintln!("reopened-first original flush: {call:?}");
                 }
             }
+            let mut reported = std::collections::BTreeSet::new();
             for (position, detail) in &driver.boundaries {
                 let count = position
                     .split_once(':')
                     .and_then(|(count, _)| count.parse::<usize>().ok());
-                if count.is_some_and(|count| cuts[8] <= count && count <= cuts[9]) {
-                    eprintln!("reopened-first original owner {position}: {detail}");
+                if count.is_some_and(|count| {
+                    writes[cuts[8]..cuts[9]].iter().any(|write| {
+                        write.operation.contains("sync") && count.abs_diff(write.ordinal) <= 2
+                    })
+                }) {
+                    let mut detail = detail.clone();
+                    while let Some(start) = detail.find("IdempotencyKey([") {
+                        let Some(end) = detail[start..].find("])") else {
+                            break;
+                        };
+                        detail.replace_range(start..start + end + 2, "<operation-key>");
+                    }
+                    if reported.insert((position, detail.clone())) {
+                        eprintln!("reopened-first original owner {position}: {detail}");
+                    }
                 }
             }
         }
