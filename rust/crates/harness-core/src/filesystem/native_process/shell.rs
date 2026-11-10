@@ -142,7 +142,7 @@ pub fn workspace_grant<T>(
     mounts: &MountTable<T>,
     environment: &mut std::collections::BTreeMap<String, String>,
 ) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use acyclic_native_runtime::execution::{
             ExecutionAccess, ExecutionGrant, ExecutionNetwork,
@@ -183,7 +183,7 @@ pub fn workspace_grant<T>(
             .map(Some)
             .map_err(io)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (mounts, environment);
         Ok(None)

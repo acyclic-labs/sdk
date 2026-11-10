@@ -14,6 +14,8 @@ use std::{
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 /// Filesystem authority of an execution, including all its descendants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,7 +127,7 @@ impl Grant {
         Ok(false)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn cwd_root(&self, cwd: &Path) -> io::Result<&BoundPath> {
         if cwd.starts_with(&self.workspace.path) {
             return Ok(&self.workspace);
@@ -299,7 +301,9 @@ impl BoundPath {
             }
             #[cfg(target_os = "linux")]
             let child = linux::open_beneath(&root, relative, _meter)?;
-            #[cfg(target_os = "linux")]
+            #[cfg(target_os = "macos")]
+            let child = macos::open_beneath(root, relative, _meter)?;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 crate::meter::native_control_attempt(
                     _meter,
@@ -309,7 +313,7 @@ impl BoundPath {
                 Ok(true)
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         Err(unavailable(
             "native grant attenuation is unavailable on this platform",
         ))
@@ -445,7 +449,12 @@ impl ExecutionGrant {
                 ..self
             })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::Prepared::new(&self.policy, self.access, None, None)?;
+            Ok(self)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ))
@@ -637,11 +646,13 @@ impl ExecutionGrant {
             _cwd,
             _meter,
         )?;
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        let platform = macos::Prepared::new(&self.policy, self.access, _cwd, _meter)?;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         Ok(PreparedExecution {
             platform,
             grant: self.clone(),
@@ -654,6 +665,8 @@ impl ExecutionGrant {
 pub struct PreparedExecution {
     #[cfg(target_os = "linux")]
     platform: linux::Prepared,
+    #[cfg(target_os = "macos")]
+    platform: macos::Prepared,
     grant: ExecutionGrant,
 }
 
@@ -667,6 +680,10 @@ impl std::fmt::Debug for PreparedExecution {
 }
 
 impl PreparedExecution {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn wrap_command(&self, command: &mut crate::ProcessCommand) {
+        command.wrap_sandbox(&self.platform.profile);
+    }
     #[cfg(target_os = "linux")]
     pub(crate) fn working_directory(&self) -> &std::fs::File {
         self.platform.working_directory()
@@ -678,11 +695,13 @@ impl PreparedExecution {
     pub(crate) fn install(self, _command: &mut std::process::Command) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         self.platform.install(_command, self.grant);
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        self.platform.install(_command);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         Ok(())
     }
 

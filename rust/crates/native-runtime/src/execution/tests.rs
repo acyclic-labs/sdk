@@ -1,6 +1,77 @@
 use super::*;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::{ProcessCommand as Command, ProcessStdio as Stdio, ProcessTree};
+
+#[cfg(target_os = "macos")]
+#[test]
+fn sandbox_denies_outside_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace \"quoted\"");
+    let volume = temp.path().join("volume");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&volume).unwrap();
+    std::fs::write(&outside, "original").unwrap();
+    std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+    for access in [ExecutionAccess::WorkspaceWrite, ExecutionAccess::ReadOnly] {
+        let grant = ExecutionGrant::composed(
+            &workspace,
+            access,
+            [volume.clone()],
+            [PathBuf::from("/")],
+            ExecutionNetwork::Off,
+        )
+        .unwrap()
+        .compile_native()
+        .unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                r#"
+            (printf changed > escape) 2>/dev/null && exit 10
+            /bin/sh -c 'printf changed > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11
+            (printf inside > inside) 2>/dev/null
+            (printf volume > "$VOLUME/written") 2>/dev/null
+            printf confined
+        "#,
+            ])
+            .env_clear()
+            .env("OUTSIDE", &outside)
+            .env("VOLUME", &volume)
+            .current_dir(&workspace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut tree = ProcessTree::spawn_granted(command, &grant, None).unwrap();
+        let mut output = String::new();
+        use std::io::Read;
+        tree.take_stdout()
+            .unwrap()
+            .read_to_string(&mut output)
+            .unwrap();
+        assert!(
+            tree.wait(crate::CaptureSchedule::Unbounded)
+                .unwrap()
+                .success(),
+            "{output}"
+        );
+        assert_eq!(output, "confined");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "original");
+        assert_eq!(
+            workspace.join("inside").exists(),
+            access == ExecutionAccess::WorkspaceWrite
+        );
+        assert_eq!(
+            volume.join("written").exists(),
+            access == ExecutionAccess::WorkspaceWrite
+        );
+        if access == ExecutionAccess::WorkspaceWrite {
+            std::fs::remove_file(workspace.join("inside")).unwrap();
+            std::fs::remove_file(volume.join("written")).unwrap();
+        }
+    }
+}
 
 #[cfg(target_os = "linux")]
 mod ipc;
