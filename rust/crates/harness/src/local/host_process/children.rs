@@ -33,7 +33,7 @@ mod tools;
 pub use tools::serve;
 
 /// The saved log's line where framing or decoding dropped one native event.
-const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
+pub(super) const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
 
 struct Running {
     process: HostSessionProcess,

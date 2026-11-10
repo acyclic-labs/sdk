@@ -7,7 +7,7 @@ pub mod validation;
 /// Byte bound of a retained answer.
 pub(super) const ANSWER_LIMIT: usize = 4096;
 /// Byte bound of one native event line and of a retained answer's source.
-pub(super) const EVENT_LIMIT: usize = 65_536;
+pub(in crate::local::host_process) const EVENT_LIMIT: usize = 65_536;
 
 /// A lost frame and malformed JSON share the same omission boundary.
 pub(super) fn decode(line: std::io::Result<String>) -> Option<(String, Value)> {

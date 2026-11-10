@@ -22,9 +22,9 @@ pub const EVENT_LOG_BYTES: u64 = 4 * 1024 * 1024;
 /// The line ending a log whose later events exceeded its bound.
 const EVENTS_OMITTED: &[u8] = b"{\"type\":\"acyclic.events_omitted\"}\n";
 
-/// Runs the interactive native root with its inherited console and process
-/// group. Native hosts retain terminal/job control; managed children use the
-/// separate, custodied session API below. Turn-end hooks capture root turns.
+/// Runs a native root. Interactive hosts retain their console and job control;
+/// headless hosts use the same process-tree custody as managed children.
+/// Turn-end hooks and terminal headless cleanup capture root writes.
 pub fn run_root_session(
     cwd: &Path,
     host: &str,
@@ -58,60 +58,97 @@ pub fn run_root_session(
         )
         .env("ACYCLIC_WORKSPACE", cwd)
         .env("ACYCLIC_TASK", task.to_string());
-    let status = if prompt.is_some() {
-        use std::io::{Read as _, Write as _};
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped());
-        let model = launch::selected_model(host, arguments);
-        let mut child = command.spawn().map_err(storage)?;
-        let output = child
-            .stdout
-            .take()
-            .ok_or_else(|| storage("native stdout absent"))?;
-        let copied: Result<()> = (|| {
-            let mut output = output;
-            let mut stdout = std::io::stdout().lock();
-            stdout
-                .write_all(&native_context(&task, cwd, model)?)
-                .map_err(storage)?;
-            stdout.write_all(b"\n").map_err(storage)?;
-            let mut lines = acyclic_native_runtime::lines::LineBuffer::new(65_536);
-            let mut buffer = [0; 8192];
-            loop {
-                let count = output.read(&mut buffer).map_err(storage)?;
-                let bytes = if count == 0 {
-                    &b"\n"[..]
-                } else {
-                    &buffer[..count]
-                };
-                for line in lines.push(bytes) {
-                    let line = line.map_err(storage)?;
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let event = attribute_model(line.as_bytes(), model)?;
-                    stdout.write_all(&event).map_err(storage)?;
-                    stdout.write_all(b"\n").map_err(storage)?;
-                }
-                stdout.flush().map_err(storage)?;
-                if count == 0 {
-                    break;
-                }
-            }
-            Ok(())
-        })();
-        if copied.is_err() {
-            let _ = child.kill();
-        }
-        let status = child.wait().map_err(storage)?;
-        copied?;
-        status
+    let outcome = if prompt.is_some() {
+        run_headless_root(
+            &command,
+            &task,
+            cwd,
+            launch::selected_model(host, arguments),
+        )?
     } else {
-        command.status().map_err(storage)?
+        command.status().map_err(storage)
     };
-    super::host_files::request(cwd, HostAction::Capture { task })?;
+    // Even a broken output pipe must capture the now-quiescent checkout. Keep
+    // the original execution error after that request has finished.
+    let captured = super::host_files::request(cwd, HostAction::Capture { task });
+    let status = outcome?;
+    captured?;
     Ok(status)
+}
+
+/// The outer result proves physical retirement; the inner result retains the
+/// original output/exit error. An unproved retirement must never capture.
+fn run_headless_root(
+    command: &std::process::Command,
+    task: &AgentPath,
+    cwd: &Path,
+    model: Option<&str>,
+) -> Result<Result<std::process::ExitStatus>> {
+    use acyclic_native_runtime::{CaptureSchedule, ProcessStdio, ProcessTree};
+    let workspace = super::host_files::workspace_root(cwd)?
+        .canonicalize()
+        .map_err(storage)?;
+    let view = cwd.canonicalize().map_err(storage)?;
+    let lease = HostProcessLease::acquire(&workspace, task, &view)?;
+    let mut native = ProcessCommand::new(command.get_program());
+    native.args(command.get_args()).current_dir(cwd);
+    for (name, value) in command.get_envs() {
+        if let Some(value) = value {
+            native.env(name, value);
+        }
+    }
+    native
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped());
+    let mut tree = ProcessTree::spawn_in_custody(&mut native, &lease.custody).map_err(storage)?;
+    let copied = (|| {
+        let output = tree
+            .take_stdout()
+            .ok_or_else(|| storage("native stdout absent"))?;
+        copy_root_output(output, std::io::stdout().lock(), task, cwd, model)
+    })();
+    let outcome = copied.and_then(|()| tree.wait(CaptureSchedule::Unbounded).map_err(storage));
+    tree.terminate(None).map_err(storage)?;
+    Ok(outcome)
+}
+
+fn copy_root_output(
+    mut output: impl std::io::Read,
+    mut stdout: impl std::io::Write,
+    task: &AgentPath,
+    cwd: &Path,
+    model: Option<&str>,
+) -> Result<()> {
+    stdout
+        .write_all(&native_context(task, cwd, model)?)
+        .map_err(storage)?;
+    stdout.write_all(b"\n").map_err(storage)?;
+    let mut lines = acyclic_native_runtime::lines::LineBuffer::new(children::answer::EVENT_LIMIT);
+    let mut buffer = [0; 8192];
+    loop {
+        let count = output.read(&mut buffer).map_err(storage)?;
+        let bytes = if count == 0 {
+            &b"\n"[..]
+        } else {
+            &buffer[..count]
+        };
+        for line in lines.push(bytes) {
+            // The shared bounded decoder discards a malformed/oversized event
+            // through its delimiter. Report loss explicitly and keep the native
+            // run alive, just as managed native children do.
+            let event = match line {
+                Ok(line) if line.is_empty() => continue,
+                Ok(line) => attribute_model(line.as_bytes(), model)?.into_owned(),
+                Err(_) => children::EVENT_OMITTED.to_vec(),
+            };
+            stdout.write_all(&event).map_err(storage)?;
+            stdout.write_all(b"\n").map_err(storage)?;
+        }
+        stdout.flush().map_err(storage)?;
+        if count == 0 {
+            return Ok(());
+        }
+    }
 }
 
 /// Exclusive right to start one agent's native session processes.

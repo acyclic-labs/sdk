@@ -124,12 +124,13 @@ fn successful_prefix(text: &str, current: &NativeAnswer, message: &str) {
 }
 
 fn check_event(event: &Value, current: &NativeAnswer, before: NativeAnswer) {
-    if !matches!(event.get("type").and_then(Value::as_str), Some("turn.started" | "step_start"))
-        && matches!(
-            before.outcome,
-            Some(Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Indeterminate { .. })
-        )
-    {
+    if !matches!(
+        event.get("type").and_then(Value::as_str),
+        Some("turn.started" | "step_start")
+    ) && matches!(
+        before.outcome,
+        Some(Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Indeterminate { .. })
+    ) {
         same(current, &before);
         return;
     }

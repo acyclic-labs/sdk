@@ -17,6 +17,13 @@ with that explicit root. The no-FUSE qualification supplies an empty temporary
 root and drives both `__workspace` and the headless client against it, then
 repeats those clients in stock Debian Docker with no FUSE device.
 
+Run `test:headless-nofuse` with `ACYCLIC_TEST_BINARY`, `E2E_GRAPHCODER` and
+`E2E_NATIVE_PROBE_OWNER` pointing to the matching `acyclic`, `graphcoder` and
+`workspace-probe` example binaries. It needs no mount or namespace privileges.
+Headless output uses the shared bounded native event decoder: malformed or
+oversized events emit `acyclic.event_omitted`, and subsequent events continue.
+Output failure stops and joins the entire native process tree before capture.
+
 Start GraphCoder outside the host sandbox, from the workspace:
 
 ```sh

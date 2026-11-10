@@ -5,24 +5,15 @@ import {fileURLToPath} from 'node:url';
 import test from 'node:test';
 import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
-import {fixtureEnvironment,checked,run,start,Spool} from './native-fixture.mjs';
+import {fixtureEnvironment,checked,run} from './native-fixture.mjs';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
+import {probeOwner} from './workspace-probe.mjs';
 
 function requireNoFuse(){
  assert.equal(process.platform,'linux');
  if(!process.env.E2E_NATIVE_PROBE_OWNER)
   assert.equal(existsSync('/dev/fuse'),false,'run workspace-nofuse.sh in the stock Debian container');
-}
-
-async function probeOwner(binary,workspace,state,root,env){
- const probe=join(root,'native-host');mkdirSync(join(probe,'dev'),{recursive:true});
- const owner=start(binary,[workspace,state,probe],{cwd:workspace,env});owner.collect();
- const events=new Spool(owner.child.stdout,owner.closed,
-  {key:event=>event?.type==='workspace-owner-ready'?['ready']:[],unique:true});
- try{await events.keyed('ready');}
- catch(error){owner.child.stdin.end();const result=await owner.closed;throw Object.assign(new Error(result.stderr,{cause:error}),{result});}
- return {async close(){owner.child.stdin.end();return await owner.closed;}};
 }
 
 async function roots(binary,headless){
