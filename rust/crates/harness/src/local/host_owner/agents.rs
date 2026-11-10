@@ -434,7 +434,7 @@ impl HostDriver {
     async fn turn(&self, agent: &AgentState, input: Option<Queued>) -> Result<TurnStep> {
         let mut session = self.session(agent).await?;
         // A turn resumes only on its host's hooks, each of which is input.
-        let Some(Queued { inbox, input }) = input else {
+        let Some(Queued { inbox, input, .. }) = input else {
             return Ok(idle(Vec::new()));
         };
         let (mut outs, mut drops) = (Vec::new(), None);
