@@ -535,7 +535,7 @@ mod tests {
             .await?;
             assert_eq!(filtered.items.len(), 1);
             assert_eq!(filtered.items[0].agent, agent);
-            let request = AgentPageRequest::new(1, 64 * 1024, None)?;
+            let request = AgentPageRequest::new(1, 64 * 1024, None).map_err(storage)?;
             let unfiltered = crate::local::sessions::page(&connection, request.clone()).await?;
             let empty = crate::local::sessions::page_filtered(
                 &connection,
@@ -847,6 +847,7 @@ mod tests {
     #[tokio::test]
     async fn session_merges_publish_checkout_files_and_preserve_conflicts() -> Result<()> {
         use crate::local::{WorkspaceMounting, sessions};
+        use acyclic_fs::facade::FsWork as _;
         let checkout = tempfile::tempdir().map_err(storage)?;
         let storage_dir = tempfile::tempdir().map_err(storage)?;
         std::fs::write(checkout.path().join("shared.txt"), b"base\n").map_err(storage)?;
