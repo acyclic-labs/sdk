@@ -104,6 +104,14 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
                     client.turn(&entry).await?.answer
                 )));
             }
+            Some(crate::local::Event::Status(StatusRecord {
+                phase: crate::agent::Phase::Done { outcome },
+                ..
+            })) => {
+                return Err(Error::Invalid(format!(
+                    "agent ended before the required approval: {outcome:?}"
+                )));
+            }
             _ => {}
         }
         let after = projection.event(&delivery).after;
@@ -304,10 +312,13 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
     else {
         return Err(Error::Invalid("spawn returned another reply".into()));
     };
-    requests
-        .recv()
-        .await
-        .ok_or_else(|| Error::Storage("dispatch channel closed".into()))?;
+    model_dispatch_before_settlement(&harness, &original_child, async {
+        requests
+            .recv()
+            .await
+            .ok_or_else(|| Error::Storage("dispatch channel closed".into()))
+    })
+    .await?;
     let mut parent = ObservedConversation::open(&harness).await?;
     parent.send("prefix", "decision point").await?;
     let prefix = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
@@ -570,6 +581,24 @@ pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Re
             Err(Error::Invalid("runtime completion returned success".into()))
         },
         result = observation => result,
+    }
+}
+
+/// A retained test producer cannot outlive the original actor's progress.
+async fn model_dispatch_before_settlement(
+    harness: &Arc<LocalHarness>,
+    original: &AgentPath,
+    dispatch: impl Future<Output = Result<()>>,
+) -> Result<()> {
+    tokio::select! { biased;
+        dispatched = dispatch => dispatched,
+        completed = settled(harness, original) => {
+            let entries = completed?;
+            let last = entries.last().map(|entry| String::from_utf8_lossy(entry));
+            Err(Error::Storage(format!(
+                "original agent settled before model dispatch: {last:?}"
+            )))
+        },
     }
 }
 
@@ -919,7 +948,10 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     ));
     let mut events = client.observe(Some(0)).await?;
     let inbox = client.send("lost-producer", "hello").await?;
-    entering.await.map_err(agent)?;
+    model_dispatch_before_settlement(&harness, connection.root(), async {
+        entering.await.map_err(agent)
+    })
+    .await?;
     // Same canonical agent, different original authenticated Session. Refusal
     // must precede even the reply query, without consuming the other follow.
     let other = conversation(&harness).await?;
