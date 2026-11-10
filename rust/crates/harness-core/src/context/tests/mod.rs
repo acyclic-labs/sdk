@@ -286,5 +286,6 @@ fn compact(
 mod compaction;
 mod configuration_sources;
 mod pipeline;
+mod prompt_guards;
 #[cfg(not(target_arch = "wasm32"))]
 mod reasoning_compaction;
