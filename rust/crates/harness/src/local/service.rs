@@ -1106,6 +1106,20 @@ mod tests {
                 matches!(phase, crate::agent::Phase::Idle),
                 "{name} did not become idle: {phase:?}"
             );
+            let state = local
+                .agents()
+                .await?
+                .0
+                .state(selected.root())
+                .await
+                .map_err(storage)?;
+            let entries = Conversation::open(selected.clone())
+                .entries(state.conversation_base, state.conversation_tail)
+                .await?;
+            assert!(
+                matches!(entries.as_slice(), [entry] if entry.outcome.is_completed()),
+                "{name} brief did not complete: {entries:?}"
+            );
             descendants.push(selected.clone());
         }
         let parent_state = local
