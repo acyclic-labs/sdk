@@ -568,8 +568,8 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     assert_eq!(entry.inbox, inbox);
     assert!(matches!(entry.input, TurnInput::Message { .. }));
-    assert_eq!(provider.request_count(), 1);
     let turn = client.turn(&entry).await?;
+    assert_eq!(provider.request_count(), 1, "settled turn: {turn:?}");
     assert_eq!(
         (turn.prompt.as_deref(), turn.answer.as_str()),
         (Some("hello"), "done")
