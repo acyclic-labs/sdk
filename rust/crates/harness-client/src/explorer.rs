@@ -847,6 +847,36 @@ impl Explorer {
         }
     }
 
+    /// Return to the scope's first page without collecting its descendants.
+    pub fn home(&mut self) {
+        self.anchor = Pos::Gap {
+            parent: self.root.clone(),
+            page: 0,
+        };
+        self.velocity = 0;
+    }
+
+    /// Advance one visible window in the expanded tree. A missing next page
+    /// remains a resumable gap, planned by the same reader on the next frame.
+    pub fn next_page(&mut self) -> Poll<bool> {
+        let Some((position, row)) = self.rows.last() else {
+            return if self.reader.cache().listing(&self.root, 0).is_some() {
+                Poll::Ready(false)
+            } else {
+                Poll::Pending
+            };
+        };
+        if matches!(row, Row::Loading { .. }) {
+            return Poll::Pending;
+        }
+        let Some(next) = self.next(position) else {
+            return Poll::Ready(false);
+        };
+        self.anchor = next;
+        self.velocity = 0;
+        Poll::Ready(true)
+    }
+
     /// Show an agent's children.
     pub fn expand(&mut self, agent: &AgentPath) {
         let page = match self.locate(agent) {

@@ -710,22 +710,32 @@ pub async fn run(
     // An open panel's first shown row; panels open at their top.
     let mut overlay_top = 0usize;
     let start = Instant::now();
+    let tree_marker = [Line::raw("")];
     loop {
         let navigation = sidebar.navigation();
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let size: Size = size()?;
+        usage_page.wrap(size.width);
+        let busy = view.busy();
+        input.busy = busy;
         let shown = ui.tree.unwrap_or_else(|| sidebar.has_children());
-        sidebar.frame(
-            now,
-            if shown && size.width >= 80 {
-                size.height
+        // The same layout as painting owns row credit, including a growing
+        // prompt, the usage footer and a running tool's terminal strip.
+        let tree_area = Screen {
+            tree: if shown { &tree_marker } else { &[] },
+            usage: if usage_stopped.is_some() {
+                &usage_unavailable[..]
             } else {
-                4
+                &usage_page.lines
             },
-            shown && size.width >= 80,
-        );
+            terminal: if busy { &output_rows[..] } else { &[] },
+            ..Screen::default()
+        }
+        .areas(Rect::from((Position::ORIGIN, size)), &input)
+        .tree;
+        sidebar.frame(now, tree_area.height, tree_area.width > 0);
         let tree_shown = ui.tree.unwrap_or_else(|| sidebar.has_children());
-        let tree_rows = sidebar.rows(root.agent(), tree_shown && size.width >= 80);
+        let tree_rows = sidebar.rows(root.agent(), tree_shown && size.width >= 80, size.width / 3);
         let transcript_width = size
             .width
             .saturating_sub(if tree_shown && size.width >= 80 {
@@ -733,9 +743,6 @@ pub async fn run(
             } else {
                 0
             });
-        usage_page.wrap(size.width);
-        let busy = view.busy();
-        input.busy = busy;
         let back = view.back;
         if std::mem::take(&mut view.ring) {
             terminal.bell();

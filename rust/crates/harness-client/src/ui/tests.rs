@@ -181,6 +181,8 @@ async fn ui_default_projection() -> TestResult {
         ("Parser worker", "selected-model", "0.12 EUR", "2m")
     );
     assert!(row.state.contains("Review ready") && row.state.contains("Idle"));
+    assert!(title_matches(&row.title, "pWK"));
+    assert!(!title_matches(&row.title, "wp"));
     assert_eq!(
         view.bytes(&cut, &index, 2..17)?,
         view.project(&cut, &index)?

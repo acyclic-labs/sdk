@@ -162,6 +162,15 @@
               "Enter attach"
             ]
           },
+          "send": "/ok"
+        },
+        {
+          "when": {
+            "contains": [
+              "/ok",
+              "Oak · M · $1 · 2m"
+            ]
+          },
           "send": "\r"
         },
         {
