@@ -481,22 +481,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fork_override_is_accepted_after_exec() {
-        let mut args = Args::try_parse_from([
-            "graphcoder",
-            "--fork-from",
-            "agents/original@4",
-            "exec",
-            "Continue",
-            "--override",
-            "continuation.json",
-        ])
-        .unwrap();
-        assert!(args.prepare_input().is_ok());
-        assert_eq!(
-            args.override_file.as_deref(),
-            Some(std::path::Path::new("continuation.json"))
-        );
+    fn fork_override_is_accepted_after_exec_and_run() {
+        for argv in [
+            vec![
+                "graphcoder",
+                "--fork-from",
+                "agents/original@4",
+                "exec",
+                "Continue",
+                "--override",
+                "continuation.json",
+            ],
+            vec![
+                "acyclic",
+                "run",
+                "--fork-from",
+                "agents/original@4",
+                "--override",
+                "continuation.json",
+                "-p",
+                "Continue",
+            ],
+        ] {
+            let mut args = Args::try_parse_from(argv).unwrap();
+            assert!(args.prepare_input().is_ok());
+            assert_eq!(
+                args.override_file.as_deref(),
+                Some(std::path::Path::new("continuation.json"))
+            );
+        }
     }
 
     #[test]

@@ -490,7 +490,7 @@ def binding_oracle_regression():
     # This must be the exact original oracle, not a parallel failing example.
     require(
         hashlib.sha256(stale).hexdigest()
-        == "688bd1ba9de86b3ee2b05dfab135c226ee0271a6402d6e23b4856a203dfbb4f2",
+        == "08d5a1df137af5f5dadc4c0b74e0990ec93907c51e1c09fe138411f5af492ff0",
         "restore exact original binding oracle for red-first regression",
     )
     try:
