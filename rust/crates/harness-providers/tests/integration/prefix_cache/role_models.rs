@@ -296,6 +296,8 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
         catalog.resolve("workers/replacement")?,
     ))?)?;
     resumed.agents().drain(&kid).await?;
+    drop(resumed);
+    let resumed = make_bound(make_executors(root_model.clone())?)?;
     // No model on the worker seed: descendants inherit their actual parent.
     assert_eq!(
         resumed.child_profile(&kid, "worker").await?.model,
@@ -367,7 +369,7 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
     extends("responses", "later turn", &sent.2[1].body, &sent.2[2].body)?;
     assert!(sent.2[1].cached.read > 0);
     if adapter == Adapter::Gemini {
-        let body: Value = serde_json::from_slice(&sent.2[1].body)?;
+        let body: Value = serde_json::from_slice(&sent.2[2].body)?;
         let parts: Vec<_> = body["contents"]
             .as_array()
             .ok_or("contents")?
