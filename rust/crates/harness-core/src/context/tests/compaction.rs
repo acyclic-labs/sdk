@@ -329,3 +329,137 @@ fn production_compaction_preserves_typed_project_instructions_with_role_control(
     }));
     Ok(())
 }
+
+#[test]
+fn compaction_keeps_fragmented_schemas_only_for_retained_exchanges() -> Result<()> {
+    let definition = |revision: &str, kind: &str| crate::tool::ToolDefinition {
+        name: "mcp.compaction.live".into(),
+        revision: revision.into(),
+        description: "A live schema".into(),
+        input_schema: serde_json::json!({"type":"object","properties":{"value":{"type":kind}},"required":["value"],"additionalProperties":false}),
+        output_schema: serde_json::json!({"type":kind}),
+        projection_schema: serde_json::json!({"type":"object","properties":{"kind":{"const":"json"},"value":{"type":kind}},"required":["kind","value"],"additionalProperties":false}),
+    };
+    let fragments = |table: &[crate::tool::ToolDefinition]| -> Result<Vec<ModelMessage>> {
+        let json = serde_json::to_string(table)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let cut = json.len() / 2;
+        Ok([(0, &json[..cut], false), (cut, &json[cut..], true)].into_iter().map(|(offset, fragment, complete)| ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Part(ModelContentPart::Notices {
+                notices: vec![crate::conversation::wire::Notice {
+                    source: "tools".into(), kind: "tools.changed".into(),
+                    body: serde_json::json!({"offset":offset,"json":fragment,"complete":complete}),
+                    wake: false, coalesce_key: None,
+                }],
+            }),
+        }).collect())
+    };
+    let exchange = |id: &str, value: Value| {
+        [
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(ModelContentPart::ToolCall(
+                    crate::model::ToolCall::new(
+                        id.into(),
+                        "mcp.compaction.live".into(),
+                        serde_json::json!({"value":value}),
+                    ),
+                )),
+            },
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: id.into(),
+                    name: "mcp.compaction.live".into(),
+                    content: crate::model::ToolResultContent::Json { value },
+                }),
+            },
+        ]
+    };
+    let first = fragments(&[definition("1", "string")])?;
+    let second = fragments(&[definition("2", "integer")])?;
+    let mut messages = first.clone();
+    messages.extend(exchange("a", serde_json::json!("old")));
+    messages.push(text(ModelRole::User, "older padding"));
+    messages.extend(exchange("b", serde_json::json!("still old")));
+    messages.extend(second.clone());
+    messages.extend(exchange("c", serde_json::json!(1)));
+    messages.push(text(ModelRole::User, "recent padding"));
+    messages.extend(exchange("d", serde_json::json!(2)));
+    messages.extend(fragments(&[])?);
+    messages.push(text(ModelRole::User, "current"));
+    let current = messages.len() as u32 - 1;
+    let source = context(messages, Some(current));
+    let prepare = |messages, tools| {
+        crate::model::PreparedModelRequest::prepare(
+            crate::model::ModelRequest {
+                summary: false,
+                compose_tools: false,
+                model: crate::model::Model::new("test".into(), "model".into(), "1".into())?,
+                messages,
+                tools,
+                sampling: Default::default(),
+                max_output_tokens: None,
+            },
+            Limits::default(),
+            None,
+        )
+    };
+    let has_call =
+        |context: &Context, id: &str| {
+            context.messages.iter().any(|message| {
+                message.content.parts().iter().any(
+                    |part| matches!(part, ModelContentPart::ToolCall(call) if call.call_id == id),
+                )
+            })
+        };
+    let mut dropped_one_exchange = false;
+    for maximum in 2..=source.messages.len() {
+        let (retained, proof) = compact(&source, maximum, source.messages.len())?;
+        validate_compaction(&proof, &source, &retained, None)?;
+        for current in [Vec::new(), vec![definition("3", "boolean")]] {
+            prepare(retained.messages.clone(), current)?;
+        }
+        if has_call(&retained, "d") {
+            assert!(
+                second
+                    .iter()
+                    .all(|fragment| retained.messages.contains(fragment))
+            );
+            let mut broken = retained.messages.clone();
+            let first_fragment = broken
+                .iter()
+                .position(|message| message == &second[0])
+                .expect("first schema fragment");
+            broken.remove(first_fragment);
+            assert!(prepare(broken, Vec::new()).is_err());
+            dropped_one_exchange |= !has_call(&retained, "c");
+        }
+        if has_call(&retained, "a") || has_call(&retained, "b") {
+            assert!(
+                first
+                    .iter()
+                    .all(|fragment| retained.messages.contains(fragment))
+            );
+        }
+    }
+    assert!(
+        dropped_one_exchange,
+        "one schema table must not pin every call in its epoch"
+    );
+    let policy = ThresholdCompaction {
+        recent_tokens: 1,
+        ..Default::default()
+    };
+    let count = ModelTokenCount::from_upper_bounds([0; 32], 0, vec![1; source.messages.len()]);
+    for maximum in 2..=source.messages.len() {
+        if let Ok((through, maximum)) =
+            policy.projection_budget(&source, &count, maximum, 1, &mut None)
+        {
+            let (retained, _) = compact(&source, maximum, through)?;
+            prepare(retained.messages, Vec::new())?;
+        }
+    }
+    Ok(())
+}
