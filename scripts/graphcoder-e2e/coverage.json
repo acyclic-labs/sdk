@@ -24,6 +24,7 @@
       "owner": "tool-latency",
       "cases": [
         "bash-capture",
+        "shell-gemini-signed",
         "file-tools-responses",
         "file-tools-chat",
         "file-tools-anthropic"
@@ -293,10 +294,11 @@
       "target": "Canonical reasoning and model alloys",
       "owner": "providers",
       "cases": [
-        "provider-alloys"
+        "provider-alloys",
+        "shell-gemini-signed"
       ],
       "gaps": [
-        "Provider alloy selection is component coverage; mixed-provider shipping reasoning across compaction/replay remains unqualified."
+        "Same-route signed Gemini tool replay is covered; mixed-provider reasoning across compaction/replay remains unqualified."
       ]
     }
   }
