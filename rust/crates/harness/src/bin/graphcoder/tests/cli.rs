@@ -116,6 +116,26 @@ async fn model_adapter(directory: &Path, response: &'static str, adapter: &str) 
 }
 
 #[tokio::test]
+async fn taskless_text_input_closes_or_refuses_before_model_execution() {
+    for input in ["", "unexpected task\n"] {
+        let fixture = fixture();
+        let model = model(fixture._directory.path()).await;
+        let output = graphcoder(&fixture, &model.catalog, Vec::new(), input).await;
+        assert_eq!(output.status.success(), input.is_empty(), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        if !input.is_empty() {
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("text input: no task or pending approval"),
+                "{output:?}"
+            );
+        }
+        assert_eq!(model.generated(), 0);
+        model.close().await;
+    }
+}
+
+#[tokio::test]
 async fn chat_without_a_counter_starts_with_explicit_no_compaction() {
     const CHAT: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     for unchecked in [false, true] {

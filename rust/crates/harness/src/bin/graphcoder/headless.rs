@@ -988,9 +988,8 @@ pub(super) async fn jsonl(
     // Prompts share the awaited native stderr writer, so a full stderr pipe
     // delays only this prompt, never the coordination runtime.
     let mut diagnostics = None;
-    // A saved cursor may already be past the status that announced the
-    // pending approval. Text input answers it from the current phase, read
-    // once at reconnect; replay of that same status does not prompt twice.
+    // Admit text against the opening phase before stdin can win the select.
+    // Preserve its original answer binding; projected replay owns its frames.
     if input_format == super::args::InputFormat::Text
         && let Some(Phase::WaitingApproval { id, binding }) = opening_phase
     {
@@ -1135,16 +1134,21 @@ pub(super) async fn jsonl(
                     None
                 }
             }
-            line = lines.next_line(), if open && (input_format == super::args::InputFormat::Jsonl || approval.is_some()) => {
+            line = lines.next_line(), if open && (initial_prompt.is_none() || input_format == super::args::InputFormat::Jsonl || approval.is_some()) => {
                 let line = line?;
+                if line.is_none() {
+                    open = false;
+                }
                 if input_format == super::args::InputFormat::Text {
-                    let (id, binding) = approval.take().ok_or("approval input: no pending request; recovery: graphcoder exec --input-format jsonl")?;
-                    let answer = line.as_deref().unwrap_or_default();
-                    conversation.decide_with_binding(&id, binding, matches!(answer.trim(), "y" | "Y" | "yes")).await?;
+                    if let Some((id, binding)) = approval.take() {
+                        let answer = line.as_deref().unwrap_or_default();
+                        conversation.decide_with_binding(&id, binding, matches!(answer.trim(), "y" | "Y" | "yes")).await?;
+                    } else if line.as_deref().is_some_and(|line| !line.trim().is_empty()) {
+                        return Err("text input: no task or pending approval; recovery: use graphcoder -p 'TASK' or graphcoder exec --operation OPERATION with JSONL input".into());
+                    }
                     continue;
                 }
                 let Some(line) = line else {
-                    open = false;
                     continue;
                 };
                 if line.trim().is_empty() {
