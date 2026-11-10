@@ -151,6 +151,26 @@ async function execute(test, prepared) {
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
       const inputFixture = { ...fixture, env: { ...fixture.env, ...input.environment } };
+      if (input.mode === "service") {
+        // The service belongs to the case, rather than to a terminal whose
+        // original custody owner correctly retires all of its descendants.
+        const service = await processes.startOwned(binary,
+          [...fixture.args, "--local-service", "--signal-ready"],
+          { cwd: fixture.workspace, env: inputFixture.env });
+        await new Promise((resolve, reject) => {
+          const ready = bytes => {
+            service.child.stdout.off("data", ready);
+            if (bytes[0] === 10) resolve();
+            else reject(new Error("session service refused readiness"));
+          };
+          service.child.stdout.on("data", ready);
+          service.closed.then(result => {
+            service.child.stdout.off("data", ready);
+            reject(new Error(`session service exited before readiness: ${result.stderr}`));
+          }, reject);
+        });
+        continue;
+      }
       if (input.mode === "conversation") {
         await conversation(processes, binary, fixture, { ...input, operation: input.operation ?? operation },
           capture => captures.push(capture));

@@ -521,6 +521,37 @@ mod tests {
             };
             connection.execute(&create_title).await?;
             let selected = connection.select(agent.clone()).await?;
+            let filtered = crate::local::sessions::page_filtered(
+                &connection,
+                AgentPageRequest::default(),
+                &crate::local::sessions::Filter {
+                    title: Some("INDEPENDENT".into()),
+                    states: vec![crate::local::sessions::State::Idle],
+                    created_after: Some(1),
+                    created_before: Some(u64::MAX),
+                    updated_after: Some(1),
+                },
+            )
+            .await?;
+            assert_eq!(filtered.items.len(), 1);
+            assert_eq!(filtered.items[0].agent, agent);
+            let request = AgentPageRequest::new(1, 64 * 1024, None)?;
+            let unfiltered = crate::local::sessions::page(&connection, request.clone()).await?;
+            let empty = crate::local::sessions::page_filtered(
+                &connection,
+                request,
+                &crate::local::sessions::Filter {
+                    states: vec![crate::local::sessions::State::Archived],
+                    ..Default::default()
+                },
+            )
+            .await?;
+            assert!(empty.items.is_empty());
+            assert!(empty.next.is_some());
+            assert_eq!(
+                empty.next, unfiltered.next,
+                "an empty filtered page must preserve the source continuation"
+            );
             let name = AgentCommand::NameSession {
                 agent: agent.clone(),
                 name: "fix parser/branch".into(),
@@ -815,7 +846,6 @@ mod tests {
 
     #[tokio::test]
     async fn session_merges_publish_checkout_files_and_preserve_conflicts() -> Result<()> {
-        use crate::filesystem::{WorkspaceMutation, workspace_ref};
         use crate::local::{WorkspaceMounting, sessions};
         let checkout = tempfile::tempdir().map_err(storage)?;
         let storage_dir = tempfile::tempdir().map_err(storage)?;
@@ -857,28 +887,28 @@ mod tests {
                 .iter()
                 .find(|binding| binding.name == "project")
                 .ok_or_else(|| Error::Invalid("missing isolated project".into()))?;
-            let reference = workspace_ref(
-                project.volume.provider().clone(),
-                &project.volume.storage_name(&mut None)?,
-            )?;
-            local
-                .files
-                .apply(
-                    &reference,
-                    None,
-                    &[
-                        WorkspaceMutation::PutFile {
-                            path: format!("/{name}"),
-                            bytes: acyclic_stream::OwnedBytes::copy_from_slice(text),
-                        },
-                        WorkspaceMutation::PutFile {
-                            path: "/shared.txt".into(),
-                            bytes: acyclic_stream::OwnedBytes::copy_from_slice(text),
-                        },
-                    ],
-                    &crate::IdempotencyKey::new(name)?,
-                )
+            let view = local
+                .workspace
+                .as_ref()
+                .unwrap()
+                .spawned_project_view(&project.volume)
                 .await?;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+            // Use the same lazy writer as tools: an overwrite preserves the
+            // native source identity rather than adding an unrelated file to
+            // the authored-only generation underneath that source.
+            for path in [format!("/{name}"), "/shared.txt".into()] {
+                view.write(
+                    &path,
+                    acyclic_stream::OwnedBytes::copy_from_slice(text),
+                    acyclic_fs::IdempotencyKey::from_bytes(crate::OperationId::new().into_bytes()),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    &mut accounting,
+                )
+                .await
+                .map_err(storage)?;
+            }
         }
         assert_eq!(
             std::fs::read(checkout.path().join("shared.txt")).map_err(storage)?,

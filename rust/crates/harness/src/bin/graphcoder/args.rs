@@ -356,7 +356,7 @@ pub enum Command {
         prompt: Option<String>,
     },
     /// Read one lazy page of this checkout's root sessions.
-    Sessions(Page),
+    Sessions(Sessions),
     /// Create a session and optionally author its title.
     #[command(name = "new")]
     NewSession { title: Option<String> },
@@ -395,6 +395,28 @@ pub struct Page {
     /// Encoded reply credit; increase it if one row and its continuation cannot fit.
     #[arg(long, default_value_t = AgentPageRequest::default().bytes())]
     pub page_bytes: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct Sessions {
+    #[command(flatten)]
+    pub page: Page,
+    /// Case-insensitive title or root-id substring within each requested page.
+    #[arg(long)]
+    pub title: Option<String>,
+    /// Match these states (repeat or comma-separate): idle, running,
+    /// waiting-approval, waiting, done, archived.
+    #[arg(long, value_delimiter = ',')]
+    pub state: Vec<acyclic_harness::local::sessions::State>,
+    /// Inclusive UTC creation bound in Unix microseconds.
+    #[arg(long)]
+    pub created_after: Option<u64>,
+    /// Exclusive UTC creation bound in Unix microseconds.
+    #[arg(long)]
+    pub created_before: Option<u64>,
+    /// Inclusive UTC status-commit bound in Unix microseconds.
+    #[arg(long)]
+    pub updated_after: Option<u64>,
 }
 
 #[derive(Debug, clap::Args)]

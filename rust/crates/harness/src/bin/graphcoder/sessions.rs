@@ -106,24 +106,16 @@ async fn choose(
     loop {
         let height = terminal.size_reader()()?.height;
         let rows = u32::from(height.saturating_sub(9).max(1)).min(128);
-        let page = sessions::page(
+        let page = sessions::page_filtered(
             &connection,
             AgentPageRequest::new(rows, 64 * 1024, cursor.clone())?,
+            &sessions::Filter {
+                title: filter.map(str::to_owned),
+                ..Default::default()
+            },
         )
         .await?;
-        let visible: Vec<_> = page
-            .items
-            .into_iter()
-            .filter(|row| {
-                filter.is_none_or(|filter| {
-                    row.agent.as_str().contains(filter)
-                        || row
-                            .title
-                            .as_ref()
-                            .is_some_and(|title| title.contains(filter))
-                })
-            })
-            .collect();
+        let visible: Vec<_> = page.items.into_iter().collect();
         let mut choices: Vec<_> = visible
             .iter()
             .map(|row| {

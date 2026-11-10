@@ -524,14 +524,21 @@ async fn connected(
     event_output: Option<&mut headless::Output>,
     mut terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(Command::Sessions(page)) = &args.command {
-        let page = acyclic_harness::local::sessions::page(
+    if let Some(Command::Sessions(list)) = &args.command {
+        let page = acyclic_harness::local::sessions::page_filtered(
             &connection,
             acyclic_harness::client::AgentPageRequest::new(
-                page.page_size,
-                page.page_bytes,
-                page.cursor.clone(),
+                list.page.page_size,
+                list.page.page_bytes,
+                list.page.cursor.clone(),
             )?,
+            &acyclic_harness::local::sessions::Filter {
+                title: list.title.clone(),
+                states: list.state.clone(),
+                created_after: list.created_after,
+                created_before: list.created_before,
+                updated_after: list.updated_after,
+            },
         )
         .await?;
         let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
