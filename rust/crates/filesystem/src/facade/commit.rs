@@ -48,38 +48,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         .await
     }
 
-    /// Records this operation even when its authored root is unchanged. Uses
-    /// the same conditional publication and replay contract as `commit`.
-    pub async fn commit_even_if_unchanged<E, F, Fut>(
-        &mut self,
-        operation_id: OperationId,
-        operation_context: Option<Digest>,
-        operation_evidence: Option<acyclic_stream::OwnedBytes>,
-        original_fingerprint_permit: Option<PublicationPermit>,
-        permit: PublicationPermit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        mut before_publication: F,
-    ) -> crate::MeasuredResult<OperationReceipt<LivePublicationObservation>, E>
-    where
-        E: From<FsError> + Send,
-        F: FnMut(WorkBudget) -> Fut + ProviderTask,
-        Fut: Future<Output = crate::MeasuredResult<OperationReceipt<()>, E>> + ProviderTask,
-    {
-        self.commit_even_if_clean(
-            operation_id,
-            operation_context,
-            operation_evidence,
-            original_fingerprint_permit,
-            permit,
-            budget,
-            cancellation,
-            &mut before_publication,
-            None,
-        )
-        .await
-    }
-
     /// Seals the original operation even when its authored root is unchanged.
     pub(crate) async fn commit_even_if_clean<E, F, Fut>(
         &mut self,

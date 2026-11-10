@@ -1138,7 +1138,6 @@ async fn reply_waits_require_original_committed_requests() -> Result {
     }
     let request = InboxRecord::Spawn(SpawnRequest {
         profile: acyclic_harness_core::agent::CreationConfig {
-            model: None,
             continuation: None,
             context: acyclic_harness_core::agent::SpawnContext::Fork,
             template: None,
@@ -1231,7 +1230,6 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
-                model: None,
                 continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
@@ -1278,7 +1276,6 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
-                model: None,
                 continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,

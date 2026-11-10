@@ -4,17 +4,14 @@ use super::*;
 fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let cache = Cache::default();
     for profile in [
         NativeToolProfile::Anthropic,
         NativeToolProfile::Openai,
         NativeToolProfile::Google,
     ] {
-        let model = crate::model::Model::new("test".into(), format!("{profile:?}"), "1".into())?;
+        let cache = Cache::default();
         let calls = AtomicUsize::new(0);
-        let refused = cache.get(&model, || {
-            Err(Error::Unsupported("original profile refusal".into()))
-        });
+        let refused = cache.get(|| Err(Error::Unsupported("original profile refusal".into())));
         assert!(
             matches!(refused, Err(Error::Unsupported(reason)) if reason == "original profile refusal")
         );
@@ -25,7 +22,7 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
                 .map(|_| {
                     scope.spawn(|| {
                         start.wait();
-                        cache.get(&model, || {
+                        cache.get(|| {
                             calls.fetch_add(1, Ordering::SeqCst);
                             NativeTools::new(profile).map(|tools| Some(Arc::new(tools)))
                         })
@@ -40,7 +37,7 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         let original = bindings[0].as_ref().expect("native family binding");
         // A cached hit does not even ask the immutable selection for its profile.
         let retained = cache
-            .get(&model, || {
+            .get(|| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 Err(Error::Unsupported("cached binding was read again".into()))
             })?
@@ -74,7 +71,7 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         let mut changed = registry.clone();
         let admitted = Arc::new(NativeTools::from_definitions(admitted)?);
         let selected = Cache::default()
-            .get(&model, || Ok(Some(Arc::clone(&admitted))))?
+            .get(|| Ok(Some(Arc::clone(&admitted))))?
             .unwrap();
         assert!(Arc::ptr_eq(&selected, &admitted));
         selected.bind(&mut changed)?;
@@ -151,14 +148,11 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
             assert!(registry.get(retired, None, None)?.is_none());
         }
     }
-    let model = crate::model::Model::new("test".into(), "absent".into(), "1".into())?;
     let absent = Cache::default();
-    assert!(absent.get(&model, || Ok(None))?.is_none());
+    assert!(absent.get(|| Ok(None))?.is_none());
     assert!(
         absent
-            .get(&model, || Err(Error::Unsupported(
-                "absent profile was read again".into()
-            )))?
+            .get(|| Err(Error::Unsupported("absent profile was read again".into())))?
             .is_none()
     );
     // Canonical presentation cannot create a missing selection.

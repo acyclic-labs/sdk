@@ -377,10 +377,6 @@ impl LocalHarness {
                 )
                 .with_agent_tools(&self.agent_tools)
                 .with_templates();
-                let executors = match &self.models {
-                    Some(models) => executors.with_models(models.clone()),
-                    None => executors,
-                };
                 Arc::new(match self.sampling {
                     Some(sampling) => executors.with_sampling(sampling),
                     None => executors,

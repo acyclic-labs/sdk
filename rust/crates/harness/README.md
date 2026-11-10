@@ -25,48 +25,6 @@ Scoped tool installation asks a `ToolApprovalVerifier` to read a resolved journa
 
 Durable scheduler declarations pin initial process state by `FileRef`, not inline JSON. Opening the Stream-backed coordinator requires an authority-scoped content verifier; it checks declared state and successful result bytes on replay and before new publication. New operations must enter through `declare_operation` with a signed, matching owner scope and `operation:declare`; generic event submission cannot publish a declaration or an orchestration decision. Successful worker outcomes are JSON `FileRef`s. Joins, quorums, and reducers stage their result through an owner-bound `SchedulerPayloadStore` before publishing a ref-only event. Malformed or missing bytes leave no new event and prevent reopening an affected history, while an exact in-process retry reconciles by idempotency key. Placement is bounded exact-match worker label metadata, enforced when leasing, and durable inbox items carry `FileRef` payloads.
 
-Browser JavaScript hosts register alternate models with `configureModel` (or
-`WasmModelProvider.install`) before selecting the root model last. Pass that
-same registry to `WasmAgents.open` or `openHosting`. Each opened host retains
-its original catalog snapshot; reopening with another default preserves the
-model addresses already recorded in root and child streams.
-
-Root model selection lives in the shared `agent.ts` settings or the host's
-explicit binding. A child role can choose another provider and model in its
-home volume's `templates/worker/AGENT.md`:
-
-Before the first local run, hosts may create `.volumes/home` as a real directory
-and write `agent.ts` and role files there. The harness admits that directory into
-the home volume before reading settings. No initialization command or flag is
-needed. Its original source is retained in the excluded SDK namespace; reopening
-uses the persisted volume, so later home edits are never overwritten by the seed.
-
-```yaml
----
-version: 1
-context: fork
-may_spawn: [worker, advisor, reviewer]
-model: openai/gpt-6-luna
----
-Own the assigned work and verify its result.
-```
-
-The optional `spawn.model` overrides the role's selection. A role without
-`model` inherits its parent's selection, including when the parent is a worker.
-The admitted `CreationConfig.model` is written with the child's `ForkAdopted`
-stream record. Role edits affect future children; forks, continuations and
-resumed agents retain their recorded selection.
-
-Hosts bind their protected catalog through `StockExecutors::with_models` and the shared cached
-`model::ModelResolver`; `Registry::graphcoder` supplies it automatically. Hosted
-Actors use `server::Execution.models`, and browser hosts use
-`WasmAgentRegistry::bind_models`. Unknown selections fail without silently
-calling another provider. Native plugin hosts keep their own model loops and
-can read the same creation selection for coordination. Credentials remain in
-the host resolver. Selection adds no prompt messages: existing projection
-preserves native reasoning ownership and appends conversation deltas. Native
-tool declarations are cached separately for each model identity.
-
 ```sh
 cargo add acyclic-harness
 ```

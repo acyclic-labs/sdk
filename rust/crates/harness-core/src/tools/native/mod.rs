@@ -104,38 +104,19 @@ type Mapped = (
 /// One profile's mapped declarations, decoded and checked once.
 pub struct NativeTools(Vec<Mapped>);
 
-/// Model-specific declarations. The fallible initializer owns the
+/// One immutable selection's declarations. The fallible initializer owns the
 /// reservation before it reads the profile or decodes any declarations.
 #[cfg(any(feature = "filesystem", test))]
 #[derive(Default)]
-pub(crate) struct Cache(
-    std::sync::Mutex<
-        std::collections::BTreeMap<(String, String, String), Option<Arc<NativeTools>>>,
-    >,
-);
+pub(crate) struct Cache(once_cell::sync::OnceCell<Option<Arc<NativeTools>>>);
 
 #[cfg(any(feature = "filesystem", test))]
 impl Cache {
     pub(crate) fn get(
         &self,
-        model: &crate::model::Model,
         binding: impl FnOnce() -> Result<Option<Arc<NativeTools>>>,
     ) -> Result<Option<Arc<NativeTools>>> {
-        let mut cache = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let key = (
-            model.provider.clone(),
-            model.name.clone(),
-            model.revision.clone(),
-        );
-        if let Some(native) = cache.get(&key) {
-            return Ok(native.clone());
-        }
-        let native = binding()?;
-        cache.insert(key, native.clone());
-        Ok(native)
+        self.0.get_or_try_init(binding).cloned()
     }
 }
 

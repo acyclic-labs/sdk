@@ -351,7 +351,6 @@ where
     ) -> Result<Self, Error> {
         let stream = volumes.filesystem.stream_provider();
         let maximum_bytes = turns.limits.maximum_bytes;
-        let model = turns.executors.model_selection();
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
         let turner = FilesystemTurnHost::new(
@@ -388,8 +387,7 @@ where
             handler.clone(),
             turns.clock.clone(),
             Some(composer.clone()),
-        )?
-        .with_model(model);
+        )?;
         // The host pins roots to the same creation reader these turns use.
         let agents = Arc::new(match templates {
             Some(templates) => agents.with_templates(templates),

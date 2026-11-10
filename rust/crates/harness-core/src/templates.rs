@@ -15,8 +15,6 @@ const ROOT: &str = include_str!("seed/templates/orchestrator/AGENT.md");
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Creation {
-    #[serde(default)]
-    model: Option<String>,
     version: u32,
     context: SpawnContext,
     may_spawn: Vec<String>,
@@ -32,9 +30,6 @@ fn parse(bytes: &[u8]) -> Result<Creation> {
         return Err(Error::Invalid(
             "unsupported template version; use version 1".into(),
         ));
-    }
-    if let Some(model) = &creation.model {
-        crate::model::selection::validate(model)?;
     }
     for name in &creation.may_spawn {
         name_component(name)?;
@@ -76,7 +71,6 @@ pub fn root() -> Result<CreationConfig> {
         return Err(Error::Invalid("the root default must be top_level".into()));
     }
     Ok(CreationConfig {
-        model: root.model,
         continuation: None,
         context: root.context,
         template: None,
@@ -171,7 +165,6 @@ pub(crate) async fn select(
         ));
     }
     Ok(CreationConfig {
-        model: creation.model,
         continuation: None,
         context: creation.context,
         template: Some(file),

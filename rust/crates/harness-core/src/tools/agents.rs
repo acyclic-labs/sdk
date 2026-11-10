@@ -47,7 +47,7 @@ use std::{
 };
 
 /// Revision of the agent tools, selected for the model over other revisions.
-pub const REVISION: &str = "agent-3";
+pub const REVISION: &str = "agent-2";
 /// Names of the agent tools; every agent turn is granted them.
 pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 
@@ -55,9 +55,6 @@ pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnAgentInput {
-    /// Optional provider/model overriding the role's model and parent inheritance.
-    #[serde(default)]
-    pub model: Option<String>,
     /// Child name, unique under this agent; reusable after a setup failure
     /// before any reply or agent action committed. It names the child's path and branch.
     pub name: String,
@@ -216,12 +213,6 @@ impl AgentTool {
                     Ok(profile) => profile,
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
-                if let Some(model) = input.model {
-                    if let Err(error) = crate::model::selection::validate(&model) {
-                        return Ok(super::rejected_input(error));
-                    }
-                    profile.model = Some(model);
-                }
                 profile.peers = peers;
                 // The agent's hard limit: a spawn the step would refuse is
                 // refused here, before the model is told it succeeded.

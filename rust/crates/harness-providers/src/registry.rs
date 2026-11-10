@@ -352,16 +352,3 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
     }
     Ok(())
 }
-
-impl Registry {
-    /// Retains one shared cached resolver for every agent in this composition.
-    pub fn into_model_resolver(self) -> acyclic_harness_core::model::ModelResolver {
-        acyclic_harness_core::model::ModelResolver::new(
-            self.default_model().to_owned(),
-            move |selection| {
-                let provider = Arc::new(self.resolve(selection)?);
-                Ok((provider.model().clone(), provider))
-            },
-        )
-    }
-}
