@@ -349,7 +349,7 @@ fn real_pty_waits_only_until_writable() -> io::Result<()> {
 fn high_descriptors_wait_only_until_writable() -> io::Result<()> {
     use rustix::process::{Resource, getrlimit, setrlimit};
     const HIGH: u64 = 1500;
-    const RECOVERY: &str = "run `cargo nextest run --locked -p acyclic-harness-tui --features tui --lib -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'` in an environment offering descriptors above 1500";
+    const RECOVERY: &str = "run `cargo nextest run --locked -p acyclic-harness-tui --lib -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'` in an environment offering descriptors above 1500";
     let mut limit = getrlimit(Resource::Nofile);
     if limit.maximum.is_some_and(|maximum| maximum <= HIGH) {
         return Err(io::Error::new(
