@@ -119,7 +119,8 @@ impl ToolRegistry {
                 .capability()
                 .is_some_and(|grant| grants.contains(grant))
                 && (snapshot.resolve(&tool.name, None)?.is_some()
-                    || source.recover(tool, None)?.is_some())
+                    || source.recover(tool, None)?.is_some()
+                    || snapshot.recover(tool, None)?.is_some())
                 || snapshot.source_granted(tool, grants)?
             {
                 return Ok(true);
