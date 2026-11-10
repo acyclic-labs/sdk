@@ -49,8 +49,37 @@
               "approved.txt"
             ]
           },
-          "reject": {"contains": ["APPROVAL_E2E_DONE"]},
-          "prompt": "/feedback "
+          "reject": {
+            "contains": [
+              "APPROVAL_E2E_DONE"
+            ]
+          },
+          "prompt": "/cost"
+        },
+        {
+          "send": "\u001b",
+          "when": {
+            "contains": [
+              "Subtree cost"
+            ],
+            "absent": [
+              "Original action"
+            ]
+          }
+        },
+        {
+          "reject": {
+            "contains": [
+              "APPROVAL_E2E_DONE"
+            ]
+          },
+          "prompt": "/feedback ",
+          "when": {
+            "contains": [
+              "Original action",
+              "approved.txt"
+            ]
+          }
         },
         {
           "when": {
@@ -70,14 +99,18 @@
               "Enter saves locally"
             ]
           },
-          "reject": {"contains": ["APPROVAL_E2E_DONE"]},
+          "reject": {
+            "contains": [
+              "APPROVAL_E2E_DONE"
+            ]
+          },
           "send": "y\r"
         },
         {
           "when": {
             "contains": [
               "APPROVAL_E2E_DONE",
-              "\u25cb"
+              "○"
             ]
           },
           "send": "\u0004"

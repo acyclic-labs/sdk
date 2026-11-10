@@ -705,8 +705,9 @@ pub async fn run(
     let mut viewport = Viewport::default();
     // An open panel's first shown row; panels open at their top.
     let mut overlay_top = 0usize;
-    // One opening per original approval. A failed range read stays failed.
-    let mut approval_opened = None;
+    // Replacement cancels a consumer, not the approval. Only a failed read
+    // prevents reopening the same original action.
+    let mut approval_failed = None;
     let mut approval_reviewed = None;
     let start = Instant::now();
     loop {
@@ -740,12 +741,11 @@ pub async fn run(
             queries.close(query_future.as_mut());
         }
         if let Some(status) = view.approval_status {
-            if approval_opened != Some(status)
+            if approval_failed != Some(status)
                 && overlay.is_none()
                 && queries.source().is_none()
                 && view.prompt.is_none()
             {
-                approval_opened = Some(status);
                 queries.select(
                     query::Source::Approval { status, offset: 0 },
                     query_future.as_mut(),
@@ -753,7 +753,7 @@ pub async fn run(
                 overlay_top = 0;
             }
         } else {
-            approval_opened = None;
+            approval_failed = None;
         }
         let feedback = matches!(view.prompt, Some(Prompt::Feedback));
         if let Some(panel) = queries.page.as_mut() {
@@ -809,6 +809,11 @@ pub async fn run(
             terminal.draw(size, |frame| {
                 areas = screen.render(frame, &input, &mut viewport, scroll, now);
             })?;
+            if overlay.is_none()
+                && let Some(status) = query::reviewed(&queries, overlay_top, areas.overlay_rows(0))
+            {
+                approval_reviewed = Some(status);
+            }
             // Page keys scroll the open panel by its page, else the transcript.
             let page = if panel {
                 areas.overlay_rows(0)
@@ -916,16 +921,20 @@ pub async fn run(
                     None => std::future::pending().await,
                 }
             } => {
+                let approval = match queries.source() {
+                    Some(query::Source::Approval { status, .. }) => Some(*status),
+                    _ => None,
+                };
                 match queries.finish(result, query_future.as_mut()) {
                     Ok(()) => {
                         overlay_top = 0;
-                        if let Some(query::Source::Approval { status, .. }) = queries.source()
-                            && queries.page.as_ref().is_some_and(|page| page.next.is_none())
-                        {
-                            approval_reviewed = Some(*status);
-                        }
                     },
-                    Err(error) => view.notice = refusal(format_args!("Filesystem query ended: {error}")),
+                    Err(error) => {
+                        if approval.is_some() {
+                            approval_failed = approval;
+                        }
+                        view.notice = refusal(format_args!("Filesystem query ended: {error}"));
+                    },
                 }
             }
             event = events.next() => {
