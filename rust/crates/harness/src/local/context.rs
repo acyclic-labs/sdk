@@ -365,11 +365,7 @@ impl LocalHarness {
                 .conventions
                 .push(workspace.context_line().to_owned());
             if self.checkout_context {
-                #[cfg(test)]
-                self.environment_reads
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let (selected, _) = workspace.selected_view().await?;
-                let view = selected.as_ref().unwrap_or_else(|| workspace.view());
                 // A selected branch can use a separate physical mount. Reuse
                 // that admitted handle; never report the base mount for it.
                 let selected_mount = if let Some(view) = &selected
@@ -393,33 +389,13 @@ impl LocalHarness {
                         .as_ref()
                         .map(|mounted| mounted.path.as_path())
                 };
-                let compatibility = acyclic_fs::GitCompatStore::load(
-                    &workspace.store,
-                    workspace.view().workspace().id(),
-                )
-                .await
-                .map_err(storage)?;
                 let (model, _) = self.agent()?;
-                let mut facts = environment::gather(
+                manifest.environment = Some(environment::gather(
                     cwd,
                     self.clock.now_unix_millis(),
                     &model.name,
                     &self.environment_platform,
-                    compatibility.is_none(),
-                )
-                .await?;
-                if let Some(compatibility) = compatibility {
-                    use acyclic_fs::facade::FsWork as _;
-                    let cancellation = acyclic_fs::CancellationToken::new();
-                    let snapshot = view
-                        .snapshot(&mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation))
-                        .await?;
-                    facts.git_status = Some(environment::sdk_status(
-                        &compatibility,
-                        acyclic_fs::GitTreeRef::Lazy(snapshot),
-                    )?);
-                }
-                manifest.environment = Some(facts);
+                )?);
             }
         }
         Ok(manifest)
