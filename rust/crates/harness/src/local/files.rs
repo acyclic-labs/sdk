@@ -25,6 +25,9 @@ impl LocalHarness {
             ));
         }
         let state = hosted.agents().state(agent).await.map_err(storage)?;
+        if state.closed {
+            return Err(Error::Refused("archived fork cannot be merged".into()));
+        }
         let project = state
             .volumes
             .iter()

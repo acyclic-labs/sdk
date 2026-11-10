@@ -638,8 +638,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             let delivered = self.deliver(target, archive(target, by, id)?).await?;
             self.pause(target, false).await?;
             let state = self.state(target).await?;
-            for child in state.open_children {
-                self.archive(&child, by, id).await?;
+            let mut ancestry = vec![(target.clone(), state.open_children, None)];
+            while let Some((parent, children, after)) = ancestry.last_mut() {
+                // One child is a page credit, not a subtree-size bound. The
+                // persistent cursor and ancestry are the only retained work.
+                let Some(next) = children.page(after.as_ref(), 1).await?.pop() else {
+                    ancestry.pop();
+                    continue;
+                };
+                let child = parent.child(&next)?;
+                *after = Some(next);
+                self.deliver(&child, archive(&child, by, id)?).await?;
+                self.pause(&child, false).await?;
+                let state = self.state(&child).await?;
+                ancestry.push((child, state.open_children, None));
             }
             Ok(delivered)
         })

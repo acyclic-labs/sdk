@@ -1139,6 +1139,10 @@ async fn run_current(
                                 queries.select(query::Source::Merge(agent, acyclic_harness::OperationId::new().to_string()), query_future.as_mut());
                                 None
                             }
+                            tree::Intent::Discard(agent) => {
+                                queries.select(query::Source::Discard(agent, acyclic_harness::OperationId::new().to_string()), query_future.as_mut());
+                                None
+                            }
                             tree::Intent::Wait(agent) => {
                                 queries.select(query::Source::Wait(agent), query_future.as_mut());
                                 None

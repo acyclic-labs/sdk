@@ -955,6 +955,20 @@ mod tests {
             std::fs::read(checkout.path().join("nested.txt")).map_err(storage)?,
             b"nested\n"
         );
+        let discarded = Conversation::open(descendants[1].clone());
+        sessions::archive(parent.connection(), "discard-child-subtree").await?;
+        assert!(matches!(
+            parent.wait_current_input().await?,
+            crate::agent::Phase::Done { .. }
+        ));
+        assert!(matches!(
+            discarded.wait_current_input().await?,
+            crate::agent::Phase::Done { .. }
+        ));
+        assert!(matches!(
+            discarded.deliver("after-discard", "must not run").await?,
+            crate::local::agent_conversation::Sent::Refused(_)
+        ));
         assert_eq!(
             provider.request_count(),
             2,
