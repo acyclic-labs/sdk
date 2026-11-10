@@ -282,7 +282,18 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
                     Some(b"spawned") => step(
                         b"waiting",
                         Vec::new(),
-                        Wait::Until(Until::all(agent.open_children.clone()).within(Some(TIMEOUT))),
+                        Wait::Until(
+                            Until::all(
+                                agent
+                                    .open_children
+                                    .page(None, CHILDREN)
+                                    .await?
+                                    .into_iter()
+                                    .map(|id| agent.path.child(&id))
+                                    .collect::<std::result::Result<BTreeSet<_>, _>>()?,
+                            )
+                            .within(Some(TIMEOUT)),
+                        ),
                     ),
                     Some(_) => {
                         self.0
@@ -323,8 +334,14 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     });
     host.send(&root, &user(), &start).await?;
     host.drain_event(&root).await?;
-    let children = host.state(&root).await?.open_children;
-    assert_eq!(children.len(), CHILDREN);
+    let membership = host.state(&root).await?.open_children;
+    assert_eq!(membership.len(), CHILDREN);
+    let children = membership
+        .page(None, CHILDREN)
+        .await?
+        .into_iter()
+        .map(|id| root.child(&id))
+        .collect::<std::result::Result<BTreeSet<_>, _>>()?;
     for child in &children {
         host.send(child, &user(), &start).await?;
         host.drain_event(child).await?;
