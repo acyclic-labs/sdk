@@ -252,11 +252,7 @@ impl LocalHarness {
             })?;
             let bound = server.bound();
             let observation = bound
-                .client_credential(
-                    agent.as_ref().unwrap_or(server.root()),
-                    server.resource(),
-                    Arc::clone(&self.clock),
-                )
+                .client_credential(server.root(), server.resource(), Arc::clone(&self.clock))
                 .await
                 .map_err(storage)?;
             let changes = bound.changes().map_err(storage)?;
