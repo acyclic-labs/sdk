@@ -5,7 +5,14 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityRoot},
 };
 
-fn grants(volume: &VolumeRef) -> Result<(AuthorityRoot, ContentGrant, ContentGrant)> {
+struct Grants {
+    _issuer: AuthorityRoot,
+    directory: ContentGrant,
+    whole: ContentGrant,
+    write: ContentGrant,
+}
+
+fn grants(volume: &VolumeRef) -> Result<Grants> {
     let issuer = AuthorityRoot::new(
         "custody",
         [17; 32],
@@ -37,7 +44,20 @@ fn grants(volume: &VolumeRef) -> Result<(AuthorityRoot, ContentGrant, ContentGra
         u64::MAX,
         &mut None,
     )?;
-    Ok((issuer, read, write))
+    let whole = ContentGrant::verify(
+        &verifier,
+        &scope,
+        volume,
+        VolumeOperation::Read,
+        u64::MAX,
+        &mut None,
+    )?;
+    Ok(Grants {
+        _issuer: issuer,
+        directory: read,
+        whole,
+        write,
+    })
 }
 
 #[test]
@@ -61,13 +81,13 @@ async fn concurrent_publication() -> Result<()> {
     };
     let parent = volume("parent", 1)?;
     let child = volume("child", 2)?;
-    let (_parent_issuer, parent_read, parent_write) = grants(&parent)?;
-    let (_child_issuer, child_read, child_write) = grants(&child)?;
+    let parent_grants = grants(&parent)?;
+    let child_grants = grants(&child)?;
     let parent_workspace = host.create_volume(&parent).await?.workspace;
     let original = host
         .put_content(
             &parent,
-            &parent_write,
+            &parent_grants.write,
             "GOAL.md",
             b"original",
             "text/markdown",
@@ -82,10 +102,10 @@ async fn concurrent_publication() -> Result<()> {
     let fork = host
         .fork_volume(
             &parent,
-            &parent_read,
+            &parent_grants.whole,
             &cut,
             &child,
-            &child_write,
+            &child_grants.write,
             None,
             &IdempotencyKey::new("fork")?,
         )
@@ -109,7 +129,7 @@ async fn concurrent_publication() -> Result<()> {
     let key = IdempotencyKey::new("parent-replacement")?;
     let writer = host.put_content(
         &parent,
-        &parent_write,
+        &parent_grants.write,
         "GOAL.md",
         b"parent replacement",
         "text/markdown",
@@ -124,7 +144,7 @@ async fn concurrent_publication() -> Result<()> {
         let inherited = host
             .read_private_path(
                 &child,
-                &child_read,
+                &child_grants.directory,
                 "GOAL.md",
                 Some(&fork.generation),
                 64,
@@ -138,7 +158,7 @@ async fn concurrent_publication() -> Result<()> {
             let own = host
                 .put_content(
                     &child,
-                    &child_write,
+                    &child_grants.write,
                     "GOAL.md",
                     b"child replacement",
                     "text/markdown",
@@ -150,7 +170,7 @@ async fn concurrent_publication() -> Result<()> {
                 )
                 .await?;
             assert_eq!(
-                host.read_content(&own, &child_read, 64, None)
+                host.read_content(&own, &child_grants.whole, 64, None)
                     .await?
                     .as_ref(),
                 b"child replacement"
@@ -160,7 +180,13 @@ async fn concurrent_publication() -> Result<()> {
             // or the child's foreign FileRef, even though both indexes are inherited.
             let source = host.file_generation(&own, None)?;
             let plan = host
-                .prepare_volume_import(&child, &child_read, &source, &parent, &parent_write)
+                .prepare_volume_import(
+                    &child,
+                    &child_grants.whole,
+                    &source,
+                    &parent,
+                    &parent_grants.write,
+                )
                 .await?;
             let outcome = plan
                 .apply(
@@ -176,7 +202,7 @@ async fn concurrent_publication() -> Result<()> {
             let (imported, bytes) = host
                 .read_private_path(
                     &parent,
-                    &parent_read,
+                    &parent_grants.directory,
                     "GOAL.md",
                     None,
                     64,
@@ -189,7 +215,7 @@ async fn concurrent_publication() -> Result<()> {
             assert_eq!(
                 host.read_private_path(
                     &child,
-                    &child_read,
+                    &child_grants.directory,
                     "GOAL.md",
                     Some(&fork.generation),
                     64,
