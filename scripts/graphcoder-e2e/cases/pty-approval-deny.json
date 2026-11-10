@@ -1,6 +1,6 @@
 {
   "id": "pty-approval-deny",
-  "adapter": "messages",
+  "adapter": "anthropic",
   "workspace": {
     "kind": "plain",
     "files": {}
