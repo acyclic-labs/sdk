@@ -13,7 +13,7 @@ impl ToolDefinition {
         // before releasing its allocation, on finite and native paths alike.
         let scope = crate::filesystem::PreparationScope::new(original)?;
         let io = scope.io();
-        if let Err(violation) = self.check_projection_schema(value, io)? {
+        if let Err(violation) = self.check_projection_schema(value, "tool projection", io)? {
             return Ok(Err(violation));
         }
         let content = decode_projection(value, io)?;

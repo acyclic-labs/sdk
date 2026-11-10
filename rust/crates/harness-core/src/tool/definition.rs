@@ -250,7 +250,7 @@ impl ToolDefinition {
         return self.check_scoped_projection(value, limits, io);
         #[cfg(not(feature = "filesystem"))]
         {
-            if let Err(violation) = self.check_projection_schema(value, io)? {
+            if let Err(violation) = self.check_projection_schema(value, "tool projection", io)? {
                 return Ok(Err(violation));
             }
             let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
@@ -261,18 +261,14 @@ impl ToolDefinition {
         }
     }
 
-    pub(super) fn check_projection_schema(
+    pub(crate) fn check_projection_schema(
         &self,
         value: &Value,
+        label: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Result<()>> {
         let authored = crate::executor::with_history_io(io, |work| {
-            crate::executor::check_json_schema_value(
-                &self.projection_schema,
-                value,
-                "tool projection",
-                work,
-            )
+            crate::executor::check_json_schema_value(&self.projection_schema, value, label, work)
         })?;
         if authored.is_ok() || !super::output::is_spill(value) {
             return Ok(authored);

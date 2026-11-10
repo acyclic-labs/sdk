@@ -71,6 +71,35 @@ fn error(message: &str) -> ToolResultContent {
     }
 }
 
+#[test]
+fn shared_spill_contract_survives_request_preparation() -> Result<()> {
+    for version in [json!("immutable-version"), Value::Null] {
+        let admitted = version.is_string();
+        let spill = json!({"output_spill":{"path":"tool-output/result.json","version":version},
+            "text":"retained preview", "omitted_bytes":42});
+        for envelope in [
+            json!({"kind":"json", "value":spill}),
+            json!({"kind":"parts", "parts":[{"kind":"text", "text":format!(
+                r#"{{"output_spill":{},"text":"retained preview","omitted_bytes":42}}"#,
+                spill["output_spill"])}]}),
+        ] {
+            let result = serde_json::from_value(envelope)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let request = answered("echo", json!("argument"), result);
+            let prepared = PreparedModelRequest::prepare(request, Limits::default(), None);
+            assert_eq!(prepared.is_ok(), admitted, "{prepared:?}");
+            if let Ok(prepared) = prepared {
+                assert_eq!(
+                    PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?
+                        .request(),
+                    prepared.request()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 // An error result answers any paired call, as a supplied schema-valid result already answers a
 // bound one: both are history, neither proves a tool ran. Its contract is its shape, enforced
 // identically on every source (in memory, prepared, decoded), so no loader carries provenance.
