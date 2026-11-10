@@ -22,7 +22,13 @@ impl ToolRegistry {
             return Err(Error::Conflict("tool registries overlap".into()));
         }
         if let Some(allowed) = &other.source_ceiling {
-            self.restrict_sources(allowed);
+            self.source_ceiling = Some(Arc::new(
+                allowed
+                    .iter()
+                    .filter(|name| self.source_allowed(name))
+                    .cloned()
+                    .collect(),
+            ));
         }
         let data = Arc::make_mut(&mut self.data);
         self.sources.extend(other.sources);

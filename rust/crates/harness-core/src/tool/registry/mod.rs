@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 /// One tool assembled from three independently replaceable values.
 #[derive(Clone)]
@@ -48,7 +49,7 @@ impl ModelSelection {
 pub struct ToolRegistry {
     data: Arc<RegistryData>,
     sources: Vec<Arc<dyn ToolSource>>,
-    source_ceiling: Option<Arc<[String]>>,
+    source_ceiling: Option<Arc<BTreeSet<String>>>,
 }
 
 /// A shared, event-invalidated tool catalog. Refresh runs before model dispatch;
@@ -66,41 +67,102 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
     fn capability(&self) -> Option<&str> {
         None
     }
+    /// Rebind an admitted revision to its original producer for replay or
+    /// reconciliation. This never makes a removed tool callable again.
+    fn recover(
+        &self,
+        _definition: &ToolDefinition,
+        _io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<Arc<Tool>>> {
+        Ok(None)
+    }
 }
 
 impl ToolRegistry {
     pub(crate) fn restrict_sources(&mut self, allowed: &[String]) {
-        self.source_ceiling = Some(
-            allowed
-                .iter()
-                .filter(|name| self.source_allowed(name))
-                .cloned()
-                .collect(),
-        );
+        let allowed = allowed
+            .iter()
+            .filter(|name| self.source_allowed(name))
+            .cloned()
+            .collect();
+        self.source_ceiling = Some(Arc::new(allowed));
     }
 
-    fn source_allowed(&self, name: &str) -> bool {
+    pub(super) fn source_allowed(&self, name: &str) -> bool {
         self.source_ceiling
             .as_ref()
-            .is_none_or(|allowed| allowed.iter().any(|allowed| allowed == name))
+            .is_none_or(|allowed| allowed.contains(name))
     }
-
-    pub(crate) fn source_granted(&self, name: &str, grants: &crate::Capabilities) -> Result<bool> {
-        if !self.source_allowed(name) {
+    pub(crate) fn fixed_definitions(
+        &self,
+        grants: &crate::Capabilities,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<ToolDefinition>> {
+        Self {
+            data: self.data.clone(),
+            sources: Vec::new(),
+            source_ceiling: None,
+        }
+        .definitions_for_grants(grants, io)
+    }
+    pub(crate) fn source_granted(
+        &self,
+        tool: &ToolDefinition,
+        grants: &crate::Capabilities,
+    ) -> Result<bool> {
+        if !self.source_allowed(&tool.name) {
             return Ok(false);
         }
         for source in &self.sources {
             let snapshot = source.snapshot()?;
-            if (source
+            if source
                 .capability()
                 .is_some_and(|grant| grants.contains(grant))
-                && snapshot.resolve(name, None)?.is_some())
-                || snapshot.source_granted(name, grants)?
+                && (snapshot.resolve(&tool.name, None)?.is_some()
+                    || source.recover(tool, None)?.is_some()
+                    || snapshot.recover(tool, None)?.is_some())
+                || snapshot.source_granted(tool, grants)?
             {
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+    /// Fixed, granted declarations are pinned by the executor configuration.
+    /// Source overlap is rejected when preparing their original model request.
+    pub(crate) fn fixed_for_grants(
+        &self,
+        name: &str,
+        grants: &crate::Capabilities,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<Arc<Tool>>> {
+        Ok(self
+            .get_shared(name, None, io)?
+            .filter(|tool| {
+                let capability = tool.executor.capability().unwrap_or(tool);
+                grants.iter().any(|grant| {
+                    grant.strip_prefix("tool:call:") == Some(capability.definition.name.as_str())
+                })
+            })
+            .cloned())
+    }
+    pub(crate) fn recover(
+        &self,
+        definition: &ToolDefinition,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<Arc<Tool>>> {
+        if let Some(tool) = self.get_shared(&definition.name, Some(&definition.revision), io)? {
+            return Ok(Some(Arc::clone(tool)));
+        }
+        for source in &self.sources {
+            if let Some(tool) = source.recover(definition, io)? {
+                return Ok(Some(tool));
+            }
+            if let Some(tool) = source.snapshot()?.recover(definition, io)? {
+                return Ok(Some(tool));
+            }
+        }
+        Ok(None)
     }
     pub(crate) fn was_removed(&self, name: &str) -> Result<bool> {
         for source in &self.sources {
@@ -134,8 +196,10 @@ impl ToolRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<Arc<Tool>>> {
         for source in &self.sources {
-            if let Some(tool) = source.snapshot()?.resolve(name, io)? {
-                return Ok(self.source_allowed(name).then_some(tool));
+            if let Some(tool) = source.snapshot()?.resolve(name, io)?
+                && self.source_allowed(&tool.definition.name)
+            {
+                return Ok(Some(tool));
             }
         }
         Ok(self.get_shared(name, None, io)?.cloned())
