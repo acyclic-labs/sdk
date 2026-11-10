@@ -71,9 +71,9 @@ impl Credentials {
     /// Stores a host credential in the same OS service used by discovery.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn store_api_key(provider: &str, key: &str) -> Result<()> {
-        if key.trim().is_empty() {
+        if key.trim().is_empty() || key.trim().chars().any(char::is_control) {
             return Err(super::invalid(
-                "API key is empty; recovery: paste a provider API key",
+                "API key must be nonempty and single-line; recovery: paste a provider API key",
             ));
         }
         keyring::Entry::new("acyclic-harness", provider)

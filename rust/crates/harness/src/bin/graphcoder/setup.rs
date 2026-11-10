@@ -103,27 +103,28 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
         .keys()
         .map(|model| format!("{provider}/{model}"))
         .collect();
-    let requires_key =
-        registry.needs_credentials(models.first().ok_or("provider has no catalogued model")?)?;
-    if requires_key {
-        if !Credentials::keychain_available() {
-            return Err("OS keychain unavailable; recovery: unlock/start the OS credential service, or configure an environment key or --credentials FILE before starting graphcoder".into());
-        }
-        let key = onboarding::read(&mut terminal, "API key (hidden)", true)?;
-        Credentials::store_api_key(provider, &key)?;
-        print!("Key saved in OS keychain service acyclic-harness.\r\n");
-    }
     let index = onboarding::choose(&mut terminal, "Model", &models)?;
     let selected = models
         .get(index)
         .ok_or("model selection unavailable")?
         .clone();
+    if registry.needs_credentials(&selected)? {
+        if !Credentials::keychain_available() {
+            return Err("OS keychain unavailable; recovery: unlock/start the OS credential service, or configure an environment key or --credentials FILE before starting graphcoder".into());
+        }
+        let key = onboarding::read_secret(&mut terminal, "API key (hidden)")?;
+        Credentials::store_api_key(provider, &key)?;
+        print!("Key saved in OS keychain service acyclic-harness.\r\n");
+    }
+    // Discard cached missing-source observations after publishing a credential,
+    // and admit the exact selection before making it the next launch's default.
+    let refreshed = self::registry(args)?;
+    refreshed.resolve(&selected)?;
     if let Some(settings) = settings(args)? {
         settings.set_model(&selected)?;
     }
     args.model = Some(selected);
-    // Rebuild the source snapshot only after publishing the new credential.
-    *registry = self::registry(args)?;
+    *registry = refreshed;
     Ok(Some(terminal))
 }
 

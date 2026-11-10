@@ -26,7 +26,7 @@ pub fn interactive() -> bool {
 /// Reads one line on OS input events, without a readiness timer or polling.
 /// The caller owns one native terminal through setup and the conversation;
 /// dropping that owner restores raw mode, including on cancellation.
-pub fn read(
+fn read(
     _terminal: &mut crate::term::Tty,
     label: &str,
     secret: bool,
@@ -73,6 +73,18 @@ pub fn read(
             _ => {}
         }
         output.flush()?;
+    }
+}
+
+/// Read a nonempty, single-line credential. Rejected input is wiped before
+/// waiting for the next OS input event; cancellation never returns a key.
+pub fn read_secret(terminal: &mut crate::term::Tty, label: &str) -> io::Result<Zeroizing<String>> {
+    loop {
+        let value = read(terminal, label, true)?;
+        if !value.trim().is_empty() && !value.trim().chars().any(char::is_control) {
+            return Ok(value);
+        }
+        print!("Paste a nonempty, single-line API key.\r\n");
     }
 }
 

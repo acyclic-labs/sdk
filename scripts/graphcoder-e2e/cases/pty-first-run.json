@@ -6,17 +6,33 @@
   "authentication": "api_key",
   "models": ["tiny", "chosen"],
   "model": { "steps": [
-    { "when": { "user": "first configured prompt" }, "text": ["FIRST_CONFIGURED_ANSWER"] },
+    { "when": { "user": "first configured prompt" }, "text": ["FIRST_CONFIGURED_ANSWER"], "hold": true },
     { "when": { "user": "next configured prompt" }, "text": ["NEXT_CONFIGURED_ANSWER"] }
   ] },
   "inputs": [
-    { "mode": "pty", "actions": [
+    { "mode": "headless", "args": ["-p", "must not prompt"], "exit": 1,
+      "stderr_contains": ["provider key unavailable", "recovery:"],
+      "stdout_absent": ["GraphCoder first run", "API key (hidden)"] },
+    { "mode": "pty", "exit": 1, "actions": [
       { "when": { "contains": ["GraphCoder first run", "Provider:"] }, "send": "2\r" },
-      { "when": { "contains": ["API key (hidden):"] }, "send": "E2E_FIRST_RUN_NONSECRET\r" },
-      { "when": { "contains": ["Key saved in OS keychain service acyclic-harness", "Model:"] }, "assert": { "absent": ["E2E_FIRST_RUN_NONSECRET"] }, "send": "1\r" },
-      { "when": { "contains": ["GraphCoder", "\u25cb"], "cursor": true }, "prompt": "first configured prompt" },
-      { "when": { "contains": ["FIRST_CONFIGURED_ANSWER", "\u25cb"] }, "send": "\u0004" }
+      { "when": { "contains": ["Model:"] }, "assert": { "absent": ["API key (hidden)"] }, "send": "\u0003" }
     ] },
+    { "mode": "pty", "exit": 1, "actions": [
+      { "when": { "contains": ["GraphCoder first run", "Provider:"] }, "send": "2\r" },
+      { "when": { "contains": ["Model:"] }, "send": "1\r" },
+      { "when": { "contains": ["API key (hidden):"] }, "send": "CANCELLED_KEY_NONSECRET\u0004" }
+    ] },
+    { "mode": "pty", "actions": [
+      { "when": { "contains": ["GraphCoder first run", "Provider:"] }, "send": "0\r" },
+      { "when": { "contains": ["Choose a listed number.", "Provider:"] }, "send": "2\r" },
+      { "when": { "contains": ["Model:"] }, "send": "1\r" },
+      { "when": { "contains": ["API key (hidden):"] }, "send": " \r" },
+      { "when": { "contains": ["Paste a nonempty, single-line API key."] }, "send": "\u001b[200~bad\nkey\u001b[201~\r" },
+      { "when": { "contains": ["API key (hidden):"] }, "send": "E2E_FIRST_RUN_NONSECRET\r" },
+      { "when": { "contains": ["GraphCoder", "\u25cb"], "cursor": true }, "prompt": "first configured prompt" },
+      { "when": { "delta": "FIRST_CONFIGURED_ANSWER" }, "send": "\u001b" },
+      { "when": { "contains": ["FIRST_CONFIGURED_ANSWER", "interaction cancelled", "\u25cb"] }, "send": "\u0004" }
+    ], "exit": 2 },
     { "mode": "pty", "actions": [
       { "when": { "contains": ["GraphCoder", "\u25cb"], "cursor": true }, "assert": { "absent": ["GraphCoder first run", "API key (hidden)"] }, "prompt": "next configured prompt" },
       { "when": { "contains": ["NEXT_CONFIGURED_ANSWER", "\u25cb"] }, "send": "\u0004" }
@@ -25,6 +41,7 @@
   "assert": {
     "requests": 2,
     "http": [{ "step": 0, "body": { "model": "chosen" } }, { "step": 1, "body": { "model": "chosen" } }],
-    "wire_absent": ["E2E_FIRST_RUN_NONSECRET"], "each_model_absent": ["E2E_FIRST_RUN_NONSECRET"]
+    "wire_absent": ["E2E_FIRST_RUN_NONSECRET", "CANCELLED_KEY_NONSECRET"],
+    "each_model_absent": ["E2E_FIRST_RUN_NONSECRET", "CANCELLED_KEY_NONSECRET"]
   }
 }
