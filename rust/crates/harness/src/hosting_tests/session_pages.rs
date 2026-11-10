@@ -39,7 +39,8 @@ async fn ten_thousand_sessions_keep_discovery_at_two_bounded_head_views() -> Res
         };
         let roots = server.bound().session_roots()?;
         let status = StatusRecord {
-            child_wakes: Vec::new(),
+            child_settlement: None,
+            child_wakes: None,
             phase: Phase::Idle,
             cursor: 0,
             conversation: 0,
