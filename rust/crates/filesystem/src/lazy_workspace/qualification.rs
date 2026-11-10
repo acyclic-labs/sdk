@@ -80,11 +80,11 @@ impl NativePublicationSnapshot {
     /// input evidence. Preserve the original publication evidence when admitting
     /// a retained view; this projection cannot replace that proof.
     pub fn lazy_snapshot(
-        self,
+        &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<LazySnapshotRef>, crate::FsError> {
         ctx.check()?;
-        let cut = match self.context {
+        let cut = match &self.context {
             NativeSnapshotContext::Authored { .. } => return Ok(None),
             NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } => cut,
         };

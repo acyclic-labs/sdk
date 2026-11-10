@@ -120,7 +120,8 @@ where
                 .removals
                 .lock()
                 .map_err(|_| MountSourceError::Stale)?
-                .publication;
+                .publication
+                .clone();
             self.replay_selected_publication(
                 operation,
                 generation,

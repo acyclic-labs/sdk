@@ -83,7 +83,7 @@ async fn exactification_denials_do_not_publish_or_create_children() {
     ] {
         assert!(
             root.exactify_snapshot(
-                cut,
+                cut.clone(),
                 name,
                 IdempotencyKey::new(),
                 &mut KernelAccounting::standalone(budget, &cancel)

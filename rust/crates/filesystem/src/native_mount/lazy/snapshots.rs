@@ -160,7 +160,8 @@ where
             .removals
             .lock()
             .map_err(|_| MountSourceError::Stale)?
-            .publication;
+            .publication
+            .clone();
         if let Some((
             id,
             Some(SelectedImportProof {

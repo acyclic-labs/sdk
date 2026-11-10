@@ -235,7 +235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
     > {
         if self.publication_evidence.is_none()
             && (force || self.checkout.has_pending_mutations())
-            && let Some(context) = context
+            && let Some(context) = &context
         {
             let (digest, evidence) = crate::lazy_workspace::publication_evidence(
                 context.clone(),
@@ -244,7 +244,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
                 &mut crate::kernel::KernelAccounting::native(work, cancellation),
             )
             .map_err(MountSourceError::from)?;
-            self.publication_evidence = Some((context, permit, digest, evidence));
+            self.publication_evidence = Some((context.clone(), permit, digest, evidence));
         }
         Ok(match &self.publication_evidence {
             Some((context, permit, digest, evidence)) => (

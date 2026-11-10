@@ -36,10 +36,10 @@ pub(super) fn validate_completion_result<E: std::error::Error + 'static>(
                 return Err(GitCompatError::WorkspaceMismatch);
             };
             let previous_tree =
-                expected_head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
-            let reused_head = proof.is_none() && previous_tree == Some(*tree);
+                expected_head.and_then(|id| state.commits.get(&id).map(|commit| &commit.tree));
+            let reused_head = proof.is_none() && previous_tree == Some(tree);
             let valid_capture =
-                capture_proof_valid(*tree, *workspace_tree, proof.as_ref(), previous_tree)
+                capture_proof_valid(tree, workspace_tree, proof.as_ref(), previous_tree)
                     && proof
                         .as_ref()
                         .is_none_or(|proof| proof.operation_id == pending.id.operation_id());
@@ -55,7 +55,7 @@ pub(super) fn validate_completion_result<E: std::error::Error + 'static>(
         }
         _ => {}
     }
-    if let GitPendingMutation::CaptureCommit { workspace_tree, .. } = pending.mutation
+    if let GitPendingMutation::CaptureCommit { workspace_tree, .. } = &pending.mutation
         && workspace_tree.workspace_id() != workspace_id
     {
         return Err(GitCompatError::WorkspaceMismatch);
@@ -64,10 +64,10 @@ pub(super) fn validate_completion_result<E: std::error::Error + 'static>(
 }
 
 pub(super) fn capture_proof_valid(
-    tree: GitTreeRef,
-    workspace_tree: GitTreeRef,
+    tree: &GitTreeRef,
+    workspace_tree: &GitTreeRef,
     proof: Option<&GitCaptureProof>,
-    previous_tree: Option<GitTreeRef>,
+    previous_tree: Option<&GitTreeRef>,
 ) -> bool {
     if tree.workspace_id() == workspace_tree.workspace_id() {
         return proof.is_none();
@@ -121,13 +121,13 @@ pub(super) fn validate_git_commits(
             || commit.hash_id() != commit.id
             || !known_workspaces.contains(&commit.workspace_tree.workspace_id())
             || !capture_proof_valid(
-                commit.tree,
-                commit.workspace_tree,
+                &commit.tree,
+                &commit.workspace_tree,
                 commit.capture_proof.as_ref(),
                 commit
                     .parents
                     .first()
-                    .and_then(|id| state.commits.get(id).map(|parent| parent.tree)),
+                    .and_then(|id| state.commits.get(id).map(|parent| &parent.tree)),
             )
             || commit.parents.iter().any(|parent| {
                 !state.commits.contains_key(parent) && !state.external_parents.contains(parent)

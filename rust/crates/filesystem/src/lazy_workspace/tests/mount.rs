@@ -44,7 +44,7 @@ async fn materialization_phase_denial_preserves_the_callers_owned_namespace() {
                 root.populate_source_directory(
                     &mut transaction,
                     "/file.txt",
-                    reference,
+                    reference.clone(),
                     node,
                     &mut namespace,
                     &mut ctx,
@@ -550,9 +550,16 @@ async fn source_directory_identity_cannot_be_promoted_twice() {
         .await
         .unwrap()
         .value;
-    root.populate_source_node(&mut transaction, "/d", reference, node, 0, accounting!())
-        .await
-        .unwrap();
+    root.populate_source_node(
+        &mut transaction,
+        "/d",
+        reference.clone(),
+        node,
+        0,
+        accounting!(),
+    )
+    .await
+    .unwrap();
     let error = root
         .populate_source_node(&mut transaction, "/e", reference, node, 0, accounting!())
         .await

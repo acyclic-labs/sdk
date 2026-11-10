@@ -49,7 +49,7 @@ where
     let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
     let source = lazy
         .source_lookup(
-            lazy.source_reference(&mut accounting).map_err(lazy_error)?,
+            &lazy.source_reference(&mut accounting).map_err(lazy_error)?,
             path,
             &mut accounting,
         )
@@ -82,7 +82,7 @@ where
         // Accept a hint only after revalidating the exact imported source version.
         let current = lazy
             .source_lookup(
-                lazy.source_reference(&mut accounting).map_err(lazy_error)?,
+                &lazy.source_reference(&mut accounting).map_err(lazy_error)?,
                 path,
                 &mut accounting,
             )

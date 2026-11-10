@@ -130,13 +130,15 @@ where
             }
             return Ok(context);
         }
-        if let (Some(generation), Some(SelectedImportProof { input, .. })) = (committed, proof) {
+        if let (Some(generation), Some(SelectedImportProof { input, .. })) =
+            (committed, proof.as_ref())
+        {
             let (snapshot, original_input) = self
                 .lazy
                 .selected_snapshot(operation, generation, accounting)
                 .await
                 .map_err(lazy_error)?;
-            if original_input != input {
+            if original_input != *input {
                 return Err(MountSourceError::Stale);
             }
             let cut = self
@@ -151,7 +153,7 @@ where
             {
                 return Err(MountSourceError::Stale);
             }
-            return Ok(NativeSnapshotContext::Selected { cut, input });
+            return Ok(NativeSnapshotContext::Selected { cut, input: *input });
         }
         let cut = self
             .lazy

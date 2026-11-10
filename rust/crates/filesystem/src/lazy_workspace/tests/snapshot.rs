@@ -303,7 +303,7 @@ async fn routed_forks_retain_both_layers_after_independent_provider_progress() {
             old
         );
         assert_eq!(
-            root.read_at_snapshot(basis.clone(), path, None, 64, accounting!())
+            root.read_at_snapshot(&basis, path, None, 64, accounting!())
                 .await
                 .unwrap()
                 .0

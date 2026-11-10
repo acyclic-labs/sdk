@@ -249,8 +249,8 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
             if state
                 .commits
                 .values()
-                .map(|commit| commit.workspace_tree)
-                .chain(state.stash.iter().copied())
+                .map(|commit| &commit.workspace_tree)
+                .chain(state.stash.iter())
                 .any(|tree| tree.workspace_id() == retired)
             {
                 state.retired_workspaces.insert(retired);
@@ -298,11 +298,14 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
             let tree = state
                 .stash
                 .last()
-                .copied()
+                .cloned()
                 .ok_or(GitCompatError::UnknownObject("stash@{0}".to_owned()))?;
             prepare_transition(
                 state,
-                GitFilesystemAction::RestoreGeneration { tree, paths: None },
+                GitFilesystemAction::RestoreGeneration {
+                    tree: tree.clone(),
+                    paths: None,
+                },
                 GitPendingMutation::StashPop { tree },
             )
         }
@@ -498,7 +501,7 @@ fn show_file<E: std::error::Error + 'static>(
         return Err(GitCompatError::UnknownObject(format!("{revision}:{path}")));
     }
     Ok(GitFilesystemAction::ShowFile {
-        tree: commit.tree,
+        tree: commit.tree.clone(),
         path: path.to_owned(),
     })
 }

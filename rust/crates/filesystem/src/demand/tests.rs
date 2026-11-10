@@ -780,7 +780,14 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     let mut peers = Vec::new();
     for _ in 0..1024 {
         let mut peer = source
-            .list_page(reference, &directory, None, 1, &peer_work, &peer_stop)
+            .list_page(
+                reference.clone(),
+                &directory,
+                None,
+                1,
+                &peer_work,
+                &peer_stop,
+            )
             .await?;
         peer.publication
             .as_mut()
@@ -852,7 +859,7 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     drop(peers);
     assert_eq!(peer_work.live_allocation_bytes(), baseline);
     assert!(matches!(
-        source.list_page(reference.clone(), &directory, Some(SourceCursor::detached(reference, token)),
+        source.list_page(reference.clone(), &directory, Some(SourceCursor::detached(reference.clone(), token)),
             1, WorkBudget::UNBOUNDED, &cancellation).await,
         Err(failure) if matches!(failure.error, DemandError::StaleCursor)
     ));
@@ -1384,7 +1391,7 @@ async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Resul
         };
         // This is the exact state the transport codec retains, independent of
         // any source-specific owner held by this test's page.
-        cursor = Some(SourceCursor::detached(next.source, next.token));
+        cursor = Some(SourceCursor::detached(next.source.clone(), next.token));
         // Native enumeration lifetime remains the caller's custody. Routing
         // preserves that owner while encoded tokens locate it weakly.
         owner = Some(next);

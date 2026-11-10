@@ -473,7 +473,7 @@ pub(super) fn advanced_origin_parent(parent: &LazyWorkspaceState) -> LazyWorkspa
         revision: parent.revision + 1,
         source: crate::demand::SourceReference {
             epoch: parent.source.epoch + 1,
-            ..parent.source
+            ..parent.source.clone()
         },
         overlay: LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).unwrap()),
         shadows: crate::LazyShadowId::from_bytes(
