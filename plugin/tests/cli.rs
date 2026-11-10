@@ -539,7 +539,7 @@ async fn failed_prompt_and_replay_report_the_original_cause() {
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         assert_eq!(output.stdout, b"fixture partial\n");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(stderr.trim_end(), format!("graphcoder: {cause}"));
+        assert_eq!(stderr.trim_end(), format!("acyclic: {cause}"));
         assert_eq!(model.generated(), 1, "replay dispatched model work");
     }
     model.close().await;
@@ -1287,10 +1287,10 @@ async fn catalog_errors_exit_with_their_cause_on_stderr() {
         assert!(output.stdout.is_empty());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.starts_with("graphcoder: ") && stderr.trim_end().len() > "graphcoder:".len(),
+            stderr.starts_with("acyclic: ") && stderr.trim_end().len() > "acyclic:".len(),
             "{stderr:?}"
         );
-        assert_eq!(stderr.matches("graphcoder: ").count(), 1, "{stderr:?}");
+        assert_eq!(stderr.matches("acyclic: ").count(), 1, "{stderr:?}");
     }
 }
 

@@ -117,20 +117,20 @@ pub struct Args {
     #[arg(global = true, long, requires = "operation")]
     pub event_cursor: Option<PathBuf>,
     /// Validate final JSON artifacts against this schema before reporting success.
-    #[arg(global = true, long, global = true)]
+    #[arg(global = true, long)]
     pub output_schema: Option<PathBuf>,
     /// Atomically replace this file with the last successfully validated output.
-    #[arg(global = true, long, global = true)]
+    #[arg(global = true, long)]
     pub output: Option<PathBuf>,
     /// Message identity: rerunning an operation replays its settled answers
     /// instead of sending its prompts again.
-    #[arg(global = true, long, global = true)]
+    #[arg(global = true, long)]
     pub operation: Option<String>,
     /// Reopen the last interactive conversation, including after a normal quit.
-    #[arg(global = true, long, global = true)]
+    #[arg(global = true, long)]
     pub resume: bool,
     /// Select an existing session by its canonical agent path.
-    #[arg(global = true, long, global = true)]
+    #[arg(global = true, long)]
     pub agent: Option<String>,
     /// Fork a decider's retained conversation event and workspace generation.
     #[arg(global = true, long, value_name = "AGENT_PATH@EVENT_OFFSET", conflicts_with_all = ["agent", "resume", "host_workspace"])]
@@ -373,6 +373,7 @@ pub enum Command {
     /// Execute through the same conversation driver used by prompt mode.
     Exec {
         /// One task; omitted reads JSONL requests from stdin.
+        #[arg(id = "task")]
         prompt: Option<String>,
     },
     /// Read one lazy page of the selected session's direct children.
