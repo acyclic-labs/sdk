@@ -51,7 +51,7 @@ impl FileTool {
         self.public_path(file.path(), io)?;
         crate::executor::with_history_io(io, |history| {
             let limits = scope.limits();
-            if matches!(self, Self::Read) {
+            if matches!(self, Self::Read | Self::Remove) {
                 limits.validate_file_metadata(&file, history)
             } else {
                 limits.validate_file(&file, history)
@@ -105,6 +105,18 @@ impl FileTool {
         let (file, custody) = match *self {
             Self::Read => {
                 let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                if let Some(ReadSelection::Directory { limit, .. }) = &input.0.selection {
+                    super::directory::validate_input(&input.0, *limit, work)?;
+                    context
+                        .ok_or_else(|| {
+                            error(
+                                crate::wire::ErrorCode::Unauthorized,
+                                "directory read requires its admitted context",
+                            )
+                        })?
+                        .authorize_tool_directory_read(&input.0.path, io)?;
+                    return Ok((None, input.1));
+                }
                 let source = self.path_source(
                     scope,
                     context,
@@ -153,8 +165,50 @@ impl FileTool {
                     io,
                 );
             }
+            Self::Remove => {
+                let input = decode::<RemoveFileInput>(&invocation.arguments, work)?;
+                if input.0.if_version.is_empty() || input.0.if_version == "absent" {
+                    return Err(error(
+                        crate::wire::ErrorCode::Invalid,
+                        "remove requires any or a version",
+                    ));
+                }
+                if input.0.if_version != "any" {
+                    return self.path_source(
+                        scope,
+                        context,
+                        &input.0.path,
+                        Some(&input.0.if_version),
+                        work,
+                        io,
+                    );
+                }
+                self.public_path(&input.0.path, io)?;
+                if input.0.path.len() > scope.limits().path_bytes {
+                    return Err(error(
+                        crate::wire::ErrorCode::Invalid,
+                        "file path exceeds original task bound",
+                    ));
+                }
+                return Ok((None, input.1));
+            }
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
+                if let Some(version) = input
+                    .0
+                    .if_version
+                    .as_deref()
+                    .filter(|version| !matches!(*version, "any" | "absent"))
+                {
+                    return self.path_source(
+                        scope,
+                        context,
+                        &input.0.path,
+                        Some(version),
+                        work,
+                        io,
+                    );
+                }
                 self.public_path(&input.0.path, io)?;
                 if input.0.path.len() > scope.limits().path_bytes {
                     return Err(error(
@@ -224,10 +278,10 @@ impl FileTool {
             let (file, custody) =
                 super::version::decode_tool_version(context, path, version, work)?;
             match file {
-                FileReadSource::Content(file) => Ok((Some(file), custody)),
+                super::version::SelectedVersion::Content(file) => Ok((Some(file), custody)),
                 // A selected generation grants no authority. The ordinary path
                 // authorization below must still establish the directory grant.
-                FileReadSource::Authored(_) => Ok((None, custody)),
+                super::version::SelectedVersion::Authored(_) => Ok((None, custody)),
             }
         })
     }

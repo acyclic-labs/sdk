@@ -1,5 +1,78 @@
 use super::*;
 
+/// An immutable namespace selection. The original producer supplies its
+/// generation and path; this does not assert a file length or content digest.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct PathSelection {
+    /// Original selected volume.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
+    pub volume: VolumeRef,
+    /// Validated path relative to that volume.
+    pub path: String,
+    /// Generation retained by the original producer.
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "WasmResourceRefWire & { kind: 'generation' }")
+    )]
+    pub generation: crate::resources::GenerationRef,
+}
+
+/// Borrowed wire projection: encoding a path version copies no retained
+/// volume, generation or path before writing the original output buffer.
+#[derive(Serialize)]
+pub(crate) struct PathSelectionView<'a> {
+    pub volume: &'a VolumeRef,
+    pub path: &'a str,
+    pub generation: &'a crate::resources::GenerationRef,
+}
+
+impl PathSelection {
+    pub(crate) fn view(&self) -> PathSelectionView<'_> {
+        PathSelectionView {
+            volume: &self.volume,
+            path: &self.path,
+            generation: &self.generation,
+        }
+    }
+
+    pub(crate) fn validate(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.view().validate(work)
+    }
+
+    pub(crate) fn matches_source(&self, file: &FilePathSelection) -> bool {
+        self.volume == file.volume && self.path == file.path && self.generation == file.generation
+    }
+
+    pub(crate) fn matches_content(&self, file: &FileRef) -> bool {
+        self.volume == file.volume()
+            && self.path == file.path()
+            && names_generation(file, self.generation)
+    }
+
+    fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+        self.volume.validate(work)?;
+        self.generation.validate(work)?;
+        validate_content_path(self.path, work)?;
+        if self.generation.as_resource().provider() != self.volume.provider()
+            || is_internal_path(self.path)
+        {
+            return Err(conversation_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "path selection belongs to another provider or an internal path",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// An immutable authored file selection. This identifies the selected generation
 /// and path; it makes no whole-file digest or native snapshot completeness claim.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -34,6 +107,14 @@ impl FilePathSelection {
             && self.byte_length == file.descriptor().byte_length()
             && names_generation(file, &self.generation)
     }
+
+    pub(crate) fn path_selection(&self) -> PathSelectionView<'_> {
+        PathSelectionView {
+            volume: &self.volume,
+            path: &self.path,
+            generation: &self.generation,
+        }
+    }
 }
 
 /// Whether a complete descriptor's version is `generation`'s key, as authored
@@ -55,19 +136,7 @@ impl FilePathSelection {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.volume.validate(work)?;
-        self.generation.validate(work)?;
-        validate_content_path(&self.path, work)?;
-        if self.generation.as_resource().provider() != self.volume.provider()
-            || is_internal_path(&self.path)
-        {
-            return Err(conversation_error(
-                work,
-                crate::wire::ErrorCode::Invalid,
-                "file selection belongs to another provider or an internal path",
-            ));
-        }
-        Ok(())
+        self.path_selection().validate(work)
     }
 
     #[cfg(feature = "filesystem")]

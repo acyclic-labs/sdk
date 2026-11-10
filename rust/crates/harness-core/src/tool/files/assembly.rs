@@ -15,6 +15,7 @@ impl FileTool {
         ) = match self {
             Self::Read => return crate::tools::catalog::READ.bind_with_projection(mode),
             Self::Write => return crate::tools::catalog::WRITE.bind_with_projection(mode),
+            Self::Remove => return crate::tools::catalog::REMOVE.bind_with_projection(mode),
             Self::Edit => return crate::tools::catalog::EDIT.bind_with_projection(mode),
             Self::Patch { .. } => (
                 "acyclic.patch_file",

@@ -259,11 +259,11 @@ pub use content::{
     ContentPublisher, ContentResidencyVerifier, ContentSource,
 };
 pub use directory::{
-    MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
+    DirectoryRead, MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
     PrivateDirectoryPage,
 };
-pub use file_source::FilePathSelection;
-pub(crate) use file_source::names_generation;
+pub use file_source::{FilePathSelection, PathSelection};
+pub(crate) use file_source::{PathSelectionView, names_generation};
 pub use files::{FileDescriptor, FileRef};
 #[cfg(feature = "filesystem")]
 pub(crate) use files::{PublicationDomain, PublicationWitness};

@@ -262,7 +262,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         clippy::too_many_arguments,
         reason = "The provider receives the grant, generation and cursor as separate borrowed fields."
     )]
-    fn list_private_directory<'a>(
+    fn list_private_directory<'a, 'io: 'a>(
         &'a self,
         _volume: &'a VolumeRef,
         _granted_prefix: &'a str,
@@ -271,8 +271,9 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _after: Option<&'a str>,
         _maximum_entries: u32,
         _ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, Option<PrivateDirectoryPage>>> {
+        io: Option<&'io ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, Option<(PrivateDirectoryPage, Option<ContentHold<'io>>)>>>
+    {
         Err(content_error(
             io,
             crate::wire::ErrorCode::Unsupported,
@@ -417,21 +418,39 @@ pub enum ContentChange<'a> {
         /// Exact source identity authorized for deletion in this commit.
         source: &'a FileRef,
     },
+    /// Removes the binding only while its original namespace selection is unchanged.
+    DeleteAt {
+        /// Original volume, path and generation; no content body is required.
+        source: &'a PathSelection,
+    },
+    /// Removes the current binding without requiring a source read.
+    Delete {
+        /// Destination authorized for deletion at the commit's selected cut.
+        path: &'a str,
+    },
 }
 
 impl ContentChange<'_> {
     /// Exact destination path covered by the publication.
     pub fn path(&self) -> &str {
         match self {
-            Self::CreateAbsent { path, .. } => path,
+            Self::CreateAbsent { path, .. } | Self::Delete { path } => path,
             Self::UpdateExpected { source, .. } | Self::DeleteExpected { source } => source.path(),
+            Self::DeleteAt { source } => &source.path,
         }
     }
     /// Original immutable source, when this change replaces or removes a file.
     pub fn source(&self) -> Option<&FileRef> {
         match self {
-            Self::CreateAbsent { .. } => None,
+            Self::CreateAbsent { .. } | Self::DeleteAt { .. } | Self::Delete { .. } => None,
             Self::UpdateExpected { source, .. } | Self::DeleteExpected { source } => Some(source),
+        }
+    }
+
+    pub(crate) fn path_source(&self) -> Option<&PathSelection> {
+        match self {
+            Self::DeleteAt { source } => Some(source),
+            _ => None,
         }
     }
 }
@@ -849,7 +868,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             crate::conversation::ContentAccess { ceiling, io },
         )
     }
-    fn list_private_directory<'a>(
+    fn list_private_directory<'a, 'io: 'a>(
         &'a self,
         volume: &'a VolumeRef,
         granted_prefix: &'a str,
@@ -858,8 +877,9 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         after: Option<&'a str>,
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
-        io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, Option<PrivateDirectoryPage>>> {
+        io: Option<&'io ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, Option<(PrivateDirectoryPage, Option<ContentHold<'io>>)>>>
+    {
         self.bound_reader(volume, io)?.list_private_directory(
             volume,
             granted_prefix,
