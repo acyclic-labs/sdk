@@ -698,7 +698,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         let projection = serde_json::json!({
             "$version": 1,
             "header": {
-                "$version": 1,
+                "version": 1,
                 "summary": request.request().summary,
                 "compose_tools": request.request().compose_tools,
                 "model": request.request().model,
