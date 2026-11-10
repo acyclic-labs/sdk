@@ -296,8 +296,9 @@ impl CaptureBatch<'_> {
         } else {
             None
         };
-        let reidentify = if let Some(namespace) =
-            self.source_namespace.filter(|_| !exists_with_kind)
+        let reidentify = if let Some(namespace) = self
+            .source_namespace
+            .filter(|_| !exists_with_kind && host_kind != FileKind::Directory)
         {
             let identity = crate::demand::native::file_identity(&metadata);
             let file_id = crate::demand::source_file_id(
