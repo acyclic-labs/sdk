@@ -14,20 +14,6 @@ enum Connection {
     Http(super::super::http::HttpMcpTransport),
 }
 
-// Eager schema exposure and event-driven refresh collect the same lazy pages.
-pub(super) async fn discover<F, Fut>(list: F) -> Result<Vec<McpToolDefinition>>
-where
-    F: FnMut(Option<String>) -> Fut,
-    Fut: std::future::Future<Output = Result<rmcp::model::ListToolsResult>>,
-{
-    super::super::tool_pages(list)
-        .try_fold(Vec::new(), |mut tools, page| async move {
-            tools.extend(page);
-            Ok(tools)
-        })
-        .await
-}
-
 pub(super) async fn connect(
     server: &McpServer,
     workspace: &Path,
@@ -236,7 +222,7 @@ impl Connection {
 /// Materializes the shared page stream for an eagerly exposed catalog.
 pub(super) async fn discover<F, Fut>(list: F) -> Result<Vec<McpToolDefinition>>
 where
-    F: Fn(Option<String>) -> Fut,
+    F: FnMut(Option<String>) -> Fut,
     Fut: std::future::Future<Output = Result<rmcp::model::ListToolsResult>>,
 {
     super::super::tool_pages(list)
