@@ -208,6 +208,9 @@ fn configure(
     let mut config = registry
         .graphcoder(&args.workspace, args.model.clone())?
         .working_directory(&std::env::current_dir()?)?;
+    if args.no_compaction {
+        config = config.compaction(acyclic_harness::context::CompactionPolicy::Disabled);
+    }
     if let Some(directory) = &args.host_state_directory {
         config = config.state_directory(directory);
     }

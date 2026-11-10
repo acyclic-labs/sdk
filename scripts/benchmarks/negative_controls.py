@@ -9,6 +9,13 @@ from pathlib import Path
 
 
 CONTROLS = [
+    ("doctor loses counterless execution policy", "graphcoder_harbor.py",
+     "self.binary, self.state, self.model_name, compaction=self.compaction",
+     "self.binary, self.state, self.model_name",
+     "test_harbor.HarborContracts.test_counterless_catalog_controls_doctor_and_execution"),
+    ("execution loses counterless policy", "graphcoder_harbor.py",
+     "instruction,\n            compaction=self.compaction", "instruction",
+     "test_harbor.HarborContracts.test_counterless_catalog_controls_doctor_and_execution"),
     ("task skills omitted from the project", "graphcoder_harbor.py",
      "if self.skills_dir:", "if False:",
      "test_harbor.HarborContracts.test_task_skills_are_project_files_and_copy_failure_revokes_execution"),

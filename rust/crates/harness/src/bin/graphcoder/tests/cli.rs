@@ -65,6 +65,10 @@ async fn model(directory: &Path) -> Model {
 }
 
 async fn model_response(directory: &Path, response: &'static str) -> Model {
+    model_adapter(directory, response, "responses").await
+}
+
+async fn model_adapter(directory: &Path, response: &'static str, adapter: &str) -> Model {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -75,7 +79,11 @@ async fn model_response(directory: &Path, response: &'static str) -> Model {
             post(|| async { Json(json!({"input_tokens": 64})) }),
         )
         .route(
-            "/responses",
+            if adapter == "chat" {
+                "/chat/completions"
+            } else {
+                "/responses"
+            },
             post(move |Json(body): Json<Value>| {
                 recorded.lock().unwrap().push(body);
                 async move { ([("content-type", "text/event-stream")], response) }
@@ -92,18 +100,49 @@ async fn model_response(directory: &Path, response: &'static str) -> Model {
     });
     let catalog = directory.join("catalog.json");
     std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
-        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
+        "adapter":adapter,"authentication":"optional","base_url":format!("http://{address}"),
         "models":{
             "tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}},
             "drifted":{"capacity":{"context_tokens":4096,"output_tokens":512},"features":{"tools":true,"images":false}}
         },"max_event_bytes":4096,
-        "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
+        "token_counter": (adapter != "chat").then(|| json!({"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}))
     }})).unwrap()).unwrap();
     Model {
         catalog,
         requests,
         stop,
         server,
+    }
+}
+
+#[tokio::test]
+async fn chat_without_a_counter_starts_with_explicit_no_compaction() {
+    const CHAT: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+    for unchecked in [false, true] {
+        let fixture = fixture();
+        let model = model_adapter(fixture._directory.path(), CHAT, "chat").await;
+        let mut args = vec!["-p", "hello"];
+        if unchecked {
+            args.push("--no-compaction");
+        }
+        let output = graphcoder(&fixture, &model.catalog, args, "").await;
+        if unchecked {
+            assert_eq!(succeeded(&output), "fixture answer\n");
+            assert_eq!(model.generated(), 1);
+        } else {
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("configure a verified input token counter"),
+                "{output:?}"
+            );
+            assert_eq!(
+                model.generated(),
+                0,
+                "counted negative control never generates"
+            );
+        }
+        model.close().await;
     }
 }
 

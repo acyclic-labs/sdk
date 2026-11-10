@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import importlib.metadata
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +47,21 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
         self.kwargs = dict(logs_dir=self.root / "logs", model_name="openai/fixture",
             graphcoder_binary=str(self.binary), graphcoder_sha256=hashlib.sha256(self.original).hexdigest(),
             source_sha="a" * 40, base_url="http://127.0.0.1:9999/v1", context_tokens=100, output_tokens=10)
+
+    async def test_counterless_catalog_controls_doctor_and_execution(self):
+        for provider, path, counterless in (("deepseek", "/deepseek/v1", True),
+                                           ("openai", "/v1", False)):
+            with self.subTest(provider=provider):
+                agent = GraphCoder(**{**self.kwargs, "model_name": provider + "/fixture",
+                    "base_url": "http://127.0.0.1:9999" + path})
+                environment = Environment()
+                await agent.setup(environment)
+                uploaded = json.loads(environment.uploads[agent.state + "/catalog.json"])
+                self.assertEqual(uploaded["benchmark"]["token_counter"] is None, counterless)
+                self.assertEqual("--no-compaction" in environment.commands[-1], counterless)
+                self.assertIn("doctor", environment.commands[-1])
+                await agent.run("hello", environment, None)
+                self.assertEqual("--no-compaction" in environment.commands[-1], counterless)
 
     async def test_install_run_and_failed_reinstall_fence_execution(self):
         self.assertEqual(importlib.metadata.version("harbor"), "0.24.0")

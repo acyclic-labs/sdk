@@ -91,7 +91,7 @@ def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: 
     }}
 
 
-def _invocation(binary: str, state: str, model: str) -> list[str]:
+def _invocation(binary: str, state: str, model: str, compaction: bool) -> list[str]:
     """The one environment and flag set both the readiness check and the run use."""
     home = str(PurePosixPath(state) / "home")
     return [
@@ -105,17 +105,18 @@ def _invocation(binary: str, state: str, model: str) -> list[str]:
         "ACYCLIC_SIGNING_CUSTODY=private-file", "ACYCLIC_SIGNING_CUSTODY_DIRECTORY=" + home,
         binary, "--catalog", str(PurePosixPath(state) / "catalog.json"),
         "--settings-root", home, "--model", "benchmark/" + model.split("/", 1)[1],
-    ]
+    ] + ([] if compaction else ["--no-compaction"])
 
 
-def doctor_command(binary: str, state: str, model: str) -> str:
+def doctor_command(binary: str, state: str, model: str, *, compaction: bool = True) -> str:
     """GraphCoder's own startup checks for the run's exact flags: every refusal at once."""
-    return 'env -i PATH="$PATH" ' + shlex.join(_invocation(binary, state, model) + ["doctor"])
+    return 'env -i PATH="$PATH" ' + shlex.join(_invocation(binary, state, model, compaction) + ["doctor"])
 
 
-def run_command(binary: str, state: str, logs: str, model: str, instruction: str) -> str:
+def run_command(binary: str, state: str, logs: str, model: str, instruction: str,
+                *, compaction: bool = True) -> str:
     """Keep prompt and every path as single shell arguments, including newlines."""
-    arguments = _invocation(binary, state, model) + ["--prompt=" + instruction]
+    arguments = _invocation(binary, state, model, compaction) + ["--prompt=" + instruction]
     # --workspace defaults to the task's native working directory. Redirection
     # preserves GraphCoder's exit status rather than that of a logging pipeline.
     return ('env -i PATH="$PATH" ' + shlex.join(arguments) + " > " + shlex.quote(str(PurePosixPath(logs) / "graphcoder.jsonl"))
