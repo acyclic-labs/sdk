@@ -214,14 +214,27 @@ message ReadRequest {
   uint32 limit = 3;
   // Minimum cut, as in TailRequest.
   repeated Revision at_least = 4;
-  // Exact indexed key, with a pinned exclusive search bound. limit counts
-  // matching records; without this clause it counts consecutive positions.
+  // Indexed selector, with a pinned exclusive search bound. limit counts
+  // matches; without this clause it counts consecutive positions.
   ReadKeySeek key = 5;
 }
 
+// Exact key: matches in [from, before), in order. Key range (end present):
+// index entries (k, sequence) with key <= k < end, sequence < before and
+// (k, sequence) >= (key, from), ascending; a record appears once per key it
+// carries in the range. Ranges are ascending only.
 message ReadKeySeek {
   bytes key = 1;
   uint64 before = 2;
+  // Exclusive last key of a range; absent selects key alone.
+  optional bytes end = 3;
+  ReadOrder order = 4;
+}
+
+enum ReadOrder {
+  READ_ORDER_ASCENDING = 0;
+  // Exact keys only: descending sequences, the latest match first.
+  READ_ORDER_LATEST_FIRST = 1;
 }
 
 enum WhenAbsent {

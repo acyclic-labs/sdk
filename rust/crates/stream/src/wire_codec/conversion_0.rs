@@ -284,24 +284,25 @@ pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, St
     })
 }
 
-/// Decodes the exact byte key and exclusive historical search bound.
+/// Decodes an indexed selector: exact key or key range, bound and order.
 pub fn read_key_from_wire(
     value: Option<wire::ReadKeySeek>,
 ) -> Result<Option<crate::ReadKeySeek>, StreamError> {
     value
         .map(|value| {
-            crate::ReadKeySeek::validate_key(&value.key)?;
-            Ok(crate::ReadKeySeek {
+            let key = crate::ReadKeySeek {
                 key: value.key.into(),
+                end: value.end.map(Into::into),
                 before: value.before,
-            })
+                order: crate::ReadOrder::from_wire(value.order)?,
+            };
+            key.validate()?;
+            Ok(key)
         })
         .transpose()
 }
 
-/// Transfers a bounded indexed lookup and its original key backing to the wire.
-/// Native backing retains its original custody and admits transport metadata;
-/// exhausted capacity refuses with `Capacity`, cancellation with `Unavailable`.
+/// Transfers indexed bounds with their original byte custody.
 pub fn read_key_to_wire(
     value: Option<crate::ReadKeySeek>,
 ) -> Result<Option<wire::ReadKeySeek>, StreamError> {
@@ -316,6 +317,18 @@ pub fn read_key_to_wire(
                     }
                 })?,
                 before: value.before,
+                end: value
+                    .end
+                    .map(|end| end.try_into_bytes())
+                    .transpose()
+                    .map_err(|error| {
+                        if error.kind() == std::io::ErrorKind::OutOfMemory {
+                            StreamError::Capacity
+                        } else {
+                            StreamError::Unavailable
+                        }
+                    })?,
+                order: value.order.to_wire(),
             })
         })
         .transpose()

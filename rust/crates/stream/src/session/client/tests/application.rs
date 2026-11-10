@@ -167,6 +167,8 @@ async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> T
     let prepare = |length, delivery| wire::SessionFollow {
         resource: wire_codec::session::stream_resource("events"),
         key: Some(wire::ReadKeySeek {
+            end: None,
+            order: Default::default(),
             key: vec![b'a'; length].into(),
             before: 4,
         }),
@@ -235,8 +237,11 @@ async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> T
     };
     follow.resource = wire_codec::session::stream_resource(crate::conformance::key_seek::SOURCE);
     follow.key = Some(wire::ReadKeySeek {
+        end: None,
+        order: Default::default(),
         key: Bytes::from_static(b"a"),
         before: 4,
+        ..Default::default()
     });
     follow.read_limit = 3;
     follow.until = Some(4);

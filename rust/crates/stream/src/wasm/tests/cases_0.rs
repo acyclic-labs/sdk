@@ -106,11 +106,11 @@ fn commit_normalization_is_canonical_and_shape_checked() -> Result<(), StreamErr
         normalize_commit_bytes(&wire.encode_to_vec()).map_err(|_| StreamError::InvalidArgument)?;
     assert_eq!(normalized, wire.encode_to_vec());
 
-    let invalid = wire::CommitRequest {
-        include_envelope: false,
-        conditions: Vec::new(),
-        ..wire
-    };
+    let mut invalid = wire;
+    invalid.include_envelope = false;
+    for effect in &mut invalid.effects {
+        effect.conditions.clear();
+    }
     assert_eq!(
         normalize_commit_bytes(&invalid.encode_to_vec()),
         Err("limit_exceeded")

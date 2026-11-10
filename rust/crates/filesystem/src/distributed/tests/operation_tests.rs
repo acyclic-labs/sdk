@@ -114,7 +114,7 @@ async fn indexed_operation(
     let mut records = store
         .provider
         .read(ReadRequest {
-            key: Some(acyclic_stream::ReadKeySeek { key, before }),
+            key: Some(acyclic_stream::ReadKeySeek::exact(key, before)),
             path: stream_path(authority, "/records")?,
             from: 1,
             limit: 1,

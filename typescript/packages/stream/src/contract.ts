@@ -1,4 +1,4 @@
-import { HeadProjection, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
+import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
@@ -171,8 +171,15 @@ export function wireRequest(request: WireRequest): Uint8Array {
         requirePathType(request.path);
         requireSequenceType(request.from);
         requireLimitType(request.limit);
-        if (request.key !== undefined) { requireBytesType(request.key.key); requireSequenceType(request.key.before); }
-        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: request.path, from: request.from, limit: request.limit, ...(request.key === undefined ? {} : { key: request.key }), atLeast: [...(request.atLeast ?? [])] }));
+        if (request.key !== undefined) {
+          requireBytesType(request.key.key); requireSequenceType(request.key.before);
+          if (request.key.end !== undefined) requireBytesType(request.key.end);
+          if (request.key.order !== undefined && request.key.order !== "ascending" && request.key.order !== "latest_first") throw new StreamError("invalid_argument", "read order is invalid");
+        }
+        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: request.path, from: request.from, limit: request.limit, ...(request.key === undefined ? {} : { key: {
+          key: request.key.key, before: request.key.before, ...(request.key.end === undefined ? {} : { end: request.key.end }),
+          order: request.key.order === "latest_first" ? ReadOrder.LATEST_FIRST : ReadOrder.ASCENDING,
+        } }), atLeast: [...(request.atLeast ?? [])] }));
       case "follow":
         requirePathType(request.path);
         requireSequenceType(request.from);

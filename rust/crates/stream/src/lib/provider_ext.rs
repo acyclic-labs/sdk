@@ -80,11 +80,21 @@ pub trait StreamProviderExt: StreamProvider {
         through: u64,
     ) -> impl std::future::Future<Output = Result<Option<DurableReceipt>, StreamError>> + ProviderTask;
 
-    /// One bounded direct-child page at a coherent authority snapshot.
+    /// One bounded direct-child page at a coherent authority snapshot: the
+    /// `children` read selector. Pages resume at `next_after`.
     fn children_page(
         &self,
         request: ChildrenPageRequest,
     ) -> impl std::future::Future<Output = Result<ChildrenPage, StreamError>> + ProviderTask;
+
+    /// The latest record carrying `key` at or after `at_least`, by one
+    /// latest-first indexed lookup, never a scan of the stream.
+    fn latest(
+        &self,
+        path: StreamPath,
+        key: Bytes,
+        at_least: RevisionCut,
+    ) -> impl std::future::Future<Output = Result<Option<Record>, StreamError>> + ProviderTask;
 
     /// Waits for the authority snapshot to cover the caller's minimum cut.
     fn wait_applied(
@@ -251,6 +261,28 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
             let view = self.heads(selection.clone()).await?;
             view.validate_for(&selection)?;
             view.children.ok_or(StreamError::InvalidResponse)
+        }
+    }
+
+    fn latest(
+        &self,
+        path: StreamPath,
+        key: Bytes,
+        at_least: RevisionCut,
+    ) -> impl std::future::Future<Output = Result<Option<Record>, StreamError>> + ProviderTask {
+        async move {
+            use futures::StreamExt as _;
+            self.read(ReadRequest {
+                key: Some(ReadKeySeek::latest(key, u64::MAX)),
+                path,
+                from: 0,
+                limit: 1,
+                at_least,
+            })
+            .await?
+            .next()
+            .await
+            .transpose()
         }
     }
 
