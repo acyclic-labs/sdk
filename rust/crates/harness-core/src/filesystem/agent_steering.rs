@@ -128,14 +128,9 @@ where
             ),
             None => crate::agent::BoundaryEnd::Open,
         };
-        let selection = crate::agent::select_boundary(
-            &*self.stream,
-            &self.agent.path,
-            from,
-            until,
-        )
-        .await
-        .map_err(agent_error)?;
+        let selection = crate::agent::select_boundary(&*self.stream, &self.agent.path, from, until)
+            .await
+            .map_err(agent_error)?;
         let initial_notices = crate::agent::turn_notices(&self.agent).map_err(agent_error)?;
         let inputs = selection.inputs.into_iter().filter(|(inbox, input)| {
             !matches!(input, crate::agent::InboxRecord::Notice {
