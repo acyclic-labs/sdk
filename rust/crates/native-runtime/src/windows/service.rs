@@ -22,7 +22,10 @@ use windows_sys::Win32::{
     },
 };
 
-pub(crate) fn spawn_service_process(executable: &Path) -> io::Result<File> {
+pub(crate) fn spawn_service_process(
+    executable: &Path,
+    arguments: &[std::ffi::OsString],
+) -> io::Result<File> {
     let executable_argument = executable.as_os_str().encode_wide().collect::<Vec<_>>();
     if executable_argument.contains(&0) {
         return Err(io::Error::new(
@@ -38,10 +41,10 @@ pub(crate) fn spawn_service_process(executable: &Path) -> io::Result<File> {
     }
     let mut executable_wide = executable_argument.clone();
     executable_wide.push(0);
-    let mut command_line = Vec::with_capacity(executable_argument.len() + 32);
-    command_line.push(u16::from(b'"'));
-    command_line.extend(executable_argument);
-    command_line.extend(format!("\" __service {}\0", crate::SERVICE_READY_ARGUMENT).encode_utf16());
+    let mut command = crate::ProcessCommand::new(executable);
+    command.args(arguments).arg(crate::SERVICE_READY_ARGUMENT);
+    let mut command_line = crate::process_tree::service_command_line(&command)?;
+    command_line.push(0);
 
     let (reader, writer) = readiness_pipe()?;
     let writer_handle: HANDLE = writer.as_raw_handle();

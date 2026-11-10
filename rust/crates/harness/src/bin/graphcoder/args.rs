@@ -41,6 +41,11 @@ pub enum Mounting {
     about = "Coding agent on the local harness's agents or an endpoint's"
 )]
 pub struct Args {
+    /// Internal detached owner, started through the shared readiness protocol.
+    #[arg(long, hide = true)]
+    pub local_service: bool,
+    #[arg(long, hide = true, requires = "local_service")]
+    pub signal_ready: bool,
     /// Own workspace files for native coding hosts, without a provider or agent loop.
     /// Emits a `workspace-owner-ready` JSONL event on stdout after request events are installed.
     #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "transcripts", "resume", "agent"])]

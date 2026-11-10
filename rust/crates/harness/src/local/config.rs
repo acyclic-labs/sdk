@@ -340,7 +340,6 @@ impl LocalHarnessConfig {
     }
     /// The one resolution of this composition's durable state directory: the injected directory, else the
     /// project's default under the per-user root.
-    #[cfg(test)]
     pub(super) fn resolved_state_directory(&self) -> Result<PathBuf> {
         let location = self.state_location()?;
         if let StateLocation::Directory(directory) = location {
