@@ -1535,7 +1535,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
                     })
             })
         })?;
-        let agents = request(&cwd, HostAction::Agents { task: parent.clone() })?;
+        let agents = request(&cwd, HostAction::Agents { task: parent.clone() , after: None, limit: 256 })?;
         assert_eq!(agents["agents"][0]["reference"], "endpoint-boundary");
         assert_eq!(request(&cwd, HostAction::Open {
             host: "codex".into(), session: "fixture-native-session".into(),
@@ -1647,9 +1647,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     let refused_operation = OperationId::new();
     assert!(
-        matches!(request_operation(&registry, &cwd, refused_operation, HostAction::Agents {
-        task: serde_json::from_value(result["task"].clone()).map_err(storage)?,
-    }), Err(ref error) if request_storage_cause(error, refused_operation) == failure)
+        matches!(request_operation(&registry, &cwd, refused_operation, HostAction::Agents { task: serde_json::from_value(result["task"].clone()).map_err(storage)?, after: None, limit: 256 }), Err(ref error) if request_storage_cause(error, refused_operation) == failure)
     );
     assert_eq!(
         std::fs::read_dir(&requests).map_err(storage)?.count(),

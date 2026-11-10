@@ -54,7 +54,7 @@ impl std::fmt::Display for InvalidWorkspaceCommand {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("step=admit native command: ")?;
         match self {
-            Self::Usage => formatter.write_str("expected fs COMMAND..., discard REF..., agents, log, capture or reopen ID; recovery: run acyclic --help"),
+            Self::Usage => formatter.write_str("expected fs COMMAND..., discard REF..., agents [--after ID] [--limit N], log, capture or reopen ID; recovery: run acyclic --help"),
             Self::Agent(cause) => write!(formatter, "{cause}; recovery: run acyclic reopen harness/agents/AGENT_ID"),
         }
     }
@@ -93,7 +93,32 @@ pub fn workspace_action(
                 .collect::<Vec<_>>()
                 .join(" "),
         },
-        ("agents", []) => HostAction::Agents { task: resolve()? },
+        ("agents", page) => {
+            let mut after = None;
+            let mut limit = None;
+            for pair in page.chunks(2) {
+                match pair {
+                    [flag, value] if flag == "--after" && after.is_none() => {
+                        after = Some(serde_json::from_value(json!(value))?)
+                    }
+                    [flag, value] if flag == "--limit" && limit.is_none() => {
+                        let parsed = value
+                            .parse::<u32>()
+                            .map_err(|_| InvalidWorkspaceCommand::Usage)?;
+                        if parsed == 0 {
+                            return Err(InvalidWorkspaceCommand::Usage.into());
+                        }
+                        limit = Some(parsed);
+                    }
+                    _ => return Err(InvalidWorkspaceCommand::Usage.into()),
+                }
+            }
+            HostAction::Agents {
+                task: resolve()?,
+                after,
+                limit: limit.unwrap_or(256),
+            }
+        }
         ("log", []) => HostAction::Fs {
             task: resolve()?,
             command: "log".into(),

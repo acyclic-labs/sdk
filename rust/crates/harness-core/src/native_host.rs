@@ -82,10 +82,14 @@ pub enum HostAction {
         /// Ordinary shared filesystem command.
         command: String,
     },
-    /// The agent's open children and their sessions.
+    /// One visible page of the agent's open children and their sessions.
     Agents {
         /// Parent agent.
         task: AgentPath,
+        /// Exclusive child identity seek.
+        after: Option<crate::agent::AgentId>,
+        /// Page size; splits work without limiting total children.
+        limit: u32,
     },
 }
 
