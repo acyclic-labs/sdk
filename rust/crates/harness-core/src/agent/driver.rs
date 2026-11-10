@@ -394,22 +394,6 @@ impl ConversationEntry {
         );
         self
     }
-    /// Exact files this immutable entry publishes to its readers. A reference
-    /// to one grants no directory, later version or unselected turn.
-    pub fn references_file(&self, file: &FileRef) -> bool {
-        self.output == *file
-            || self.targets.as_ref() == Some(file)
-            || match &self.input {
-                TurnInput::Message {
-                    body, attachments, ..
-                } => body.as_ref() == file || attachments.as_deref() == Some(file),
-                TurnInput::Brief { brief } => brief.as_ref() == file,
-                TurnInput::Notice { notice, .. } => notice.as_ref() == file,
-                TurnInput::Hook { event, .. } => event.as_ref() == file,
-                _ => false,
-            }
-    }
-
     /// Whether this entry belongs to the authenticated self-continuation of
     /// this exact agent and original goal run.
     #[must_use]
