@@ -274,6 +274,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .subscriptions
             .get(INBOX)
             .ok_or(Error::Record("agent inbox subscription missing"))?;
+        let settled_at_micros = delivery
+            .record
+            .as_ref()
+            .map(|record| record.committed_at_micros);
         let (wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
             (
                 Trigger::Record {
@@ -338,7 +342,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             &self.driver,
             &path,
             state,
-            (cursor, delivery.now_unix_ms),
+            (cursor, delivery.now_unix_ms, settled_at_micros),
             wake,
             cancellation,
         )
