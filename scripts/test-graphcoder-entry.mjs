@@ -41,9 +41,16 @@ try {
       running?.killExecutable();
     });
     const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
-    const frames = new TerminalFrames(screen);
     let parsed = Promise.resolve(), firstFrame = false;
     const raw = new OutputWatch(["\x1b[?25h"]);
+    const frames = new TerminalFrames(screen, () => {
+      if (firstFrame || failure) return;
+      if (screenText(screen).includes("GraphCoder") && raw.has("\x1b[?25h")) {
+        firstFrame = true;
+        if (terminal) running.input.write("\x04");
+        else { failure = new Error("piped invocation opened the TUI"); running.killExecutable(); }
+      }
+    });
     try {
       await new Promise((resolve, reject) => {
         provider.once("error", reject);
@@ -66,14 +73,7 @@ try {
         try {
           running.child.stdout.on("data", bytes => {
             raw.write(bytes);
-            parsed = frames.write(bytes, () => {
-              if (firstFrame || failure) return;
-              if (screenText(screen).includes("GraphCoder") && raw.has("\x1b[?25h")) {
-                firstFrame = true;
-                if (terminal) running.input.write("\x04");
-                else { failure = new Error("piped invocation opened the TUI"); running.killExecutable(); }
-              }
-            });
+            parsed = frames.write(bytes);
           });
           if (!terminal) running.input.end();
           // The same output producer owns this join. Early EOF reaches the
