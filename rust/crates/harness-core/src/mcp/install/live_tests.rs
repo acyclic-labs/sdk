@@ -72,24 +72,6 @@ impl McpToolTransport for Remote {
     }
 }
 
-// The production configured catalog nests per-server live sources. Keep
-// declaration selection and actual dispatch under the same server-only grant.
-struct Configured(ToolRegistry);
-impl crate::tool::ToolSource for Configured {
-    fn refresh(&self) -> BoxProviderFuture<'_, Result<()>> {
-        Box::pin(async move { self.0.refresh().await })
-    }
-    fn snapshot(&self) -> Result<ToolRegistry> {
-        Ok(self.0.clone())
-    }
-    fn was_removed(&self, name: &str) -> Result<bool> {
-        self.0.was_removed(name)
-    }
-    fn capability(&self) -> Option<&str> {
-        Some("mcp:configured")
-    }
-}
-
 #[tokio::test]
 async fn live_mcp_tools_append_deltas_preserve_prefix_and_refuse_removed_calls() -> Result<()> {
     for compose in [false, true] {
