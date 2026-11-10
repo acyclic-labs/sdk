@@ -3,7 +3,7 @@ use super::*;
 use crate::core::{AggregateKind, Authority, AuthorityRoot};
 use crate::{
     AgentId, Capabilities,
-    conversation::{VolumeClass, VolumeOwner},
+    conversation::{PrivateDirectoryEntry, PrivateDirectoryEntryKind, VolumeClass, VolumeOwner},
 };
 
 #[tokio::test]
