@@ -308,7 +308,7 @@ mod reference_tests {
                 decoded = decoded.paired().unwrap().0;
             }
             prop_assert_eq!(decoded.payload().unwrap(), payload.as_slice());
-            prop_assert_eq!(decoded, leaf);
+            prop_assert_eq!(&decoded, &leaf);
             let truncated = SourceReference {
                 components: old.components.slice(..old.components.len() - 1),
                 ..old.clone()
