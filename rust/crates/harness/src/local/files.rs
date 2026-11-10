@@ -70,7 +70,7 @@ impl LocalHarness {
             )
             .await?;
         match output {
-            acyclic_fs::GitCommandOutput::Committed(commit) => Ok(Some(commit.id.to_string())),
+            acyclic_fs::GitCommandOutput::Committed(commit) => Ok(Some(commit.id.to_hex())),
             acyclic_fs::GitCommandOutput::NoOp | acyclic_fs::GitCommandOutput::Filesystem(_) => {
                 Ok(None)
             }
