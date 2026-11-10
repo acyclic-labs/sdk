@@ -495,6 +495,26 @@ where
     }
 
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    /// Session admission for this endpoint's root uses the same audience as
+    /// its client enrollment. Local roots have a conversation audience;
+    /// admitted workloads retain their original host-selected audience.
+    pub fn client_authority(
+        &self,
+        root: &AgentPath,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    ) -> Result<acyclic_stream::session::Authority, Error> {
+        self.admit_path(root)?;
+        let issuer = self.admission.verify(&self.issuer, root).map_err(turn)?;
+        super::session_authority(
+            issuer
+                .native()
+                .ok_or(Error::Record("client admission requires native custody"))?,
+            clock,
+        )
+        .map_err(turn)
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     async fn client_observation(
         &self,
         root: &AgentPath,
@@ -587,25 +607,7 @@ where
         offset: u64,
         maximum: u64,
     ) -> Result<(Vec<u8>, u64), Error> {
-        self.admit_path(agent)?;
-        let state = self.agents.state(agent).await?;
-        let authority = agent_authority(
-            &self.issuer,
-            &self.admission,
-            &state.path,
-            &state.volumes,
-            state.adoption_grant(file),
-        )
-        .await
-        .map_err(turn)?;
-        let reader = super::FilesystemContentVerifier::new(
-            Arc::clone(&self.volumes),
-            &authority.verifier,
-            &authority.scope,
-            self.maximum_bytes,
-            None,
-        )
-        .map_err(turn)?;
+        let reader = self.reader(agent, Some(file)).await?;
         let length = file.descriptor().byte_length();
         let remaining = length
             .checked_sub(offset)
@@ -621,6 +623,42 @@ where
         .await
         .map_err(turn)?;
         Ok((bytes.to_vec(), length))
+    }
+
+    /// Authenticated reader of the selected agent's bound volumes, for shared
+    /// file projections such as a session's diff. Enrollment cannot widen its
+    /// original admission or read another session's private content.
+    pub async fn content_reader(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<Arc<super::FilesystemContentVerifier<StreamAuthorityStore<P>, O>>, Error> {
+        self.reader(agent, None).await
+    }
+
+    async fn reader(
+        &self,
+        agent: &AgentPath,
+        file: Option<&FileRef>,
+    ) -> Result<Arc<super::FilesystemContentVerifier<StreamAuthorityStore<P>, O>>, Error> {
+        self.admit_path(agent)?;
+        let state = self.agents.state(agent).await?;
+        let authority = agent_authority(
+            &self.issuer,
+            &self.admission,
+            &state.path,
+            &state.volumes,
+            file.map_or(&[][..], |file| state.adoption_grant(file)),
+        )
+        .await
+        .map_err(turn)?;
+        super::FilesystemContentVerifier::new(
+            Arc::clone(&self.volumes),
+            &authority.verifier,
+            &authority.scope,
+            self.maximum_bytes,
+            None,
+        )
+        .map_err(turn)
     }
 
     /// Reads at most `maximum` bytes from `offset` of `path` below `agent`'s

@@ -144,12 +144,46 @@ impl crate::hosting::Platform for LocalUser {
     ) -> BoxProviderFuture<'a, Result<Vec<crate::context::DiffFilePage>>> {
         Box::pin(async move {
             let local = self.harness()?;
-            if local.agents.get().map(Hosted::root) != Some(agent) {
-                return Err(Error::Unsupported(
-                    "a child agent's fork diff is unavailable".into(),
-                ));
+            if local.agents.get().map(Hosted::root) == Some(agent) {
+                return local.project_diff(&self.diffs, page).await;
             }
-            local.project_diff(&self.diffs, page).await
+            let state = local
+                .agents()
+                .await?
+                .0
+                .state(agent)
+                .await
+                .map_err(storage)?;
+            let project = state
+                .volumes
+                .iter()
+                .find(|binding| binding.name == "project")
+                .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
+            let operation = crate::filesystem::spawned_operation(agent, &project.name);
+            let base = local
+                .files
+                .creation_generation(&project.volume, operation)
+                .await?
+                .ok_or_else(|| {
+                    Error::Unsupported("selected project has no fork creation receipt".into())
+                })?;
+            let reference = crate::filesystem::workspace_ref(
+                project.volume.provider().clone(),
+                &project.volume.storage_name(&mut None)?,
+            )?;
+            let current = local.files.resolve(&reference, None).await?.generation;
+            let reader = local
+                .agents
+                .get()
+                .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+                .server
+                .bound()
+                .content_reader(agent)
+                .await
+                .map_err(storage)?;
+            self.diffs
+                .page(&*reader, &project.volume, (&base, &current), page)
+                .await
         })
     }
 

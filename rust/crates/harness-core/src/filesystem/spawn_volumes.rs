@@ -111,6 +111,12 @@ fn key(child: &AgentPath, name: &str) -> [u8; 16] {
     bytes
 }
 
+/// Creation identity of an agent's forked binding. Observation of its original
+/// generation uses this same receipt, independently of later edits or merges.
+pub fn spawned_operation(child: &AgentPath, binding: &str) -> acyclic_fs::OperationId {
+    acyclic_fs::OperationId::from_bytes(key(child, binding))
+}
+
 fn invalid(error: crate::Error) -> Error {
     Error::Turn(Box::new(error))
 }
@@ -135,10 +141,7 @@ fn spawned_volume(
         &mut None,
     )
     .map_err(invalid)?;
-    Ok((
-        destination,
-        acyclic_fs::OperationId::from_bytes(key(child, &binding.name)),
-    ))
+    Ok((destination, spawned_operation(child, &binding.name)))
 }
 
 /// The volume spawned child `child` binds in place of its parent's volume

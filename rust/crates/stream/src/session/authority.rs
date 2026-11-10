@@ -182,11 +182,7 @@ impl Authority {
         let credential: Credential = self.snapshot().and_then(|snapshot| {
             verify::verify(bytes, snapshot.trust.as_ref(), snapshot.now_unix_seconds)
                 .map(Arc::new)
-                .map_err(|error| {
-                    #[cfg(any(test, feature = "test-support"))]
-                    eprintln!("session credential admission: {}", error.kind());
-                    error.into()
-                })
+                .map_err(Into::into)
         });
         let revision = slots
             .next_revision
@@ -313,11 +309,7 @@ impl Authority {
                 PolicyDecision::Allow,
                 scope,
             )
-            .map_err(|error| {
-                #[cfg(any(test, feature = "test-support"))]
-                eprintln!("session request authorization: {}", error.kind());
-                Rejection::from(error)
-            })
+            .map_err(Rejection::from)
     }
     fn filter(
         &self,
