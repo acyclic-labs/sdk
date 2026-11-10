@@ -1,0 +1,65 @@
+--- a/rust/crates/filesystem/src/kernel/file_table/page_codec.rs
++++ b/rust/crates/filesystem/src/kernel/file_table/page_codec.rs
+@@ -1,4 +1,8 @@
+ use super::*;
++
++fn missing_writer_guard(guard: &str) -> bool {
++    std::env::var("ACYFS_WRITER_OMIT_GUARD").as_deref() == Ok(guard)
++}
+ 
+ /// Encodes one canonical page with before-effect admission.
+ pub fn encode_file_table_page<E>(
+@@ -41,7 +45,7 @@
+     let mut observe =
+         |step| crate::kernel::codec::observe_encoding(&mut observe, step, data_custody);
+     observe(EncodeWorkStep::Check)?;
+-    if count(records.len())? > maximum_items {
++    if count(records.len())? > maximum_items && !missing_writer_guard("leaf-limit") {
+         return Err(invariant(FileTableError::TooManyItems).into());
+     }
+     let mut length = DOMAIN.len() + 2 + 1 + 4;
+@@ -54,10 +58,10 @@
+             ..WorkCounters::default()
+         };
+         observe(EncodeWorkStep::Admit(examined))?;
+-        let validation = if prior.is_some_and(|prior| prior >= record.file_id) {
++        let validation = if prior.is_some_and(|prior| prior >= record.file_id) && !missing_writer_guard("leaf-order") {
+             Err(invariant(FileTableError::NotStrictlyOrdered))
+         } else {
+-            record.validate().map_err(invariant)
++            if missing_writer_guard("record") { Ok(()) } else { record.validate().map_err(invariant) }
+         };
+         observe(EncodeWorkStep::Completed(examined))?;
+         validation?;
+@@ -116,10 +120,10 @@
+     use crate::kernel::codec::EncodeWorkStep;
+     observe(EncodeWorkStep::Check)?;
+     let item_count = count(children.len())?;
+-    if item_count == 0 {
++    if item_count == 0 && !missing_writer_guard("internal-empty") {
+         return Err(invariant(FileTableError::InvalidInternalPage).into());
+     }
+-    if item_count > maximum_items {
++    if item_count > maximum_items && !missing_writer_guard("internal-limit") {
+         return Err(invariant(FileTableError::TooManyItems).into());
+     }
+     let mut prior = None;
+@@ -131,7 +135,8 @@
+         };
+         observe(EncodeWorkStep::Admit(examined))?;
+         let valid =
+-            !prior.is_some_and(|prior| prior >= file_id) && page.kind == ObjectKind::FileTablePage;
++            (!prior.is_some_and(|prior| prior >= file_id) || missing_writer_guard("internal-order"))
++                && (page.kind == ObjectKind::FileTablePage || missing_writer_guard("internal-kind"));
+         observe(EncodeWorkStep::Completed(examined))?;
+         if !valid {
+             return Err(invariant(FileTableError::InvalidInternalPage).into());
+@@ -398,7 +403,7 @@
+         ..WorkCounters::default()
+     };
+     observe(EncodeWorkStep::Admit(examined))?;
+-    let validation = record.validate().map_err(invariant);
++    let validation = if missing_writer_guard("standalone-record") { Ok(()) } else { record.validate().map_err(invariant) };
+     observe(EncodeWorkStep::Completed(examined))?;
+     validation?;
+     let item_length = file_record_encoded_length(record)?;

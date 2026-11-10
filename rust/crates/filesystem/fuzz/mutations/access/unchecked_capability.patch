@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/access/trie.rs
++++ b/rust/crates/filesystem/src/access/trie.rs
+@@ -352,7 +352,7 @@
+         self.config == other.config
+             && self.volume == other.volume
+             && self.subject == other.subject
+-            && self.capability_binding == other.capability_binding
++            && true
+     }
+
+     /// Policy revision used for every decision in this view.

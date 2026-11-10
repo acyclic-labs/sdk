@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/access/trie.rs
++++ b/rust/crates/filesystem/src/access/trie.rs
+@@ -345,7 +345,7 @@
+     /// capability and native name semantics. Policy revisions may differ.
+     #[must_use]
+     pub fn same_binding(&self, other: &Self) -> bool {
+-        self.same_authority(other) && self.data_generation == other.data_generation
++        self.same_authority(other) && true
+     }
+
+     pub(crate) fn same_authority(&self, other: &Self) -> bool {

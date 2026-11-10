@@ -1,0 +1,9 @@
+--- a/rust/crates/filesystem/src/access/view.rs
++++ b/rust/crates/filesystem/src/access/view.rs
+@@ -129,5 +129,5 @@
+ fn can_replace(current: &PathTrie, next: &PathTrie) -> bool {
+     next.same_binding(current)
+         && next.policy_version() >= current.policy_version()
+-        && next.head_position() >= current.head_position()
++        && true
+ }

@@ -334,14 +334,12 @@ impl Write for MaterializationWriter<'_> {
             return acyclic_native_runtime::write_file(&mut self.file, bytes);
         };
         let remaining = work.remaining().map_err(std::io::Error::other)?;
-        let length = bytes
-            .len()
-            .min(remaining.object_bytes_written as usize)
-            .min(if self.encoded {
-                remaining.bytes_encoded as usize
-            } else {
-                usize::MAX
-            });
+        let limit = remaining.object_bytes_written.min(if self.encoded {
+            remaining.bytes_encoded
+        } else {
+            u64::MAX
+        });
+        let length = bounded_write_length(bytes.len(), limit);
         if length == 0 && !bytes.is_empty() {
             work.charge(crate::WorkCounters {
                 object_bytes_written: 1,
@@ -407,4 +405,9 @@ pub(super) fn materialization_open_at(
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
     })?;
     crate::native_host::open_leaf(parent, Path::new(leaf), options, &mut &*work)
+}
+
+// An allowance wider than the native slice index cannot constrain its length.
+pub(super) fn bounded_write_length<N: Copy + Ord + TryFrom<u64>>(length: N, limit: u64) -> N {
+    N::try_from(limit).map_or(length, |limit| length.min(limit))
 }

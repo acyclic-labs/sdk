@@ -4,6 +4,54 @@ use std::sync::{OnceLock, Weak};
 
 type Owners<T> = OrderedMutex<BTreeMap<PathBuf, ([u8; 16], Weak<T>)>, OPERATION>;
 
+/// Shared joins retain this entire value atomically, including its native
+/// handle. Retire the handle before the owner's Arc and physical teardown.
+#[derive(Debug)]
+pub(super) struct OwnerRef {
+    _handle: acyclic_native_runtime::StoreHandle,
+    owner: Arc<Owner>,
+}
+
+impl OwnerRef {
+    pub(super) fn new(owner: Arc<Owner>) -> Self {
+        Self {
+            _handle: owner._claim.handle(),
+            owner,
+        }
+    }
+}
+
+impl std::ops::Deref for OwnerRef {
+    type Target = Owner;
+
+    fn deref(&self) -> &Owner {
+        &self.owner
+    }
+}
+
+pub(super) fn create(
+    root: &Path,
+    cache_limit: Option<usize>,
+) -> Result<Arc<Owner>, LocalCoreStateStoreError> {
+    let claim =
+        acyclic_native_runtime::StoreClaim::acquire(&root.join(OWNER_LOCK)).map_err(|error| {
+            if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
+                LocalCoreStateStoreError::OwnershipConflict(root.to_owned())
+            } else {
+                error.into()
+            }
+        })?;
+    Ok(Arc::new(Owner {
+        residents: Arc::default(),
+        log: Mutex::default(),
+        flush_gate: Mutex::default(),
+        pending: AtomicBool::new(false),
+        failed: AtomicBool::new(false),
+        cache_limit,
+        _claim: claim,
+    }))
+}
+
 // Registry -> OS namespace lock. Neither the record log nor provider/view locks
 // are acquired while holding this registry. The constructor uses try-lock only.
 fn join<T, const FENCE: bool>(
@@ -44,19 +92,15 @@ impl LocalCoreStateStore {
         let held =
             crate::native_host::HostRoot::open(&root, &mut crate::native_host::ordinary_work())
                 .map_err(|error| LocalCoreStateStoreError::LazyWork(error.into()))?;
-        static OWNERS: OnceLock<Owners<Owner>> = OnceLock::new();
+        static OWNERS: OnceLock<Owners<OwnerRef>> = OnceLock::new();
         let owner = join::<_, true>(
             OWNERS.get_or_init(|| OrderedMutex::new(BTreeMap::new())),
             root.clone(),
             held.identity().to_bytes(),
             || {
-                let store = Self::open_owned(&root)?;
-                let Ownership::Owned(mut owner) = store.ownership else {
-                    unreachable!()
-                };
-                Arc::get_mut(&mut owner).expect("new owner").cache_limit =
-                    Some(super::contexts::OWNED_CHECKPOINT as usize);
-                Ok(owner)
+                create(&root, Some(super::contexts::OWNED_CHECKPOINT as usize))
+                    .map(OwnerRef::new)
+                    .map(Arc::new)
             },
         )?;
         Ok(Self {
@@ -149,7 +193,7 @@ mod tests {
         else {
             panic!("joined store is not owned")
         };
-        assert!(Arc::ptr_eq(a, b));
+        assert!(Arc::ptr_eq(&a.owner, &b.owner));
         assert!(LocalCoreStateStore::open_owned(directory.path()).is_err());
         drop(first);
         assert!(LocalCoreStateStore::open_owned(directory.path()).is_err());
@@ -196,5 +240,109 @@ mod tests {
         ));
         drop(first);
         LocalCoreStateStore::open_shared_owner(&root).unwrap();
+    }
+
+    #[test]
+    fn shared_join_cannot_turn_an_exclusive_open_into_a_retirement_wait() {
+        crate::initialize_test_native_io();
+
+        fn retain<T>(owner: &Arc<T>) -> Arc<T> {
+            let registry = Owners::new(BTreeMap::from([(
+                PathBuf::from("namespace"),
+                ([1; 16], Arc::downgrade(owner)),
+            )]));
+            join::<_, true>(&registry, "namespace".into(), [1; 16], || {
+                panic!("the shared join must retain the existing owner")
+            })
+            .unwrap()
+        }
+
+        fn conflicts(retain_handle: bool) -> bool {
+            let directory = tempfile::tempdir().unwrap();
+            let original = Arc::new(OwnerRef::new(create(directory.path(), None).unwrap()));
+            let release = original._claim.release_observer();
+            // Stop the shared opener immediately after its registry upgrade,
+            // before it constructs a store. The negative control upgrades only
+            // the bare owner, reproducing the original Arc/handle gap.
+            let (joined, bare) = if retain_handle {
+                (Some(retain(&original)), None)
+            } else {
+                (None, Some(retain(&original.owner)))
+            };
+            drop(original);
+
+            let (events, received) = std::sync::mpsc::channel();
+            let registered = events.clone();
+            let observer = std::thread::spawn(move || {
+                if release.wait_registered().is_ok() {
+                    registered.send(true).unwrap();
+                }
+            });
+            let path = directory.path().to_owned();
+            let opener = std::thread::spawn(move || {
+                let result = LocalCoreStateStore::open_owned(path);
+                events.send(false).unwrap();
+                result
+            });
+            // The actual claim registration event races the exclusive open's
+            // completion. No timeout, sleep or readiness probe is involved.
+            let waited = received.recv().unwrap();
+            drop((joined, bare));
+            observer.join().unwrap();
+            let result = opener.join().unwrap();
+            if waited {
+                assert!(result.is_ok(), "{result:?}");
+                false
+            } else {
+                matches!(result, Err(LocalCoreStateStoreError::OwnershipConflict(_)))
+            }
+        }
+
+        assert!(
+            conflicts(true),
+            "a shared join waited on its own live store"
+        );
+        assert!(!conflicts(false), "the bare-owner negative control escaped");
+    }
+
+    #[test]
+    fn reopening_waits_for_the_retiring_native_owner() {
+        crate::initialize_test_native_io();
+        for shared in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = if shared {
+                LocalCoreStateStore::open_shared_owner(directory.path())
+            } else {
+                LocalCoreStateStore::open_owned(directory.path())
+            }
+            .unwrap();
+            let Ownership::Owned(owner) = &store.ownership else {
+                panic!("not owned")
+            };
+            // Retain physical teardown after the last public handle retires.
+            let retiring = owner.owner.clone();
+            let release = owner._claim.release_observer();
+            drop(store);
+            let (events, received) = std::sync::mpsc::channel();
+            let registered = events.clone();
+            let observer = std::thread::spawn(move || {
+                registered.send(release.wait_registered().is_ok()).unwrap();
+            });
+            let path = directory.path().to_owned();
+            let opener = std::thread::spawn(move || {
+                let result = LocalCoreStateStore::open_owned(path);
+                events.send(false).unwrap();
+                result
+            });
+            let waited = received.recv().unwrap();
+            drop(retiring);
+            observer.join().unwrap();
+            let reopened = opener.join().unwrap();
+            assert!(
+                waited,
+                "reopen refused instead of waiting for native retirement"
+            );
+            assert!(reopened.is_ok(), "{reopened:?}");
+        }
     }
 }

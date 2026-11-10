@@ -60,15 +60,12 @@ enum Ownership {
     /// Each transaction is admitted by a shared `owner.lock`.
     Shared,
     /// Sole owner; clones share its lock and record cache.
-    Owned(Arc<Owner>),
+    Owned(Arc<owners::OwnerRef>),
 }
 
 /// Lifetime-long exclusive ownership of one namespace.
 #[derive(Debug)]
 struct Owner {
-    /// Held without a descriptor; transactions of other handles refuse while
-    /// it names a live owner.
-    _claim: acyclic_native_runtime::StoreClaim,
     /// Cached logged records, `None` when absent. Joinable owners bound this cache.
     residents: Arc<RwLock<Residents>>,
     /// Core-state log, opened by the first logged transaction. Its mutex
@@ -80,6 +77,8 @@ struct Owner {
     /// An uncertain append/barrier requires closing and reopening this owner.
     failed: AtomicBool,
     cache_limit: Option<usize>,
+    /// Last: the WAL and cached records retire before native ownership releases.
+    _claim: acyclic_native_runtime::StoreClaim,
 }
 
 /// One held lock file, released when dropped.
@@ -195,7 +194,7 @@ enum Admission {
     Shared {
         _lock: OwnerLock,
     },
-    Owned(Arc<Owner>),
+    Owned(Arc<owners::OwnerRef>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -221,26 +220,10 @@ impl LocalCoreStateStore {
     pub fn open_owned(root: impl Into<PathBuf>) -> Result<Self, LocalCoreStateStoreError> {
         let root = root.into();
         std::fs::create_dir_all(&root)?;
-        let claim = acyclic_native_runtime::StoreClaim::acquire(&root.join(OWNER_LOCK)).map_err(
-            |error| {
-                if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
-                    LocalCoreStateStoreError::OwnershipConflict(root.clone())
-                } else {
-                    error.into()
-                }
-            },
-        )?;
+        let owner = owners::create(&root, None)?;
         Ok(Self {
             root: Arc::new(root),
-            ownership: Ownership::Owned(Arc::new(Owner {
-                _claim: claim,
-                residents: Arc::default(),
-                log: Mutex::default(),
-                flush_gate: Mutex::default(),
-                pending: AtomicBool::new(false),
-                failed: AtomicBool::new(false),
-                cache_limit: None,
-            })),
+            ownership: Ownership::Owned(Arc::new(owners::OwnerRef::new(owner))),
             deferral: None,
             inspection: false,
             journal_work: None,
@@ -371,7 +354,7 @@ impl LocalCoreStateStore {
                     OwnerLock::shared(&root)?
                 },
             },
-            (Ownership::Owned(owner), _) => Admission::Owned(Arc::clone(owner)),
+            (Ownership::Owned(owner), _) => Admission::Owned(owner.clone()),
         };
         let deferred = matches!(admission, Admission::Owned(_))
             && self

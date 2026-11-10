@@ -52,9 +52,9 @@ async fn cancelled_retirement_keeps_contending_async_controls_off_the_executor()
 
     // All three admissions must yield while retained retirement holds the lock.
     // Only a sibling on this current-thread executor can release that owner.
-    let mut live = Box::pin(with_live_session_async(
+    let mut live = Box::pin(with_session_work_async(
         &session,
-        &work,
+        &mount.source,
         NativeSessionControl::FlushCallbacks,
     ));
     let mut sync = Box::pin(mount.sync());

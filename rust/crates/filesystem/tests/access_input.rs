@@ -14,6 +14,17 @@ pub struct Input {
     pub now: u64,
     #[serde(default)]
     pub native_name: Option<(u8, Vec<u8>)>,
+    #[serde(default)]
+    pub publications: Vec<Publication>,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Publication {
+    pub version: u64,
+    pub head: u64,
+    pub binding: u8,
+    pub data_generation: Option<[u8; 32]>,
 }
 
 pub fn check(bytes: &[u8]) {
@@ -94,7 +105,8 @@ fn check_decisions<const CORRUPT_DECISION: bool>(
     // The same bounded construction may refuse a larger principal-independent
     // automaton. Successful constructions must match every decision and name.
     let shared = shared.ok().map(std::sync::Arc::new);
-    let trie = std::sync::Arc::new(trie);
+    let published = AccessView::new(trie);
+    let trie = published.current()?;
     let prepared = trie.prepare(&input.path);
     for action in Action::ALL {
         let expected = decide(
@@ -125,6 +137,71 @@ fn check_decisions<const CORRUPT_DECISION: bool>(
     check_native_name(&input, &trie, resource, context)?;
     if let Some(shared) = &shared {
         check_native_name(&input, shared, resource, context)?;
+    }
+    check_publications(&input, &published, resource, context)?;
+    Ok(())
+}
+
+fn check_publications(
+    input: &Input,
+    published: &AccessView,
+    resource: Resource<'_>,
+    context: Context,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut version = input.policy.version;
+    let mut head = resource.head;
+    for update in &input.publications {
+        let mut policy = input.policy.clone();
+        policy.version = update.version;
+        let mut principal = input.principal.clone();
+        let mut capability = input.capability.clone();
+        let mut next = resource;
+        next.head = update.head;
+        // Each nonzero selector changes one independently authenticated field.
+        let binding = update.binding % 5;
+        match binding {
+            1 => next.volume = "other-project",
+            2 => principal.id.push_str("/other"),
+            3 => capability.layers.push(Vec::new()),
+            4 => {
+                use acyclic_fs::model::CaseSensitivity;
+                next.config.case_sensitivity = match next.config.case_sensitivity {
+                    CaseSensitivity::Sensitive => CaseSensitivity::ProfileFolded,
+                    CaseSensitivity::ProfileFolded => CaseSensitivity::Sensitive,
+                };
+            }
+            _ => {}
+        }
+        let Ok(mut candidate) = PathTrie::compile(&policy, &principal, next, context, &capability)
+        else {
+            continue;
+        };
+        if let Some(generation) = update.data_generation {
+            candidate = candidate.with_data_generation(acyclic_fs::GenerationId::new(
+                acyclic_fs::Digest::from_bytes(generation),
+            ));
+        }
+        let previous = published.current()?;
+        // This relation uses the input history, not the production binding
+        // predicate or the result of a second publication implementation.
+        let accepted = binding == 0
+            && update.data_generation.is_none()
+            && update.version >= version
+            && update.head >= head;
+        assert_eq!(
+            published.publish(candidate).is_ok(),
+            accepted,
+            "published access changed binding or rolled back a revision"
+        );
+        let current = published.current()?;
+        if accepted {
+            version = update.version;
+            head = update.head;
+        } else {
+            assert!(std::sync::Arc::ptr_eq(&previous, &current));
+        }
+        assert_eq!(current.policy_version(), version);
+        assert_eq!(current.head_position(), head);
     }
     Ok(())
 }

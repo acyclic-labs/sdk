@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/access/trie.rs
++++ b/rust/crates/filesystem/src/access/trie.rs
+@@ -351,7 +351,7 @@
+     pub(crate) fn same_authority(&self, other: &Self) -> bool {
+         self.config == other.config
+             && self.volume == other.volume
+-            && self.subject == other.subject
++            && true
+             && self.capability_binding == other.capability_binding
+     }
+

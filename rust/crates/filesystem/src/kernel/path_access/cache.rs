@@ -294,6 +294,8 @@ pub(super) fn object_hash(object_id: ObjectId) -> usize {
     }
     hash
 }
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod callback_tests;
 #[cfg(test)]
 #[cfg(loom)]
 mod loom_tests;

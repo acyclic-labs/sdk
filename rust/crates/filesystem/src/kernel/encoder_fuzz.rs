@@ -31,19 +31,262 @@ fn record_copies(record: &FileRecord) -> u64 {
         }
 }
 
+fn check_file_table_write(
+    expected: Option<FileTableError>,
+    examined: u64,
+    encode: impl FnOnce(
+        &mut dyn FnMut(EncodeWorkStep) -> Result<(), FsError>,
+    ) -> Result<Vec<u8>, FsError>,
+) -> Option<Vec<u8>> {
+    let mut completed = WorkCounters::UNCHARGED;
+    let mut allocated = false;
+    let result = encode(&mut |step| {
+        match step {
+            EncodeWorkStep::Completed(delta) => {
+                completed.items_examined += delta.items_examined;
+                completed.bytes_encoded += delta.bytes_encoded;
+                completed.bytes_copied += delta.bytes_copied;
+            }
+            EncodeWorkStep::Allocation(_) => allocated = true,
+            _ => {}
+        }
+        Ok(())
+    });
+    let Some(expected) = expected else {
+        assert!(
+            result.is_ok(),
+            "file-table writer refused an admitted record"
+        );
+        return result.ok();
+    };
+    let actual = match result {
+        Err(FsError::Decode(CanonicalDecodeError::Invariant(
+            super::codec::CanonicalInvariant::FileTable(error),
+        ))) => Some(error),
+        _ => None,
+    };
+    assert_eq!(actual, Some(expected), "file-table writer refusal differs");
+    assert_eq!(
+        completed,
+        WorkCounters {
+            items_examined: examined,
+            ..WorkCounters::UNCHARGED
+        },
+        "file-table writer refusal completed effects"
+    );
+    assert!(!allocated, "file-table writer refusal allocated output");
+    None
+}
+
+// Mutate admitted records, retaining their captured identities and references.
+// Both production writer entry points must agree on admission and preserve values.
+fn check_file_record_writer(record: FileRecord) {
+    let check = |record: FileRecord, valid: bool| {
+        let expected = (!valid).then_some(FileTableError::InvalidRecord);
+        let bytes = check_file_table_write(expected, 1, |observe| {
+            super::file_table::encode_file_record(record, observe, |_| {
+                FsError::from(CanonicalDecodeError::AllocationFailed)
+            })
+        });
+        if let Some(bytes) = bytes {
+            let decoded = super::file_table::decode_file_record(&bytes);
+            assert_eq!(decoded.as_ref().ok(), Some(&record));
+        }
+        let page = FileTablePage::Leaf(vec![record]);
+        let bytes = check_file_table_write(expected, 1, |observe| {
+            encode_file_table_page(&page, u32::MAX, observe, |_| {
+                FsError::from(CanonicalDecodeError::AllocationFailed)
+            })
+        });
+        if let Some(bytes) = bytes {
+            let decoded = decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| {
+                Ok::<_, FsError>(())
+            });
+            assert_eq!(decoded.as_ref().ok(), Some(&page));
+        }
+    };
+    let wrong_reference = crate::ObjectId {
+        kind: crate::ObjectKind::Blob,
+        ..record.metadata
+    };
+    for invalid in [
+        FileRecord {
+            link_count: 0,
+            ..record
+        },
+        FileRecord {
+            metadata: wrong_reference,
+            ..record
+        },
+        FileRecord {
+            bindings: Some(wrong_reference),
+            ..record
+        },
+    ] {
+        check(invalid, false);
+    }
+    if let Some(payload) = wrong_payload(record.payload) {
+        check(FileRecord { payload, ..record }, false);
+    }
+    // Enumerate the complete persisted kind byte, rather than a second kind list.
+    for kind in (0..=u8::MAX).filter_map(|tag| FileKind::from_tag(tag).ok()) {
+        let valid = match record.kind {
+            FileKind::Regular
+            | FileKind::Directory
+            | FileKind::SymbolicLink
+            | FileKind::ReparsePoint => kind == record.kind,
+            FileKind::CharacterDevice | FileKind::BlockDevice => {
+                matches!(kind, FileKind::CharacterDevice | FileKind::BlockDevice)
+            }
+            FileKind::Fifo | FileKind::Socket | FileKind::MountBoundary => matches!(
+                kind,
+                FileKind::Fifo | FileKind::Socket | FileKind::MountBoundary
+            ),
+        };
+        check(FileRecord { kind, ..record }, valid);
+    }
+}
+
+fn wrong_payload(payload: FilePayload) -> Option<FilePayload> {
+    match payload {
+        FilePayload::Regular {
+            logical_bytes,
+            mut extents,
+        } => {
+            extents.kind = crate::ObjectKind::Blob;
+            Some(FilePayload::Regular {
+                logical_bytes,
+                extents,
+            })
+        }
+        FilePayload::Directory { mut entries } => {
+            entries.kind = crate::ObjectKind::Blob;
+            Some(FilePayload::Directory { entries })
+        }
+        FilePayload::SymbolicLink {
+            target_bytes,
+            mut target,
+        } => {
+            target.kind = crate::ObjectKind::TreePage;
+            Some(FilePayload::SymbolicLink {
+                target_bytes,
+                target,
+            })
+        }
+        FilePayload::ReparsePoint {
+            payload_bytes,
+            mut payload,
+        } => {
+            payload.kind = crate::ObjectKind::TreePage;
+            Some(FilePayload::ReparsePoint {
+                payload_bytes,
+                payload,
+            })
+        }
+        FilePayload::InlineRegular(_) | FilePayload::Device { .. } | FilePayload::Empty => None,
+    }
+}
+
+// Derive invalid typed inputs from admitted writer bytes. Strict decoding alone
+// cannot exercise the writer's own admission guards.
+fn check_file_table_writer(page: &FileTablePage) {
+    let descending = |id: crate::FileId| {
+        let mut other = id.into_bytes();
+        other[0] ^= 1;
+        let other = crate::FileId::from_bytes(other);
+        [id.max(other), id.min(other)]
+    };
+    let refuse = |page: &FileTablePage, maximum, expected, examined| {
+        check_file_table_write(Some(expected), examined, |observe| {
+            encode_file_table_page(page, maximum, observe, |_| {
+                FsError::from(CanonicalDecodeError::AllocationFailed)
+            })
+        });
+    };
+    match page {
+        FileTablePage::Leaf(records) => {
+            if let Some(first) = records.first() {
+                refuse(
+                    page,
+                    u32::try_from(records.len() - 1).unwrap_or(u32::MAX),
+                    FileTableError::TooManyItems,
+                    0,
+                );
+                let mut duplicate = vec![*first; 2];
+                refuse(
+                    &FileTablePage::Leaf(duplicate.clone()),
+                    u32::MAX,
+                    FileTableError::NotStrictlyOrdered,
+                    2,
+                );
+                [duplicate[0].file_id, duplicate[1].file_id] = descending(first.file_id);
+                refuse(
+                    &FileTablePage::Leaf(duplicate),
+                    u32::MAX,
+                    FileTableError::NotStrictlyOrdered,
+                    2,
+                );
+                check_file_record_writer(*first);
+            }
+        }
+        FileTablePage::Internal(children) => {
+            refuse(
+                &FileTablePage::Internal(Vec::new()),
+                u32::MAX,
+                FileTableError::InvalidInternalPage,
+                0,
+            );
+            if let Some(first) = children.first() {
+                refuse(
+                    page,
+                    u32::try_from(children.len() - 1).unwrap_or(u32::MAX),
+                    FileTableError::TooManyItems,
+                    0,
+                );
+                let mut duplicate = vec![first.clone(); 2];
+                refuse(
+                    &FileTablePage::Internal(duplicate.clone()),
+                    u32::MAX,
+                    FileTableError::InvalidInternalPage,
+                    2,
+                );
+                [duplicate[0].first, duplicate[1].first] = descending(first.first);
+                refuse(
+                    &FileTablePage::Internal(duplicate),
+                    u32::MAX,
+                    FileTableError::InvalidInternalPage,
+                    2,
+                );
+                let mut invalid = first.clone();
+                invalid.page.kind = crate::ObjectKind::Blob;
+                refuse(
+                    &FileTablePage::Internal(vec![invalid]),
+                    u32::MAX,
+                    FileTableError::InvalidInternalPage,
+                    1,
+                );
+            }
+        }
+    }
+}
+
+fn decode_limits() -> DecodeLimits {
+    DecodeLimits {
+        maximum_object_bytes: 4096,
+        maximum_page_bytes: 4096,
+        maximum_page_items: 32,
+        maximum_name_bytes: 256,
+        ..DecodeLimits::default()
+    }
+}
+
 fn produce(
     kind: u8,
     wire: &[u8],
     observe: &mut dyn FnMut(EncodeWorkStep) -> Result<(), FsError>,
     copies: &mut u64,
 ) -> Result<Vec<u8>, FsError> {
-    let limits = DecodeLimits {
-        maximum_object_bytes: 4096,
-        maximum_page_bytes: 4096,
-        maximum_page_items: 32,
-        maximum_name_bytes: 256,
-        ..DecodeLimits::default()
-    };
+    let limits = decode_limits();
     let mut nothing = |_| Ok::<_, FsError>(());
     let allocation = |_| CanonicalDecodeError::AllocationFailed.into();
     match kind {
@@ -279,6 +522,23 @@ fn check_inner<const MUTANT: u8, const ASSERT_PREFIX: bool>(input: &[u8]) {
         header[7],
         usize::from(header[8]),
     );
+    // Admission is independent of the accounting mode and fault prefix. Check
+    // typed writer mutations once, outside the reference/observed replay pair.
+    match kind {
+        2 => {
+            if let Ok(page) =
+                decode_file_table_page(wire, decode_limits(), &mut |_| Ok::<_, FsError>(()))
+            {
+                check_file_table_writer(&page);
+            }
+        }
+        10 => {
+            if let Ok(record) = super::file_table::decode_file_record(wire) {
+                check_file_record_writer(record);
+            }
+        }
+        _ => {}
+    }
     let recheck = cfg!(not(target_arch = "wasm32")) && mode >= 3;
     let budget = WorkBudget {
         bytes_encoded: u64::from(u16::from_le_bytes([header[1], header[2]])),
