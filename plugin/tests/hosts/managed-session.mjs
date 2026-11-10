@@ -1,7 +1,7 @@
 // Model-free native sessions use the real sandbox and original recorded output.
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
-import {chmod,mkdir,readFile,writeFile,unlink} from 'node:fs/promises';
+import {chmod,mkdir,readFile,writeFile,unlink,rm} from 'node:fs/promises';
 import {existsSync,readFileSync,readSync,writeSync} from 'node:fs';
 import {createConnection,createServer} from 'node:net';
 import {delimiter,isAbsolute,join,relative,resolve,sep} from 'node:path';
@@ -119,7 +119,7 @@ async function host(){
  process.stdout.write(events.slice(1).join(''));
 }
 
-async function scenario(argv,clock){
+async function scenario(argv,clock,root){
  const started=clock();
  const [acyclic,graphcoder,codex,name,...extra]=argv;
  assert.ok(acyclic&&graphcoder&&codex&&!extra.length&&['lifecycle','recursive','resume'].includes(name),recovery);
@@ -128,7 +128,6 @@ async function scenario(argv,clock){
   .records.find(record=>record.host==='codex'&&record.mode==='installed'&&record.code===0);
  assert.ok(capture,'restore the original native completion fixture');
  const session=JSON.parse(capture.stdout.split('\n')[0]).thread_id;
- const root=scratchDirectory('managed-native-session-',{E2E_SCRATCH_ROOT:'/var/tmp'});
  const workspace=join(root,'workspace'),state=join(root,'state'),bin=join(root,'bin'),fixture=join(root,'native-events.jsonl');
  await Promise.all([mkdir(workspace),mkdir(state),mkdir(bin),writeFile(fixture,capture.stdout)]);
  const env=environment(root,{...nativeEnvironment(),PATH:bin+delimiter+process.env.PATH,
@@ -254,6 +253,7 @@ async function scenario(argv,clock){
 // The retained clock control calls the same owner and scenario as the CLI.
 // Only progress observations use this clock; readiness remains event-driven.
 export async function managedSession(argv,clock=()=>performance.now()){
+ let root;
  try{
   await withOwnedCase({processes:scope,signal:cancellation?.signal,run:async()=>{
    const mode=argv[0];
@@ -267,9 +267,16 @@ export async function managedSession(argv,clock=()=>performance.now()){
     writeSync(1,'{"type":"descendant-ready"}\n');
     Atomics.wait(held,0,0);
    }
-   else await scenario(argv,clock);
+   else{
+    root=scratchDirectory('managed-native-session-',{E2E_SCRATCH_ROOT:'/var/tmp'});
+    await scenario(argv,clock,root);
+   }
   }});
- }finally{cancellation?.dispose();}
+ }finally{
+  // withOwnedCase has joined process retirement, including on scenario failure.
+  try{if(root)await rm(root,{recursive:true,force:true});}
+  finally{cancellation?.dispose();}
+ }
 }
 
 if(process.argv[1]&&resolve(process.argv[1])===driver){
