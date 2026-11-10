@@ -9,8 +9,16 @@ impl ToolRegistry {
         name: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
-        self.get(name, None, io)
-            .map(|tool| tool.map(|tool| tool.executor.capability().unwrap_or(tool)))
+        let selected = match self.data.selected.get(name) {
+            // A family can replace the canonical spelling entirely. Every
+            // declaration retains the capability selected before binding.
+            Some(ModelSelection::Native { names, .. }) => match names.first() {
+                Some(declaration) => self.get(declaration, None, io)?,
+                None => None,
+            },
+            _ => self.get(name, None, io)?,
+        };
+        Ok(selected.map(|tool| tool.executor.capability().unwrap_or(tool)))
     }
 
     pub(crate) fn pin_model_definitions(
