@@ -131,6 +131,18 @@ pub enum AgentCommand {
     },
     /// Discover the root admitted by this session's credential.
     Root {},
+    /// Page the explicitly admitted root-session directory.
+    Sessions {
+        /// Bounded directory credit and its opaque continuation.
+        #[serde(default)]
+        page: AgentPageRequest,
+    },
+    /// Create an independent root under the host's session admission.
+    NewSession {
+        /// Stable creation identity; reuse exactly after an uncertain result.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+    },
     /// Snapshot explicit paths in a named client session; wait on its original
     /// filesystem publication producer when `after` is still current.
     ClientFiles {
@@ -599,7 +611,7 @@ impl AgentCommand {
     #[must_use]
     pub const fn agent(&self) -> Option<&AgentPath> {
         match self {
-            Self::Root {} => None,
+            Self::Root {} | Self::Sessions { .. } | Self::NewSession { .. } => None,
             Self::Bind { agent } => agent.as_ref(),
             Self::Spawn { parent: agent, .. }
             | Self::Fork { parent: agent, .. }
@@ -634,6 +646,8 @@ impl AgentCommand {
         match self {
             Self::Bind { .. } => "bind",
             Self::Root {} => "root",
+            Self::Sessions { .. } => "sessions",
+            Self::NewSession { .. } => "new_session",
             Self::ClientFiles { .. } => "client_files",
             Self::PublishClientFiles { .. } => "publish_client_files",
             Self::Prompt { .. } => "prompt",

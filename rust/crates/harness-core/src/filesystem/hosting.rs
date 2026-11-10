@@ -473,6 +473,47 @@ where
         calls: &str,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<super::AgentObservation, Error> {
+        self.client_observation(root, calls, clock, None).await
+    }
+
+    /// Explicit owner enrollment for the root directory of this placement.
+    /// This is a platform operation, never callable by a session request.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn session_credential(
+        &self,
+        root: &AgentPath,
+        calls: &str,
+        directory: &str,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    ) -> Result<super::AgentObservation, Error> {
+        if let TurnAdmission::Admitted { scope, .. } = &self.admission {
+            let whole = acyclic_fs::access::Capability::whole_volume(
+                None,
+                &acyclic_fs::access::Action::ALL,
+            )
+            .to_scope_label()
+            .map_err(|error| turn(crate::Error::Invalid(error.to_string())))?;
+            if scope.agent().is_some()
+                || !scope
+                    .capabilities()
+                    .iter()
+                    .any(|grant| grant == whole.as_str())
+            {
+                return Err(turn(crate::Error::Unauthorized("session directory enrollment requires the placement owner's whole-volume admission".into())));
+            }
+        }
+        self.client_observation(root, calls, clock, Some(directory))
+            .await
+    }
+
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    async fn client_observation(
+        &self,
+        root: &AgentPath,
+        calls: &str,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        directory: Option<&str>,
+    ) -> Result<super::AgentObservation, Error> {
         self.admit_path(root)?;
         let state = self.agents.state(root).await?;
         let authority = agent_authority(
@@ -485,12 +526,13 @@ where
         .await
         .map_err(turn)?;
         self.volumes
-            .agent_observation(
+            .client_observation(
                 &authority,
                 &state.path,
                 &authority.private.volume,
                 clock,
                 Some(calls),
+                directory,
             )
             .await
             .map_err(turn)
