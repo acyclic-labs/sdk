@@ -1,7 +1,7 @@
 //! Inbox observations at model boundaries. They do not race or drop tool futures.
 
 use super::{AgentPath, AgentRecord as _, Error, InboxRecord};
-use acyclic_stream::{ReadRequest, StreamProvider};
+use acyclic_stream::{ReadRequest, StreamProvider, StreamProviderExt as _};
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -47,9 +47,10 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
         through: from,
         inputs: Vec::new(),
     };
+    let mut end = until;
     loop {
         let room = super::MAX_QUEUED - selection.inputs.len();
-        let limit = until.map_or(room as u64, |until| {
+        let limit = end.map_or(room as u64, |until| {
             (until - selection.through).min(room as u64)
         }) as u32;
         if limit == 0 {
@@ -93,6 +94,18 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
         }
         if barrier || read < limit {
             break;
+        }
+        if end.is_none() && selection.inputs.len() < super::MAX_QUEUED {
+            // Only a paged observation needs a head fence. It bounds this cut
+            // even if independent producers keep appending during the reads;
+            // the ordinary single-page path buys no extra control request.
+            end = Some(
+                provider
+                    .head(agent.inbox()?)
+                    .await
+                    .map_err(Error::Stream)?
+                    .tail,
+            );
         }
     }
     if until.is_some_and(|until| until != selection.through) {

@@ -135,7 +135,10 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                 host.send(
                     &path,
                     &super::super::user(),
-                    &requested(&format!("independent-before-reply-{index}"), &path),
+                    &InboxRecord::ApprovalRequested(ApprovalRequested {
+                        child: path.clone(),
+                        id: intent(&format!("independent-before-reply-{index}")),
+                    }),
                 )
                 .await?;
             }
