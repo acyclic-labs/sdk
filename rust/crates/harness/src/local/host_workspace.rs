@@ -212,7 +212,7 @@ impl HostWorkspace {
                     scope: &self.scope,
                     request,
                 },
-                self.capture_volumes(),
+                Box::pin(self.capture_volumes()),
             )
             .await?;
         self.verify().await?;
