@@ -369,7 +369,9 @@ mod tests {
             catch (error) { if (!(error instanceof DeniedError)) throw error; }
             try { await remove('remove.txt', 'absent'); throw new Error('invalid condition succeeded'); }
             catch (error) { if (!(error instanceof TypeError)) throw error; }
-            await write('agent.ts', {model: 'example/model'}, 'any');
+            // These are own JSON data properties, never an object literal's
+            // prototype setter, including after the authored module is loaded.
+            await write('agent.ts', JSON.parse('{"model":"example/model","__proto__":{"enabled":true},"nested":{"__proto__":"data"},"escaped":"quote\\\" and slash\\\\"}'), 'any');
             const moduleText = (await read('agent.ts')).text();
             const notebook = '{"cells":[],"nbformat":4}';
             await write('empty.ipynb', notebook, 'any');
@@ -584,11 +586,45 @@ mod tests {
         // A serving failure drops its reply producer. Preserve that original
         // error before inspecting the guest's resulting channel-closure error.
         let (calls, large_pages, directory_pages) = served?;
+        let mut value = result.unwrap().unwrap().value;
+        let module_text = value
+            .as_object_mut()
+            .expect("module result")
+            .remove("moduleText")
+            .expect("original published settings text");
+        struct NoImports;
+        impl crate::config::Tree for NoImports {
+            fn read<'a>(
+                &'a self,
+                path: &'a str,
+            ) -> futures::future::BoxFuture<'a, crate::Result<Option<acyclic_stream::OwnedBytes>>>
+            {
+                Box::pin(async move {
+                    Err(crate::Error::Invalid(format!(
+                        "authored plain settings unexpectedly imported {path}"
+                    )))
+                })
+            }
+        }
+        let settings = crate::config::evaluate(
+            "agent.ts",
+            module_text.as_str().expect("module text").as_bytes(),
+            &NoImports,
+            &serde_json::Value::Null,
+            crate::config::Surface::Data,
+        )
+        .await?;
         assert_eq!(
-            result.unwrap().unwrap().value,
+            settings.value,
+            serde_json::json!({
+                "model":"example/model", "__proto__":{"enabled":true},
+                "nested":{"__proto__":"data"}, "escaped":"quote\" and slash\\",
+            })
+        );
+        assert_eq!(
+            value,
             serde_json::json!({
                 "lines":["β"],"conflict":"changed","absent":null,
-                "moduleText":"export default {\"model\":\"example/model\"}",
             })
         );
         // Ten original operations, two notebook operations and one large write.
