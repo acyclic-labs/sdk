@@ -65,8 +65,17 @@ impl<T: Default> Watched<T> {
                     .native
                     .as_ref()
                     .ok_or_else(|| Error::Invalid("credential watch missing".into()))?;
-                native.arm()?;
-                let file = native.credential_watch();
+                let file = loop {
+                    let revision = native.revision();
+                    let file = native.credential_watch();
+                    native.arm()?;
+                    // Rearm only after an event invalidated the roots being
+                    // resolved. Subscribe first so an alias retarget cannot
+                    // be marked seen while we still hold its previous target.
+                    if native.revision() == revision {
+                        break file;
+                    }
+                };
                 let mut events = events().subscribe();
                 events.borrow_and_update();
                 CredentialWatch::from_custodian(file.validity(), async move {
@@ -96,6 +105,19 @@ impl<T: Default> Watched<T> {
             .map_err(|_| Error::Invalid("credential resolver lock poisoned".into()))?;
         self.observe(&mut state)?;
         Ok((state.revision, read(&mut state.value)?))
+    }
+
+    /// A source owner's explicit rejection invalidates the same observation as
+    /// its watch. The next read rearms before loading; old publishers lose their
+    /// revision, including when the native notification has not arrived yet.
+    pub(crate) fn invalidate(&self) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Invalid("credential resolver lock poisoned".into()))?;
+        state.value = T::default();
+        state.watch = None;
+        Ok(())
     }
 
     pub(crate) fn publish(&self, revision: u64, value: T) -> Result<()> {

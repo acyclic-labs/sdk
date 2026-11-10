@@ -276,6 +276,11 @@ impl CodexLogin {
         failure: &mut Option<RefreshFailure>,
     ) -> Result<(String, Option<String>)> {
         let path = self.path.clone();
+        if rejected.is_some() {
+            // HTTP 401 is authoritative invalidation even before a pending
+            // file event. Recover from the current source, never cached tokens.
+            self.document.invalidate()?;
+        }
         let (generation, cached) = self.document.read(|auth| Ok(auth.clone()))?;
         let mut auth = match cached {
             Some(auth) => auth,
