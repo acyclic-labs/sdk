@@ -250,6 +250,55 @@ impl NamespacePath {
         copy_names(names.iter(), depth, encoded, accounting, cancellation)
     }
 
+    pub(crate) fn suffix_with_accounting(
+        &self,
+        depth: usize,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
+        accounting.check()?;
+        let names = self
+            .components
+            .get(depth..)
+            .ok_or(NamespacePathError::TooDeep)?;
+        // A suffix cannot exceed this already-admitted path's volume limits.
+        let encoded = names
+            .iter()
+            .try_fold(0u32, |bytes, name| {
+                bytes
+                    .checked_add(
+                        u32::try_from(name.as_bytes().len())
+                            .map_err(|_| crate::WorkError::Overflow)?,
+                    )
+                    .and_then(|bytes| bytes.checked_add(1))
+                    .ok_or(crate::WorkError::Overflow)
+            })?
+            .max(1);
+        copy_names(names.iter(), names.len(), encoded, accounting, cancellation)
+    }
+
+    pub(crate) fn prepend_with_accounting(
+        &self,
+        prefix: &LogicalName,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
+        let encoded = self
+            .encoded_bytes
+            .checked_add(
+                u32::try_from(prefix.as_bytes().len()).map_err(|_| crate::WorkError::Overflow)?,
+            )
+            .and_then(|bytes| bytes.checked_add(u32::from(!self.is_root())))
+            .ok_or(crate::WorkError::Overflow)?;
+        copy_names(
+            std::iter::once(prefix).chain(self.components.iter()),
+            self.depth() + 1,
+            encoded,
+            accounting,
+            cancellation,
+        )
+    }
+
     pub(crate) fn unicode_text_with_accounting(
         &self,
         accounting: &mut KernelAccounting<'_>,

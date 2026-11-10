@@ -18,6 +18,47 @@ pub use page::*;
 mod contracts;
 pub use contracts::*;
 
+mod empty;
+pub use empty::Empty;
+mod routed;
+pub use routed::Routed;
+
+// Keep delegation on the caller's original native ledger. Standalone callers
+// receive and merge the same receipt, including work completed on failure.
+macro_rules! source_call {
+    ($ctx:expr, $cancel:expr, |$work:ident| $call:expr) => {{
+        async {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some($work) = $ctx.native_work() {
+                return $call.await;
+            }
+            let $work = $ctx.remaining().map_err(DemandError::from)?;
+            contracts::accept_source_result($call.await, $ctx)
+        }
+        .await
+    }};
+}
+pub(crate) use source_call;
+
+macro_rules! source_sync {
+    ($ctx:expr, |$work:ident| $call:expr) => {{
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = if let Some($work) = $ctx.native_work() {
+            $call
+        } else {
+            let $work = $ctx.remaining().map_err(DemandError::from)?;
+            contracts::accept_source_result($call, $ctx)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let result = {
+            let $work = $ctx.remaining().map_err(DemandError::from)?;
+            contracts::accept_source_result($call, $ctx)
+        };
+        result
+    }};
+}
+pub(crate) use source_sync;
+
 /// Native provider backed by a held, no-follow directory capability.
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native;
