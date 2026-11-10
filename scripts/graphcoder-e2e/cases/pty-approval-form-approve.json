@@ -21,7 +21,7 @@
       },
       {
         "when": {
-          "tool_result": "file"
+          "tool_result": "\"file\":{"
         },
         "text": [
           "APPROVAL_E2E_DONE"
