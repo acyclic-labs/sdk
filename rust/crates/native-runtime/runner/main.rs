@@ -22,38 +22,20 @@
 mod entry;
 #[path = "../src/process_tree/record.rs"]
 mod record;
+mod request;
 mod sys;
+use request::{DESCRIPTORS, Mapped, Received, Slot, Spec, array4, spec, word};
 #[path = "../src/process_tree/warden.rs"]
 mod warden;
 
 use core::ffi::{CStr, c_char, c_void};
 use sys::{Errno, Fd, Pid};
 
-/// Descriptors one request carries: custody directory, reply, the owner's
-/// working directory, up to three streams and one optional boundary ruleset.
-const DESCRIPTORS: usize = 7;
+/// The control socket, above the standard streams.
+const CONTROL: Fd = 3;
 /// Reply frame tags, each followed by a native-endian 32-bit value.
 const STARTED: u8 = b'P';
 const FAILED: u8 = b'E';
-/// Stream slots in a request.
-const NULL: u8 = 0;
-const SENT: u8 = 1;
-const CLOSED: u8 = 2;
-/// Request flags.
-const HAS_CWD: u8 = 1;
-const HAS_UID: u8 = 2;
-const HAS_GID: u8 = 4;
-const HAS_BOUNDARY: u8 = 8;
-/// Resource limits a request carries, as soft and hard pairs.
-const LIMITS: usize = 16;
-/// The fixed fields before a request's strings: slots, flags, user, group,
-/// owner, file-creation mask, limits, and the argument and environment
-/// counts.
-const FIXED: usize = 3 + 1 + 4 + 4 + 4 + 4 + 8 + 8 + LIMITS * 16 + 8 + 8;
-// The native instruction slice is borrowed directly from this wire offset.
-const _: () = assert!((FIXED + 4).is_multiple_of(core::mem::align_of::<entry::Instruction>()));
-/// The control socket, above the standard streams.
-const CONTROL: Fd = 3;
 
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
@@ -212,46 +194,6 @@ unsafe extern "C" fn bcmp(left: *const c_void, right: *const c_void, count: usiz
     unsafe { memcmp(left, right, count) }
 }
 
-/// Memory the runner maps for itself.
-struct Mapped {
-    base: *mut u8,
-    length: usize,
-}
-
-impl Mapped {
-    const EMPTY: Self = Self {
-        base: core::ptr::null_mut(),
-        length: 0,
-    };
-
-    /// Grows to at least `length` bytes, keeping the contents.
-    fn reserve(&mut self, length: usize) -> Result<(), Errno> {
-        if length <= self.length {
-            return Ok(());
-        }
-        let length = length
-            .checked_next_power_of_two()
-            .ok_or(Errno(sys::ENOMEM))?
-            .max(1 << 16);
-        self.base = if self.base.is_null() {
-            sys::map(length)?
-        } else {
-            // SAFETY: this whole mapping, which nothing else references.
-            unsafe { sys::remap(self.base, self.length, length)? }
-        };
-        self.length = length;
-        Ok(())
-    }
-
-    fn bytes(&mut self) -> &mut [u8] {
-        if self.base.is_null() {
-            return &mut [];
-        }
-        // SAFETY: this mapping is readable and writable for its length.
-        unsafe { core::slice::from_raw_parts_mut(self.base, self.length) }
-    }
-}
-
 fn read_exact(mut bytes: &mut [u8]) -> Result<(), Errno> {
     while !bytes.is_empty() {
         match sys::read(CONTROL, bytes) {
@@ -262,21 +204,6 @@ fn read_exact(mut bytes: &mut [u8]) -> Result<(), Errno> {
         }
     }
     Ok(())
-}
-
-/// One received request: its descriptors and body length.
-struct Received {
-    descriptors: [Fd; DESCRIPTORS],
-    count: usize,
-    length: usize,
-}
-
-impl Received {
-    fn close(&self) {
-        for fd in self.descriptors.iter().take(self.count) {
-            sys::close(*fd);
-        }
-    }
 }
 
 /// Reads one request into `body`. `None` once the owner has closed the
@@ -371,61 +298,12 @@ fn receive(body: &mut Mapped) -> Result<Option<Received>, Errno> {
 #[repr(C, align(8))]
 struct ControlSpace([u8; 64]);
 
-fn word(bytes: &[u8]) -> usize {
-    let mut word = [0; 8];
-    if let Some(bytes) = bytes.get(..8) {
-        word.copy_from_slice(bytes);
+impl Received {
+    fn close(&self) {
+        for fd in self.descriptors.iter().take(self.count) {
+            sys::close(*fd);
+        }
     }
-    usize::from_ne_bytes(word)
-}
-
-fn array4(bytes: &[u8]) -> [u8; 4] {
-    let mut array = [0; 4];
-    if let Some(bytes) = bytes.get(..4) {
-        array.copy_from_slice(bytes);
-    }
-    array
-}
-
-/// Where the program's standard stream comes from.
-#[derive(Clone, Copy)]
-enum Slot {
-    /// The runner's null device, already in place.
-    Null,
-    Descriptor(Fd),
-    Closed,
-}
-
-/// A request, ready to exec: pointers into the runner's request memory.
-struct Spec {
-    reply: Fd,
-    directory: Fd,
-    here: Fd,
-    owner: Pid,
-    slots: [Slot; 3],
-    cwd: Option<*const c_char>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-    /// The owner's file-creation mask and resource limits at the request.
-    mask: u32,
-    signals: u64,
-    ignored: u64,
-    limits: [[u64; 2]; LIMITS],
-    program: *const c_char,
-    /// The program has no slash, so the child's `PATH` finds it.
-    search: bool,
-    path: Option<*const c_char>,
-    argv: *const *const c_char,
-    envp: *const *const c_char,
-    boundary: Option<Boundary>,
-}
-
-/// Borrowed native policy in this original request's mapping. Remapping is
-/// complete before these pointers are formed, just like argv and envp.
-struct Boundary {
-    ruleset: Fd,
-    filter: *const entry::Instruction,
-    count: usize,
 }
 
 /// Clones one warden as the owner's child. Every failure is reported on the
@@ -443,166 +321,11 @@ fn launch(received: Received, body: &mut Mapped) {
     received.close();
 }
 
-/// Reads a request body and lays out its argument and environment vectors
-/// after it.
-fn spec(received: &Received, body: &mut Mapped) -> Result<Spec, Errno> {
-    let invalid = Errno(sys::EINVAL);
-    let descriptor = |index: usize| {
-        received
-            .descriptors
-            .get(index)
-            .copied()
-            .filter(|_| index < received.count)
-            .ok_or(invalid)
-    };
-    let length = received.length;
-    let (slots, flags, uid, gid, owner, mask, signals, ignored, limits, argc, envc) = {
-        let mut reader = Reader(body.bytes().get(..length).ok_or(invalid)?);
-        let slots = reader.take(3)?;
-        let flags = *reader.take(1)?.first().ok_or(invalid)?;
-        let uid = reader.word()?;
-        let gid = reader.word()?;
-        let owner = Pid::try_from(reader.word()?).map_err(|_| invalid)?;
-        let mask = reader.word()?;
-        let signals = reader.wide()?;
-        let ignored = reader.wide()?;
-        let mut limits = [[0; 2]; LIMITS];
-        for limit in &mut limits {
-            *limit = [reader.wide()?, reader.wide()?];
-        }
-        let argc = reader.count()?;
-        let envc = reader.count()?;
-        let mut kinds = [0; 3];
-        kinds.copy_from_slice(slots);
-        (
-            kinds, flags, uid, gid, owner, mask, signals, ignored, limits, argc, envc,
-        )
-    };
-    // A confined request's original `here` descriptor is its bound cwd.
-    // Reject a second path-based selection before any warden is created.
-    if flags & (HAS_BOUNDARY | HAS_CWD) == (HAS_BOUNDARY | HAS_CWD) {
-        return Err(invalid);
-    }
-    let mut next = 3;
-    let mut streams = [Slot::Null; 3];
-    for (stream, kind) in streams.iter_mut().zip(slots) {
-        *stream = match kind {
-            NULL => Slot::Null,
-            SENT => {
-                next += 1;
-                Slot::Descriptor(descriptor(next - 1)?)
-            }
-            CLOSED => Slot::Closed,
-            _ => return Err(invalid),
-        };
-    }
-    let (policy, strings) = if flags & HAS_BOUNDARY != 0 {
-        let mut reader = Reader(body.bytes().get(FIXED..length).ok_or(invalid)?);
-        let count = usize::try_from(reader.word()?).map_err(|_| invalid)?;
-        // The kernel consumes a 16-bit instruction count. Reject malformed
-        // requests before creating a warden; no truncation can broaden policy.
-        if count == 0 || u16::try_from(count).is_err() {
-            return Err(invalid);
-        }
-        reader.take(
-            count
-                .checked_mul(core::mem::size_of::<entry::Instruction>())
-                .ok_or(invalid)?,
-        )?;
-        let start = FIXED + 4;
-        let end = start
-            .checked_add(count * core::mem::size_of::<entry::Instruction>())
-            .ok_or(invalid)?;
-        (Some((descriptor(next)?, start, count)), end)
-    } else {
-        (None, FIXED)
-    };
-    if received.count != next + usize::from(policy.is_some()) {
-        return Err(invalid);
-    }
-    // The vectors follow the body, aligned for pointers.
-    let vectors = length
-        .checked_next_multiple_of(8)
-        .ok_or(Errno(sys::ENOMEM))?;
-    let pointers = argc
-        .checked_add(envc)
-        .and_then(|count| count.checked_add(2))
-        .and_then(|count| count.checked_mul(core::mem::size_of::<*const c_char>()))
-        .ok_or(Errno(sys::ENOMEM))?;
-    body.reserve(vectors.checked_add(pointers).ok_or(Errno(sys::ENOMEM))?)?;
-    let base = body.base;
-    // Shared, and only the body: the vectors after it are written below.
-    let bytes: &[u8] = body.bytes().get(..length).ok_or(invalid)?;
-    let mut offset = strings;
-    let mut string = || -> Result<*const c_char, Errno> {
-        let rest = bytes.get(offset..).ok_or(invalid)?;
-        let end = rest.iter().position(|byte| *byte == 0).ok_or(invalid)?;
-        let start = offset;
-        offset += end + 1;
-        Ok(base.wrapping_add(start).cast_const().cast())
-    };
-    let program = string()?;
-    let cwd = if flags & HAS_CWD != 0 {
-        Some(string()?)
-    } else {
-        None
-    };
-    let mut path = None;
-    let vector = base.wrapping_add(vectors).cast::<*const c_char>();
-    for index in 0..argc {
-        let argument = string()?;
-        // SAFETY: within the pointer area reserved above.
-        unsafe { vector.add(index).write(argument) };
-    }
-    // SAFETY: within the pointer area reserved above.
-    unsafe { vector.add(argc).write(core::ptr::null()) };
-    let environment = vector.wrapping_add(argc + 1);
-    for index in 0..envc {
-        let variable = string()?;
-        // SAFETY: a NUL-terminated string in this request.
-        if unsafe { CStr::from_ptr(variable) }
-            .to_bytes()
-            .starts_with(b"PATH=")
-        {
-            path = Some(variable.wrapping_add(5));
-        }
-        // SAFETY: within the pointer area reserved above.
-        unsafe { environment.add(index).write(variable) };
-    }
-    // SAFETY: within the pointer area reserved above.
-    unsafe { environment.add(envc).write(core::ptr::null()) };
-    // SAFETY: the program is a NUL-terminated string in this request.
-    let search = !unsafe { CStr::from_ptr(program) }
-        .to_bytes()
-        .contains(&b'/');
-    Ok(Spec {
-        reply: descriptor(1)?,
-        directory: descriptor(0)?,
-        here: descriptor(2)?,
-        owner,
-        slots: streams,
-        cwd,
-        uid: (flags & HAS_UID != 0).then_some(uid),
-        gid: (flags & HAS_GID != 0).then_some(gid),
-        mask,
-        signals,
-        ignored,
-        limits,
-        program,
-        search,
-        path,
-        argv: vector.cast_const(),
-        envp: environment.cast_const(),
-        boundary: policy.map(|(ruleset, start, count)| Boundary {
-            ruleset,
-            filter: base.wrapping_add(start).cast(),
-            count,
-        }),
-    })
-}
-
 /// In the cloned warden: runs the warden, and in the program it forks, execs.
 fn warden(spec: &Spec) -> ! {
+    if let Some(activity) = spec.activity {
+        released(spec, activity);
+    }
     report(spec.reply, STARTED, sys::getpid());
     // Still the runner's group, which the warden returns to.
     let home = sys::getpgrp();
@@ -612,6 +335,46 @@ fn warden(spec: &Spec) -> ! {
     };
     report(spec.reply, FAILED, error);
     sys::exit(127)
+}
+
+/// An owner-exit action holds no process tree or volume device. The original
+/// activity pipe also belongs to any admitted producer: EOF proves that no
+/// such producer can perform a late effect after this action.
+fn released(spec: &Spec, activity: Fd) -> ! {
+    let result = (|| {
+        sys::setpgid(0, 0)?;
+        // Loss of the dispatcher is independent of this admitted action.
+        sys::close(CONTROL);
+        report(spec.reply, STARTED, sys::getpid());
+        sys::close(spec.reply);
+        let execute = released_byte(spec.directory)?;
+        loop {
+            match sys::read(activity, &mut [0; 256]) {
+                Ok(0) => break,
+                Ok(_) | Err(Errno(sys::EINTR)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        sys::close(spec.directory);
+        sys::close(activity);
+        if execute {
+            return Err(exec(spec));
+        }
+        Ok(())
+    })();
+    sys::exit(if result.is_ok() { 0 } else { 127 })
+}
+
+/// EOF releases the action; an explicit byte cancels it. Interrupted reads
+/// resume the same producer event, without probing or a timeout.
+fn released_byte(fd: Fd) -> Result<bool, Errno> {
+    loop {
+        match sys::read(fd, &mut [0]) {
+            Ok(count) => return Ok(count == 0),
+            Err(Errno(sys::EINTR)) => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// In the program: sets up what the request asks for and execs. Returns the
@@ -720,32 +483,4 @@ fn report(reply: Fd, tag: u8, value: i32) {
         rest.copy_from_slice(&value.to_ne_bytes());
     }
     let _ = sys::write(reply, &frame);
-}
-
-/// A cursor over a request body.
-struct Reader<'a>(&'a [u8]);
-
-impl<'a> Reader<'a> {
-    fn take(&mut self, length: usize) -> Result<&'a [u8], Errno> {
-        if length > self.0.len() {
-            return Err(Errno(sys::EINVAL));
-        }
-        let (taken, rest) = self.0.split_at(length);
-        self.0 = rest;
-        Ok(taken)
-    }
-
-    fn word(&mut self) -> Result<u32, Errno> {
-        Ok(u32::from_ne_bytes(array4(self.take(4)?)))
-    }
-
-    fn count(&mut self) -> Result<usize, Errno> {
-        Ok(word(self.take(8)?))
-    }
-
-    fn wide(&mut self) -> Result<u64, Errno> {
-        let mut wide = [0; 8];
-        wide.copy_from_slice(self.take(8)?);
-        Ok(u64::from_ne_bytes(wide))
-    }
 }

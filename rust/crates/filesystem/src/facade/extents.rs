@@ -8,7 +8,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResolvedFi
         maximum_spans: u32,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<Option<ExtentPlan>> {
+    ) -> W::OwnedOutput<Option<ExtentPlan>, crate::FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             let mut accounting = accounting.allocation_scope()?;
@@ -36,7 +36,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResolvedFi
             result
         }
         .await;
-        work.finish_owned(result, &accounting)
+        work.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 }
 
@@ -49,7 +49,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         maximum_spans: u32,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<Option<ExtentPlan>> {
+    ) -> W::OwnedOutput<Option<ExtentPlan>, crate::FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             let mut accounting = accounting.allocation_scope()?;
@@ -76,7 +76,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             result
         }
         .await;
-        work.finish_owned(result, &accounting)
+        work.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 }
 
@@ -241,7 +241,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         maximum_spans: u32,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<Option<ExtentPlan>> {
+    ) -> W::OwnedOutput<Option<ExtentPlan>, crate::FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             let mut accounting = accounting.allocation_scope()?;
@@ -261,7 +261,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             result
         }
         .await;
-        work.finish_owned(result, &accounting)
+        work.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 
     pub(crate) async fn plan_file_extents_projected_with_accounting<F: ContentFile, T>(

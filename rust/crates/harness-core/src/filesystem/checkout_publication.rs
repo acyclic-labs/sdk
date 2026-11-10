@@ -211,7 +211,11 @@ impl CheckoutPublication {
     ) -> Result<()> {
         // Remove staging before its replay evidence: a failed cleanup must
         // leave the completed marker available to protect later host edits.
-        let directory = NativeDirectory(root).publication_directory(operation)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let (directory, _custody) =
+            NativeDirectory(root).publication_directory_with_native_work(operation, &work)?;
         cleanup_directory(&directory)?;
         state.remove_materialization_async(operation).await?;
         Ok(())
@@ -261,17 +265,18 @@ fn completed(
 }
 
 fn cleanup_directory(directory: &Path) -> Result<()> {
-    if !directory
-        .try_exists()
-        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?
-    {
-        return Ok(());
-    }
     let parent = directory
         .parent()
         .ok_or_else(|| Error::Invalid("native staging directory has no parent".into()))?;
-    acyclic_native_runtime::remove_child_directory(parent, directory)
-        .map_err(|cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause)))
+    // Journals retain shared parent identities before creating their operation
+    // directory. Even an empty parent can therefore belong to a preparation.
+    // Only this operation's tree can be retired without invalidating a journal.
+    match acyclic_native_runtime::remove_child_directory(parent, directory) {
+        Err(cause) if cause.kind() != std::io::ErrorKind::NotFound => {
+            Err(acyclic_fs::NativeTreeMaterializationError::Io(cause).into())
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -291,11 +296,6 @@ mod tests {
         let root = std::env::temp_dir().join("checkout-parent/checkout");
         let publication = CheckoutPublication::new(&root, identity, OperationId::new(), &work)?;
         assert_eq!(publication.root(), root.as_path());
-        assert!(
-            publication
-                .directory()
-                .starts_with(std::env::temp_dir().join("checkout-parent/.acyclic-m"))
-        );
         assert!(work.live_allocation_bytes() > baseline);
         drop(publication);
         assert_eq!(work.live_allocation_bytes(), baseline);

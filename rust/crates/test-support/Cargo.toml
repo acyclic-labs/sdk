@@ -8,10 +8,12 @@ publish = false
 
 [dependencies]
 acyclic-differential = { path = "../differential" }
+tokio = { version = "1.48.0", default-features = false, features = ["io-util", "time"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
 proptest.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "test-util"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

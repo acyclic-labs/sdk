@@ -149,8 +149,21 @@ impl LocalHarness {
                 ] if rules.is_empty() => "all admitted actions allowed",
                 _ => "policy-controlled approvals",
             };
+            // A physical workspace projects no home volume.
+            #[cfg(any(test, feature = "native-execution"))]
+            let home = binding
+                .workspace
+                .as_ref()
+                .is_none_or(|workspace| workspace.mounting == super::WorkspaceMounting::Native);
+            #[cfg(not(any(test, feature = "native-execution")))]
+            let home = true;
+            let home = if home {
+                " .volumes/home is your private retained home volume and is never merged into the project."
+            } else {
+                ""
+            };
             manifest.conventions.push(format!(
-                "Approval mode: {mode}. Shell commands have no OS sandbox. A refusal returns a tool failure; adapt or report the block, never assume the action ran. .volumes/home is your private retained home volume and is never merged into the project."
+                "Approval mode: {mode}. Shell commands have no OS sandbox. A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home}"
             ));
             // The agent tools bind per turn, outside the registry; the model
             // sees them through the manifest like every other tool. A turn

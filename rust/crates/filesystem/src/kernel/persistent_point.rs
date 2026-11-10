@@ -10,6 +10,9 @@ use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
 use std::collections::VecDeque;
 
+#[cfg(all(test, loom, not(target_arch = "wasm32")))]
+mod model_checking;
+
 pub(crate) type Failure = OperationFailure<Error>;
 
 /// A value with ownership charged to a kernel accounting context.
@@ -103,6 +106,23 @@ growable_buffer!(Vec);
 growable_buffer!(VecDeque);
 
 impl<T> Owned<Vec<T>> {
+    /// Appends only within original admitted backing, without growing it.
+    pub(crate) fn push(
+        &mut self,
+        value: T,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if self.value.len() == self.value.capacity() {
+            return Err(super::CanonicalDecodeError::AllocationFailed.into());
+        }
+        let copied = crate::WorkCounters {
+            items_examined: 1,
+            bytes_copied: std::mem::size_of::<T>() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        accounting.perform(copied, || self.value.push(value))
+    }
+
     pub(crate) fn allocate(
         count: usize,
         accounting: &mut KernelAccounting<'_>,

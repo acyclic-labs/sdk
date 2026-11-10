@@ -1,0 +1,14 @@
+diff --git a/rust/crates/collections/src/page/merge.rs b/rust/crates/collections/src/page/merge.rs
+--- a/rust/crates/collections/src/page/merge.rs
++++ b/rust/crates/collections/src/page/merge.rs
+@@ -22,9 +22,7 @@ pub fn overlapping<L, R, E>(
+             std::cmp::Ordering::Equal => emit(left.next(), right.next())?,
+             std::cmp::Ordering::Greater => emit(None, right.next())?,
+         };
+-        if !keep_going {
+-            return Ok(false);
+-        }
++        let _ = keep_going;
+     }
+     Ok(true)
+ }

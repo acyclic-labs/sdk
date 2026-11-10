@@ -1,0 +1,10 @@
+--- a/rust/crates/filesystem/src/kernel/persistent_point.rs
++++ b/rust/crates/filesystem/src/kernel/persistent_point.rs
+@@ -256,6 +256,7 @@
+         // guard. Only the old vector backing dies during replacement.
+         let backing =
+             crate::foundation::usize_to_u64(self.value.capacity() * std::mem::size_of::<B::Item>());
++        self.bytes = backing;
+         let carried = self
+             .bytes
+             .checked_sub(backing)

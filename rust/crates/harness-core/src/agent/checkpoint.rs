@@ -19,7 +19,7 @@
 //! whose window and turn would not fit fails the agent visibly instead (see
 //! [`super::machine`]), so no step can wedge an agent on a record its stream
 //! refuses.
-use super::{AgentId, AgentState, Error};
+use super::{AgentId, AgentRecord as _, AgentState, Error};
 use acyclic_actors::guest::{Checkpoint, CodecIdentity};
 use prost::Message as _;
 use std::collections::BTreeSet;
@@ -51,6 +51,27 @@ pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Er
     acyclic_actors::guest::admit_checkpoint(Some(checkpoint), identity())
         .map_err(|_| Error::IncompatibleCheckpointCodec)?;
     decode(&checkpoint.bytes)
+}
+
+/// Original bindings available to a host composition, before its first step
+/// from the delivered adoption and afterwards from the committed checkpoint.
+pub(crate) fn committed_state(
+    previous: Option<&Checkpoint>,
+    delivered: Option<&acyclic_stream::Record>,
+) -> Result<AgentState, Error> {
+    if let Some(previous) = previous {
+        return checkpoint_state(previous);
+    }
+    let record = delivered.ok_or(Error::Record("agent has no committed adoption"))?;
+    let super::InboxRecord::ForkAdopted(adopted) = super::InboxRecord::decode(&record.value)?
+    else {
+        return Err(Error::Record("first agent input is not ForkAdopted"));
+    };
+    let path = match &adopted.parent {
+        Some(parent) => parent.child(&adopted.agent)?,
+        None => super::AgentPath::root(&adopted.agent),
+    };
+    AgentState::adopted(path, &adopted)
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

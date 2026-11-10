@@ -131,7 +131,8 @@ async function prepare(test, gitOrigin) {
   });
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
   fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog,
-    ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`])];
+    ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`]),
+    ...(test.variant === "physical" ? ["--workspace-mounting", "physical"] : [])];
   // Tracing owns explicit text storage, including through the native PTY host.
   for (const option of ["diagnostic-records", "diagnostic-record-bytes"]) {
     const value = process.env[`E2E_${option.toUpperCase().replaceAll("-", "_")}`];

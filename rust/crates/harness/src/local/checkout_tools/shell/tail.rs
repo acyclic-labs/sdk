@@ -1,5 +1,5 @@
 //! Bounded presentation over the existing process stream. Overflow goes to
-//! the task's home mount and is captured by the command's ordinary commit.
+//! a visible task volume and is captured by the command's ordinary commit.
 use std::{
     collections::VecDeque,
     io::{self, Write},

@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness-core/src/filesystem/checkout_publication.rs b/rust/crates/harness-core/src/filesystem/checkout_publication.rs
+--- a/rust/crates/harness-core/src/filesystem/checkout_publication.rs
++++ b/rust/crates/harness-core/src/filesystem/checkout_publication.rs
+@@ -275,6 +275,9 @@
+         Err(cause) if cause.kind() != std::io::ErrorKind::NotFound => {
+             Err(acyclic_fs::NativeTreeMaterializationError::Io(cause).into())
+         }
+-        _ => Ok(()),
++        _ => {
++            let _ = std::fs::remove_dir(parent);
++            Ok(())
++        }
+     }
+ }

@@ -65,7 +65,8 @@ impl LocalHarnessConfig {
         let mut failures = Vec::new();
         #[cfg(any(test, feature = "native-execution"))]
         if native {
-            if matches!(self.project, LocalProject::Workspace(_))
+            if self.workspace_mounting == WorkspaceMounting::Native
+                && matches!(self.project, LocalProject::Workspace(_))
                 && let Err(error) =
                     workspace::volumes::require_available(acyclic_fs::probe_native_mount())
             {

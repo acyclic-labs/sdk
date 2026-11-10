@@ -1,0 +1,40 @@
+diff --git b/rust/crates/stream/src/preparation.rs a/rust/crates/stream/src/preparation.rs
+index e50d0b2e36..f407a552da 100644
+--- b/rust/crates/stream/src/preparation.rs
++++ a/rust/crates/stream/src/preparation.rs
+@@ -125,10 +125,7 @@ pub fn soft(request: &CommitRequest) -> usize {
+ 
+ /// The mutations a settled commit applies: all but the `skipped` soft appends.
+ /// `skipped` must be the canonical-order subsequence produced by [`settle`] or
+-/// [`skipped`] for this same validated request. Selection borrows both inputs,
+-/// allocates nothing, and compares at most once per soft append. A complete
+-/// traversal takes linear time in the mutation count plus examined path bytes,
+-/// independent of history.
++/// [`skipped`] for this same validated request.
+ pub fn applied<'a>(
+     request: &'a CommitRequest,
+     skipped: &'a [StreamPath],
+@@ -139,21 +136,11 @@ pub fn applied<'a>(
+ // Keep comparison accounting on the same traversal as provider selection.
+ fn applied_with<'a>(
+     request: &'a CommitRequest,
+-    mut skipped: &'a [StreamPath],
++    skipped: &'a [StreamPath],
+     mut compare: impl FnMut(&StreamPath, &StreamPath) -> std::cmp::Ordering + Clone + 'a,
+ ) -> impl Iterator<Item = &'a CommitMutation> + Clone + 'a {
+     request.mutations.iter().filter(move |mutation| {
+-        if let CommitMutation::SoftAppend { path, .. } = mutation
+-            && skipped
+-                .first()
+-                .is_some_and(|next| compare(next, path).is_eq())
+-        {
+-            // Both sequences are canonical, and skipped is a subsequence of
+-            // these soft appends. A match consumes exactly its original slot.
+-            skipped = &skipped[1..];
+-            return false;
+-        }
+-        true
++        !matches!(mutation, CommitMutation::SoftAppend { path, .. } if skipped.binary_search_by(|skipped| compare(skipped, path)).is_ok())
+     })
+ }
+ 

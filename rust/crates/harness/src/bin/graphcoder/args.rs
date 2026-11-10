@@ -22,6 +22,18 @@ pub enum OutputFormat {
     Jsonl,
 }
 
+/// How task views reach the host filesystem.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum Mounting {
+    /// Native when this host admits it, else physical with a notice on stderr.
+    #[default]
+    Auto,
+    /// FUSE, `ProjFS` or NFS projection; refuses to start without it.
+    Native,
+    /// Plain directories; needs no device, capability or mount helper.
+    Physical,
+}
+
 /// `GraphCoder`'s shipping command-line arguments.
 #[derive(Debug, Parser)]
 #[command(
@@ -39,6 +51,11 @@ pub struct Args {
     /// Root directory of the selected workspace.
     #[arg(long, default_value = ".")]
     pub workspace: PathBuf,
+    /// How the checkout's task views reach the host filesystem. `physical`
+    /// runs every agent in a plain directory and captures its changes at each
+    /// tool boundary, so it needs no /dev/fuse, capability or mount helper.
+    #[arg(long, value_enum, default_value_t, conflicts_with_all = ["host_workspace", "endpoint"])]
+    pub workspace_mounting: Mounting,
     /// Instruction scope relative to the workspace root.
     #[arg(long)]
     pub directory: Option<String>,

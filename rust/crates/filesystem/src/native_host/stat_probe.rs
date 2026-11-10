@@ -285,8 +285,7 @@ impl Fault {
     pub(crate) fn fired(&self) -> bool {
         FAULT.get().is_none()
     }
-    /// Restores the folding defect: a failed handle query hashes as an
-    /// absent handle instead of failing.
+    /// Restore the failed-handle folding defect for the retained control.
     pub(crate) fn fold_errors(&self) {
         FOLD.set(true);
     }

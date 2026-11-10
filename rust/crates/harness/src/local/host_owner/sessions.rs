@@ -118,7 +118,7 @@ impl HostWorkspaceOwner {
         action: SessionAction,
         next: bool,
     ) -> Result<Value> {
-        self.attach(parent).await?;
+        let parent_view = self.attach(parent).await?;
         let child = agents::child(parent, reference)?;
         if let SessionAction::Spawn { prompt } = &action {
             prompt_bound(prompt)?;
@@ -128,7 +128,7 @@ impl HostWorkspaceOwner {
             let brief = self.native.brief(&state, reference, prompt).await?;
             if !state.open_children.contains(&child) {
                 // Host-authored parent work is the child's starting point.
-                self.view(parent)?.capture(operation).await?;
+                parent_view.capture(operation).await?;
                 self.native
                     .request(
                         parent,
@@ -141,7 +141,7 @@ impl HostWorkspaceOwner {
                     .await?;
             }
         }
-        self.attach(&child).await?;
+        let _child_view = self.attach(&child).await?;
         let include_result = !matches!(&action, SessionAction::Reply { .. });
         let (mut accepted, mut fence) = (None, None);
         match action {
@@ -279,7 +279,7 @@ impl HostWorkspaceOwner {
             turn: session.settled + 1,
         };
         Ok(
-            json!({"task":child,"cwd":self.view(child)?.path(),"turn":claim.turn,
+            json!({"task":child,"cwd":self.view(child)?.host_cwd(),"turn":claim.turn,
             "claim":claim,"prompt":prompt,"session":session.native}),
         )
     }
@@ -375,7 +375,7 @@ impl HostWorkspaceOwner {
     ) -> Result<Value> {
         let (state, session) = self.native.session(child).await?;
         let pending = session.pending(&state);
-        let mut value = json!({"task":child,"cwd":self.view(child)?.path(),
+        let mut value = json!({"task":child,"cwd":self.view(child)?.host_cwd(),
             "status":{"settled":session.claimed().is_none(),"turn":session.settled},
             "control":session.control,"events":session.events,"pending":pending});
         if include_result {

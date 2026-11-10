@@ -25,6 +25,7 @@ mod linux {
         // changing permissions after bind would leave an admission race.
         rustix::process::umask(rustix::fs::Mode::RWXG | rustix::fs::Mode::RWXO);
         let host_uid = rustix::process::geteuid().as_raw();
+        let ready = acyclic_native_runtime::take_service_ready_signal()?;
         let mut arguments = std::env::args_os().skip(1);
         let mut socket = None;
         let mut config = None;
@@ -32,6 +33,7 @@ mod linux {
             match option.to_str() {
                 Some("--socket") => socket = arguments.next().map(PathBuf::from),
                 Some("--config") => config = arguments.next().map(PathBuf::from),
+                Some(acyclic_native_runtime::SERVICE_READY_ARGUMENT) => {}
                 _ => return Err("step=parse arguments; recovery: acyclic-virtiofsd --socket PATH --config LOCAL_CONFIG.json".into()),
             }
         }
@@ -75,6 +77,9 @@ mod linux {
                     path: socket.clone(),
                     identity: std::fs::symlink_metadata(&socket)?,
                 };
+                if let Some(ready) = ready {
+                    ready.signal()?;
+                }
                 let connection = tokio::select! {
                     accepted = listener.accept() => {
                         let connection = accepted?.0;

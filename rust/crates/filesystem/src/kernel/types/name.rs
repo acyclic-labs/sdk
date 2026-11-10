@@ -241,7 +241,7 @@ impl LogicalName {
         &self,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<String> {
+    ) -> W::OwnedOutput<String, crate::FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = (|| {
             let mut owned = OriginalReadAccounting::new(&mut accounting)?;
@@ -306,7 +306,7 @@ impl LogicalName {
             })();
             finish_owned(owned, result)
         })();
-        work.finish_owned(result, &accounting)
+        work.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 
     pub(crate) fn retained_bytes(&self) -> usize {

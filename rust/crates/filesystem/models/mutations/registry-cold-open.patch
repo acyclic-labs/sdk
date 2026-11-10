@@ -1,0 +1,12 @@
+--- a/rust/crates/filesystem/src/native_mount/registry.rs
++++ b/rust/crates/filesystem/src/native_mount/registry.rs
+@@ -226,9 +226,6 @@
+             .0
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner);
+-        if let Some(registry) = shared.as_ref() {
+-            return Ok(std::sync::Arc::clone(registry));
+-        }
+         let (directory, file) = open_in_directory(directory, work)?;
+         let registry = std::sync::Arc::new(Registry::new(directory, file));
+         *shared = Some(std::sync::Arc::clone(&registry));

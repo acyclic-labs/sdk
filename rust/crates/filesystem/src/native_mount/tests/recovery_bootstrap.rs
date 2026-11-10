@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Duration;
 
 #[test]
 fn fresh_process_recovery_initializes_its_registry() -> Result<(), Box<dyn std::error::Error>> {

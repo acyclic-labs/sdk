@@ -16,7 +16,10 @@ import { sha256File } from "../file-digest.mjs";
 // Each filesystem variant is its own suite, so each owns one whole envelope.
 export function variants(cases, platform) {
   return cases.flatMap(test => [{ ...test, variant: "primary" },
-    ...(platform === "win32" && test.ntfs ? [{ ...test, id: `${test.id}-ntfs`, variant: "ntfs" }] : [])]);
+    ...(platform === "win32" && test.ntfs ? [{ ...test, id: `${test.id}-ntfs`, variant: "ntfs" }] : []),
+    // Linux also runs the selected cases with physical workspace mounting: no
+    // /dev/fuse, capability or mount helper, as in an unprivileged container.
+    ...(platform === "linux" && test.physical ? [{ ...test, id: `${test.id}-physical`, variant: "physical" }] : [])]);
 }
 
 export function collect(cases, receipts, platform, coverage) {

@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness/src/local/host_owner.rs b/rust/crates/harness/src/local/host_owner.rs
+--- a/rust/crates/harness/src/local/host_owner.rs
++++ b/rust/crates/harness/src/local/host_owner.rs
+@@ -378,6 +378,9 @@ impl HostWorkspaceOwner {
+         if !idle.is_empty() {
+             let views = Arc::clone(&self.views);
+             let retirement = acyclic_native_runtime::spawn_blocking(move || -> Result<()> {
++                for (agent, _, _) in &idle {
++                    views.lock().map_err(storage)?.remove(agent);
++                }
+                 #[cfg(test)]
+                 let complete = gate.is_none_or(|(entered, release)| {
+                     let _ = entered.send(());

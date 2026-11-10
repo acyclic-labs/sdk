@@ -1,6 +1,33 @@
 //! Ordered leaf rewrites over original values, mutations and allocation custody.
 
 use super::Format;
+use std::iter::Peekable;
+
+/// Merges original ordered inputs while both have a pending item.
+///
+/// Equal items are delivered together; every delivery consumes at least one
+/// input. A false delivery stops immediately and returns false. On exhaustion
+/// returns true, leaving any unmatched tail in its original iterator. The
+/// caller owns comparison admission; refusals propagate before consumption.
+/// Uses constant scratch, without allocation or cloning.
+pub fn overlapping<L, R, E>(
+    left: &mut Peekable<impl Iterator<Item = L>>,
+    right: &mut Peekable<impl Iterator<Item = R>>,
+    mut compare: impl FnMut(&L, &R) -> Result<std::cmp::Ordering, E>,
+    mut emit: impl FnMut(Option<L>, Option<R>) -> Result<bool, E>,
+) -> Result<bool, E> {
+    while let (Some(a), Some(b)) = (left.peek(), right.peek()) {
+        let keep_going = match compare(a, b)? {
+            std::cmp::Ordering::Less => emit(left.next(), None)?,
+            std::cmp::Ordering::Equal => emit(left.next(), right.next())?,
+            std::cmp::Ordering::Greater => emit(None, right.next())?,
+        };
+        if !keep_going {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
 
 /// Visits the union of two strictly ordered inputs without cloning their items.
 ///
@@ -10,18 +37,14 @@ use super::Format;
 pub fn ordered<L, R, E>(
     left: impl IntoIterator<Item = L>,
     right: impl IntoIterator<Item = R>,
-    mut compare: impl FnMut(&L, &R) -> Result<std::cmp::Ordering, E>,
+    compare: impl FnMut(&L, &R) -> Result<std::cmp::Ordering, E>,
     mut emit: impl FnMut(Option<L>, Option<R>) -> Result<(), E>,
 ) -> Result<(), E> {
     let mut left = left.into_iter().peekable();
     let mut right = right.into_iter().peekable();
-    while let (Some(a), Some(b)) = (left.peek(), right.peek()) {
-        match compare(a, b)? {
-            std::cmp::Ordering::Less => emit(left.next(), None)?,
-            std::cmp::Ordering::Equal => emit(left.next(), right.next())?,
-            std::cmp::Ordering::Greater => emit(None, right.next())?,
-        }
-    }
+    overlapping(&mut left, &mut right, compare, |a, b| {
+        emit(a, b).map(|()| true)
+    })?;
     for item in left {
         emit(Some(item), None)?;
     }

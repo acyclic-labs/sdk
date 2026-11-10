@@ -10,9 +10,11 @@ use crate::storage::{
     ObjectWrite,
 };
 use crate::{
-    AuthorityWork, CancellationToken, NativeAllocation, NativeMaterializationWork,
-    NativeTreeMaterializationError, WorkBudget, WorkCounters,
+    AuthorityWork, NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError,
+    WorkCounters,
 };
+#[cfg(test)]
+use crate::{CancellationToken, WorkBudget};
 use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
 use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeMap, HashMap, HashSet};

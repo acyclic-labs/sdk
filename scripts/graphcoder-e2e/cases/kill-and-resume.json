@@ -39,5 +39,6 @@
   ],
   "assert": {
     "requests": 1
-  }
+  },
+  "physical": true
 }

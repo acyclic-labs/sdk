@@ -105,7 +105,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         if let Some(volumes) = &volumes {
             handler = handler.with_spawn_volumes(volumes.clone());
         }
-        if lifecycle.is_some() {
+        if lifecycle.is_some() || volumes.is_some() {
             handler = handler.with_close();
         }
         let composer: Option<Arc<dyn Composer>> = match (&volumes, &lifecycle) {

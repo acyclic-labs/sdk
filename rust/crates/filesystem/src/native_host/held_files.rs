@@ -2,6 +2,7 @@
 //! to a held directory handle, so replacing the root's path never redirects
 //! one.
 use super::*;
+#[cfg(any(test, feature = "native-mount"))]
 use std::io::Write as _;
 #[cfg(any(test, feature = "native-mount"))]
 use std::path::PathBuf;
@@ -598,7 +599,7 @@ pub mod publication_test_support {
         pub omit_reader_sync: bool,
         /// Duplicate each original parent handle before directory admission.
         pub duplicate_parent_handles: bool,
-        /// Generate an unnecessary candidate before checking the existing record.
+        /// Generate a candidate before checking for an existing record.
         pub generate_candidates_eagerly: bool,
     }
 

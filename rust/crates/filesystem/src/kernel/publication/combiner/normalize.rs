@@ -123,22 +123,20 @@ impl Ticket {
         if certified.is_none() {
             return Ok(None);
         }
-        for committed in state.selected() {
-            let query = CommitFootprint {
-                reads: Some(&self.proposal.core.preconditions.reads),
-                writes: &self.proposal.core.delta.value,
-            }
-            .independent(
-                CommitFootprint {
-                    reads: None,
-                    writes: &committed.core.delta.value,
-                },
-                accounting.remaining()?.items_examined,
-            );
-            accounting.charge_items(query.items_examined)?;
-            if !query.independent? {
-                return Ok(None);
-            }
+        let query = CommitFootprint {
+            reads: Some(&self.proposal.core.preconditions.reads),
+            writes: &self.proposal.core.delta.value,
+        }
+        .independent_all(
+            state.selected().map(|committed| CommitFootprint {
+                reads: None,
+                writes: &committed.core.delta.value,
+            }),
+            accounting.remaining()?.items_examined,
+        );
+        accounting.charge_items(query.items_examined)?;
+        if !query.independent? {
+            return Ok(None);
         }
         Ok(certified)
     }
