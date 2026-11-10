@@ -53,9 +53,15 @@ test("fixture descendants cannot inherit host profiles or temporary directories 
     const keys = ["TEMP", "TMP", "TMPDIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "XDG_RUNTIME_DIR"];
     const profiles = Object.fromEntries(keys.map(key => [key, outside]));
     const inherited = { ...process.env, ...profiles,
+      ComSpec: process.env.ComSpec ?? "fixture-shell",
+      SystemRoot: process.env.SystemRoot ?? "fixture-system-root",
       E2E_PROCESS_HOST: process.env.E2E_PROCESS_HOST ?? process.execPath,
       FIXTURE_PRIVATE_VALUE: "unrelated caller state" };
-    const launch = nativeEnvironment(inherited);
+    const launch = nativeEnvironment(Object.fromEntries(Object.entries(inherited)
+      .map(([key, value]) => [key.toUpperCase(), value])));
+    assert.equal(launch.ComSpec, inherited.ComSpec,
+      "native shell consumers need the canonical launcher key regardless of inherited spelling");
+    assert.equal(launch.SystemRoot, inherited.SystemRoot);
     const env = environment(settings, { ...launch, ...profiles });
     for (const key of ["TEMP", "TMP", "TMPDIR"]) assert.equal(env[key], join(settings, "tmp"));
     for (const [key, path] of [["CODEX_HOME", ".codex"], ["CLAUDE_CONFIG_DIR", ".claude"], ["PI_CODING_AGENT_DIR", ".pi/agent"],
