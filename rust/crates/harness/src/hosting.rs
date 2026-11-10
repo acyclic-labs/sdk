@@ -1329,9 +1329,7 @@ where
                             whole
                         }
                         Err(error) => {
-                            return call
-                                .reply(&Err(error))
-                                .map_err(|_| StreamError::LimitExceeded);
+                            return reply(&call, &Err(error));
                         }
                     }
                 }
@@ -1388,9 +1386,28 @@ where
                 let policy = server.platform.policy(&principal, call.command()).await?;
                 authorization.authorize(&server.resource, &[], &attributes, policy)?;
             }
-            call.reply(&result).map_err(|_| StreamError::LimitExceeded)
+            reply(&call, &result)
         })
     }
+}
+
+// The serving boundary must not turn an invalid reply into a capacity refusal.
+// Record only the command kind and stable codec failure, never command bodies.
+fn reply(
+    call: &acyclic_harness_client::AgentCall,
+    result: &Result<AgentReply, Error>,
+) -> Result<Bytes, StreamError> {
+    call.reply(result).map_err(|error| {
+        tracing::error!(
+            command = ?call.command().kind(),
+            code = error.code(),
+            "agent reply encoding refused"
+        );
+        match error {
+            acyclic_harness_client::CommandError::Invalid => StreamError::InvalidResponse,
+            acyclic_harness_client::CommandError::Capacity => StreamError::LimitExceeded,
+        }
+    })
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

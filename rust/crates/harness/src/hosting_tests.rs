@@ -188,6 +188,37 @@ async fn call(
     Ok(decode_agent_reply(&response.body, command)?)
 }
 
+#[test]
+fn serving_reply_codec_preserves_invalid_and_capacity_refusals() -> Result {
+    let command = AgentCommand::Root {};
+    let call = acyclic_harness_client::AgentCall::decode(&invocation("agents", &command)?)?;
+    assert!(matches!(
+        super::reply(&call, &Ok(AgentReply::Staged {})),
+        Err(StreamError::InvalidResponse)
+    ));
+    let oversized = AgentReply::Bound {
+        binding: "x".repeat(acyclic_harness_client::MAX_AGENT_COMMAND_BYTES + 1),
+        tools: String::new(),
+    };
+    assert!(matches!(
+        super::reply(&call, &Ok(oversized)),
+        Err(StreamError::LimitExceeded)
+    ));
+    let root = AgentPath::root(&AgentId::from_bytes([13; 16]));
+    let encoded = super::reply(
+        &call,
+        &Ok(AgentReply::Root {
+            agent: root.clone(),
+        }),
+    )?;
+    let response = wire::InvokeActorResponse::decode(encoded)?;
+    assert!(matches!(
+        decode_agent_reply(&response.body, &command)?,
+        Ok(AgentReply::Root { agent }) if agent == root
+    ));
+    Ok(())
+}
+
 fn binding()
 -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     binding_with(Arc::new(Never), Default::default())
