@@ -183,6 +183,9 @@ impl HttpMcpTransport {
                     if response.status != 200 {
                         return Err(Error::Indeterminate(operation));
                     }
+                    // Discovery may have refreshed during the disconnected
+                    // interval. Revalidate after subscribing to close that gap.
+                    generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     sse::notifications(
                         response.body,
                         operation,
