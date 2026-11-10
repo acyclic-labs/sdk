@@ -117,8 +117,8 @@ where
         // notice frontier with unrelated arrivals before the first dispatch.
         // Replay always uses ContextPrepared's exact original cut.
         let until = match frozen {
-            Some(cut) => Some(cut.through),
-            None if step == 0 => Some(
+            Some(cut) => crate::agent::BoundaryEnd::Exact(cut.through),
+            None if step == 0 => crate::agent::BoundaryEnd::Fence(
                 self.admitted
                     .lock()
                     .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?
@@ -126,7 +126,7 @@ where
                     .unwrap_or(from)
                     .max(from),
             ),
-            None => None,
+            None => crate::agent::BoundaryEnd::Open,
         };
         let selection = crate::agent::select_boundary(
             &*self.stream,

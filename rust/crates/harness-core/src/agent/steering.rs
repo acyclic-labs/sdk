@@ -29,6 +29,17 @@ pub struct BoundaryCut {
     pub through: u64,
 }
 
+/// How an inbox observation ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundaryEnd {
+    /// Observe the current bounded window.
+    Open,
+    /// Stop at this exclusive source cursor or the end of a window.
+    Fence(u64),
+    /// Replay exactly the admitted source range.
+    Exact(u64),
+}
+
 /// Read one window at an actual model boundary. A later arrival belongs to a
 /// later boundary. Cancel/archive are barriers and remain explicit interrupts.
 /// `from` is the last admitted model frontier; a frozen range is replayed
@@ -37,8 +48,12 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
     provider: &P,
     agent: &AgentPath,
     from: u64,
-    until: Option<u64>,
+    boundary: BoundaryEnd,
 ) -> Result<BoundarySelection, Error> {
+    let until = match boundary {
+        BoundaryEnd::Open => None,
+        BoundaryEnd::Fence(fence) | BoundaryEnd::Exact(fence) => Some(fence),
+    };
     if until.is_some_and(|until| until < from) {
         return Err(Error::Record("steering cursor precedes its source range"));
     }
@@ -68,7 +83,8 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
         let mut records = match records {
             Ok(records) => records,
             Err(error)
-                if error.category() == acyclic_stream::StreamError::NotFound && until.is_none() =>
+                if error.category() == acyclic_stream::StreamError::NotFound
+                    && !matches!(boundary, BoundaryEnd::Exact(_)) =>
             {
                 break;
             }
@@ -112,7 +128,7 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
             );
         }
     }
-    if until.is_some_and(|until| until != selection.through) {
+    if matches!(boundary, BoundaryEnd::Exact(until) if until != selection.through) {
         return Err(Error::Record("frozen steering range is unavailable"));
     }
     Ok(selection)
