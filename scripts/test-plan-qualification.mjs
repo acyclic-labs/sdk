@@ -260,7 +260,7 @@ test("four clippy workers retain every feature invocation and fail when any work
   assert.deepEqual([...new Set(parallel.calls.map(call => call.target))].sort(), ["target", "target-clippy-1", "target-clippy-2", "target-clippy-3"]);
   assert.ok(parallel.calls.every(call => call.command === "cargo" && call.jobs === "4"));
   assert.ok(parallel.calls.some(call => JSON.stringify(call.args) === JSON.stringify([
-    "clippy", "-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--all-targets",  "--locked", "--", "-D", "warnings",
+    "clippy", "-p", "acyclic-harness", "--all-targets", "--no-default-features", "--locked", "--", "-D", "warnings",
   ])));
   assert.equal(parallel.exitCode, 0);
   const failed = await execute(4, true);
