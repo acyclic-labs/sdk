@@ -108,6 +108,14 @@ where
             .await
             .map_err(turn)?
             .ok_or(Error::Record("selected directory does not exist"))?;
-        PrivateDirectoryPage::from_filesystem(generation, page).map_err(turn)
+        let ledger =
+            crate::filesystem::PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())
+                .map_err(turn)?;
+        let source = ledger
+            .reserve_decode(generation.logical_owned_bytes().map_err(turn)?)
+            .map_err(turn)?;
+        PrivateDirectoryPage::from_filesystem(generation, page, source, &ledger)
+            .map(|(page, _custody)| page)
+            .map_err(turn)
     }
 }
