@@ -191,3 +191,65 @@ pub async fn archive(connection: &Connection, operation: &str) -> Result<()> {
     };
     Ok(())
 }
+
+/// Pause each parent before paging its children, so a paused subtree cannot
+/// grow behind the traversal. Resume uses the same existing actor control.
+/// Only the current page and the path back through the tree are retained.
+pub fn pause_subtree<'a>(
+    connection: &'a Connection,
+    agent: AgentPath,
+    paused: bool,
+) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+    Box::pin(async move {
+        let AgentReply::Paused { .. } = connection
+            .execute(&AgentCommand::Pause {
+                agent: agent.clone(),
+                paused,
+            })
+            .await?
+        else {
+            return Err(unexpected());
+        };
+        let mut cursor = None;
+        loop {
+            let AgentReply::Children { items, next } = connection
+                .execute(&AgentCommand::Children {
+                    agent: agent.clone(),
+                    page: AgentPageRequest::new(32, 32 * 1024, cursor).map_err(storage)?,
+                })
+                .await?
+            else {
+                return Err(unexpected());
+            };
+            for child in items {
+                pause_subtree(connection, child.agent, paused).await?;
+            }
+            let Some(next) = next else {
+                return Ok(());
+            };
+            cursor = Some(next);
+        }
+    })
+}
+
+/// Explicit all-session control visits directory pages without retaining a roster.
+pub async fn pause_all(connection: &Connection, paused: bool) -> Result<()> {
+    let mut cursor = None;
+    loop {
+        let AgentReply::Children { items, next } = connection
+            .execute(&AgentCommand::Sessions {
+                page: AgentPageRequest::new(32, 32 * 1024, cursor).map_err(storage)?,
+            })
+            .await?
+        else {
+            return Err(unexpected());
+        };
+        for root in items {
+            pause_subtree(connection, root.agent, paused).await?;
+        }
+        let Some(next) = next else {
+            return Ok(());
+        };
+        cursor = Some(next);
+    }
+}

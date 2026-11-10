@@ -155,6 +155,15 @@ pub enum AgentCommand {
         /// Zero-based inclusive settled conversation offset.
         at: u64,
     },
+    /// Durably pause or explicitly resume the selected actor through its
+    /// existing runtime, parking the same owned execution resources.
+    Pause {
+        /// Selected actor within the authenticated session tree or directory.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// True to pause, false to resume.
+        paused: bool,
+    },
     /// Snapshot explicit paths in a named client session; wait on its original
     /// filesystem publication producer when `after` is still current.
     ClientFiles {
@@ -602,6 +611,7 @@ impl AgentCommand {
             Self::Spawn { parent: agent, .. }
             | Self::Fork { parent: agent, .. }
             | Self::ForkSession { agent, .. }
+            | Self::Pause { agent, .. }
             | Self::Prompt { agent, .. }
             | Self::Cancel { agent, .. }
             | Self::Compact { agent, .. }
@@ -639,6 +649,7 @@ impl AgentCommand {
             Self::Sessions { .. } => "sessions",
             Self::NewSession { .. } => "new_session",
             Self::ForkSession { .. } => "fork_session",
+            Self::Pause { .. } => "pause",
             Self::AgentFiles { .. } => "agent_files",
             Self::PublishAgentFiles { .. } => "publish_agent_files",
             Self::Archive { .. } => "archive",
