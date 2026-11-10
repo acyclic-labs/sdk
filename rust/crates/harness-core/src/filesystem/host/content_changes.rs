@@ -223,13 +223,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let mut checked_actions = [false; 2];
             for change in changes {
                 crate::model::charge_items(Some(io), 1)?;
-                require_change_ceiling(
-                    change_action(change),
-                    volume,
-                    ceiling,
-                    &mut checked_actions,
-                    io,
-                )?;
+                require_change_ceiling(change.action(), volume, ceiling, &mut checked_actions, io)?;
                 crate::conversation::validate_content_path(
                     change.path(),
                     &mut Some(&mut io.history_io()),
@@ -324,7 +318,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             if let Some(root_view) = &root_view {
                 for change in changes {
-                    access::require(&root_view.0, change_action(change), change.path(), io)?;
+                    access::require(&root_view.0, change.action(), change.path(), io)?;
                 }
                 if needs_binding {
                     let fence = root_view
@@ -352,7 +346,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 access::access_view(&opened, grant.policy_scope(), None, payload, ceiling, io)
                     .await?;
             for change in changes {
-                let action = change_action(change);
+                let action = change.action();
                 if let Some(check) = check {
                     check(action, change.path())?;
                 }
@@ -692,14 +686,4 @@ fn change_result<
             ContentChangeResult::Deleted(stock_string_copy(path.as_ref(), Some(io))?)
         }
     })
-}
-
-fn change_action(change: &ContentChange<'_>) -> Action {
-    match change {
-        ContentChange::CreateAbsent { .. } => Action::Create,
-        ContentChange::UpdateExpected { .. } => Action::Write,
-        ContentChange::DeleteExpected { .. }
-        | ContentChange::DeleteAt { .. }
-        | ContentChange::Delete { .. } => Action::Delete,
-    }
 }

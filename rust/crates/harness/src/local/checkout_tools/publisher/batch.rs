@@ -1,6 +1,5 @@
 use super::*;
 use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult, ContentChanges};
-use acyclic_fs::access::Action;
 
 impl CheckoutPublisher {
     pub(super) fn publish_changes<'a, 'io: 'a, Output: acyclic_stream::ProviderTask + 'a>(
@@ -19,11 +18,7 @@ impl CheckoutPublisher {
                 if let Some(changes) = changes {
                     for change in changes {
                         mount.check_with_work(
-                            match change {
-                                ContentChange::CreateAbsent { .. } => Action::Create,
-                                ContentChange::UpdateExpected { .. } => Action::Write,
-                                ContentChange::DeleteExpected { .. } => Action::Delete,
-                            },
+                            change.action(),
                             change.path(),
                             self.tools.clock.now_unix_millis() / 1000,
                             access
