@@ -22,12 +22,15 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
     use acyclic_harness_client::{EventProjection, MAX_READ_BYTES};
 
-    let arguments = serde_json::json!({"text": "request".repeat(12_000)});
+    let arguments = serde_json::json!({
+        "path": "approval-request.txt",
+        "content": "request".repeat(12_000),
+    });
     let provider = super::scripted([
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                 "echo-request".into(),
-                "example.echo".into(),
+                "write".into(),
                 arguments.clone(),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
@@ -42,7 +45,6 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         LocalHarness::open(
             volume_config(directory.path(), project, provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled)
-                .tool(super::tool("example.echo"))
                 .approval_policy(crate::approvals::ApprovalPolicy::default()),
         )
         .await?,
