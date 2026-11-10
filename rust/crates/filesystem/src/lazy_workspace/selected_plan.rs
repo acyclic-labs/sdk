@@ -119,7 +119,6 @@ impl<
                         .inspect_unauthored(
                             &mut checkout.value,
                             path,
-                            Some(cut),
                             InspectBasis {
                                 state: Some(&state),
                                 retain_pinned_observation: true,

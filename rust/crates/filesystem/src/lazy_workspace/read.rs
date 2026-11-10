@@ -34,7 +34,6 @@ impl<
             .inspect_unauthored(
                 &mut checkout.value,
                 path,
-                None,
                 InspectBasis {
                     unobserved: true,
                     ..InspectBasis::default()
@@ -116,9 +115,7 @@ impl<
             return Err(LazyWorkspaceError::NotFound);
         };
         let source = matches!(lookup, LazyLookup::Source { .. });
-        let result = if source && cut.source != self.source.reference() {
-            Err(LazyWorkspaceError::StaleSource)
-        } else if lookup.stat().kind != SourceNodeKind::RegularFile {
+        let result = if lookup.stat().kind != SourceNodeKind::RegularFile {
             Err(LazyWorkspaceError::NotRegularFile)
         } else {
             self.read_resolved(&lookup, path, range, maximum, ctx)

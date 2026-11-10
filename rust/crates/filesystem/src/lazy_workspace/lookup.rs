@@ -121,13 +121,7 @@ impl<
             .checkout(crate::model::GenerationSelector::Head, ctx)
             .await?;
         let result = self
-            .inspect_unauthored(
-                &mut checkout.value,
-                path,
-                None,
-                InspectBasis::default(),
-                ctx,
-            )
+            .inspect_unauthored(&mut checkout.value, path, InspectBasis::default(), ctx)
             .await;
         checkout.retire(ctx)?;
         let (lookup, _, guard) = result?;
@@ -153,7 +147,6 @@ impl<
             .inspect_unauthored(
                 &mut checkout.value,
                 path,
-                Some(cut),
                 InspectBasis {
                     state: Some(&state),
                     retain_pinned_observation: true,
@@ -186,12 +179,7 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<LazyStat>, LazyWorkspaceError> {
         let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
-        let result = match &lookup {
-            Some(LazyLookup::Source { .. }) if cut.source != self.source.reference() => {
-                Err(LazyWorkspaceError::StaleSource)
-            }
-            _ => Ok(lookup.as_ref().map(LazyLookup::stat)),
-        };
+        let result = Ok(lookup.as_ref().map(LazyLookup::stat));
         match lookup {
             Some(lookup) => self.retire_lookup((lookup, guard), ctx)?,
             None => crate::kernel::retire_allocation(guard, 0, ctx)?,
@@ -203,7 +191,6 @@ impl<
         &self,
         checkout: &mut crate::Checkout<A, O>,
         path: &str,
-        frozen: Option<LazySnapshotRef>,
         basis: InspectBasis<'_>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Option<LazyLookup>, bool, KernelOwnedAllocation), LazyWorkspaceError> {
@@ -257,9 +244,6 @@ impl<
                 if let Some(node) = basis.listed {
                     (state.source, Some(node), false)
                 } else {
-                    if frozen.is_some() && state.source != self.source.reference() {
-                        return Err(LazyWorkspaceError::StaleSource);
-                    }
                     (
                         state.source,
                         self.source_lookup(state.source, path, ctx).await?,

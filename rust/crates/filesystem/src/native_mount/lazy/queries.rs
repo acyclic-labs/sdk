@@ -208,7 +208,6 @@ where
             .inspect_unauthored(
                 &mut checkout,
                 text,
-                None,
                 crate::lazy_workspace::InspectBasis {
                     state: Some(&state),
                     authored_absent: true,

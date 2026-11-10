@@ -187,7 +187,7 @@ impl<
         ))
     }
 
-    /// Loads the ready binding, following a shared source's newer epoch.
+    /// Loads the ready binding, retaining a fork's source cut.
     pub async fn state(
         &self,
         ctx: &mut KernelAccounting<'_>,
@@ -204,8 +204,8 @@ impl<
     /// Loads the ready binding at the source's current epoch. A source
     /// shared by several workspaces advances its epoch when any of them
     /// observes a change; that invalidates source cursors, not this
-    /// workspace's authored or observed state, so every reader of the
-    /// binding follows the newer epoch rather than treating it as stale.
+    /// workspace's authored or observed state. Root bindings follow the newer
+    /// epoch; forks retain the source cut captured by their creation.
     pub(crate) async fn current_binding(
         &self,
         missing: fn() -> LazyWorkspaceError,
@@ -216,15 +216,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or_else(missing)?;
-        let source = self.source.reference();
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source.identity != source.identity
-            || state.source.epoch > source.epoch
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        state.require_ready_fork()?;
+        let source = self.binding_source(&state)?;
         if state.source == source {
             return Ok(state);
         }
@@ -244,6 +236,27 @@ impl<
         Err(LazyWorkspaceError::Concurrent)
     }
 
+    /// A root follows its provider; a fork owns its original source cut.
+    pub(super) fn binding_source(
+        &self,
+        state: &LazyWorkspaceState,
+    ) -> Result<SourceReference, LazyWorkspaceError> {
+        let source = self.source.reference();
+        if state.schema_version != LAZY_STATE_SCHEMA
+            || state.workspace_id != self.workspace.id()
+            || state.source.identity != source.identity
+            || state.source.epoch > source.epoch
+        {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        state.require_ready_fork()?;
+        Ok(if state.fork_origin.is_some() {
+            state.source
+        } else {
+            source
+        })
+    }
+
     /// Selects companion indexes for a retained mounted checkout without mutation.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) async fn mounted_read_state(
@@ -259,15 +272,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::NotFound)?;
-        let source = self.source.reference();
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source.identity != source.identity
-            || state.source.epoch > source.epoch
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        state.require_ready_fork()?;
+        let source = self.binding_source(&state)?;
         if let Some(pending) = &state.pending_remove {
             if state.source != source {
                 return Err(LazyWorkspaceError::StaleSource);

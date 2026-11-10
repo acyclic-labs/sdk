@@ -279,9 +279,6 @@ impl<
                 match phase {
                     LazyDirectoryPhase::Source(cursor) => {
                         used = true;
-                        if state.source != self.source.reference() {
-                            return Err(LazyWorkspaceError::StaleSource);
-                        }
                         let bytes = std::mem::size_of::<LazyWorkspaceError>() as u64;
                         let guard = ctx.claim_owned(bytes, 1)?;
                         let mut failure =

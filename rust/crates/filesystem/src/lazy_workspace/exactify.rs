@@ -201,7 +201,6 @@ impl<
                         .inspect_unauthored(
                             &mut transaction.checkout,
                             path,
-                            Some(cut),
                             InspectBasis {
                                 state: Some(&state),
                                 retain_pinned_observation: true,
@@ -288,7 +287,6 @@ impl<
                 .inspect_unauthored(
                     &mut checkout.value,
                     paths.value.first().ok_or(LazyWorkspaceError::Concurrent)?,
-                    Some(cut),
                     InspectBasis {
                         state: Some(state),
                         retain_pinned_observation: true,

@@ -146,6 +146,7 @@ async fn fork_retains_available_source_and_authored_cuts() {
         .write_text("/authored.txt", "authored before")
         .await
         .unwrap();
+    let basis = root.snapshot(accounting!()).await.unwrap();
     let (child, cut) = root
         .fork(
             "child",
@@ -187,7 +188,7 @@ async fn fork_retains_available_source_and_authored_cuts() {
         b"authored before"
     );
     assert_eq!(
-        root.read_at_snapshot(cut, "/source.txt", None, 64, accounting!())
+        root.read_at_snapshot(basis, "/source.txt", None, 64, accounting!())
             .await
             .unwrap()
             .0
@@ -195,4 +196,40 @@ async fn fork_retains_available_source_and_authored_cuts() {
             .as_slice(),
         b"source before"
     );
+    assert_eq!(
+        root.stat_at_snapshot(basis, "/unobserved.txt", accounting!())
+            .await
+            .unwrap()
+            .unwrap()
+            .logical_bytes,
+        Some(b"source before".len() as u64)
+    );
+    let (page, _) = child
+        .list_directory("/", None, 16, accounting!())
+        .await
+        .unwrap();
+    let listed = page.entries.iter().find_map(|entry| entry.source).unwrap();
+    assert_eq!(
+        listed.version,
+        SourceVersion(*blake3::hash(b"source before").as_bytes())
+    );
+    let reopened = root
+        .open_related(child.workspace().clone(), accounting!())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .read_at_snapshot(cut, "/source.txt", None, 64, accounting!())
+            .await
+            .unwrap()
+            .0
+            .bytes
+            .as_slice(),
+        b"source before"
+    );
+    source.versions.lock().unwrap().remove(&cut.source.epoch);
+    assert!(matches!(
+        child.read("/source.txt", 64, accounting!()).await,
+        Err(LazyWorkspaceError::Demand(DemandError::StaleSource))
+    ));
 }
