@@ -70,7 +70,7 @@ fn shared_references(host: &str, cwd: &Path) -> Result {
         let mut command = native_fixture(&view, events, "0");
         running
             .process
-            .spawn(&mut command, running.claim.operation)?;
+            .spawn(&mut command, running.claim.operation, None)?;
         shell_pid(&mut running)?;
         running.process.queue_stdin(b"release\n".to_vec())?;
         wait_exit(&mut running)?;
@@ -143,7 +143,7 @@ fn references(host: &str, cwd: &Path) -> Result {
     let mut command = native_fixture(&view, "", "0");
     running
         .process
-        .spawn(&mut command, running.claim.operation)?;
+        .spawn(&mut command, running.claim.operation, None)?;
     shell_pid(&mut running)?;
     sessions.children.insert(key.clone(), running);
     let replay = sessions.spawn(&reference, "work".into())?;
