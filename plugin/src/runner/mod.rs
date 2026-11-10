@@ -10,8 +10,8 @@ mod args;
 /// Shipping argument and input boundaries for decoder conformance and fuzzing.
 #[cfg(feature = "test-support")]
 pub mod test_support {
-    pub use crate::args::{Args, Command, InputFormat, OutputFormat};
-    pub use crate::headless::input::{Request, parse};
+    pub use super::args::{Args, Command, InputFormat, OutputFormat};
+    pub use super::headless::input::{Request, parse};
 }
 mod headless;
 mod lifecycle;
@@ -32,10 +32,10 @@ use acyclic_harness::{
     server::ServerConfig,
 };
 use acyclic_harness_providers::{Credentials, Registry};
-use args::{Args, Command, InputFormat, OutputFormat};
+use args::{Args, Command, InputFormat, OutputFormat, Template};
 use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use futures::{FutureExt as _, future::LocalBoxFuture};
-use std::{future::Future, sync::Arc};
+use std::{future::Future, io::IsTerminal as _, sync::Arc};
 
 // Construct each phase on its own call frame. Boxing an already constructed
 // future in the awaiting frame still retains its construction scratch space
@@ -45,7 +45,7 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
     build().boxed_local()
 }
 
-/// `GraphCoder` on argv, its server (`graphcoder serve`) through the seams
+/// `GraphCoder` on argv, its server (`acyclic serve`) through the seams
 /// `seams` makes of the self-deployed defaults: the one entry point a
 /// self-deployed and a managed server share.
 /// Enabled diagnostics require caller-owned text buffers or an explicit paired
@@ -65,7 +65,20 @@ pub fn main_with(
     seams: impl FnOnce(ServerConfig) -> ServerConfig,
     diagnostic_storage: Option<Vec<Box<[u8]>>>,
 ) -> CliCompletion {
-    let arguments = arguments();
+    main_from(std::env::args_os(), seams, diagnostic_storage)
+}
+
+/// Drive the shared frontend with caller-owned native arguments, including argv[0].
+pub fn main_from<I, T>(
+    argv: I,
+    seams: impl FnOnce(ServerConfig) -> ServerConfig,
+    diagnostic_storage: Option<Vec<Box<[u8]>>>,
+) -> CliCompletion
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let arguments = arguments(argv);
     let runtime = match acyclic_native_runtime::coordination_runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -100,12 +113,21 @@ pub fn main_with(
     result
 }
 
-fn arguments() -> std::io::Result<(Args, Option<acyclic_native_runtime::obs::ReportAdmission>)> {
+fn arguments<I, T>(
+    argv: I,
+) -> std::io::Result<(Args, Option<acyclic_native_runtime::obs::ReportAdmission>)>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
     let admission = acyclic_native_runtime::obs::ReportAdmission::from_environment()?;
-    let matches = Args::command().get_matches();
+    let matches = Args::command().get_matches_from(argv);
     let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if args.default_config && matches.value_source("model") != Some(ValueSource::CommandLine) {
         args.model = None;
+    }
+    if args.default_config && matches.value_source("catalog") != Some(ValueSource::CommandLine) {
+        args.catalog = None;
     }
     if let Err(error) = args.prepare_input() {
         Args::command()
@@ -205,9 +227,10 @@ fn configure(
     args: &Args,
     registry: Registry,
 ) -> Result<LocalHarnessConfig, Box<dyn std::error::Error>> {
-    let mut config = registry
-        .graphcoder(&args.workspace, args.model.clone())?
-        .working_directory(&std::env::current_dir()?)?;
+    let mut config = match args.template {
+        Template::Graphcoder => registry.graphcoder(&args.workspace, args.model.clone())?,
+    }
+    .working_directory(&std::env::current_dir()?)?;
     if args.no_compaction {
         config = config.compaction(acyclic_harness::context::CompactionPolicy::Disabled);
     }
@@ -474,6 +497,8 @@ async fn drive(
     let interactive = args.prompt.is_none()
         && args.input_format != InputFormat::Jsonl
         && args.output_format != OutputFormat::Jsonl
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
         && !acyclic_harness::tui::term::Environment::capture().is_dumb();
     let operation = args
         .operation

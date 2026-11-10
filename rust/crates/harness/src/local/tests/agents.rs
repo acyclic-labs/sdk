@@ -18,16 +18,52 @@ async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> 
 
 #[tokio::test]
 async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() -> Result<()> {
-    use crate::model::{ModelEvent, ToolCall};
+    use crate::model::{ModelContent, ModelEvent, ToolCall};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
-    use acyclic_harness_client::{EventProjection, MAX_READ_BYTES};
+    use acyclic_harness_client::{AgentCommand, AgentReply, EventProjection, MAX_READ_BYTES};
 
-    let arguments = serde_json::json!({"text": "request".repeat(12_000)});
-    let provider = super::scripted([
+    let arguments = serde_json::json!({
+        "path": "approval-request.txt",
+        "content": "request".repeat(12_000),
+    });
+    let provider = super::scripted([ScriptedTurn::Text("ready".into())]);
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .approval_policy(crate::approvals::ApprovalPolicy::default()),
+        )
+        .await?,
+    );
+    // The root orchestrator admits delegation, not file writes. Select an
+    // actual worker before observing the original write approval.
+    let connection = harness.connect().await?;
+    let AgentReply::Spawned {
+        agent: worker,
+        delivery: crate::agent::Delivered::Committed { .. },
+    } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: connection.root().clone(),
+            id: crate::agent::IntentId::try_from("approval-worker").map_err(agent)?,
+            brief: ModelContent::Text("prepare the write".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("approval worker did not open".into()));
+    };
+    let client = Conversation::open(connection.select(worker.clone()).await?);
+    // Spawn's receipt names the parent's inbox. Join the worker's own
+    // committed input frontier rather than treating that receipt as its input.
+    settled(&harness, &worker).await?;
+    let opened_calls = provider.request_count();
+    provider.extend([
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                "echo-request".into(),
-                "example.echo".into(),
+                "write-request".into(),
+                "write".into(),
                 arguments.clone(),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
@@ -36,18 +72,6 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         ]),
         ScriptedTurn::Text("approved".into()),
     ]);
-    let directory = tempfile::tempdir().map_err(agent)?;
-    let project = volume(directory.path()).await?;
-    let harness = Arc::new(
-        LocalHarness::open(
-            volume_config(directory.path(), project, provider.clone())?
-                .compaction(crate::context::CompactionPolicy::Disabled)
-                .tool(super::tool("example.echo"))
-                .approval_policy(crate::approvals::ApprovalPolicy::default()),
-        )
-        .await?,
-    );
-    let client = conversation(&harness).await?;
     let mut projection = EventProjection::new("approval-export".into());
     let mut observed = ObservedConversation {
         conversation: Arc::clone(&client),
@@ -56,12 +80,31 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let inbox = client.send("approval-input", "echo the request").await?;
     let (id, published_binding, delivery) = loop {
         let (event, delivery) = observed.observer.next_projected().await?;
-        if let Some(crate::local::Event::Status(StatusRecord {
-            phase: crate::agent::Phase::WaitingApproval { id, binding },
-            ..
-        })) = event?
-        {
-            break (id, binding, delivery);
+        match event? {
+            Some(crate::local::Event::Status(StatusRecord {
+                phase: crate::agent::Phase::WaitingApproval { id, binding },
+                ..
+            })) => break (id, binding, delivery),
+            Some(crate::local::Event::Turn(entry)) if entry.inbox == inbox => {
+                let journal = client.execution_page(inbox, 0, false).await?;
+                let failures: Vec<_> = journal
+                    .page
+                    .iter()
+                    .flat_map(|page| &page.items)
+                    .filter_map(|record| match &record.event {
+                        crate::executor::ExecutionEvent::ToolFailed { reason, cause, .. } => {
+                            Some((reason, cause))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                return Err(Error::Invalid(format!(
+                    "input settled before its expected approval: {:?}; {}; original tool failures: {failures:?}",
+                    entry.outcome,
+                    client.turn(&entry).await?.answer
+                )));
+            }
+            _ => {}
         }
         let after = projection.event(&delivery).after;
         projection.accepted(&delivery.resource, after);
@@ -73,6 +116,12 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let pending = client.pending_approval(&id).await?.ok_or_else(|| {
         Error::Invalid("original approval binding is absent from the pending query".into())
     })?;
+    let (_opening, phase) = client.observe_current().await?;
+    assert!(matches!(
+        phase,
+        crate::agent::Phase::WaitingApproval { id: opening_id, binding }
+            if opening_id == id && binding.as_ref() == Some(&pending.binding)
+    ));
     assert_eq!(pending.status, sequence);
     assert_eq!(Some(&pending.binding), published_binding.as_ref());
     assert!(serde_json::to_vec(&pending).map_err(agent)?.len() < 1024);
@@ -130,7 +179,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     );
     assert!(client.approval_request(sequence, length + 1).await.is_err());
     assert!(client.approval_request(0, 0).await.is_err());
-    assert_eq!(provider.request_count(), 1);
+    assert_eq!(provider.request_count(), opened_calls + 1);
     projection.accepted(&delivery.resource, Some(after));
     assert_eq!(projection.cursor(&delivery.resource).next, sequence + 1);
     let binding = crate::interaction::ApprovalBinding {
@@ -145,11 +194,12 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
             .await
             .is_err()
     );
-    assert_eq!(provider.request_count(), 1);
+    assert_eq!(provider.request_count(), opened_calls + 1);
     client
         .decide_with_binding(&id, binding.clone(), true)
         .await?;
-    let (agents, root) = harness.agents().await?;
+    let (agents, _) = harness.agents().await?;
+    let root = &worker;
     observed.settled(inbox).await?;
     assert!(client.pending_approval(&id).await?.is_none());
     assert!(client.approval_prompt(&id).await?.is_none());
@@ -2868,9 +2918,18 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     );
     let older = next.ok_or_else(|| Error::Invalid("older continuation missing".into()))?;
     let expected = client.project_heads().await?;
-    let inbox = client
-        .restore("apply", 0, RestoreMode::Both, expected)
-        .await?;
+    let mut prepared = client.prepare_restore("apply", 0, RestoreMode::Both, expected)?;
+    let receipt = prepared.execute().await.map_err(agent)?;
+    let crate::client::AgentReply::Delivered {
+        delivery: Delivered::Committed { inbox },
+    } = receipt
+    else {
+        return Err(Error::Invalid("prepared restore did not commit".into()));
+    };
+    let replay = prepared.execute().await.map_err(agent)?;
+    assert!(
+        matches!(replay, crate::client::AgentReply::Delivered { delivery: Delivered::Committed { inbox: repeated } } if repeated == inbox)
+    );
     settlement(&mut observed, inbox).await?;
     let entries = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
     assert_eq!(entries.len(), 3);

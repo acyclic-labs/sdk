@@ -299,8 +299,8 @@ const claims = {
     "append inherited prior invocation work", ["--features", "filesystem-local,native-execution,test-support"],
   ],
   "cli-failure-output": [
-    "rust/crates/harness/src/completion.rs", "graphcoder",
-    "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
+    "rust/crates/harness/src/completion.rs", "acyclic-plugin",
+    "runner::lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
     "failure output retained a lost shutdown producer", [],
     { mutations: [
       { patch: "rust/proofs/cli-failure-output/shutdown.patch", label: "shutdown-omitted", diagnostic: "failure output retained a lost shutdown producer" },

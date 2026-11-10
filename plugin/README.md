@@ -1,8 +1,26 @@
-# Native host workspace coordination
+# Acyclic CLI
+
+The `acyclic` executable runs the GraphCoder preset with `acyclic run`, serves the
+shared harness with `acyclic serve ADDRESS`, and reopens an existing agent with
+`acyclic attach AGENT`. All three use the same frontend library and SDK client.
+`acyclic run --help` lists execution, provider and output options.
+The thin `graphcoder` executable is `acyclic run --template graphcoder`: with
+terminal input and output it opens the same TUI as `acyclic attach`; with pipes
+it runs headless. It forwards options to the shared parser. Submit a headless task
+with `-p 'TASK'`, or use `acyclic exec --operation OPERATION` with JSONL input.
+With no task, closing stdin exits; unexpected text is refused with a recovery
+command. Text stdin otherwise answers pending approvals.
+`ACYCLIC_MODEL` selects the model when `--model` is absent. `ACYCLIC_LOG` enables
+diagnostics with explicit `--diagnostic-records` and `--diagnostic-record-bytes`
+storage; use `off` to disable text diagnostics. `--default-config` ignores the
+environment model and `ACYCLIC_CATALOG` selection. `ACYCLIC_CATALOG` selects the
+provider catalog when `--catalog` is absent; neither variable contains credentials.
+
+## Native host workspace coordination
 
 Claude Code, Codex, Pi, OpenCode and Antigravity run their own sessions, providers, tools, permissions
 and agent loops. Acyclic coordinates isolated workspaces, capture and merges
-through an already-running GraphCoder harness.
+through an already-running Acyclic harness.
 
 Root coordination and capture use the existing checkout and work without
 `/dev/fuse`, including in a stock Linux container. Native hosts retain their own
@@ -17,10 +35,10 @@ with that explicit root. The no-FUSE qualification supplies an empty temporary
 root and drives both `__workspace` and the headless client against it, then
 repeats those clients in stock Debian Docker with no FUSE device.
 
-Start GraphCoder outside the host sandbox, from the workspace:
+Start the shared workspace owner outside the host sandbox, from the workspace:
 
 ```sh
-graphcoder --host-workspace --host-state-directory /path/to/explicit/state
+acyclic run --host-workspace --host-state-directory /path/to/explicit/state
 acyclic install codex
 acyclic host codex -- --sandbox workspace-write --ask-for-approval never
 ```
@@ -265,9 +283,9 @@ stand-in native sessions held alive at the N/2N samples:
 node plugin/tests/hosts/shared-mount-scale.mjs ACYCLIC GRAPHCODER codex
 ```
 
-Select `claude-code` or `pi` for the other adapters. GraphCoder must be built
-with the harness `test-support` feature for its OS resource query. These
-instrumented binaries are test fixtures, not the shipping package. The oracle
+Select `claude-code` or `pi` for the other adapters. This Acyclic build enables
+the harness `test-support` feature for its OS resource query. The instrumented
+executable is a test fixture. The oracle
 shares the harness's descriptor/thread bounds and requires zero mount growth;
 it samples the shared mount owner, excluding descendant host-runtime resources.
 Each child acknowledges the hold barrier before and after each sample; the
@@ -302,7 +320,7 @@ Supported selections and required inputs are:
 | --- | --- |
 | `managed:lifecycle`, `managed:recursive`, `managed:resume` | Acyclic, GraphCoder and Codex 0.164.0 or later |
 | `managed:bounded-framing` | Acyclic only |
-| `scale:codex`, `scale:claude-code`, `scale:pi` | Acyclic and GraphCoder with resource instrumentation |
+| `scale:codex`, `scale:claude-code`, `scale:pi` | Acyclic with resource instrumentation |
 
 For standalone framing, the same qualifier stages only its required binary
 from Cargo's JSON output and uses the shared fixture and case-budget owners:

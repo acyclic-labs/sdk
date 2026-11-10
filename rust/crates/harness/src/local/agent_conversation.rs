@@ -35,7 +35,7 @@ pub use acyclic_harness_client::ExecutionQuery;
 use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
-pub use history::HistoryPage;
+pub use history::{HistoryPage, PreparedHistoryAction};
 use std::sync::Arc;
 pub use usage_query::UsageQuery;
 
@@ -621,6 +621,20 @@ impl Conversation {
     /// Session, host or decoding failures.
     pub async fn settled(&self) -> Result<u64> {
         Ok(self.settlement().await?.0)
+    }
+
+    /// Observes new turns and the latest status, returning the current phase
+    /// from the same settlement that selected both opening positions. A
+    /// reconnecting client can admit input before consuming its first event.
+    ///
+    /// # Errors
+    /// Session, host, decoding or follow admission failures.
+    pub async fn observe_current(&self) -> Result<(super::Observer, Phase)> {
+        let (settled, statuses, phase) = self.settlement().await?;
+        Ok((
+            super::Observer::open(&self.connection, settled, statuses.saturating_sub(1))?,
+            phase,
+        ))
     }
 
     /// Every settled turn from conversation sequence `from`, or from the current
