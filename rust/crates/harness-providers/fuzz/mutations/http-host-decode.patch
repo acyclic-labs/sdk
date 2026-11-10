@@ -1,0 +1,20 @@
+--- a/rust/crates/harness-providers/src/spec.rs
++++ b/rust/crates/harness-providers/src/spec.rs
+@@ -62,7 +62,7 @@
+     pub base_url: String,
+     /// Explicitly permit HTTP to this exact canonical host, without wildcards.
+     /// Other hosts retain the HTTPS or loopback-only policy.
+-    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "discard_http_host")]
+     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+     pub allow_http_host: Option<String>,
+     /// Explicit endpoint headers; adapter authentication remains authoritative.
+@@ -159,3 +159,8 @@
+         Self::DEFAULT
+     }
+ }
++
++fn discard_http_host<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<Option<String>, D::Error> {
++    let _ = Option::<String>::deserialize(decoder)?;
++    Ok(None)
++}

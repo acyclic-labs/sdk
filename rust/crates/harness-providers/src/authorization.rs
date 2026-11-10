@@ -55,9 +55,10 @@ pub(crate) fn bind(
     let Some(resolver) = resolver else {
         return NativeCredentials.bind(source, "", scheme, transport);
     };
-    let origin = crate::registry::validate_url(&config.base_url)?
-        .origin()
-        .ascii_serialization();
+    let origin =
+        crate::registry::validate_url(&config.base_url, config.allow_http_host.as_deref())?
+            .origin()
+            .ascii_serialization();
     let binding = resolver.bind(source, &origin, scheme, transport)?;
     let (key, scope, transport) = binding.into_parts();
     if reference.is_some() && (key.is_some() || scope.is_none()) {

@@ -168,7 +168,10 @@ impl StockExecution<'_> {
             )> = None;
             decoded = match funded {
                 Some((table, hold)) => {
+                    #[cfg(feature = "filesystem")]
                     hold.into_retained()?;
+                    #[cfg(not(feature = "filesystem"))]
+                    let _ = hold;
                     table
                 }
                 None => serde_json::from_str(&previous)
