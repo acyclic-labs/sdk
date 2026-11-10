@@ -66,6 +66,15 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
     fn capability(&self) -> Option<&str> {
         None
     }
+    /// Rebind an admitted revision to its original producer for replay or
+    /// reconciliation. This never makes a removed tool callable again.
+    fn recover(
+        &self,
+        _definition: &ToolDefinition,
+        _io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<Arc<Tool>>> {
+        Ok(None)
+    }
 }
 
 impl ToolRegistry {
@@ -85,22 +94,56 @@ impl ToolRegistry {
             .is_none_or(|allowed| allowed.iter().any(|allowed| allowed == name))
     }
 
-    pub(crate) fn source_granted(&self, name: &str, grants: &crate::Capabilities) -> Result<bool> {
-        if !self.source_allowed(name) {
-            return Ok(false);
+
+    pub(crate) fn fixed_definitions(
+        &self,
+        grants: &crate::Capabilities,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<ToolDefinition>> {
+        Self {
+            data: self.data.clone(),
+            sources: Vec::new(),
+            source_ceiling: None,
         }
+        .definitions_for_grants(grants, io)
+    }
+    pub(crate) fn source_granted(
+        &self,
+        tool: &ToolDefinition,
+        grants: &crate::Capabilities,
+    ) -> Result<bool> {
+        if !self.source_allowed(&tool.name) { return Ok(false); }
         for source in &self.sources {
             let snapshot = source.snapshot()?;
-            if (source
+            if source
                 .capability()
                 .is_some_and(|grant| grants.contains(grant))
-                && snapshot.resolve(name, None)?.is_some())
-                || snapshot.source_granted(name, grants)?
+                && (snapshot.resolve(&tool.name, None)?.is_some()
+                    || source.recover(tool, None)?.is_some())
+                || snapshot.source_granted(tool, grants)?
             {
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+    pub(crate) fn recover(
+        &self,
+        definition: &ToolDefinition,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<Arc<Tool>>> {
+        if let Some(tool) = self.get_shared(&definition.name, Some(&definition.revision), io)? {
+            return Ok(Some(Arc::clone(tool)));
+        }
+        for source in &self.sources {
+            if let Some(tool) = source.recover(definition, io)? {
+                return Ok(Some(tool));
+            }
+            if let Some(tool) = source.snapshot()?.recover(definition, io)? {
+                return Ok(Some(tool));
+            }
+        }
+        Ok(None)
     }
     pub(crate) fn was_removed(&self, name: &str) -> Result<bool> {
         for source in &self.sources {

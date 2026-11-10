@@ -135,13 +135,15 @@ impl StockExecution<'_> {
                         &live
                     }
                 };
-                let mut context = crate::context::Context {
-                    messages: std::mem::take(history),
-                    ..Default::default()
-                };
-                let result = self.tools_notice(&mut context, tools);
-                **history = context.messages;
-                result?;
+                {
+                    let mut context = crate::context::Context {
+                        messages: std::mem::take(history),
+                        ..Default::default()
+                    };
+                    let result = self.tools_notice(&mut context, tools);
+                    **history = context.messages;
+                    result?;
+                }
             }
             let prior_messages = match &prior_messages {
                 request::ModelStepHistory::Turn(history, _) => history.as_slice(),
