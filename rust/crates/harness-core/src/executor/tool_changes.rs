@@ -7,6 +7,18 @@ impl StockExecution<'_> {
         context: &mut crate::context::Context,
         tools: &[crate::tool::ToolDefinition],
     ) -> Result<()> {
+        if !self.stock.tools.has_sources()
+            && !self.code_composition(tools)?
+            && !context.messages.iter().any(|message| {
+                message.content.notice_parts().is_some_and(|(notices, _)| {
+                    notices
+                        .iter()
+                        .any(|notice| notice.source == "tools" && notice.kind == "tools.changed")
+                })
+            })
+        {
+            return Ok(());
+        }
         crate::model::charge_items(self.io, tools.len() as u64)?;
         // Native declarations already expose these exact call schemas. Only
         // dynamic tools use the appended surface for every tool source.
