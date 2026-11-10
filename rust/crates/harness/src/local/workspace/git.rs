@@ -72,7 +72,9 @@ impl Commands<'_> {
                 .selected_workspace(&mut state, context.owner)
                 .await?;
             before.await?;
-            let result = self.fs(parsed, &context, &mut state, &physical).await?;
+            let command: acyclic_stream::BoxProviderFuture<'_, Result<Outcome>> =
+                Box::pin(self.fs(parsed, &context, &mut state, &physical));
+            let result = command.await?;
             context.owner.verify().await?;
             match result {
                 Outcome::Completed(output) => Ok(*output),
