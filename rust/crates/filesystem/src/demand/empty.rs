@@ -22,7 +22,7 @@ impl DemandSource for Empty {
     }
     fn reference(&self) -> SourceReference {
         SourceReference {
-            identity: *b"acyclic:empty:v1\0",
+            identity: *b"acyclic:empty:v1",
             epoch: 0,
         }
     }
