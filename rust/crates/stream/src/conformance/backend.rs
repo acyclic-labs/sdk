@@ -131,6 +131,11 @@ pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
         super::key_seek::verify(provider).await,
     );
     record(&mut failures, "soft", super::soft::verify(provider).await);
+    record(
+        &mut failures,
+        "selectors",
+        super::selectors::verify(provider).await,
+    );
     record(&mut failures, "contract", verify_contract(provider).await);
     record(
         &mut failures,

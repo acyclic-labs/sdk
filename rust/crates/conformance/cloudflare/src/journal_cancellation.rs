@@ -46,21 +46,23 @@ pub async fn qualify_journal_cancellation(
         .map_err(stream_error)?;
     let path = fork_chain(&peer, path).await.map_err(stream_error)?;
     let request = CommitRequest {
-        conditions: vec![CommitCondition::Tail {
-            path: path.clone(),
-            expected: 1,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: path.clone(),
-            records: vec![b"accepted-before-cancel".as_slice().into()],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: path.clone(),
+                expected: 1,
+            }],
+            vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec![b"accepted-before-cancel".as_slice().into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(b"cancelled-conditional".to_vec())
             .map_err(stream_error)?,
         deadline_unix_millis: None,
     };
     drop(provider.commit(request.clone()));
     let mut conflicting = request.clone();
-    conflicting.conditions = vec![CommitCondition::Tail {
+    conflicting.effects[0].conditions = vec![CommitCondition::Tail {
         path: path.clone(),
         expected: 0,
     }];

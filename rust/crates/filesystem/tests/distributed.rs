@@ -80,7 +80,7 @@ impl StreamProvider for PausingStream {
             acyclic_stream::WriteRequest::Commit(request) => {
                 Box::pin(futures::TryFutureExt::map_ok(
                     async move {
-                        if request.mutations.iter().any(|mutation| {
+                        if request.mutations().any(|mutation| {
             matches!(
                 mutation,
                 acyclic_stream::CommitMutation::Append { path, .. } if path == &self.record_path

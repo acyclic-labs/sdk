@@ -52,7 +52,9 @@ impl HistoryCursor {
         from: u64,
         anchor: Option<CommitId>,
     ) -> Result<Self, StreamError> {
-        if from > path.tail {
+        // A start beyond the tail waits there: its first delivery is `from`.
+        // An anchor at `from - 1` must already exist, so it never waits.
+        if anchor.is_some() && from > path.tail {
             return Err(StreamError::OutOfRange);
         }
         let start = if anchor.is_some() {
@@ -218,7 +220,9 @@ impl FiniteRead {
         mut examine: impl FnMut(u64) -> Result<(), E>,
         invalid: impl Fn() -> E,
     ) -> Result<Option<&Record>, E> {
-        if self.remaining == 0 || self.next >= self.history.tail {
+        // A range cursor's `from` bounds only its current key; the index
+        // seek decides whether anything later remains.
+        if self.remaining == 0 || (self.key.is_none() && self.next >= self.history.tail) {
             return Ok(None);
         }
         if self
@@ -230,9 +234,12 @@ impl FiniteRead {
                 let Some(root) = &self.history.root else {
                     return Ok(None);
                 };
-                let Some(sequence) =
-                    root.keys()
-                        .seek(&key.key, self.next, self.history.tail, &mut examine)?
+                let Some(sequence) = root.keys().seek(
+                    key,
+                    self.next,
+                    key.before.min(self.history.tail),
+                    &mut examine,
+                )?
                 else {
                     return Ok(None);
                 };
@@ -271,7 +278,12 @@ impl FiniteRead {
 
     fn take_record(&mut self) -> Option<Record> {
         let record = self.window.as_mut()?.next()?;
-        self.next = record.sequence.checked_add(1)?;
+        match &mut self.key {
+            Some(key) => key
+                .advance(&mut self.next, record.sequence, record.headers.keys())
+                .ok()?,
+            None => self.next = record.sequence.checked_add(1)?,
+        }
         self.remaining -= 1;
         Some(record)
     }
@@ -292,11 +304,14 @@ impl Iterator for FiniteRead {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self
-            .history
-            .tail
-            .saturating_sub(self.next)
-            .min(u64::from(self.remaining));
+        let remaining = if self.key.is_some() {
+            u64::from(self.remaining)
+        } else {
+            self.history
+                .tail
+                .saturating_sub(self.next)
+                .min(u64::from(self.remaining))
+        };
         (0, usize::try_from(remaining).ok())
     }
 }

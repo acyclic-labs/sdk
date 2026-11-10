@@ -16,8 +16,7 @@ async fn native_request_transfer_keeps_original_context_and_live_commit_backing(
     let mut conditions = work.vec(1)?;
     conditions.push(CommitCondition::Absent { path: path.clone() });
     let mut commit = FilesystemCommit::new(CommitRequest {
-        conditions,
-        mutations: Vec::new(),
+        effects: vec![acyclic_stream::CommitEffect::hard(conditions, Vec::new())],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"original-custody"))?,
         deadline_unix_millis: None,
     });

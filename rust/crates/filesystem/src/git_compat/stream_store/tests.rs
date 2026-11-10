@@ -63,8 +63,7 @@ async fn malformed_record_refuses_instead_of_becoming_absent()
         idempotency_key: acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(
             b"malformed-state",
         ))?,
-        conditions: Vec::new(),
-        mutations: Vec::new(),
+        effects: vec![acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new())],
         deadline_unix_millis: None,
     });
     authority.contribute_record(
