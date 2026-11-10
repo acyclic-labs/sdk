@@ -313,14 +313,6 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     }
 }
 
-#[cfg(any(
-    feature = "local",
-    feature = "postgres",
-    all(
-        any(feature = "wasm", feature = "wasm-journal"),
-        target_arch = "wasm32"
-    )
-))]
 fn commit_effect(out: &mut Vec<u8>, effect: &CommitEffect) {
     for condition in &effect.conditions {
         header(out, 1, condition_len(condition));
