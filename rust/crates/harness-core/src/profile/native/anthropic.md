@@ -21,8 +21,8 @@ tools:
   - capability: shell
     variant: shell
     revision: claude-agent-sdk-0.3.316-v1
-    arguments: {command: $command, timeout_ms: $timeout}
-    refuse: [run_in_background, dangerouslyDisableSandbox]
+    arguments: {command: $command, timeout_ms: $timeout, background: $run_in_background}
+    refuse: [dangerouslyDisableSandbox]
   - capability: edit
     variant: NotebookEdit
     revision: claude-agent-sdk-0.3.316-v1

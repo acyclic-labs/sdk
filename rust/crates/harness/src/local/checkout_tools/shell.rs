@@ -1,20 +1,23 @@
 //! Task shell execution through the shared native process capture engine.
 use super::*;
 use crate::filesystem::native_process::{self, Invocation};
+mod job;
 mod tail;
 
 impl CheckoutTools {
     pub(super) async fn shell(
         &self,
-        (input, operation, execution_grant): (
+        (input, operation, execution_grant, started): (
             crate::tools::ShellInput,
             crate::OperationId,
             Option<acyclic_native_runtime::execution::ExecutionGrant>,
+            Option<tokio::sync::oneshot::Sender<ToolResult>>,
         ),
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
         files: output::Output,
         claims: workspace::volumes::Claims,
+        context: &ToolContext,
     ) -> Result<(
         Result<ToolResult>,
         OwnedMutexGuard<State>,
@@ -25,6 +28,7 @@ impl CheckoutTools {
             || Arc::clone(&self.workspace),
             |(_, workspace)| workspace.clone(),
         );
+        let background = input.background;
         let invocation = Invocation {
             executable: executable()?.to_path_buf(),
             argv: Vec::new(),
@@ -54,6 +58,8 @@ impl CheckoutTools {
             .wake_on_failure(wake.clone())
             .map_err(storage)?;
         let output_health = files.health.clone();
+        let capture_control = control.clone();
+        let shutdown = workspace.shutdown.clone();
         let spill_name = format!("shell-{operation}.log");
         let (scratch, relative) = state
             .mounts
@@ -80,44 +86,100 @@ impl CheckoutTools {
             .clone()
             .unwrap_or_else(|| state.mounts.root.join(spill_directory));
         let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output.min(30_000));
-        let (output, (state, files, claims, retained)) =
-            native_process::capture::capture_with_custody(
-                invocation,
-                |(_, files, _, retained): &mut (
-                    OwnedMutexGuard<State>,
-                    output::Output,
-                    workspace::volumes::Claims,
-                    tail::Tail,
-                ),
-                 chunk| {
-                    files.observe(chunk)?;
-                    match chunk {
-                        acyclic_native_runtime::ProcessOutput::Stdout(bytes) => {
-                            retained.observe(bytes, false)
-                        }
-                        acyclic_native_runtime::ProcessOutput::Stderr(bytes) => {
-                            retained.observe(bytes, true)
-                        }
+        let cancellation = background
+            .then(|| job::Cancellation::open(&spill_root, operation))
+            .transpose()?;
+        // Background ownership retains the selected workspace and volume claims,
+        // while the command guard is available to later turns and file controls.
+        let state = if background {
+            drop(state);
+            None
+        } else {
+            Some(state)
+        };
+        let completion = native_process::capture::start_capture_with_custody(
+            invocation,
+            |(_, files, _, retained): &mut (
+                Option<OwnedMutexGuard<State>>,
+                output::Output,
+                workspace::volumes::Claims,
+                tail::Tail,
+            ),
+             chunk| {
+                files.observe(chunk)?;
+                match chunk {
+                    acyclic_native_runtime::ProcessOutput::Stdout(bytes) => {
+                        retained.observe(bytes, false)
                     }
-                },
-                move || {
-                    output_health.check()?;
-                    if acyclic_fs::capture_root_identity(&workspace.path)
-                        .map_err(std::io::Error::other)?
-                        != workspace.identity
-                    {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            "checkout root was replaced",
-                        ));
+                    acyclic_native_runtime::ProcessOutput::Stderr(bytes) => {
+                        retained.observe(bytes, true)
                     }
-                    control.check()
-                },
-                (state, files, claims, retained),
-                Some(wake),
-                native_process::capture::OutputRetention::Observe,
-            )
-            .await?;
+                }
+            },
+            move || {
+                output_health.check()?;
+                if acyclic_fs::capture_root_identity(&workspace.path)
+                    .map_err(std::io::Error::other)?
+                    != workspace.identity
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "checkout root was replaced",
+                    ));
+                }
+                capture_control.check()
+            },
+            (state, files, claims, retained),
+            Some(wake),
+            native_process::capture::OutputRetention::Observe,
+        )
+        .await?;
+        if let Some(started) = started {
+            let directory = format!("tools/{}/{}", context.turn_id(), operation);
+            let cancel = spill_path.trim_end_matches(".log").to_owned() + ".cancel";
+            let mut result = ToolResult {
+                value: serde_json::json!({
+                    "background": true, "output_directory": directory, "cancel": cancel,
+                    "text": format!("Background shell started. Complete stdout, stderr and result.json: {directory}. Write {cancel} to cancel this job.")
+                }),
+            };
+            let bytes = serde_json::to_vec(&result.value).map_err(storage)?;
+            let file =
+                match output::writer::stage(context, "started.json", &bytes, "application/json")
+                    .await
+                {
+                    Ok(file) => file,
+                    Err(error) => {
+                        control.stop();
+                        let _ = completion.await;
+                        return Err(error);
+                    }
+                };
+            result.value["output_volume"] = serde_json::to_value(file.volume()).map_err(storage)?;
+            let _ = started.send(result);
+        }
+        tokio::pin!(completion);
+        let closed = async {
+            match context.task().agent_children() {
+                Some(owner) => owner.closed().await,
+                None => std::future::pending().await,
+            }
+        };
+        let (output, (state, files, claims, retained)) = if let Some(cancellation) = cancellation {
+            tokio::select! {
+                result = &mut completion => result?,
+                _ = async { tokio::select! { result = cancellation.wait() => result, result = closed => result, _ = shutdown.cancelled() => Ok(()) } } => {
+                    control.stop();
+                    completion.await?
+                }
+            }
+        } else {
+            completion.await?
+        };
+        let state = match state {
+            Some(state) => state,
+            None => lock_owned(StateArc::clone(&self.state)).await,
+        };
         let result = output
             .and_then(|output| {
                 output.ok_or_else(|| Error::Conflict("process capture was interrupted".into()))

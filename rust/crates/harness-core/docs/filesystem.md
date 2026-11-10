@@ -35,3 +35,26 @@ The model-visible command tool is `shell` on every platform. It runs bash on
 Linux/macOS and PowerShell 7 (or Windows PowerShell 5.1) on Windows; the
 environment context records that command language. Hook matchers use `shell` only.
 A hook command's `shell` field continues to select its interpreter.
+
+Shell lifetime is unbounded when `timeout_ms` is omitted. A positive lifetime
+selects the original process deadline; background handoff never restarts it.
+Cancellation and authenticated scope expiry still stop the original process tree.
+
+Native checkout execution accepts `background: true`. Anthropic maps
+`run_in_background`, Gemini maps `is_background`, and the OpenAI argv interface
+uses `background`. Admission returns after the original capture owner starts;
+the command survives the admitting turn. The result names its private output
+volume and `tools/<turn>/<operation>` directory. `request.json` is immutable,
+`started.json` records admission once, `stdout/` and `stderr/` contain complete
+ordered chunks, and `result.json` is published once after cleanup and workspace
+capture. Inline output is a bounded preview with complete spill.
+
+Writing the returned `cancel` path stops only that job through a native filesystem
+notification. Archive stops the agent's jobs through its committed inbox event.
+Runtime loss drops their stop guards; process custody fences a crashed host's
+remaining trees before recovery. Recovery observes the original admission and
+never launches the command again. Concurrent commands share the selected native
+projection; filesystem publication is serialized by that projection's owner.
+Commands writing the same paths have the host filesystem's ordinary concurrency
+semantics. Machine backends without a managed job owner refuse background mode
+before dispatch.

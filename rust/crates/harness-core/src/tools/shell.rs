@@ -174,6 +174,11 @@ pub struct ShellInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]
     pub timeout_ms: Option<u32>,
+    /// Return after launch while the original command continues. Output and
+    /// its terminal result remain files; writing the returned cancel path stops
+    /// only this job. Omission waits for completion.
+    #[serde(default)]
+    pub background: bool,
     /// Target from the roster, or user:<owner> for that user's home device.
     /// Omission runs on the agent's home target; there is no fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]

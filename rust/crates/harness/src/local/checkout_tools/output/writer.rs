@@ -10,9 +10,6 @@ const OUTPUT_BATCH_BYTES: usize = 64 * 1024;
 
 pub(super) struct Writer {
     context: ToolContext,
-    /// `tools/{turn}/{operation}`.
-    directory: String,
-    operation: OperationId,
     sequence: (u64, u64),
     pending: (Vec<u8>, Vec<u8>),
     maximum: usize,
@@ -33,8 +30,6 @@ impl Writer {
         }
         let writer = Self {
             context: context.clone(),
-            directory: format!("tools/{}/{}", context.turn_id(), context.operation_id()),
-            operation: context.operation_id(),
             sequence: (0, 0),
             pending: (Vec::new(), Vec::new()),
             maximum,
@@ -46,27 +41,59 @@ impl Writer {
         Ok(writer)
     }
 
-    async fn stage(&self, name: &str, bytes: &[u8], media_type: &str) -> Result<()> {
-        let path = format!("{}/{name}", self.directory);
-        let mut hash = blake3::Hasher::new_derive_key("acyclic.local.tool-output/v1");
-        hash.update(&self.operation.into_bytes());
-        hash.update(path.as_bytes());
-        let mut operation = [0; 16];
-        operation.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-        self.context
-            .stage_file_once(
-                OperationId::from_bytes(operation),
-                &path,
-                bytes,
-                media_type,
-                // A label is one path component: `stdout`, not `stdout/{seq}`.
-                name.split('/').next().unwrap_or(name),
-                None,
-            )
-            .await?;
-        Ok(())
+    pub(in crate::local::checkout_tools) async fn stage(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        media_type: &str,
+    ) -> Result<crate::conversation::FileRef> {
+        stage(&self.context, name, bytes, media_type).await
     }
+}
 
+pub(in crate::local::checkout_tools) fn operation(
+    context: &ToolContext,
+    name: &str,
+) -> OperationId {
+    let path = format!(
+        "tools/{}/{}/{name}",
+        context.turn_id(),
+        context.operation_id()
+    );
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.tool-output/v1");
+    hash.update(&context.operation_id().into_bytes());
+    hash.update(path.as_bytes());
+    let mut operation = [0; 16];
+    operation.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(operation)
+}
+
+pub(in crate::local::checkout_tools) async fn stage(
+    context: &ToolContext,
+    name: &str,
+    bytes: &[u8],
+    media_type: &str,
+) -> Result<crate::conversation::FileRef> {
+    let path = format!(
+        "tools/{}/{}/{name}",
+        context.turn_id(),
+        context.operation_id()
+    );
+    let (file, _) = context
+        .stage_file_once(
+            operation(context, name),
+            &path,
+            bytes,
+            media_type,
+            // A label is one path component: `stdout`, not `stdout/{seq}`.
+            name.split('/').next().unwrap_or(name),
+            None,
+        )
+        .await?;
+    Ok(file)
+}
+
+impl Writer {
     pub(super) fn observe(&mut self, chunk: ProcessOutput<'_>) -> std::io::Result<()> {
         let (stderr, mut bytes) = match chunk {
             ProcessOutput::Stdout(bytes) => (false, bytes),
@@ -138,5 +165,6 @@ impl Writer {
         )?;
         self.stage("result.json", &outcome, "application/json")
             .await
+            .map(|_| ())
     }
 }

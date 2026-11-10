@@ -16,6 +16,10 @@
         },
         "timeout": {
           "type": "number"
+        },
+        "background": {
+          "type": "boolean",
+          "description": "Return after launch while the command continues. Read its returned output directory for stdout, stderr and result.json; write its cancel path to stop only this job."
         }
       },
       "required": [

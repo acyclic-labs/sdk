@@ -166,6 +166,11 @@ impl MachinesWorkspace {
         maximum: u64,
         task_deadline: Option<u64>,
     ) -> Result<ToolResult> {
+        if input.background {
+            return Err(Error::Unsupported(
+                "this Machine has no managed background shell owner".into(),
+            ));
+        }
         let stream = self
             .shell_until(input, Some(maximum), task_deadline)
             .await

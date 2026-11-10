@@ -3,7 +3,7 @@ use super::*;
 use acyclic_native_runtime::ProcessOutput;
 use tokio::sync::{Mutex, Notify, oneshot};
 
-mod writer;
+pub(super) mod writer;
 
 /// Waits, from a native capture worker, for one output publication. It
 /// completes when the volume answers, never on a wall-clock deadline.

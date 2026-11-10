@@ -172,6 +172,7 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                     command: command.into(),
                     cwd: None,
                     timeout_ms: None,
+                    background: false,
                     target: None,
                 },
                 1024,
@@ -192,6 +193,7 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                     command: command.into(),
                     cwd: None,
                     timeout_ms: None,
+                    background: false,
                     target: None
                 },
                 1024
@@ -255,7 +257,7 @@ async fn copied_workspace_round_trips_binary_edits_deletions_and_original_turn()
         .value;
     let (issuer, scope, workspace) = workspace_fixture_for_mode(volume.clone(), true).await?;
     let workspace = host.bind_machine_workspace(workspace).await?;
-    let output = workspace.run_shell(acyclic_harness_core::OperationId::new(), acyclic_harness_core::tools::ShellInput { command: "test $(wc -c < binary) -eq 3 && printf '\\000\\377' > binary && rm deleted && mkdir nested && printf created > nested/new && ln -s binary alias".into(), cwd: None, timeout_ms: None, target: None }, 4096, None).await?;
+    let output = workspace.run_shell(acyclic_harness_core::OperationId::new(), acyclic_harness_core::tools::ShellInput { command: "test $(wc -c < binary) -eq 3 && printf '\\000\\377' > binary && rm deleted && mkdir nested && printf created > nested/new && ln -s binary alias".into(), cwd: None, timeout_ms: None, background: false, target: None }, 4096, None).await?;
     assert_eq!(output.value["exit_code"], 0);
     let turn = acyclic_harness_core::OperationId::new();
     workspace.settle_workspace(turn).await?;
@@ -340,6 +342,7 @@ async fn copied_workspace_round_trips_binary_edits_deletions_and_original_turn()
                 command: "printf revoked > binary".into(),
                 cwd: None,
                 timeout_ms: None,
+                background: false,
                 target: None,
             },
             4096,

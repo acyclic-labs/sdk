@@ -64,6 +64,13 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
     /// The agent whose turn observes its children.
     fn agent(&self) -> &AgentPath;
 
+    /// Waits for this agent's committed close. Accepted background work uses
+    /// this lifetime, independently of the turn which admitted it. Hosts with
+    /// no agent lifecycle retain their enclosing runtime's lifetime.
+    fn closed(&self) -> acyclic_stream::BoxProviderFuture<'_, crate::Result<()>> {
+        Box::pin(std::future::pending())
+    }
+
     /// Resolves a child's or sibling's spawn name from committed state.
     fn resolve<'a>(
         &'a self,

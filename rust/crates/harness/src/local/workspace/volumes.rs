@@ -161,7 +161,7 @@ pub(super) async fn attach(
             options,
             task_view_admission: Arc::clone(admission),
             native: StateArc::new(AsyncMutex::new(None)),
-            users: StateArc::new(crate::sync::SyncMutex::new(0)),
+            users: StateArc::new(projection::Users::default()),
             execution: StateArc::new(AsyncMutex::new(())),
         }));
     }
@@ -214,9 +214,6 @@ fn ordered_mounts(mounts: &Mounts) -> Result<Vec<(&str, &BoundMount)>> {
 struct Claim {
     source: Arc<MountedVolume>,
     entered: projection::Entered,
-    // Released only after publication or abandonment finishes, including when
-    // the caller disappears while the physical process still owns this claim.
-    _execution: crate::sync::owned::OwnedMutexGuard<()>,
 }
 
 pub(in crate::local) struct Claims {
@@ -254,8 +251,9 @@ pub(in crate::local) async fn native_scope<T>(
     let mut projected = Ok(());
     for (relative, mount) in ordered_mounts(mounts)? {
         if let Some(source) = &mount.view.source {
-            // Stable projection identity orders acquisition. Hold every selected volume's
-            // execution guard across worker cleanup, verification and retirement.
+            // The projection's counted claims retain the mount across every
+            // overlapping command. Its native owner serializes publication;
+            // a command lifetime must not exclude other admitted commands.
             // A Linux task view aliases the original binding; mount at that
             // binding's root, never below another owner-only FUSE mount.
             let root = match projection_root(&source.destination, relative) {
@@ -265,8 +263,6 @@ pub(in crate::local) async fn native_scope<T>(
                     break;
                 }
             };
-            let execution =
-                crate::sync::owned::lock_owned(StateArc::clone(&source.execution)).await;
             let entry = async {
                 source.prepare_command().await?;
                 Box::pin(source.enter(root, relative, mount.mode.read_only())).await
@@ -276,7 +272,6 @@ pub(in crate::local) async fn native_scope<T>(
                 Ok(entry) => claims.entries.push(Claim {
                     source: Arc::clone(source),
                     entered: entry,
-                    _execution: execution,
                 }),
                 Err(error) => {
                     projected = Err(error);
@@ -327,9 +322,8 @@ fn keep_first(first: &mut Result<()>, next: Result<()>) {
     }
 }
 
-/// Retires every projection when the host disconnects. A volume a worker still
-/// owns reports a conflict, but every other volume is still published and
-/// retired rather than abandoned unpublished when the harness drops.
+/// Retires every projection when the host disconnects. Active claims wake
+/// retirement after physical cleanup; the projection stays mounted until then.
 pub(in crate::local) async fn retire(mounts: &Mounts) -> Result<()> {
     let mut retired = Ok(());
     for (_, mount) in mounts.mounts() {
@@ -488,7 +482,7 @@ pub(super) fn bind_alias(path: &Path, target: &Path, previous: Option<&Path>) ->
     Ok(())
 }
 
-pub(super) fn alias_target(path: &Path) -> Result<Option<PathBuf>> {
+pub(in crate::local) fn alias_target(path: &Path) -> Result<Option<PathBuf>> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             let parent = path

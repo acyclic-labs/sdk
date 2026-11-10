@@ -365,6 +365,7 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
                     ]),
                     cwd: None,
                     timeout_ms: None,
+                    background: false,
                     target: None,
                 },
                 1024,
@@ -407,6 +408,7 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
                     command: "true".into(),
                     cwd: None,
                     timeout_ms: None,
+                    background: false,
                     target: None
                 },
                 1024

@@ -204,7 +204,7 @@
         },
         "run_in_background": {
           "type": "boolean",
-          "description": "Background execution is unavailable. Omit this field or set it to false."
+          "description": "Return after launch while the command continues. Read its returned output directory for stdout, stderr and result.json; write its cancel path to stop only this job."
         },
         "dangerouslyDisableSandbox": {
           "type": "boolean",

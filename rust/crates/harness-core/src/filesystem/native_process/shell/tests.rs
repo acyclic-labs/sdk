@@ -123,6 +123,7 @@ fn bound_volume_cwd_keeps_its_authority() {
             command: "printf escaped > should-not-exist".into(),
             cwd: Some("escape".into()),
             timeout_ms: None,
+            background: false,
             target: None,
         },
         &mounts,
@@ -141,15 +142,21 @@ fn bound_volume_cwd_keeps_its_authority() {
     ));
     proptest::test_runner::TestRunner::new(config)
         .run(
-            &("[a-z]{1,12}", proptest::bool::ANY),
-            |(component, escape)| {
+            &(
+                "[a-z]{1,12}",
+                proptest::bool::ANY,
+                proptest::option::of(300_001u32..=u32::MAX),
+            ),
+            |(component, escape, lifetime)| {
                 std::fs::create_dir_all(native.join(&component)).unwrap();
                 let suffix = if escape { ".escape" } else { &component };
+                let before = std::time::Instant::now();
                 let result = prepare(
                     ShellInput {
                         command: "pwd".into(),
                         cwd: Some(format!(".volumes/data/{suffix}")),
-                        timeout_ms: None,
+                        timeout_ms: lifetime,
+                        background: false,
                         target: None,
                     },
                     &mounts,
@@ -160,6 +167,23 @@ fn bound_volume_cwd_keeps_its_authority() {
                     prop_assert!(matches!(result, Err(Error::Invalid(_))));
                 } else {
                     let prepared = result.unwrap();
+                    match (lifetime, prepared.schedule) {
+                        (None, acyclic_native_runtime::CaptureSchedule::Unbounded) => {}
+                        (
+                            Some(milliseconds),
+                            acyclic_native_runtime::CaptureSchedule::Deadline(deadline),
+                        ) => {
+                            let duration =
+                                std::time::Duration::from_millis(u64::from(milliseconds));
+                            prop_assert!(deadline >= before + duration);
+                            prop_assert!(deadline <= std::time::Instant::now() + duration);
+                        }
+                        other => {
+                            return Err(TestCaseError::fail(format!(
+                                "shell lifetime changed: {other:?}"
+                            )));
+                        }
+                    }
                     prop_assert_eq!(prepared.cwd, native.join(&component));
                     prop_assert_eq!(
                         prepared.environment.get("ACYCLIC_VOLUME_DATA").unwrap(),
@@ -263,7 +287,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     let input = ShellInput {
         command: r#"test -z "${ANTHROPIC_API_KEY+x}" && test -z "${ACYCLIC_TEST_RENAMED_SECRET+x}" && test -z "${ACYCLIC_TEST_NATIVE_BYTES+x}" && test -z "${!ACYCLIC_TEST_NATIVE_BYTES*}" && test -z "${ACYCLIC_TEST_BASH_HOST_ENVIRONMENT+x}" && test -z "${BASH_ENV+x}" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-explicit-path-only"#.into(),
         cwd: None,
-        timeout_ms: Some(5000), target: None,
+        timeout_ms: Some(5000), background: false, target: None,
     };
     let configured = |inherit_environment| {
         let mut invocation = invocation(&mounts.root);
@@ -382,7 +406,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
             .open(path)?
             .write_all(bytes)
     });
-    let output = run(ShellInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout_ms: Some(5000), target: None, },
+    let output = run(ShellInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout_ms: Some(5000), background: false, target: None, },
         &mounts, invocation(&mounts.root), 1, Some(observer), || Ok(())).await?
         .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
     assert_eq!(output.exit_code, Some(7));
@@ -415,6 +439,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
             ]),
             cwd: None,
             timeout_ms: None,
+            background: false,
             target: None,
         },
         &mounts,

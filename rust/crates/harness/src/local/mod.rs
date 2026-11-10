@@ -218,6 +218,7 @@ impl LocalHarness {
     pub async fn disconnect(self) -> Result<()> {
         #[cfg(any(test, feature = "native-execution"))]
         let retired = if let Some(workspace) = &self.workspace {
+            workspace.shutdown.cancel();
             workspace::volumes::retire(&workspace.mounts).await
         } else {
             Ok(())

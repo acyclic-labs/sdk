@@ -375,7 +375,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         options: scratch.options.clone(),
         task_view_admission: Arc::clone(&scratch.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
-        users: StateArc::new(crate::sync::SyncMutex::new(0)),
+        users: StateArc::new(projection::Users::default()),
         execution: StateArc::new(AsyncMutex::new(())),
     });
     std::fs::write(&blocked.destination, b"authored blocker").map_err(storage)?;
@@ -438,7 +438,7 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         options: scratch.options.clone(),
         task_view_admission: Arc::clone(&scratch.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
-        users: StateArc::new(crate::sync::SyncMutex::new(0)),
+        users: StateArc::new(projection::Users::default()),
         execution: StateArc::new(AsyncMutex::new(())),
     });
     let table = super::super::mounts::owner(
@@ -487,7 +487,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
         options: first.options.clone(),
         task_view_admission: Arc::clone(&first.task_view_admission),
         native: StateArc::new(AsyncMutex::new(None)),
-        users: StateArc::new(crate::sync::SyncMutex::new(0)),
+        users: StateArc::new(projection::Users::default()),
         execution: StateArc::new(AsyncMutex::new(())),
     });
     let table = |primary: &Arc<MountedVolume>, named: &Arc<MountedVolume>| {

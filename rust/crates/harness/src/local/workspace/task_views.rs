@@ -172,6 +172,7 @@ impl LocalWorkspace {
             // detach a replacement owner's mount at the same path.
             owner.verify().await?;
             let mut workspace = LocalWorkspace {
+                shutdown: self.shutdown.clone(),
                 native_mount_probe: self.native_mount_probe.clone(),
                 #[cfg(all(test, not(loom)))]
                 selection_reads: std::sync::atomic::AtomicUsize::new(0),
@@ -288,6 +289,7 @@ impl LocalWorkspace {
             .map_err(storage)?;
         let mounts = self.mounts_at(&path).await?;
         let workspace = Arc::new(LocalWorkspace {
+            shutdown: self.shutdown.clone(),
             native_mount_probe: self.native_mount_probe.clone(),
             #[cfg(all(test, not(loom)))]
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
