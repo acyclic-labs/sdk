@@ -658,7 +658,7 @@ where
     pub async fn volume_scope(
         &self,
         agent: &AgentPath,
-    ) -> Result<(Scope, AuthorityVerifier), Error> {
+    ) -> Result<(Scope, crate::core::AuthorityVerifier), Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         let authority = agent_authority(
