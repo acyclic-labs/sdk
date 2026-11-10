@@ -122,7 +122,7 @@ target is 50 ms; an individual launch observation is not a warm-start p50.
 | Linux x86_64 | `3357174beef3bc29c3283b0618fd6e0035682d59` | `dist` | 343.29 | `pty-markdown` passed |
 | Linux x86_64 | `704da84775e9865e1912d9f49ccb7cf9ff98b760` | `dist` | 3265.84 | `pty-markdown` passed |
 | Windows x86_64 | `3357174beef3bc29c3283b0618fd6e0035682d59` | `dist` | unavailable | Startup refused current-user DPAPI before paint |
-| macOS aarch64 | pending native execution | pending | unavailable | Native qualification pending |
+| macOS aarch64 | `704da84775e9865e1912d9f49ccb7cf9ff98b760` | `dist` attempted | unavailable | Shared build artifacts disappeared before completion |
 
 Both Linux observations used fresh isolated settings directories on a shared
 host, including the launch and emulator costs described above. They do not
@@ -139,3 +139,10 @@ Windows product timing therefore needs a credentialed user logon; native
 render controls do not need that store and passed separately. Product startup
 qualification remains incomplete until Windows and macOS have successful
 observations.
+
+On macOS, native all-targets compilation passed in 10.26 s and test-executable
+compilation passed in 49.23 s on the reviewed source. During the subsequent
+shipping-profile build, dependencies that Cargo had just emitted disappeared,
+causing missing-crate and missing-extern errors. The compiled test executable
+was also absent afterward. Neither the native acceptance controls nor product
+startup ran; these compilation results do not qualify their execution.
