@@ -20,8 +20,8 @@ replaces the same selected provenance and golden names without changing other ro
 Run the shared controls:
 
 ```sh
-cargo test --locked -p acyclic-fs --lib --no-default-features --features local,memory,test-support kernel::decoder_fuzz
-cargo run --locked --manifest-path rust/codec-fuzz/Cargo.toml --example capture -- --only-filesystem-records --extend-goldens
+cargo test --locked -p acyclic-fs --lib --no-default-features --features local,memory,test-support,native-watch kernel::decoder_fuzz
+cargo run --locked --manifest-path rust/codec-fuzz/Cargo.toml --features acyclic-fs/native-watch --example capture -- --only-filesystem-records --extend-goldens
 cargo +nightly fuzz run --fuzz-dir rust/crates/filesystem/fuzz decoder_work --features fuzz-targets -- -runs=1000
 cargo +nightly fuzz run --fuzz-dir rust/codec-fuzz filesystem_codecs -- -runs=1000
 cargo +nightly fuzz run --fuzz-dir rust/codec-fuzz filesystem_pages -- -runs=1000
