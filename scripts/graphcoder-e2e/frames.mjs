@@ -54,16 +54,23 @@ export function queryFailure(visible) {
   const notice = visible.slice(visible.lastIndexOf("\n") + 1).replace(/^✗ /, "");
   return /^(?:resource not found:|Filesystem query ended:|Usage query ended:)/.test(notice) ? notice : undefined;
 }
-function* failures(visible) {
-  const notice = queryFailure(visible), status = visible.lastIndexOf("\n") + 1;
-  const refusal = /^(?:✗ )?(storage failure:.*)$/.exec(visible.slice(status))?.[1];
-  for (const failure of visible.matchAll(/(task [0-9a-f-]{36}) failed: ([^\n]*)|✗ ([^\n]*)/g)) {
-    if ((notice || refusal) && failure.index >= status) continue;
+const NATIVE_FAILURE = /(task [0-9a-f-]{36}) failed: ([^\n]*)|✗ ([^\n]*)/g;
+function* failures(diagnostic, status = diagnostic) {
+  // The status is authoritative even when the transcript's current logical
+  // line is incomplete. Keep its complete visible row outside that cut.
+  const row = status.slice(status.lastIndexOf("\n") + 1), notice = queryFailure(status);
+  const first = row.trim().matchAll(NATIVE_FAILURE).next().value;
+  const task = first?.index === 0 && first[1] !== undefined;
+  const refusal = task ? undefined
+    : /^(?:✗ )?(storage failure:.*|.* is not available in this view)$/.exec(row.trim())?.[1];
+  const offset = diagnostic.endsWith(row) ? diagnostic.length - row.length : diagnostic.length;
+  for (const failure of diagnostic.matchAll(NATIVE_FAILURE)) {
+    if ((notice || refusal) && failure.index >= offset) continue;
     yield failure[1] !== undefined
       ? { text: failure[0], reason: failure[2], kind: "task_failure", identity: failure[1] }
       : { text: failure[0], reason: failure[3], kind: "action_refusal" };
   }
-  if (notice || refusal) yield { text: visible.slice(status), reason: notice ?? refusal,
+  if (notice || refusal) yield { text: row, reason: notice ?? refusal,
     kind: notice ? "query_failure" : "action_refusal" };
 }
 const expected = (failure, condition) => failure.kind === "action_refusal"
@@ -78,13 +85,13 @@ export function expectedTaskFailure(visible, condition) {
 }
 export class FailureHistory {
   #handled = new Map();
-  unexpected(visible, condition, assertion) {
-    for (const failure of failures(visible)) if (!expected(failure, condition) && !expected(failure, assertion)
+  unexpected(diagnostic, condition, assertion, status = diagnostic) {
+    for (const failure of failures(diagnostic, status)) if (!expected(failure, condition) && !expected(failure, assertion)
       && !expected(failure, this.#handled.get(failure.identity ?? failure.text))) return failure.text;
   }
-  accept(visible, condition, assertion) {
+  accept(diagnostic, condition, assertion, status = diagnostic) {
     const handled = new Map();
-    for (const failure of failures(visible)) {
+    for (const failure of failures(diagnostic, status)) {
       const key = failure.identity ?? failure.text, previous = this.#handled.get(key);
       // The task and explicitly admitted prefix survive clipping/reflow. Other
       // notices retain exact text identity. Retain only this frame's failures.

@@ -933,7 +933,8 @@ fn deferred_syntax_styles_only_visible_windows_and_survives_reflow()
     let line = markdown
         .lines()
         .iter()
-        .filter_map(|line| line.syntax.as_ref())
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.syntax.as_ref())
         .find(|line| line.text().contains("close"))
         .ok_or("closing comment")?
         .clone();
@@ -954,7 +955,8 @@ fn deferred_syntax_styles_only_visible_windows_and_survives_reflow()
     let reflowed = markdown
         .lines()
         .iter()
-        .filter_map(|line| line.syntax.as_ref())
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.syntax.as_ref())
         .find(|line| line.text().contains("close"))
         .ok_or("reflowed closing comment")?;
     assert!(
@@ -964,7 +966,8 @@ fn deferred_syntax_styles_only_visible_windows_and_survives_reflow()
     let number = markdown
         .lines()
         .iter()
-        .filter_map(|line| line.syntax.as_ref())
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.syntax.as_ref())
         .find(|line| line.text().contains("number"))
         .ok_or("number after comment")?;
     let visible = number.text().len() - 3..number.text().len();
@@ -989,7 +992,8 @@ fn deferred_syntax_styles_only_visible_windows_and_survives_reflow()
     let committed_number = committed
         .lines()
         .iter()
-        .filter_map(|line| line.syntax.as_ref())
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.syntax.as_ref())
         .find(|line| line.text().contains("number"))
         .ok_or("committed number")?;
     assert!(
@@ -1003,7 +1007,8 @@ fn deferred_syntax_styles_only_visible_windows_and_survives_reflow()
         .lines()
         .iter()
         .rev()
-        .filter_map(|line| line.syntax.as_ref())
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.syntax.as_ref())
     {
         line.styles_for(0..5);
     }
