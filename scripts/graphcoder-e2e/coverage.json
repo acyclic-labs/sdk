@@ -203,6 +203,7 @@
         "pty-conversation",
         "pty-help",
         "pty-markdown",
+        "pty-code-highlight",
         "pty-stream-delta",
         "pty-tool-cards",
         "pty-image-attach",

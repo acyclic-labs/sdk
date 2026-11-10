@@ -1,0 +1,125 @@
+{
+  "id": "pty-code-highlight",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "text": [
+          "## Code\n\n```rust\n",
+          "fn answer() -> u32 {\n    42\n}\n```\n\nRead [docs](https://example.com/docs)."
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "show code"
+        },
+        {
+          "when": {
+            "contains": [
+              "answer",
+              "rust",
+              "docs",
+              "○"
+            ],
+            "absent": [
+              "```",
+              "## Code"
+            ]
+          },
+          "prompt": "/theme light",
+          "assert": {
+            "raw": [
+              "\u001b]8;;https://example.com/docs\u001b\\"
+            ],
+            "styles": [
+              {
+                "text": "fn",
+                "fg": [
+                  6402031,
+                  75,
+                  14
+                ],
+                "bg": true
+              },
+              {
+                "text": "42",
+                "fg": [
+                  15057019,
+                  180,
+                  11
+                ],
+                "bg": true
+              }
+            ]
+          }
+        },
+        {
+          "when": {
+            "contains": [
+              "answer",
+              "○"
+            ],
+            "styles": [
+              {
+                "text": "fn",
+                "fg": [
+                  616922,
+                  26,
+                  4
+                ],
+                "bg": true
+              },
+              {
+                "text": "42",
+                "fg": [
+                  10118912,
+                  94,
+                  3
+                ],
+                "bg": true
+              }
+            ]
+          },
+          "prompt": "/theme dark"
+        },
+        {
+          "when": {
+            "contains": [
+              "answer",
+              "○"
+            ],
+            "styles": [
+              {
+                "text": "fn",
+                "fg": [
+                  6402031,
+                  75,
+                  14
+                ],
+                "bg": true
+              }
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 1
+  }
+}
