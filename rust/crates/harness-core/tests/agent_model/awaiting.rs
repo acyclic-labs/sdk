@@ -265,15 +265,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
                 Ok(match checkpoint {
                     None => step(
                         b"spawned",
-                        (0..CHILDREN)
-                            .map(|n| Out::Spawn {
-                                profile: None,
-                                history: None,
-                                intent: intent(&format!("child-{n}")),
-                                brief: None,
-                                volumes: Vec::new(),
-                            })
-                            .collect(),
+                        Vec::new(),
                         Wait::Approval {
                             id: intent("begin-wait"),
                             binding: None,
@@ -328,6 +320,15 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     )?;
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     host.drain_event(&root).await?;
+    // Admit ordinary individual spawn requests; the population is unlimited,
+    // while each original delivery still has its protective frame bound.
+    for n in 0..CHILDREN {
+        let Wake::Inbox { record, .. } = super::spawn_request(n as u64) else {
+            unreachable!()
+        };
+        host.send(&root, &user(), &record).await?;
+        host.drain_event(&root).await?;
+    }
     let start = InboxRecord::ApprovalRequested(ApprovalRequested {
         child: root.clone(),
         id: intent("start"),
