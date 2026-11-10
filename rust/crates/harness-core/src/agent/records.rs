@@ -48,7 +48,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 20 carries child settlement-to-wake measurements in status records.
 /// Version 21 adds input selection to actor waits.
 /// Version 22 indexes admitted replies across queued independent turns.
-pub const RECORD_VERSION: u32 = 22;
+/// Version 23 retains immutable paged child membership roots without reserved slots.
+pub const RECORD_VERSION: u32 = 23;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.

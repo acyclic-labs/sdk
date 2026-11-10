@@ -31,10 +31,14 @@ pub enum HostAction {
         /// Agent authorizing the query.
         task: AgentPath,
     },
-    /// The parent's open spawned children, by parent-local name.
+    /// One page of the parent's open spawned children, by parent-local name.
     Sessions {
         /// Owning parent agent.
         parent: AgentPath,
+        /// Exclusive identity seek within the current committed membership cut.
+        after: Option<crate::agent::AgentId>,
+        /// Page size; splits work without limiting total children. Must be positive.
+        limit: u32,
     },
     /// Native session lifecycle as the child agent's inbox records.
     Session {
@@ -232,10 +236,14 @@ impl HostWorkspaceOwner {
                 };
                 self.release_idle([task], resources).await
             }
-            HostAction::Sessions { parent } => {
+            HostAction::Sessions {
+                parent,
+                after,
+                limit,
+            } => {
                 let sessions = {
                     let _view = self.attach(&parent).await?;
-                    self.sessions(&parent).await
+                    self.sessions(&parent, after.as_ref(), limit).await
                 };
                 self.release_idle([parent], sessions).await
             }
@@ -300,13 +308,26 @@ impl HostWorkspaceOwner {
 
     async fn agents(&self, task: &AgentPath) -> Result<Value> {
         let (state, _) = self.native.session(task).await?;
-        let mut agents = Vec::with_capacity(state.open_children.len());
-        for child in &state.open_children {
-            let (child_state, session) = self.native.session(child).await?;
-            agents.push(json!({"task":child,"reference":session.reference,
+        let mut agents = Vec::new();
+        let mut after = None;
+        loop {
+            let page = state
+                .open_children
+                .page(after.as_ref(), 256)
+                .await
+                .map_err(storage)?;
+            if page.is_empty() {
+                break;
+            }
+            for id in &page {
+                let child = task.child(id).map_err(storage)?;
+                let (child_state, session) = self.native.session(&child).await?;
+                agents.push(json!({"task":child,"reference":session.reference,
                 "control":session.control,"settled":session.settled,
                 "running":session.claimed().is_some(),
                 "pending":session.pending(&child_state)}));
+            }
+            after = page.last().cloned();
         }
         Ok(json!({ "agents": agents }))
     }

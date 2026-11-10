@@ -1430,9 +1430,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         );
         let page = request(
             &cwd,
-            HostAction::Sessions {
-                parent: parent.clone(),
-            },
+            HostAction::Sessions { parent: parent.clone(), after: None, limit: 256 },
         )?;
         assert_eq!(page["references"], serde_json::json!(["endpoint-boundary"]));
         let turn = session(SessionAction::Next {})?;
@@ -1520,7 +1518,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         std::thread::scope(|scope| {
             let cwd = &cwd;
             let readers = [
-                HostAction::Sessions { parent: parent.clone() },
+                HostAction::Sessions { parent: parent.clone() , after: None, limit: 256 },
                 HostAction::Locate { cwd: cwd.clone() },
             ]
             .map(|action| scope.spawn(move || request(cwd, action).map(|_| ())));

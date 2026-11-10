@@ -24,8 +24,8 @@ use crate::agent::spawn_names::{spawn_intent, spawn_name};
 use crate::{
     Error, Result,
     agent::{
-        AgentPath, AgentState, CreationConfig, IntentId, MAX_OPEN_CHILDREN, SpawnTemplates,
-        TurnChildren, TurnEffect, TurnEffects, TurnOutcome, named_child,
+        AgentPath, AgentState, CreationConfig, IntentId, SpawnTemplates, TurnChildren, TurnEffect,
+        TurnEffects, TurnOutcome, named_child,
     },
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
@@ -112,7 +112,7 @@ pub struct WaitAgentInput {
 struct Turn {
     agent: AgentPath,
     parent: Option<AgentPath>,
-    children: BTreeSet<AgentPath>,
+    children: crate::agent::Children,
     effects: Arc<dyn TurnEffects>,
     /// What `wait` observes; `None` when the host observes no children.
     observer: Option<Arc<dyn TurnChildren>>,
@@ -122,9 +122,6 @@ struct Turn {
     /// when either is absent.
     templates: Option<(CreationConfig, Arc<dyn SpawnTemplates>)>,
     volumes: Vec<crate::agent::VolumeBinding>,
-    /// Held from a spawn's limit check through its record, so concurrent
-    /// spawns of one turn see each other.
-    spawning: futures::lock::Mutex<()>,
     /// The first unfinished wait consumes the actor deadline release.
     released: AtomicBool,
 }
@@ -171,10 +168,6 @@ impl AgentTool {
         }
         let key = call_key(&invocation, context.as_ref());
         let operation = crate::agent::operation_key(invocation.operation_id);
-        let _spawning = match self.name {
-            "spawn" => Some(turn.spawning.lock().await),
-            _ => None,
-        };
         let effect = match self.name {
             "spawn" => {
                 let input: SpawnAgentInput = match decode(invocation.arguments) {
@@ -214,13 +207,6 @@ impl AgentTool {
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
                 profile.peers = peers;
-                // The agent's hard limit: a spawn the step would refuse is
-                // refused here, before the model is told it succeeded.
-                if !self.within(&intent, MAX_OPEN_CHILDREN).await? {
-                    return Ok(rejected(format!(
-                        "at most {MAX_OPEN_CHILDREN} open children; archive one or wait for one to finish"
-                    )));
-                }
                 let brief = turn
                     .writer
                     .stage_once(
@@ -314,36 +300,41 @@ impl AgentTool {
 
     /// The open children: those open when the turn started plus this turn's
     /// recorded spawns.
-    async fn open(&self) -> Result<BTreeSet<AgentPath>> {
+    async fn open(&self) -> Result<crate::agent::Children> {
         let turn = &*self.turn;
         let mut open = turn.children.clone();
         for effect in turn.effects.recorded().await? {
             if let TurnEffect::Spawn { intent, .. } = effect {
-                open.insert(TurnEffect::child(&turn.agent, &intent).map_err(agent)?);
+                open.insert(&TurnEffect::child(&turn.agent, &intent).map_err(agent)?)
+                    .await
+                    .map_err(agent)?;
             }
         }
         Ok(open)
     }
 
-    /// Whether spawning `intent` keeps at most `limit` open children. A spawn
-    /// already recorded (a replayed call) is within its own limit.
-    async fn within(&self, intent: &IntentId, limit: usize) -> Result<bool> {
-        let open = self.open().await?;
-        let child = TurnEffect::child(&self.turn.agent, intent).map_err(agent)?;
-        Ok(open.contains(&child) || open.len() < limit)
-    }
-
     /// `agent` when this turn may reach it: an open child, or the parent too.
-    async fn recipient(&self, agent: &str, parent: bool) -> Result<Option<AgentPath>> {
+    async fn recipient(&self, reference: &str, parent: bool) -> Result<Option<AgentPath>> {
         let turn = &*self.turn;
-        if parent && let Some(to) = turn.parent.as_ref().filter(|path| path.as_str() == agent) {
+        if parent
+            && let Some(to) = turn
+                .parent
+                .as_ref()
+                .filter(|path| path.as_str() == reference)
+        {
             return Ok(Some(to.clone()));
         }
-        Ok(
-            named_child(turn.observer.as_deref(), &turn.agent, agent, false)
-                .await?
-                .filter(|child| turn.children.contains(child)),
-        )
+        let Some(child) =
+            named_child(turn.observer.as_deref(), &turn.agent, reference, false).await?
+        else {
+            return Ok(None);
+        };
+        Ok(turn
+            .children
+            .contains(&child)
+            .await
+            .map_err(agent)?
+            .then_some(child))
     }
 
     async fn peer(
@@ -460,7 +451,17 @@ impl AgentTool {
                 match observer.settled(child).await {
                     Ok(observed) => Ok(Some(observed)),
                     // Spawned this turn: its creation commits with the step.
-                    Err(Error::NotFound(_)) if open.contains(child) => Ok(None),
+                    Err(Error::NotFound(_)) => {
+                        if open
+                            .contains(child)
+                            .await
+                            .map_err(|error| (name, agent(error)))?
+                        {
+                            Ok(None)
+                        } else {
+                            Err((name, Error::NotFound(child.to_string())))
+                        }
+                    }
                     Err(error) => Err((name, error)),
                 }
             }
@@ -489,7 +490,7 @@ impl AgentTool {
                     serde_json::to_value(&observed.phase)
                         .map_err(|error| Error::Invalid(error.to_string()))
                 })?;
-            if open.contains(child) {
+            if open.contains(child).await.map_err(agent)? {
                 pending.insert(child.clone());
                 unsettled.push(json!({"name": name, "phase": phase}));
             } else {
@@ -789,7 +790,6 @@ pub fn bind_agent_tools(
         maximum_bytes,
         templates: agent.profile.clone().zip(templates),
         volumes: agent.volumes.clone(),
-        spawning: futures::lock::Mutex::new(()),
         released: AtomicBool::new(matches!(agent.phase, crate::agent::Phase::Waiting { .. })),
     });
     for (name, definition) in selected(names)? {
