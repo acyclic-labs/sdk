@@ -27,8 +27,8 @@
       { "when": { "contains": ["Choose a listed number.", "Provider:"] }, "send": "2\r" },
       { "when": { "contains": ["Model:"] }, "send": "1\r" },
       { "when": { "contains": ["API key (hidden):"] }, "send": " \r" },
-      { "when": { "contains": ["Paste a nonempty, single-line API key."] }, "send": "\u001b[200~bad\nkey\u001b[201~\r" },
-      { "when": { "contains": ["API key (hidden):"] }, "send": "E2E_FIRST_RUN_NONSECRET\r" },
+      { "when": { "contains": ["API key is empty."] }, "assert": { "raw": ["\u001b[?2004h"] }, "send": "\u001b[200~bad\nkey\u001b[201~\r" },
+      { "when": { "contains": ["API key must be a single line."] }, "send": "E2E_FIRST_RUN_NONSECRET\r" },
       { "when": { "contains": ["GraphCoder", "\u25cb"], "cursor": true }, "prompt": "first configured prompt" },
       { "when": { "delta": "FIRST_CONFIGURED_ANSWER" }, "send": "\u001b" },
       { "when": { "contains": ["FIRST_CONFIGURED_ANSWER", "interaction cancelled", "\u25cb"] }, "send": "\u0004" }

@@ -83,6 +83,8 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
         return Err(KEYS.into());
     }
     let mut terminal = Tty::open()?;
+    terminal.negotiate(&acyclic_harness::tui::term::Environment::capture())?;
+    terminal.enable_mode(2004)?;
     print!("GraphCoder first run: choose a provider\r\n");
     let providers: Vec<String> = registry
         .catalog()

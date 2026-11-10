@@ -7,10 +7,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !provider.starts_with("e2e-first-run-") || args.next().is_some() {
         return Err("expected unique first-run fixture provider".into());
     }
-    let present = Credentials::default().api_key(&provider)?.is_some();
+    let stored = Credentials::default().api_key(&provider)?;
     Credentials::remove_api_key(&provider)?;
-    if !present {
-        return Err("first-run credential was not in OS keychain".into());
+    if stored.as_deref() != Some("E2E_FIRST_RUN_NONSECRET") {
+        return Err("first-run corrected credential was not in OS keychain".into());
     }
     Ok(())
 }

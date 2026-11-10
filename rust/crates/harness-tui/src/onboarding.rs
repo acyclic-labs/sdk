@@ -81,10 +81,14 @@ fn read(
 pub fn read_secret(terminal: &mut crate::term::Tty, label: &str) -> io::Result<Zeroizing<String>> {
     loop {
         let value = read(terminal, label, true)?;
-        if !value.trim().is_empty() && !value.trim().chars().any(char::is_control) {
+        let problem = if value.trim().is_empty() {
+            "API key is empty."
+        } else if value.trim().chars().any(char::is_control) {
+            "API key must be a single line."
+        } else {
             return Ok(value);
-        }
-        print!("Paste a nonempty, single-line API key.\r\n");
+        };
+        print!("{problem} Paste a nonempty, single-line API key.\r\n");
     }
 }
 
