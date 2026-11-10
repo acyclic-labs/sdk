@@ -119,22 +119,8 @@ async fn cancellation_retires_provider_before_pending_completion_durability() ->
     struct Provider {
         entered: Mutex<Option<oneshot::Sender<()>>>,
         read: Mutex<Option<oneshot::Receiver<()>>>,
-        accounting: ScriptedModelProvider,
     }
     impl ModelProvider for Provider {
-        fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
-            self.accounting.context_capacity(model)
-        }
-
-        fn count_tokens<'a>(
-            &'a self,
-            request: &'a crate::model::PreparedModelRequest,
-            ceiling: u64,
-        ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::context::ModelTokenCount>>
-        {
-            self.accounting.count_tokens(request, ceiling)
-        }
-
         fn generate<'a>(
             &'a self,
             _: &'a crate::model::PreparedModelRequest,
@@ -179,7 +165,6 @@ async fn cancellation_retires_provider_before_pending_completion_durability() ->
         Arc::new(Provider {
             entered: Mutex::new(Some(entered)),
             read: Mutex::new(Some(read)),
-            accounting: ScriptedModelProvider::new([]),
         }),
         ContextPipeline::default(),
         ToolRegistry::default(),

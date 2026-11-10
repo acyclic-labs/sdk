@@ -103,6 +103,18 @@ impl StockExecution<'_> {
         Ok(ContextAccounting { capacity, count })
     }
 
+    /// Disabled compaction sends the installed pipeline's ordinary requests
+    /// unchecked: no capacity read and no token count on the turn's path. The
+    /// provider remains the authority on its window. Single inference and
+    /// threshold turns pass capacity admission.
+    pub(super) fn unchecked(&self) -> Result<bool> {
+        Ok(!self.single_request
+            && matches!(
+                self.compaction_policy()?,
+                crate::context::CompactionPolicy::Disabled
+            ))
+    }
+
     pub(super) fn model_capacity(&self) -> Result<crate::context::ModelContextCapacity> {
         let capacity =
             stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
