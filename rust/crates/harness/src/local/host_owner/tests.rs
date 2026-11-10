@@ -1326,7 +1326,53 @@ async fn permission_prompts_gate_spawn_and_preserve_host_tool_decisions() -> Res
 /// thread can finish.
 #[tokio::test]
 async fn concurrent_spawns_from_a_child_both_start() -> Result<()> {
+    use crate::conversation::{ContentPublisher as _, ContentResidencyVerifier as _};
     let mut fixture = Fixture::for_host("claude-code").await?;
+    let local = Arc::clone(&fixture.owner.local);
+    let verifier = local
+        .root_authority
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("fixture signing authority absent".into()))?
+        .verifier(&mut None)?;
+    let writer = crate::filesystem::FilesystemContentPublisher::new(
+        Arc::clone(&local.files),
+        &local.shared,
+        &verifier,
+        &local.signed,
+        4096,
+        None,
+    )?;
+    let (shared_file, _) = writer
+        .stage_once(
+            OperationId::new(),
+            "shared-proof.txt",
+            b"shared native content",
+            "text/plain",
+            "shared native content",
+            Default::default(),
+        )?
+        .await?;
+    async fn shared_text(
+        owner: &HostWorkspaceOwner,
+        agent: &AgentPath,
+        verifier: &crate::core::AuthorityVerifier,
+        file: &crate::conversation::FileRef,
+    ) -> Result<Vec<u8>> {
+        let state = owner.native.state(agent).await?;
+        let scope = owner.native.view_scope(&state).await?;
+        let reader = crate::filesystem::FilesystemContentVerifier::new(
+            Arc::clone(&owner.local.files),
+            verifier,
+            &scope,
+            4096,
+            None,
+        )?;
+        Ok(reader.read(file, 4096, None, None)?.await?.to_vec())
+    }
+    assert_eq!(
+        shared_text(&fixture.owner, &fixture.parent, &verifier, &shared_file).await?,
+        b"shared native content"
+    );
     let spawned = fixture
         .session(
             "parent",
@@ -1368,22 +1414,17 @@ async fn concurrent_spawns_from_a_child_both_start() -> Result<()> {
             .await?;
         assert_eq!(turn["task"], json!(child));
         assert_eq!(turn["prompt"], reference);
-        // A retained shared binding must grant the real native filesystem path,
-        // including after the owner reconstructs this descendant's view.
+        // Exercise the actual content reader with the native view's signed
+        // grants. This proves authority even on a physical host, where named
+        // volume projections are deliberately absent.
         for reopen in [false, true] {
             if reopen {
                 fixture.restart(&child).await?;
             }
-            fixture
-                .owner
-                .dispatch(
-                    OperationId::new(),
-                    HostAction::Fs {
-                        task: child.clone(),
-                        command: "status --volume shared".into(),
-                    },
-                )
-                .await?;
+            assert_eq!(
+                shared_text(&fixture.owner, &child, &verifier, &shared_file).await?,
+                b"shared native content"
+            );
         }
         views.push(cwd(&turn)?);
     }
