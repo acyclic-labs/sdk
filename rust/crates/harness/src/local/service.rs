@@ -279,6 +279,21 @@ mod tests {
         .state_directory(state.path())
         .without_default_tools();
         let local = Arc::new(super::super::LocalHarness::open(config).await?);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let project = local
+            .volume_filesystem
+            .open_workspace(
+                local.project.storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| storage(failure.error))?
+            .value;
+        project
+            .write_text("/shared.txt", "checkout base")
+            .await
+            .map_err(storage)?;
         let tree = local
             .connect()
             .await
@@ -302,11 +317,26 @@ mod tests {
             .map_err(|error| {
                 Error::Storage(format!("tree after denied directory call: {error}"))
             })?;
+        let directory_local = local.connect_sessions().await.map_err(|error| {
+            Error::Storage(format!("in-process directory client connect: {error}"))
+        })?;
+        assert!(matches!(
+            directory_local
+                .execute(&AgentCommand::LatestSession {})
+                .await?,
+            AgentReply::LatestSession { agent: None }
+        ));
         let hosted = local
             .agents
             .get()
             .ok_or_else(|| Error::Invalid("missing owner".into()))?;
         let server = Arc::clone(hosted.server());
+        let restricted = server
+            .bound()
+            .client_credential(server.root(), server.resource(), local.clock.clone())
+            .await
+            .map_err(storage)?;
+        let restricted = acyclic_auth::credential::capability_text(&restricted.credential);
         let changes = server.bound().changes().map_err(storage)?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -327,19 +357,26 @@ mod tests {
                     Some(&endpoint.endpoint),
                     Some(&observation.credential),
                 );
-                let _ = ready.send(options);
+                let _ = ready.send((options, endpoint.endpoint.clone()));
             },
             async {
                 let _ = stopped.await;
             },
         ));
         let result = async {
-            let connection =
-                Connection::connect(&readiness.await.map_err(storage)?.map_err(storage)?)
-                    .await
-                    .map_err(|error| {
-                        Error::Storage(format!("directory client connect: {error}"))
-                    })?;
+            let (options, endpoint) = readiness.await.map_err(storage)?;
+            let root_options = acyclic_harness_client::ConnectionOptions::from_env(
+                Some(&endpoint),
+                Some(&restricted),
+            )
+            .map_err(storage)?;
+            let restricted_remote = Connection::connect(&root_options)
+                .await
+                .map_err(|error| Error::Storage(format!("remote tree client connect: {error}")))?;
+            restricted_remote.execute(&AgentCommand::Root {}).await?;
+            let connection = Connection::connect(&options.map_err(storage)?)
+                .await
+                .map_err(|error| Error::Storage(format!("directory client connect: {error}")))?;
             assert!(matches!(
                 connection.execute(&AgentCommand::LatestSession {}).await?,
                 AgentReply::LatestSession { agent: None }
@@ -400,6 +437,58 @@ mod tests {
                 }
             }
             assert_eq!(listed, roots);
+            let mut projects = Vec::new();
+            for root in &roots {
+                let state = local.agents().await?.0.state(root).await.map_err(storage)?;
+                let binding = state
+                    .volumes
+                    .iter()
+                    .find(|binding| binding.name == "project")
+                    .ok_or_else(|| Error::Invalid("missing project binding".into()))?;
+                assert_ne!(binding.volume, local.project);
+                projects.push(
+                    local
+                        .volume_filesystem
+                        .open_workspace(
+                            binding.volume.storage_name(&mut None)?,
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &cancellation,
+                        )
+                        .await
+                        .map_err(|failure| storage(failure.error))?
+                        .value,
+                );
+            }
+            projects[0]
+                .write_text("/shared.txt", "first session")
+                .await
+                .map_err(storage)?;
+            projects[1]
+                .write_text("/shared.txt", "second session")
+                .await
+                .map_err(storage)?;
+            for (workspace, expected) in [
+                (&projects[0], "first session"),
+                (&projects[1], "second session"),
+                (&projects[2], "checkout base"),
+                (&project, "checkout base"),
+            ] {
+                let bytes = workspace
+                    .read(
+                        "/shared.txt",
+                        1024,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await
+                    .map_err(|failure| storage(failure.error))?
+                    .value;
+                assert_eq!(
+                    bytes.as_ref(),
+                    expected.as_bytes(),
+                    "sessions sharing one repo cannot overwrite each other"
+                );
+            }
             let agent = roots
                 .iter()
                 .find(|agent| *agent != connection.root())

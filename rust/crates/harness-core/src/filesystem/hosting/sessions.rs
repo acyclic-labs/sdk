@@ -130,6 +130,51 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         Ok(())
     }
 
+    /// Fork a session's volumes through the shared child-volume composer.
+    /// The root, its directory membership and every volume appear together.
+    pub async fn prepare_isolated_session(
+        &self,
+        intent: &IntentId,
+        mut root: RootRequest,
+        source: &AgentPath,
+    ) -> Result<Prepared, Error> {
+        self.admit_sessions()?;
+        self.admit_path(source)?;
+        if !root.fresh.is_empty() || !root.retained.is_empty() {
+            return Err(Error::Record(
+                "a root volume fork cannot also bind supplied volumes",
+            ));
+        }
+        let source = self.agents.state(source).await?;
+        self.admit_agent(&source.path, &source.volumes)?;
+        let child = AgentPath::root(&root.agent);
+        root.fresh = super::super::spawn_volumes::fork_bindings(&child, &source.volumes, None)?;
+        self.admit_root(&root)?;
+        let adopted = ForkAdopted {
+            agent: root.agent,
+            parent: None,
+            profile: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: root.fresh,
+            brief: root.brief,
+            policy: root.policy,
+        };
+        let Spawn { child, mut request } = self.agents.prepare_root(intent, adopted)?;
+        self.index_session(&child, &mut request)?;
+        let commit = self
+            .spawns
+            .root_volumes(&source, &child, None, request)
+            .await
+            .map_err(|error| {
+                turn(crate::Error::Invalid(format!(
+                    "root volume preparation: {error}"
+                )))
+            })?;
+        Ok(Prepared { child, commit })
+    }
+
     /// The last committed root membership, or no sessions yet. The lookup
     /// neither walks directory pages nor reads any transcript or volume.
     pub async fn latest_session(&self) -> Result<Option<AgentPath>, Error> {
