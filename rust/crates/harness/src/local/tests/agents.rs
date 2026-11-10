@@ -64,8 +64,20 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
                 ..
             })) => break (id, binding, delivery),
             Some(crate::local::Event::Turn(entry)) if entry.inbox == inbox => {
+                let journal = client.execution_page(inbox, 0, false).await?;
+                let failures: Vec<_> = journal
+                    .page
+                    .iter()
+                    .flat_map(|page| &page.items)
+                    .filter_map(|record| match &record.event {
+                        crate::executor::ExecutionEvent::ToolFailed { reason, cause, .. } => {
+                            Some((reason, cause))
+                        }
+                        _ => None,
+                    })
+                    .collect();
                 return Err(Error::Invalid(format!(
-                    "input settled before its expected approval: {:?}; {}",
+                    "input settled before its expected approval: {:?}; {}; original tool failures: {failures:?}",
                     entry.outcome,
                     client.turn(&entry).await?.answer
                 )));
