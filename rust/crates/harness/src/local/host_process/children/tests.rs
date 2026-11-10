@@ -170,8 +170,8 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
                 .ok_or("captured child is still running")?;
             if recovered {
                 assert_eq!(
-                    completed["results"][0]["outcome"]["Succeeded"]["text"],
-                    "PAIRED_NATIVE_DONE"
+                    completed["results"][0]["outcome"]["Succeeded"]["text"], "PAIRED_NATIVE_DONE",
+                    "exited native terminal without LF was discarded"
                 );
             } else {
                 let failure = completed["results"][0]["outcome"]["Failed"]["message"]
