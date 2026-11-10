@@ -90,36 +90,52 @@ fn scene(length: usize, width: u16, height: u16, rewrap: bool, scan: bool) -> [W
     })
 }
 
-fn independent_of_history(rewrap: bool, scan: bool) {
-    for (width, height) in [(80, 50), (120, 40)] {
-        let small = scene(100, width, height, rewrap, scan);
-        let large = scene(10_000, width, height, rewrap, scan);
-        assert_eq!(
-            small, large,
-            "input/delta paint work grew with retained history"
+fn independent_of_history(width: u16, height: u16, rewrap: bool, scan: bool) {
+    let small = scene(100, width, height, rewrap, scan);
+    let large = scene(10_000, width, height, rewrap, scan);
+    assert_eq!(
+        small, large,
+        "input/delta paint work grew with retained history"
+    );
+    for work in large {
+        assert!(
+            work.rows <= usize::from(height),
+            "paint exceeded visible rows"
         );
-        for work in large {
-            assert!(
-                work.rows <= usize::from(height),
-                "paint exceeded visible rows"
-            );
-        }
+    }
+}
+
+fn rejects_each_viewport(rewrap: bool, scan: bool) {
+    for (width, height) in [(80, 50), (120, 40)] {
+        let rejection = std::panic::catch_unwind(|| {
+            independent_of_history(width, height, rewrap, scan);
+        })
+        .expect_err("historical work escaped the viewport's oracle");
+        let message = rejection
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| rejection.downcast_ref::<&str>().copied())
+            .unwrap_or("non-text panic");
+        assert!(
+            message.contains("input/delta paint work grew with retained history"),
+            "unexpected failure at {width}x{height}: {message}"
+        );
     }
 }
 
 #[test]
 fn input_and_delta_paint_work_is_independent_of_history() {
-    independent_of_history(false, false);
+    for (width, height) in [(80, 50), (120, 40)] {
+        independent_of_history(width, height, false, false);
+    }
 }
 
 #[test]
-#[should_panic(expected = "input/delta paint work grew with retained history")]
 fn negative_control_rewrapping_history() {
-    independent_of_history(true, false);
+    rejects_each_viewport(true, false);
 }
 
 #[test]
-#[should_panic(expected = "input/delta paint work grew with retained history")]
 fn negative_control_scanning_history() {
-    independent_of_history(false, true);
+    rejects_each_viewport(false, true);
 }
