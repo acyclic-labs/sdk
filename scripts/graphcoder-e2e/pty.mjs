@@ -93,7 +93,7 @@ export async function pty(processes, binary, fixture, input, capture) {
         failures.accept(diagnostic, action.when, action.assert);
         if (unavailable && visible.includes(unavailable)) command = undefined;
         snapshots.push({ action: index, visible });
-        frames.consume();
+        if (action.prompt !== undefined || action.send !== undefined || action.kill) frames.consume();
         index++;
         if (action.prompt !== undefined) {
           command = action.prompt.trim().startsWith("/") ? action.prompt.trim() : undefined;
