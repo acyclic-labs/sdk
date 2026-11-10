@@ -1367,14 +1367,12 @@ async fn attention_alarm_default_resumes_on_input_or_original_deadline() -> Resu
         let initial = AgentState::adopted(root.clone(), &adopted(id(1)))?;
         let parked = || TurnStep {
             checkpoint: Some(b"waiting-for-reply".to_vec()),
-            reserved_children: 0,
             outs: Vec::new(),
             wait: Wait::Until(Until::input(timeout)),
             drops: None,
         };
         let done = || TurnStep {
             checkpoint: None,
-            reserved_children: 0,
             outs: Vec::new(),
             wait: Wait::Input,
             drops: None,
