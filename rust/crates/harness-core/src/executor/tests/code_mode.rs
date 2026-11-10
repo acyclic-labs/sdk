@@ -1294,7 +1294,7 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
         "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } export default total",
         "await tools['example.echo']({value:42}); export default 'x'.repeat(1000000)",
         "throw new Error('x'.repeat(1000000))",
-        "for (let i = 0; i < 100; i++) await console.log('y'.repeat(10000)); 1",
+        "for (let i = 0; i < 100; i++) await console.log('y'.repeat(10000)); export default 1",
     ] {
         let (mut executor, model, echo) = executor(code, allowed()?, true)?;
         executor.limits.render_bytes = 65_536;

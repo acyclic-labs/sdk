@@ -173,6 +173,11 @@ impl AgentApprovals {
         self
     }
 
+    /// Whether this owner has recorded effects requiring a publication barrier.
+    pub(crate) fn has_effect_barrier(&self) -> bool {
+        self.effects.is_some()
+    }
+
     /// Whether the turn stopped at a call waiting on its own recorded effects,
     /// not on an approval: its driver commits them and continues the turn.
     #[must_use]

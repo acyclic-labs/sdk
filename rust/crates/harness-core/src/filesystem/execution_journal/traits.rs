@@ -521,6 +521,9 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Option<Result<crate::conversation::BoundedContentFuture<'a, bool>>> {
         let approvals = self.agent_approvals.as_ref()?;
+        if !approvals.has_effect_barrier() {
+            return None;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if io.is_some_and(|io| io.original_native_work().is_some()) {
             return Some(Err(canonical_boundary(
