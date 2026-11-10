@@ -86,7 +86,16 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     eprintln!("approval stage: input sent {inbox}");
     let (id, published_binding, delivery) = loop {
         let (event, delivery) = observed.observer.next_projected().await?;
-        eprintln!("approval event: {event:?}");
+        eprintln!(
+            "approval event kind: {}",
+            match &event {
+                Ok(Some(crate::local::Event::Status(_))) => "status",
+                Ok(Some(crate::local::Event::Turn(_))) => "turn",
+                Ok(Some(crate::local::Event::Delta)) => "delta",
+                Ok(None) => "no value",
+                Err(_) => "original refusal",
+            }
+        );
         match event? {
             Some(crate::local::Event::Status(StatusRecord {
                 phase: crate::agent::Phase::WaitingApproval { id, binding },
@@ -116,7 +125,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         let after = projection.event(&delivery).after;
         projection.accepted(&delivery.resource, after);
     };
-    eprintln!("approval stage: waiting approval {id}");
+    eprintln!("approval stage: waiting approval {id:?}");
     let sequence = projection
         .event(&delivery)
         .sequence
