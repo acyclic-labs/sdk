@@ -12,11 +12,7 @@ use path::protoc_path;
 /// Generate the Actors descriptor and transport from the packaged proto.
 pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
     let output_root = output_root.as_ref();
-    let proto_root = PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR")
-            .ok_or_else(|| io::Error::other("CARGO_MANIFEST_DIR is unset"))?,
-    )
-    .join("proto");
+    let proto_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto");
     let rust_root = output_root.join("rust");
     fs::create_dir_all(&rust_root)?;
 
