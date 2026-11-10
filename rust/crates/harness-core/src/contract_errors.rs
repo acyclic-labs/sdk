@@ -1,5 +1,5 @@
 use super::OperationId;
-#[cfg(feature = "filesystem")]
+#[cfg(any(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::wire::ErrorCode;
 
 /// Reasons an interaction settled without approving its action. Tool callers
@@ -278,7 +278,7 @@ pub enum Error {
     #[error("Machine ownership: {0}")]
     MachineOwnership(#[source] acyclic_stream::StreamError),
     /// An owned native failure, preserving its cause and existing allocation custody.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("{cause}")]
     NativeWork {
         /// The actual native failure, without string conversion.
@@ -288,7 +288,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// Failure before the original native accounting state could be allocated.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("native accounting construction failed: {cause}")]
     NativeConstruction {
         /// The actual rejection, without constructing an owned diagnostic.
@@ -298,7 +298,7 @@ pub enum Error {
         work: Box<acyclic_fs::WorkCounters>,
     },
     /// A fixed native boundary rejection that needs no diagnostic allocation.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("{reason}")]
     NativeBoundary {
         /// The existing wire classification of the rejection.
@@ -488,7 +488,7 @@ pub enum Error {
     },
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn native_work_error_code(
     cause: &acyclic_fs::NativeTreeMaterializationError,
 ) -> ErrorCode {
@@ -756,8 +756,7 @@ impl Error {
             Self::MachineOwnership(_) => ErrorCode::Storage,
             Self::ModelDiagnostic { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeBoundary { code, .. }
-            | Self::NativeJsonAdmission { code, .. }
+            Self::NativeJsonAdmission { code, .. }
             | Self::NativeDiagnostic { code, .. }
             | Self::NativeJson { code, .. }
             | Self::NativeProstDecode { code, .. }
@@ -769,8 +768,7 @@ impl Error {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeFilesystem { source, .. } => filesystem_error_code(source),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeConstruction { .. }
-            | Self::NativeSupervisor { .. }
+            Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
             | Self::NativeDrivenJoin { .. }
             | Self::NativeStageUncertain { .. } => ErrorCode::Storage,
@@ -784,8 +782,12 @@ impl Error {
             Self::NativeWorkspacePublication { .. } => ErrorCode::Storage,
             #[cfg(feature = "filesystem")]
             Self::NativeGit { .. } => ErrorCode::Storage,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeBoundary { code, .. } => *code,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeConstruction { .. } => ErrorCode::Storage,
         }
     }
 
@@ -929,7 +931,7 @@ impl Error {
     /// Mark a fixed rejection at a checked model-input boundary. Allocation,
     /// cancellation and original IO failures retain their existing ownership.
     pub(crate) fn tool_input(self) -> Self {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Self::NativeBoundary { code, reason } = self {
             return match code {
                 crate::wire::ErrorCode::Invalid
@@ -988,11 +990,11 @@ impl Error {
                 false
             }
             Self::MountUnavailable { .. } | Self::Process(_) | Self::Allocation(_) => true,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::NativeWork { .. } => true,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::NativeConstruction { .. } => true,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::NativeBoundary { .. } => true,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeDiagnostic { .. } => true,
@@ -1263,7 +1265,7 @@ impl From<acyclic_fs::CancellationError> for Error {
 }
 
 /// Moves a native cause without formatting it or manufacturing allocation custody.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
     fn from(cause: acyclic_fs::NativeTreeMaterializationError) -> Self {
         Self::NativeWork {

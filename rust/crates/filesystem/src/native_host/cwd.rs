@@ -259,7 +259,7 @@ fn cwd_ancestor_name<W: NativeHostWork>(
     result
 }
 
-#[cfg(all(target_os = "linux", any(test, feature = "native-watch")))]
+#[cfg(target_os = "linux")]
 fn linux_directory_path_held<W: NativeHostWork>(
     directory: &Dir,
     descriptor_directory: &std::ffi::CStr,

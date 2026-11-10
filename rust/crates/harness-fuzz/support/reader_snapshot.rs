@@ -19,7 +19,7 @@ fn populated() -> RecordCache {
     let mut cache = RecordCache::new(BUDGET, STREAMS);
     cache.observe_origin(&parent(), None);
     cache.observe_tail(&parent(), 2);
-    assert!(cache.insert_record(&parent(), 1, OwnedBytes::copy_from_slice(BODY), None));
+    assert!(cache.insert_record(&parent(), 1, OwnedBytes::copy_from_slice(BODY), None, None));
     cache.note_commit(&parent(), 1, CommitId::from_bytes([7; 32]));
     cache
 }

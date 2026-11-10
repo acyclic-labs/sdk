@@ -1,6 +1,6 @@
 //! Payload ownership shared by cache entries and rendered views.
 
-use acyclic_stream::{OwnedBytes, OwnedBytesBacking};
+use acyclic_stream::{CommitId, OwnedBytes, OwnedBytesBacking, StreamPath};
 use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -38,6 +38,22 @@ impl Drop for Charge {
     }
 }
 
+/// Original append coordinates, retained with their original payload.
+///
+/// Origin is distinct from the selected stream when a fork inherits the row.
+/// These coordinates describe the admitted read, not physical work or delivery.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordEvidence {
+    /// Original stream that appended the record.
+    pub origin: StreamPath,
+    /// Zero-based record position, not a filesystem accounting sequence.
+    pub sequence: u64,
+    /// Commit that introduced this record.
+    pub commit: CommitId,
+    /// Original commit time in Unix microseconds.
+    pub committed_at_micros: u64,
+}
+
 /// Immutable record payload retaining one shared allocation charge.
 ///
 /// Cloning a row keeps the charge alive even after its cache entry is evicted.
@@ -46,9 +62,17 @@ impl Drop for Charge {
 pub struct RecordBytes {
     value: OwnedBytes,
     charge: Arc<Charge>,
+    evidence: Option<RecordEvidence>,
 }
 
 impl RecordBytes {
+    /// Borrow original coordinates through the same authorized cache lookup.
+    /// Version-one cache snapshots omit them, so restored rows return None;
+    /// a stream's highest-commit anchor never supplies missing row identity.
+    pub fn evidence(&self) -> Option<&RecordEvidence> {
+        self.evidence.as_ref()
+    }
+
     pub(crate) fn backing(&self) -> &OwnedBytesBacking {
         &self.charge.backing
     }
@@ -89,7 +113,12 @@ impl BackingPool {
         locked(&self.0).bytes
     }
 
-    pub(crate) fn retain(&self, value: OwnedBytes, budget: usize) -> RecordBytes {
+    pub(crate) fn retain(
+        &self,
+        value: OwnedBytes,
+        evidence: Option<RecordEvidence>,
+        budget: usize,
+    ) -> RecordBytes {
         let (value, backing) = value.into_backed(budget);
         let mut state = locked(&self.0);
         let charge = if let Some(charge) = state.owners.get(&backing).and_then(Weak::upgrade) {
@@ -108,6 +137,10 @@ impl BackingPool {
             state.owners.insert(backing, Arc::downgrade(&charge));
             charge
         };
-        RecordBytes { value, charge }
+        RecordBytes {
+            value,
+            charge,
+            evidence,
+        }
     }
 }

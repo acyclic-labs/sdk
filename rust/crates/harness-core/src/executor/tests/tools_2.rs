@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "filesystem"))]
 mod physical_grants;
 
 #[tokio::test]
