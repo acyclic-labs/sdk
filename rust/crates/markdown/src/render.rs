@@ -152,8 +152,6 @@ impl Renderer {
             return;
         }
         let mut prefixed = Line::plain(&self.prefix(), MUTED);
-        prefixed.code = line.code;
-        prefixed.syntax = line.syntax;
         prefixed.spans.extend(line.spans);
         self.lines.push(prefixed);
     }
