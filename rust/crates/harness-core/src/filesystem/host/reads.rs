@@ -58,9 +58,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         super::super::access::require_directory_ceiling(ceiling, volume, path, Some(io))?;
         validate_private_read_path(path, Some(io))?;
         let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
-        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
-        let workspace_ref = (workspace_ref, workspace_hold);
-        let workspace = self.open(&workspace_ref.0, Some(io)).await?;
+        let workspace = self.open(&workspace_ref, Some(io)).await?;
         drop(workspace_ref);
         let generation = match expected_generation {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
