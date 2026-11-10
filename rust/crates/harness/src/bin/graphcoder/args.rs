@@ -148,6 +148,12 @@ impl Args {
                 self.input_format = InputFormat::Jsonl;
             }
         }
+        if self.host_workspace && (self.prompt.is_some() || self.input_format == InputFormat::Jsonl)
+        {
+            return Err(
+                "workspace owner cannot execute input; recovery: remove --host-workspace to execute a task",
+            );
+        }
         if self.input_format == InputFormat::Jsonl && self.operation.is_none() {
             return Err(
                 "JSONL input: --operation is required; recovery: graphcoder --operation OPERATION exec",
@@ -404,6 +410,37 @@ mod tests {
                 "{option}"
             );
         }
+    }
+
+    #[test]
+    fn native_workspace_owner_rejects_normalized_positional_task() {
+        for task in [Some("TASK"), None] {
+            let arguments = [
+                "graphcoder",
+                "--host-workspace",
+                "--host-state-directory",
+                "fixture-state",
+                "exec",
+            ];
+            let mut args = Args::try_parse_from(arguments.into_iter().chain(task)).unwrap();
+            assert_eq!(
+                args.prepare_input(),
+                Err(
+                    "workspace owner cannot execute input; recovery: remove --host-workspace to execute a task"
+                )
+            );
+        }
+        let mut owner = Args::try_parse_from([
+            "graphcoder",
+            "--host-workspace",
+            "--host-state-directory",
+            "fixture-state",
+        ])
+        .unwrap();
+        assert!(owner.prepare_input().is_ok());
+        let mut execution = Args::try_parse_from(["graphcoder", "exec", "TASK"]).unwrap();
+        assert!(execution.prepare_input().is_ok());
+        assert_eq!(execution.prompt.as_deref(), Some("TASK"));
     }
 
     #[test]
