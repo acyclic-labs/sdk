@@ -351,18 +351,6 @@ impl ProcessCommand {
 
     /// The same description as a standard command. Owned streams are
     /// duplicated, so this description stays reusable.
-    #[cfg(target_os = "macos")]
-    pub(crate) fn wrap_sandbox(&mut self, profile: &str) {
-        let program = std::mem::replace(&mut self.program, "/usr/bin/sandbox-exec".into());
-        let original = std::mem::take(&mut self.args);
-        self.args = ["-p", profile, "--"]
-            .into_iter()
-            .map(|arg| Arg::Regular(arg.into()))
-            .chain(std::iter::once(Arg::Regular(program)))
-            .chain(original)
-            .collect();
-    }
-
     #[cfg(any(unix, test))]
     pub(crate) fn to_std(&self) -> std::io::Result<std::process::Command> {
         if self.boundary.is_some() {
