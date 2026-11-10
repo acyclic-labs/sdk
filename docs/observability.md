@@ -35,15 +35,15 @@ its own producer, retirement and diagnostic request/acknowledgement guarantees.
 
 Harness child waits export `StatusRecord.child_wakes` through the existing status
 stream and SessionFrame projection read by GraphCoder and benchmark captures.
-Each sample identifies a direct child relative to the status owner and retains
+The status holds an immutable `ChildWakeSet` root, count and wake timestamp;
+`ChildWakeSet::page` reads bounded pages after the last returned child identity.
+The checkpoint and status size are independent of the number of children.
+Each fetched sample identifies a direct child relative to the status owner and retains
 `settled_at_micros` from the original `ChildSettled` or `ChildDone` inbox commit,
 and `woke_at_micros` from the parent delivery clock where the wait resumes, before
-the driver runs. Samples accumulate in the same immutable child index used by
-membership. Each checkpoint and returning status retains only a root and count;
-`ChildWakes::page` reads a caller-sized page from that exact cut. Staging immutable
-index nodes buys lossless measurements for waits of any size without oversized
-actor or status records. The returning step publishes the cut with its ordinary
-commit; partial completions emit none. Both
+the driver runs. Samples accumulate in the shared persistent child index, whose
+root travels with the waiting checkpoint. The returning step publishes one
+descriptor in its ordinary commit; partial completions emit none. Both
 timestamps are Unix microseconds (the delivery clock has millisecond resolution).
 Clock skew remains visible in the raw pair; an absent sample is unknown. These
 are wait-return measurements, not provider-call or tool-result-publication times.

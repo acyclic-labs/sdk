@@ -403,7 +403,7 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
     let history = (0..64)
         .map(|cursor| {
             StatusRecord {
-                child_wakes: Default::default(),
+                child_wakes: None,
                 phase: Phase::Running,
                 cursor,
                 conversation: 1,
@@ -439,7 +439,7 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
     )
     .await?;
     let attention = StatusRecord {
-        child_wakes: Default::default(),
+        child_wakes: None,
         phase: Phase::WaitingHost {
             host: "codex".into(),
         },

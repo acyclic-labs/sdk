@@ -505,18 +505,12 @@ fn live_files_keep_original_request_counts_and_bounded_committed_windows() {
 
         // The same reader also borrows the actual agent status encoding.
         // A live view must not require the phase owner to publish another row.
-        let mut settlements = acyclic_harness_core::agent::Children::new();
-        let child = acyclic_harness_core::agent::AgentPath::root(
-            &acyclic_harness_core::agent::AgentId::from_bytes([1; 16]),
-        )
-        .child(&acyclic_harness_core::agent::AgentId::from_bytes([2; 16]))
-        .unwrap();
-        settlements
-            .record_settlement(&child, 5_000_000)
-            .await
-            .unwrap();
         let status = StatusRecord {
-            child_wakes: acyclic_harness_core::agent::ChildWakes::new(settlements, 5_001_000),
+            child_wakes: Some(acyclic_harness_core::agent::ChildWakeSet {
+                root: [2; 32],
+                count: 1,
+                woke_at_micros: 5_001_000,
+            }),
             phase: Phase::Idle,
             cursor: 0,
             conversation: 0,
