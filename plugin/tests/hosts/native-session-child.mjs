@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Explicit process stand-in. Its wire events are admitted captures; sandbox
-// effects below execute through the actual selected native CLI.
+// Native scale and descendant controls. Completion events are admitted captures;
+// the shipping owner retains every original process, view and socket.
 import assert from 'node:assert/strict';
-import {readFileSync,readSync,writeFileSync,existsSync} from 'node:fs';
+import {readFileSync,writeFileSync} from 'node:fs';
 import {join,relative} from 'node:path';
 import {createServer} from 'node:net';
-const {checked,start,coordination,hold,Spool}=await import(process.env.FIXTURE_SUPPORT);
+const {hold}=await import(process.env.FIXTURE_SUPPORT);
 const args=process.argv.slice(2),cwd=process.cwd(),env=process.env;
 try{
  if(args.length===1&&args[0]==='--descendant'){
@@ -33,59 +33,7 @@ try{
     process.stderr.write('e'.repeat(262144)+'diagnostic-tail-'+host);process.exitCode=17;
    }
   }
- }else{
-  const policy=['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',env.FIXTURE_WORKSPACE];
-  const delegation=['--config','features.multi_agent_v2=false','--config','agents.enabled=false'];
-  if(!args.includes('exec')){
-   assert.deepEqual(args,[...policy,...delegation]);
-   assert.equal(cwd,env.ACYCLIC_WORKSPACE);assert.equal(cwd,env.FIXTURE_WORKSPACE);
-   assert.deepEqual(JSON.parse(env.ACYCLIC_HOST_ARGS),policy);
-   writeFileSync('root-launch.json',JSON.stringify({task:env.ACYCLIC_TASK,args:policy}));
-  }else{
-   const resume=args.includes('resume')?['resume',JSON.parse(readFileSync(env.FIXTURE_EVENTS,'utf8').split('\n')[0]).thread_id]:[];
-   assert.deepEqual(args,[...policy,...delegation,'exec','--json','--cd',cwd,...resume,'-']);
-   assert.deepEqual(JSON.parse(env.ACYCLIC_HOST_ARGS),policy);
-   assert.ok(!relative(join(env.FIXTURE_WORKSPACE,'.volumes/agents'),cwd).startsWith('..'));
-   assert.equal(readFileSync('AGENTS.md','utf8'),'native instruction discovery fixture');
-   // Read exactly the first byte before starting the stream reader. The
-   // cancellation control must leave the remaining pipe bytes undrained.
-   const first=Buffer.alloc(1);
-   assert.equal(readSync(0,first,0,1,null),1,'native prompt closed before its first byte');
-   if(first[0]===66)await hold(JSON.stringify({cwd}));
-   let prompt=first.toString();for await(const chunk of process.stdin)prompt+=chunk;
-   assert.ok(['failed','cancelled','recursive','first','resumed'].includes(prompt));
-   process.stdout.write(readFileSync(env.FIXTURE_EVENTS));
-   const base=['sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','-c',
-    'sandbox_workspace_write.writable_roots='+JSON.stringify([args[args.indexOf('--add-dir')+1]]),'--'];
-   if(prompt==='resumed')assert.equal(readFileSync('.volumes/home/native-private.txt','utf8'),'first');
-   const shell='set -eu; "$1" agents >/dev/null; printf "%s" "$4" > .volumes/home/native-private.txt; '+
-    'if (printf denied > "$2") 2>/dev/null; then exit 41; fi; test ! -e "$2"; printf native > "$3"; '+
-    'if test "$4" = failed; then exit 17; fi';
-   const {run}=await import(env.FIXTURE_SUPPORT);
-   const result=await run(env.FIXTURE_CODEX,[...base,'sh','-c',shell,'fixture',env.FIXTURE_ACYCLIC,env.FIXTURE_OUTSIDE,prompt+'.txt',prompt],{cwd,env});
-   assert.equal(result.code,prompt==='failed'?17:0,result.stderr);
-   if(prompt==='recursive'){
-    const nested=start(env.FIXTURE_ACYCLIC,['__mcp','codex'],{cwd,env});
-    try{
-     const tool=coordination(nested,'node plugin/tests/hosts/managed-session.mjs ACYCLIC GRAPHCODER CODEX recursive');
-     await tool('spawn','nested','first');const finished=await tool('wait','nested');
-     assert.equal(finished.reply.kind,'answered');assert.notEqual(finished.reply.outcome.Succeeded,undefined);
-     await checked(env.FIXTURE_CODEX,[...base,env.FIXTURE_ACYCLIC,'fs','merge','agents/nested'],{cwd,env});
-     assert.equal(readFileSync('first.txt','utf8'),'native');assert.ok(!existsSync('.acyclic-sdk'));
-    }finally{nested.child.stdin.end();assert.equal((await nested.closed).code,0);}
-   }
-   if(prompt==='cancelled'){
-    const child=start(process.execPath,[process.argv[1],'--descendant'],{cwd,env});
-    const events=new Spool(child.child.stdout,child.closed,{key:event=>event.port?['ready']:[],unique:true});
-    await events.keyed('ready');
-    writeFileSync('descendant.pid',String(child.child.pid));
-    await hold(JSON.stringify({cwd}));
-   }
-   if(prompt==='failed')process.exitCode=17;
-   if(prompt==='resumed')assert.equal(args[args.indexOf('resume')+1],JSON.parse(readFileSync(env.FIXTURE_EVENTS,'utf8').split('\n')[0]).thread_id);
-  }
- }
+ }else throw new Error('expected --descendant or FIXTURE_SCALE');
 }catch(error){
- try{writeFileSync('.volumes/home/native-error.txt',error.stack);}catch{}
- console.error(`step=run native process fixture: ${error.stack}; recovery: run the original native scenario`);process.exitCode=1;
+ console.error(`step=run native process fixture: ${error.stack}; recovery: run the original native scale scenario`);process.exitCode=1;
 }
