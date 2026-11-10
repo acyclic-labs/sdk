@@ -46,7 +46,7 @@ pub(super) fn reject(session: &mut Session, id: &IntentId, reason: &str) -> Opti
 /// Applies owner request `id`, returning the input it settled. Stale or
 /// replayed requests are recorded, never failed: a failed turn would leave its
 /// input queued ahead of every later one.
-pub(super) fn apply(
+pub(super) async fn apply(
     agent: &AgentState,
     session: &mut Session,
     id: &IntentId,
@@ -61,6 +61,8 @@ pub(super) fn apply(
             if agent
                 .open_children
                 .contains(&child(&agent.path, &reference)?)
+                .await
+                .map_err(storage)?
             {
                 return Ok(reject(session, id, "native child already exists"));
             }
@@ -71,7 +73,6 @@ pub(super) fn apply(
                 volumes: Vec::new(),
                 history: None,
             });
-            session.spawned.push(reference);
         }
         Event::Claim {} => {
             let reason = match &session.running {

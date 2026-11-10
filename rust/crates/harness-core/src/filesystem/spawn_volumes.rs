@@ -8,7 +8,10 @@
 
 use super::FilesystemHost;
 use crate::{
-    agent::{AgentPath, AgentState, Error, IntentId, Out, SpawnVolumes, VolumeBinding},
+    agent::{
+        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, Out, SpawnVolumes,
+        VolumeBinding,
+    },
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
 };
 use acyclic_actors::{

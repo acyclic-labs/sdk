@@ -220,6 +220,15 @@ impl AgentPath {
         self.depth == parent.depth + 1 && parent.contains(self)
     }
 
+    /// Whether this canonical address has exactly the selected immediate parent.
+    #[must_use]
+    pub fn parent_is(&self, parent: Option<&Self>) -> bool {
+        match parent {
+            None => self.depth == 0,
+            Some(parent) => self.is_child_of(parent),
+        }
+    }
+
     /// The agent's own id, the last path segment.
     #[must_use]
     pub fn id(&self) -> AgentId {

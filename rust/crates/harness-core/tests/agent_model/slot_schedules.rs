@@ -15,7 +15,7 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
             }),
         }]);
     for wait in invalid {
-        let (root, mut state) = wide_parent()?;
+        let (root, mut state) = populated_parent(0).await?;
         state.turn = Some(Progress {
             inbox: 0,
             checkpoint: Vec::new(),
@@ -68,10 +68,10 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
 
 #[tokio::test]
 async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Result {
-    let (root, mut state) = wide_parent()?;
+    let (root, mut state) = populated_parent(2).await?;
     let recorded = intent("spawn:already-open");
     let child = TurnEffect::child(&root, &recorded)?;
-    state.open_children.insert(child.clone());
+    state.open_children.insert(&child).await?;
     state.turn = Some(Progress {
         inbox: 0,
         checkpoint: Vec::new(),
@@ -109,6 +109,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
     )
     .await?
     .state;
+    assert!(!state.open_children.contains(&child).await?);
     state = step(
         &driver,
         &root,
@@ -119,6 +120,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
     )
     .await?
     .state;
+    assert_eq!(state.open_children.len(), 2);
     let client = step(
         &driver,
         &root,
@@ -128,7 +130,7 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
         acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
-    assert_eq!(spawns(&client.outs).len(), 1);
+    assert_eq!(spawns(&client.outs), [requested_child(&root, 3)?.0]);
     let resumed = step(
         &driver,
         &root,
@@ -144,17 +146,24 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
     )
     .await?;
     assert_eq!(spawns(&resumed.outs), [recorded]);
-    assert_eq!(resumed.state.open_children.len(), 257);
+    assert!(resumed.state.open_children.contains(&child).await?);
+    assert_eq!(resumed.state.open_children.len(), 4);
     Ok(())
 }
 
 #[tokio::test]
-async fn spawn_schedules_preserve_all_recorded_spawns() -> Result {
-    {
-        for recorded in 1..=4 {
+async fn admission_schedules_preserve_every_spawn_and_replay() -> Result {
+    for population in [0, 2] {
+        for recorded in 1..=3 {
             // Place resume at every cut of five sequential client arrivals.
             for resume_at in 0..=5 {
-                let (root, mut state) = wide_parent()?;
+                let (root, mut state) = populated_parent(population).await?;
+                let mut expected: BTreeSet<_> = state
+                    .open_children
+                    .page(None, population)
+                    .await?
+                    .into_iter()
+                    .collect();
                 state.phase = Phase::Running;
                 state.turn = Some(Progress {
                     inbox: 0,
@@ -218,8 +227,11 @@ async fn spawn_schedules_preserve_all_recorded_spawns() -> Result {
                         assert_eq!(
                             spawns(&resumed.outs),
                             named,
-                            "recorded={recorded}, cut={cut}"
+                            "population={population}, cut={cut}"
                         );
+                        for intent in &named {
+                            expected.insert(TurnEffect::child(&root, intent)?.id());
+                        }
                         state = resumed.state;
                     }
                     if cut < 5 {
@@ -247,14 +259,24 @@ async fn spawn_schedules_preserve_all_recorded_spawns() -> Result {
                         .await?;
                         assert_eq!(first.state, replay.state);
                         assert_eq!(spawns(&first.outs), spawns(&replay.outs));
+                        let (intent, child) = requested_child(&root, sequence)?;
+                        assert_eq!(spawns(&first.outs), [intent]);
+                        assert!(expected.insert(child.id()));
                         state = first.state;
                     }
+                    assert_eq!(state.open_children.len(), expected.len());
+                    assert_eq!(
+                        state.open_children.page(None, expected.len()).await?,
+                        expected.iter().cloned().collect::<Vec<_>>()
+                    );
                 }
-                assert_eq!(state.open_children.len(), 255 + 5 + recorded);
                 for intent in &named {
                     assert!(
-                        matches!(state.spawn_outcome(intent), SpawnOutcome::Spawned { .. }),
-                        "recorded spawn stranded: {intent:?}; recorded={recorded}, cut={resume_at}"
+                        matches!(
+                            state.spawn_outcome(intent).await?,
+                            SpawnOutcome::Spawned { .. }
+                        ),
+                        "recorded spawn stranded: {intent:?}; population={population}, cut={resume_at}"
                     );
                 }
             }

@@ -18,6 +18,7 @@ impl TurnDriver for Ask {
             let call = self.0.fetch_add(1, Ordering::SeqCst);
             Ok(TurnStep {
                 checkpoint: None,
+
                 outs: Vec::new(),
                 wait: if call == 0 {
                     Wait::User("ask.md".into())

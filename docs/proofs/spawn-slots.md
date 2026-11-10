@@ -1,17 +1,13 @@
 # Agent boundary proofs
 
-The Kani package includes the production spawn admission predicate by path.
-Its harnesses check admission for live parents, refusal of new children after
-archive, and idempotent replay of existing children. Counts and depth are not
-inputs to admission.
+The former Kani slot arithmetic is retired: child count and depth are no longer
+admission conditions. Historical receipts remain available and do not qualify
+the new persistent membership index. Its production tests compare paged point
+updates and reopen against membership, with bounded node-read/write counters.
 
-`agent-model::slot_schedules` executes the production serialized actor step:
-24 pause/client/resume schedules, client response-loss replay, and completion
-of an already-open recorded child during an approval pause. All client and
-recorded spawns remain admissible beyond the former 256-child cap. The native
-reopen regression retains the open children and the paused driver's checkpoint.
-The historical execution receipts describe the former reservation mechanism;
-they do not qualify these changed properties.
+`agent-model::slot_schedules` retains serialized pause/client/resume schedules,
+response-loss replay, and child completion during approval pauses. The native
+reopen controls retain published membership roots and the driver's checkpoint.
 
 The generated `ExplicitStreamProvider` removes defaults from the canonical
 provider declaration. Missing adapter implementations fail compilation,

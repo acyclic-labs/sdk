@@ -158,7 +158,7 @@ impl LocalHarness {
             #[cfg(not(any(test, feature = "native-execution")))]
             let home = true;
             let home = if home {
-                " .volumes/home is your private retained home volume and is never merged into the project."
+                " .volumes/home is your private retained home volume and is never merged into the project. .volumes/shared is retained by this session and shared with its descendants; condition edits on the exact version you read."
             } else {
                 ""
             };

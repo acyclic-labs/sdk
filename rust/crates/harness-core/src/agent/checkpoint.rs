@@ -1,33 +1,10 @@
-//! The agent checkpoint's one encoding, and the static size bound of every
-//! record an agent step writes.
-//!
-//! The parts that scale with the agent's limits are raw protobuf fields
-//! rather than JSON: each open child is its 16-byte id (its path, like the
-//! agent's parent, is derived from the agent's path), the children still to
-//! archive and the children awaited are bitmaps over them, and the turn
-//! driver's checkpoint is raw bytes. The rest uses the shared named MessagePack
-//! payload.
-//!
-//! Every part of every agent record is bounded at admission: paths by
-//! the primitive record envelope, file and volume references by the conversation
-//! maxima ([`crate::conversation::MAX_PATH_BYTES`] and
-//! [`crate::conversation::MAX_LABEL_BYTES`], enforced wherever a reference is
-//! built or decoded), and texts by their own limits. `tests` builds the worst
-//! case of each record kind a step appends and checks it encodes, and the
-//! worst settled checkpoint within [`MAX_CHECKPOINT_BYTES`] and one stream
-//! record. Only the input window and the turn grow with traffic; a state
-//! whose window and turn would not fit fails the agent visibly instead (see
-//! [`super::machine`]), so no step can wedge an agent on a record its stream
-//! refuses.
-use super::{AgentId, AgentRecord as _, AgentState, Error};
+//! Agent checkpoint: persistent membership roots and raw turn bytes.
+use super::{AgentState, Error};
 use acyclic_actors::guest::{Checkpoint, CodecIdentity};
 use prost::Message as _;
-use std::collections::BTreeSet;
 
-/// Largest agent checkpoint.
+/// Protective bound on the complete encoded actor checkpoint.
 pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
-/// Maximum encoded width of the conversation and status tails, used by the
-/// worst-case record construction proof.
 #[cfg(test)]
 pub(crate) const TAIL_SLACK: usize = 2 * 20;
 
@@ -41,8 +18,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            // V3 removes child-slot reservations; old checkpoints are refused whole.
-            version: "3".into(),
+            // V4 stores persistent membership roots; old checkpoints are refused whole.
+            version: "4".into(),
         });
     &IDENTITY
 }
@@ -81,30 +58,16 @@ struct Encoded {
     /// The shared record payload, without the fields below.
     #[prost(bytes = "vec", tag = "2")]
     state: Vec<u8>,
-    /// Each open child's id, in path order.
-    #[prost(bytes = "vec", repeated, tag = "3")]
-    open_children: Vec<Vec<u8>>,
-    /// Bit `i` set: open child `i` still has to receive `Archive`.
-    #[prost(bytes = "vec", tag = "4")]
-    archive_pending: Vec<u8>,
     /// Turn driver checkpoint.
     #[prost(bytes = "vec", optional, tag = "5")]
     turn: Option<Vec<u8>>,
     /// Inbox sequence of the input that started the turn.
     #[prost(uint64, optional, tag = "6")]
     turn_inbox: Option<u64>,
-    /// Bit `i` set: the turn waits for open child `i` to settle.
-    #[prost(bytes = "vec", tag = "7")]
-    awaiting: Vec<u8>,
 }
 
-/// Retains the exact encoding checked against the selected checkpoint limit.
+/// Retains the exact final checkpoint bytes for atomic publication.
 pub(super) fn from_encoded(bytes: Vec<u8>) -> Result<Checkpoint, Error> {
-    if bytes.len() > MAX_CHECKPOINT_BYTES {
-        return Err(Error::Record(
-            "agent checkpoint exceeds MAX_CHECKPOINT_BYTES",
-        ));
-    }
     Ok(Checkpoint {
         codec: codec(),
         bytes: bytes.into(),
@@ -113,46 +76,15 @@ pub(super) fn from_encoded(bytes: Vec<u8>) -> Result<Checkpoint, Error> {
 
 /// Artifact state as checkpoint bytes. Subscription cuts belong to Actors.
 pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
-    let mut rest = state.clone();
-    let open_children = std::mem::take(&mut rest.open_children);
-    let archive_pending = std::mem::take(&mut rest.archive_pending);
-    let awaiting = std::mem::take(&mut rest.awaiting);
-    let turn = rest.turn.take();
-    if rest.parent.take() != state.path.parent() {
+    if !state.path.parent_is(state.parent.as_ref()) {
         return Err(Error::Record("agent parent is not its path's parent"));
     }
-    let mut ids = Vec::with_capacity(open_children.len());
-    let mut bitmap = vec![0; open_children.len().div_ceil(8)];
-    let mut awaited = vec![0; open_children.len().div_ceil(8)];
-    for (index, child) in open_children.iter().enumerate() {
-        if !child.is_child_of(&state.path) {
-            return Err(Error::Record("an open child is not a direct child"));
-        }
-        ids.push(child.id_bytes().to_vec());
-        if archive_pending.contains(child) {
-            bitmap[index / 8] |= 1 << (index % 8);
-        }
-        if awaiting.contains(child) {
-            awaited[index / 8] |= 1 << (index % 8);
-        }
-    }
-    if !archive_pending.is_subset(&open_children) {
-        return Err(Error::Record("a child to archive is not open"));
-    }
-    if !awaiting.is_subset(&open_children) {
-        return Err(Error::Record("an awaited child is not open"));
-    }
+    let mut rest = state.clone();
+    let turn = rest.turn.take();
+    rest.parent = None;
     Ok(Encoded {
         state: super::records::encode_payload(&rest)
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,
-        open_children: ids,
-        archive_pending: bitmap,
-        // Empty unless a turn waits: no bytes in every other checkpoint.
-        awaiting: if awaiting.is_empty() {
-            Vec::new()
-        } else {
-            awaited
-        },
         turn_inbox: turn.as_ref().map(|turn| turn.inbox),
         turn: turn.map(|turn| turn.checkpoint),
     }
@@ -165,44 +97,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
     let encoded = Encoded::decode(bytes).map_err(|_| malformed())?;
     let mut state: AgentState =
         super::records::decode_payload(&encoded.state).map_err(|_| malformed())?;
-    if !state.open_children.is_empty()
-        || !state.archive_pending.is_empty()
-        || !state.awaiting.is_empty()
-        || state.turn.is_some()
-        || state.parent.is_some()
-    {
+    if state.turn.is_some() || state.parent.is_some() {
         return Err(malformed());
     }
     state.parent = state.path.parent();
-    let bitmap = encoded.open_children.len().div_ceil(8);
-    if encoded.archive_pending.len() != bitmap
-        || !(encoded.awaiting.is_empty() || encoded.awaiting.len() == bitmap)
-    {
-        return Err(malformed());
-    }
-    let mut open_children = BTreeSet::new();
-    let mut archive_pending = BTreeSet::new();
-    let mut awaiting = BTreeSet::new();
-    for (index, id) in encoded.open_children.iter().enumerate() {
-        let id: [u8; 16] = id.as_slice().try_into().map_err(|_| malformed())?;
-        let child = state.path.child(&AgentId::from_bytes(id))?;
-        if encoded.archive_pending[index / 8] & (1 << (index % 8)) != 0 {
-            archive_pending.insert(child.clone());
-        }
-        if encoded
-            .awaiting
-            .get(index / 8)
-            .is_some_and(|bits| bits & (1 << (index % 8)) != 0)
-        {
-            awaiting.insert(child.clone());
-        }
-        if !open_children.insert(child) {
-            return Err(malformed());
-        }
-    }
-    state.open_children = open_children;
-    state.archive_pending = archive_pending;
-    state.awaiting = awaiting;
     state.turn = match (encoded.turn, encoded.turn_inbox) {
         (Some(checkpoint), Some(inbox)) => Some(super::Progress { inbox, checkpoint }),
         (None, None) => None,
@@ -229,98 +127,20 @@ pub(super) fn check_wire(bytes: &[u8]) {
     };
     let rest: AgentState = super::records::decode_payload(&encoded.state)
         .unwrap_or_else(|_| panic!("checkpoint state writer"));
-    for field in 0..5 {
+    for field in 0..2 {
         let mut changed = rest.clone();
-        let reason = match field {
-            0 => {
-                changed.parent = state.parent.clone();
-                "checkpoint admitted an embedded parent"
-            }
-            1 => {
-                changed.open_children = state.open_children.clone();
-                "checkpoint admitted embedded open children"
-            }
-            2 => {
-                changed.archive_pending = state.archive_pending.clone();
-                "checkpoint admitted embedded archive children"
-            }
-            3 => {
-                changed.awaiting = state.awaiting.clone();
-                "checkpoint admitted embedded awaited children"
-            }
-            _ => {
-                changed.turn = state.turn.clone();
-                "checkpoint admitted an embedded turn"
-            }
+        let reason = if field == 0 {
+            changed.parent = state.parent.clone();
+            "checkpoint admitted an embedded parent"
+        } else {
+            changed.turn = state.turn.clone();
+            "checkpoint admitted an embedded turn"
         };
         if changed != rest {
             let mut wire = encoded.clone();
             wire.state = super::records::encode_payload(&changed).expect("checkpoint state writer");
             refuses(wire, reason);
         }
-    }
-    for archive in [false, true] {
-        let mut changed = encoded.clone();
-        let bitmap = if archive {
-            &mut changed.archive_pending
-        } else {
-            &mut changed.awaiting
-        };
-        *bitmap = vec![0; encoded.open_children.len().div_ceil(8) + 1];
-        refuses(changed, "checkpoint admitted an invalid bitmap width");
-    }
-    let width = encoded.open_children.len().div_ceil(8);
-    if width > 0 {
-        let mut changed = encoded.clone();
-        changed.archive_pending.truncate(width - 1);
-        refuses(changed, "checkpoint admitted a short archive bitmap");
-    }
-    // Empty awaiting means no children are awaited; it remains valid.
-    if width > 1 {
-        let mut changed = encoded.clone();
-        changed.awaiting = vec![0; width - 1];
-        refuses(changed, "checkpoint admitted a short awaited bitmap");
-    }
-    if let Some(child) = encoded.open_children.first() {
-        // Reconstruct children beyond the former depth cap. The record's byte
-        // envelope remains protective; nesting itself has no admission bound.
-        let root = super::AgentPath::root(&state.path.id());
-        let nested = root.child(&state.path.id()).expect("canonical child");
-        let suffix = nested.as_str().strip_prefix(root.as_str()).expect("suffix");
-        let mut changed = rest.clone();
-        changed.path = super::AgentPath::try_from(format!("{root}{}", suffix.repeat(128)))
-            .expect("deep canonical path");
-        let mut wire = encoded.clone();
-        wire.state = super::records::encode_payload(&changed).expect("checkpoint state writer");
-        let bytes = wire.encode_to_vec();
-        if bytes.len() <= MAX_CHECKPOINT_BYTES {
-            let decoded = decode(&bytes).expect("checkpoint reconstructs deep children");
-            assert_eq!(decoded.path, changed.path);
-            assert!(
-                decoded
-                    .open_children
-                    .iter()
-                    .all(|child| child.is_child_of(&decoded.path))
-            );
-        }
-        for oversized in [false, true] {
-            let mut changed = encoded.clone();
-            let id = &mut changed.open_children[0];
-            if oversized {
-                id.push(0);
-            } else {
-                id.pop();
-            }
-            refuses(changed, "checkpoint admitted an invalid child id width");
-        }
-        let mut changed = encoded.clone();
-        changed.open_children.push(child.clone());
-        let bitmap = changed.open_children.len().div_ceil(8);
-        changed.archive_pending.resize(bitmap, 0);
-        if !changed.awaiting.is_empty() {
-            changed.awaiting.resize(bitmap, 0);
-        }
-        refuses(changed, "checkpoint admitted a duplicate child");
     }
     for retained_body in [false, true] {
         let mut changed = encoded.clone();
@@ -333,6 +153,8 @@ pub(super) fn check_wire(bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentId;
+    use std::collections::BTreeSet;
     // A deep fixture, not an admission bound.
     const FIXTURE_DEPTH: usize = 64;
     const FIXTURE_CHILDREN: usize = 256;
@@ -694,14 +516,24 @@ mod tests {
             } else {
                 0
             };
-            let open_children: BTreeSet<_> = (0..children as u64)
-                .map(|n| path.child(&id(n)).expect("below FIXTURE_DEPTH"))
-                .collect();
+            let mut open_children = crate::agent::Children::new();
+            let identities = futures::executor::block_on(async {
+                for n in 0..children as u64 {
+                    open_children
+                        .insert(&path.child(&id(n)).expect("canonical child"))
+                        .await
+                        .expect("membership insertion");
+                }
+                open_children
+                    .page(None, children)
+                    .await
+                    .expect("membership page")
+            });
             for outcome in outcomes() {
                 let state = AgentState {
-                    child_settlements: open_children
+                    child_settlements: identities
                         .iter()
-                        .map(|child| (child.id(), u64::MAX))
+                        .map(|child| (child.clone(), u64::MAX))
                         .collect(),
                     profile: adopted.profile.clone(),
                     parent: path.parent(),
