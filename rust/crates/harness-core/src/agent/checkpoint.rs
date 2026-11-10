@@ -16,8 +16,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            // V5 replaces embedded child bitmaps with immutable membership roots.
-            version: "5".into(),
+            // V6 also retains wait measurements behind an immutable membership root.
+            version: "6".into(),
         });
     &IDENTITY
 }
@@ -474,7 +474,7 @@ mod tests {
                 let encoded = serde_json::to_vec(&outcome).expect("outcome");
                 assert!(encoded.len() <= MAX_OUTCOME_BYTES, "{}", encoded.len());
                 StatusRecord {
-                    child_wakes: Vec::new(),
+                    child_wakes: None,
                     phase: Phase::Done { outcome },
                     cursor: u64::MAX,
                     conversation: u64::MAX,
@@ -523,11 +523,16 @@ mod tests {
                         .await
                         .expect("membership insert");
                 }
+                let mut settlements = super::super::Children::new();
+                for n in 0..children as u64 {
+                    settlements
+                        .insert_value(&path.child(&id(n)).unwrap(), u64::MAX)
+                        .await
+                        .unwrap();
+                }
                 for outcome in outcomes() {
                     let state = AgentState {
-                        child_settlements: (0..children as u64)
-                            .map(|n| (id(n), u64::MAX))
-                            .collect(),
+                        child_settlements: settlements.clone(),
                         profile: adopted.profile.clone(),
                         parent: path.parent(),
                         path: path.clone(),
@@ -678,11 +683,7 @@ mod tests {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);
             for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
-                let record = StatusRecord { child_wakes: (0..super::super::kernel::MAX_FANOUT).map(|n| super::super::ChildWake {
-                    child: super::super::AgentId::from_bytes((n as u128).to_be_bytes()),
-                    settled_at_micros: u64::MAX,
-                    woke_at_micros: u64::MAX,
-                }).collect(), phase, cursor: u64::MAX, conversation: u64::MAX };
+                let record = StatusRecord { child_wakes: Some(super::super::ChildWakeSet { root: [255; 32], count: u64::MAX, woke_at_micros: u64::MAX }), phase, cursor: u64::MAX, conversation: u64::MAX };
                 let worst = assert_record_bound(&record);
                 let mut sample: StatusRecord = varied(&record, name, text);
                 sample.cursor = cursor;
@@ -701,7 +702,7 @@ mod tests {
     fn waiting_host_status_requires_a_bounded_name() {
         for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
             let record = StatusRecord {
-                child_wakes: Vec::new(),
+                child_wakes: None,
                 phase: Phase::WaitingHost { host },
                 cursor: 0,
                 conversation: 0,
@@ -712,7 +713,7 @@ mod tests {
             );
         }
         let record = StatusRecord {
-            child_wakes: Vec::new(),
+            child_wakes: None,
             phase: Phase::WaitingHost {
                 host: widest(MAX_INTENT_BYTES),
             },

@@ -230,7 +230,7 @@ async fn a_wait_holding_its_delivery_deadlocks_the_same_schedule() -> Result {
 async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     use acyclic_actors::local::ControlledClock;
 
-    const CHILDREN: usize = 18;
+    const CHILDREN: usize = 1_000;
     const NOW: u64 = 5_000;
     const TIMEOUT: u64 = 200_000;
 
@@ -372,7 +372,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     assert_eq!(host.state(&root).await?.need, 1);
     for bytes in values(&*provider, root.status()?).await? {
         assert!(
-            StatusRecord::decode(&bytes)?.child_wakes.is_empty(),
+            StatusRecord::decode(&bytes)?.child_wakes.is_none(),
             "a partial completion burst must not report a returned wait"
         );
     }
@@ -412,24 +412,41 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let measured: Vec<_> = statuses
         .iter()
-        .filter(|status| !status.child_wakes.is_empty())
+        .filter(|status| status.child_wakes.is_some())
         .collect();
     assert_eq!(measured.len(), 1, "one telemetry record per returned wait");
     let wake = measured[0];
     assert_eq!(wake.cursor, before + CHILDREN as u64);
+    let measurements = wake.child_wakes.as_ref().ok_or("missing measurements")?;
+    assert_eq!(measurements.count, CHILDREN as u64);
+    // Re-decode the committed descriptor before fetching bounded immutable pages.
+    let measurements = StatusRecord::decode(&wake.encode()?)?.child_wakes.unwrap();
+    let mut samples = Vec::new();
+    let mut after = None;
+    loop {
+        let page = measurements
+            .page(provider.clone(), after.as_ref(), 17)
+            .await?;
+        assert!(page.len() <= 17);
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|sample| sample.child.clone());
+        samples.extend(page);
+    }
     assert_eq!(
-        wake.child_wakes.len(),
+        samples.len(),
         CHILDREN,
-        "every child must have a wake measurement"
+        "every child survives the paged wait return"
     );
     assert_eq!(
-        wake.child_wakes
+        samples
             .iter()
             .map(|sample| sample.child.clone())
             .collect::<BTreeSet<_>>(),
         children.iter().map(AgentPath::id).collect()
     );
-    for sample in &wake.child_wakes {
+    for sample in &samples {
         assert_eq!(sample.settled_at_micros, NOW * 1_000);
         assert_eq!(sample.woke_at_micros, NOW * 1_000);
         assert!(

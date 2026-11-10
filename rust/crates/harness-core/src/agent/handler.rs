@@ -242,6 +242,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             .archive_pending
             .bind(Arc::clone(self.store.provider()));
         observed.awaiting.bind(Arc::clone(self.store.provider()));
+        observed
+            .child_settlements
+            .bind(Arc::clone(self.store.provider()));
         Ok((observed, cursor))
     }
 

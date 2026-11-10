@@ -49,7 +49,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 21 adds input selection to actor waits.
 /// Version 22 indexes admitted replies across queued independent turns.
 /// Version 23 retains immutable paged child membership roots without reserved slots.
-pub const RECORD_VERSION: u32 = 23;
+/// Version 24 retains child wake measurements behind a lazy immutable root.
+pub const RECORD_VERSION: u32 = 24;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -639,16 +640,62 @@ pub struct ChildWake {
     pub woke_at_micros: u64,
 }
 
+/// Immutable measurements for one returned wait, fetched only in requested pages.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(deny_unknown_fields)]
+pub struct ChildWakeSet {
+    /// Content digest of the shared child index's measurement root.
+    pub root: [u8; 32],
+    /// Number of distinct children observed by this returned wait.
+    pub count: u64,
+    /// Parent delivery clock when the wait actually resumed.
+    pub woke_at_micros: u64,
+}
+impl ChildWakeSet {
+    pub(crate) fn of(children: &super::Children, woke_at_micros: u64) -> Option<Self> {
+        children.root_digest().map(|root| Self {
+            root,
+            count: children.len() as u64,
+            woke_at_micros,
+        })
+    }
+    /// Read at most `limit` measurements after `after`, in child identity order.
+    /// The final returned child is the next page's cursor; an empty page ends it.
+    pub async fn page<P: acyclic_stream::StreamProvider + ?Sized>(
+        &self,
+        provider: std::sync::Arc<P>,
+        after: Option<&AgentId>,
+        limit: usize,
+    ) -> Result<Vec<ChildWake>, Error> {
+        let count = usize::try_from(self.count)
+            .map_err(|_| Error::Record("child wake count exceeds this platform"))?;
+        let mut children = super::Children::from_digest(self.root, count)?;
+        children.bind(provider);
+        Ok(children
+            .page_values(after, limit)
+            .await?
+            .into_iter()
+            .map(|(child, settled_at_micros)| ChildWake {
+                child,
+                settled_at_micros,
+                woke_at_micros: self.woke_at_micros,
+            })
+            .collect())
+    }
+}
+
 /// One status stream record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct StatusRecord {
-    /// One measurement per observed child, published only when its wait returns.
+    /// Lazy measurements for the observed children, published only when the wait returns.
     /// Travels through the existing status/SessionFrame telemetry projection.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub child_wakes: Vec<ChildWake>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_wakes: Option<ChildWakeSet>,
     /// Phase after the transition that wrote it.
     pub phase: Phase,
     /// Inbox cursor consumed by that transition.

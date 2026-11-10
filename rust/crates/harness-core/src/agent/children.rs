@@ -19,7 +19,10 @@ type Digest = [u8; 32];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Node {
-    Leaf([u8; 16]),
+    Leaf {
+        id: [u8; 16],
+        value: u64,
+    },
     Branch {
         bit: u8,
         left: Digest,
@@ -156,6 +159,16 @@ fn right(id: [u8; 16], bit: u8) -> bool {
 type Branch = (Digest, u8, Digest, bool);
 
 impl Children {
+    pub(crate) fn root_digest(&self) -> Option<[u8; 32]> {
+        self.root
+    }
+    pub(crate) fn from_digest(root: [u8; 32], count: usize) -> Result<Self, Error> {
+        Self::try_from(Root {
+            root: Some(root),
+            count,
+        })
+        .map_err(Error::Record)
+    }
     /// Empty membership, without a storage binding.
     #[must_use]
     pub fn new() -> Self {
@@ -237,7 +250,7 @@ impl Children {
         let mut next = self.root;
         while let Some(digest) = next {
             match self.node(digest).await? {
-                Node::Leaf(found) => return Ok(Some((found, digest))),
+                Node::Leaf { id: found, .. } => return Ok(Some((found, digest))),
                 Node::Branch {
                     bit,
                     left,
@@ -266,7 +279,7 @@ impl Children {
     }
     async fn branch(&self, bit: u8, left: Digest, right: Digest) -> Result<Digest, Error> {
         let max = match self.node(right).await? {
-            Node::Leaf(id) | Node::Branch { max: id, .. } => id,
+            Node::Leaf { id, .. } | Node::Branch { max: id, .. } => id,
         };
         self.stage(Node::Branch {
             bit,
@@ -289,13 +302,20 @@ impl Children {
     }
     /// Inserts one child and stages only the nodes on its changed path.
     pub async fn insert(&mut self, child: &AgentPath) -> Result<bool, Error> {
+        self.insert_value(child, 0).await
+    }
+    pub(crate) async fn insert_value(
+        &mut self,
+        child: &AgentPath,
+        value: u64,
+    ) -> Result<bool, Error> {
         let id = child.id_bytes();
         let mut branches = Vec::new();
         let found = self.walk(id, |branch| branches.push(branch)).await?;
         if found.is_some_and(|(found, _)| found == id) {
             return Ok(false);
         }
-        let leaf = self.stage(Node::Leaf(id)).await?;
+        let leaf = self.stage(Node::Leaf { id, value }).await?;
         let root = if let Some((found, old_leaf)) = found {
             let bit = (0u8..128)
                 .find(|bit| right(id, *bit) != right(found, *bit))
@@ -352,7 +372,7 @@ impl Children {
         let mut previous = None;
         while let Some(digest) = next {
             match self.node(digest).await? {
-                Node::Leaf(id) => return Ok(Some(AgentId::from_bytes(id))),
+                Node::Leaf { id, .. } => return Ok(Some(AgentId::from_bytes(id))),
                 Node::Branch { bit, left, .. } => {
                     if bit >= 128 || previous.is_some_and(|previous| previous >= bit) {
                         return Err(Error::Record("child index branch order is invalid"));
@@ -367,6 +387,18 @@ impl Children {
     /// Up to `limit` child identities after `after`, in identity order. A
     /// caller continues from the last returned identity until the page empties.
     pub async fn page(&self, after: Option<&AgentId>, limit: usize) -> Result<Vec<AgentId>, Error> {
+        Ok(self
+            .page_values(after, limit)
+            .await?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect())
+    }
+    pub(crate) async fn page_values(
+        &self,
+        after: Option<&AgentId>,
+        limit: usize,
+    ) -> Result<Vec<(AgentId, u64)>, Error> {
         let after = after.map(AgentId::to_bytes);
         let mut pending = self
             .root
@@ -379,10 +411,10 @@ impl Children {
                 break;
             };
             match self.node(digest).await? {
-                Node::Leaf(id) if after.is_none_or(|after| id > after) => {
-                    page.push(AgentId::from_bytes(id))
+                Node::Leaf { id, value } if after.is_none_or(|after| id > after) => {
+                    page.push((AgentId::from_bytes(id), value))
                 }
-                Node::Leaf(_) => {}
+                Node::Leaf { .. } => {}
                 Node::Branch {
                     bit,
                     left,
