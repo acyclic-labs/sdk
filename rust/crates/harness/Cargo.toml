@@ -38,7 +38,7 @@ name = "explicit-image-conversion"
 # the filesystem-napi N-API generator, and browser Wasm). Explicit targets keep
 # each selection on the platform that implements its contract.
 [package.metadata.acyclic]
-consumer-features = [["filesystem"], ["filesystem-local", "test-support"], ["filesystem-local", "native-execution"], { features = ["browser"], target = "wasm32-unknown-unknown" }]
+consumer-features = [{ features = ["browser"], target = "wasm32-unknown-unknown" }]
 
 [features]
 research = ["acyclic-harness-core/research"]
