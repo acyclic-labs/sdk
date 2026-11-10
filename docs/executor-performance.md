@@ -1,4 +1,4 @@
-# Shared coordination executor performance
+# Coordination executor and GraphCoder performance
 
 C.2 step 16 / R25. Measured source: `64b447fc6b8227a3023103dfe68db1823d52577e`; containment base: `c302d2e0b98d2769827a18b1fe180924a045d836`. Main landed the executor and benchmark in `da4f54dd4d8a`, but omitted the CPU-discovery fallback and this report. The follow-up restores those two missing changes on main; its executor settings and benchmark match the measured version.
 
@@ -63,3 +63,51 @@ All four after measurements meet <=1.5x the executor floor. Single construction 
 ## Containment and cleanup
 
 At the original containment base, main already had the shared constructor used by GraphCoder/embedded callers, task custody, seeded scheduling, persistence workers and dedicated stdin handling. The executor and benchmark are now on main at `da4f54dd4d8a`. The follow-up contains only the omitted CPU-discovery fallback and the performance report, completed with native macOS results. C.3 has no executor-specific deletion row; its other areas are outside this step. The former constructor exists only in the benchmark's before control.
+
+## R25 render-work qualification
+
+Source `3357174beef3bc29c3283b0618fd6e0035682d59` adds the design's
+`tui-render-work` acceptance case. It drives an ordinary editor key and a
+streamed transcript replacement through the shared `PromptInput`,
+`TranscriptRows` and `Screen` paint path. The terminal buffer must contain the
+edited prompt and the updated answer. At both 80×50 and 120×40, increasing
+retained history from 100 to 10,000 blocks must leave each event's row visits
+and wrapped source-byte count exactly equal. Paint visits must also fit within
+the viewport's height.
+
+The same oracle runs against two negative controls: rewrapping historical
+blocks before painting, and scanning retained rows before painting. Both must
+be rejected. The Linux run passed all three controls in 0.35 s; the source also
+passed Linux and Windows GNU all-targets compilation with the `tui` feature.
+These counters establish the tested history-independent render work. They do
+not establish a wall-clock p99 or certify the design's 16.6 ms frame and 2 ms
+render targets on another machine.
+
+Reproduce the focused controls with:
+
+```sh
+cargo test --locked -p acyclic-harness-tui --features tui --lib screen::tests::tui_render_work
+```
+
+The ordinary acceptance runner selects the same native test executable through
+`E2E_TUI_TEST_BINARY` and requires a complete libtest summary including both
+negative controls:
+
+```sh
+node scripts/graphcoder-e2e/run.mjs /absolute/graphcoder /absolute/harness-mock-model tui-render-work
+```
+
+## Product first-paint measurement
+
+PTY captures now retain `first_paint_ms` and emit a `pty-startup` observation.
+The interval begins immediately before the runner requests its terminal launch
+and ends at the first completed, available frame containing GraphCoder. This
+includes process supervision, terminal transport and negotiation, application
+startup, and terminal-emulator decoding at 80×24. It is distinct from the
+executor-construction observations above.
+
+Startup measurements use GraphCoder's shipping `dist` profile. The ordinary
+`pty-markdown` case must still finish successfully; observing an early frame
+does not turn a failed case into a pass. The runner records the elapsed time
+without asserting a shared-host latency ceiling. The design's warm first-paint
+target is 50 ms; an individual launch observation is not a warm-start p50.

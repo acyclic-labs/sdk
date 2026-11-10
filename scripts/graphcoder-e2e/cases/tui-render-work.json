@@ -1,0 +1,13 @@
+{
+  "id": "tui-render-work",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [] },
+  "inputs": [{
+    "mode": "qualification",
+    "format": "libtest",
+    "binary_env": "E2E_TUI_TEST_BINARY",
+    "args": ["screen::tests::tui_render_work::", "--test-threads=1"],
+    "minimum_tests": 3
+  }],
+  "assert": { "requests": 0 }
+}
