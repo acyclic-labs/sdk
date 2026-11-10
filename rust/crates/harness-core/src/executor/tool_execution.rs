@@ -112,13 +112,20 @@ impl<'io> StockExecution<'io> {
             Ok(None)
         };
         // A settled refusal is a durable result, independent of today's catalog.
-        if matches!(recorded, RecordedCall::Failed { started: None, .. }) {
+        if matches!(
+            recorded,
+            RecordedCall::Failed {
+                started: None,
+                reason: ToolFailureKind::Removed | ToolFailureKind::Unavailable,
+                ..
+            }
+        ) {
             if let RecordedCall::Failed { reason, cause, .. } = recorded {
                 let content = tool_failure_content(reason, cause, self.io)?;
                 return self.push_tool_result(&invocation, content, None, prior_messages);
             }
         }
-        let selected = if recorded.started().is_some() {
+        let selected = if !matches!(recorded, RecordedCall::Unstarted) {
             let retained = self
                 .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
                 .await?;
@@ -153,27 +160,66 @@ impl<'io> StockExecution<'io> {
                             "tool call identity is bound to another invocation",
                         ));
                     }
-                    let content = completed_tool_projection(
-                        journal,
-                        &records,
-                        step,
-                        crate::tool::RecordedInvocation {
-                            invocation: &original.0.invocation,
-                            metadata: &original.0.metadata,
-                            target: None,
-                            filesystem: None,
-                        },
-                        &retained
-                            .request
-                            .as_ref()
-                            .ok_or(Error::Indeterminate(operation_id))?
-                            .request()
-                            .tools,
-                        self.stock.limits,
-                        self.io,
-                    )
-                    .await?;
-                    return self.push_tool_result(&invocation, content, None, prior_messages);
+                    #[cfg(all(
+                        feature = "hooks",
+                        feature = "filesystem",
+                        not(target_arch = "wasm32")
+                    ))]
+                    {
+                        let output = self
+                            .tool_hook(
+                                operation_id,
+                                crate::hooks::HookSite::BeforeTool,
+                                &invocation,
+                                None,
+                                true,
+                            )
+                            .await?;
+                        if output.blocks()
+                            || output
+                                .updated_input
+                                .as_ref()
+                                .unwrap_or(&invocation.arguments)
+                                != &original.0.invocation.arguments
+                        {
+                            return Err(stock_boundary(
+                                self.io,
+                                Conflict,
+                                "tool call identity is bound to another invocation",
+                            ));
+                        }
+                        self.append_hook_context(_hook_context, output)?;
+                    }
+                    #[cfg(not(all(
+                        feature = "hooks",
+                        feature = "filesystem",
+                        not(target_arch = "wasm32")
+                    )))]
+                    if original.0.invocation != invocation {
+                        return Err(stock_boundary(
+                            self.io,
+                            Conflict,
+                            "tool call identity is bound to another invocation",
+                        ));
+                    }
+                    let RecordedCall::Completed {
+                        result, projection, ..
+                    } = recorded
+                    else {
+                        return Err(Error::Indeterminate(operation_id));
+                    };
+                    let (content, receipt) = self
+                        .replay_tool_output(
+                            journal,
+                            operation_id,
+                            &original.0.invocation,
+                            result,
+                            projection,
+                            (definition, false),
+                            _hook_context,
+                        )
+                        .await?;
+                    return self.push_tool_result(&invocation, content, receipt, prior_messages);
                 }
                 None => return Err(Error::Indeterminate(operation_id)),
             }
@@ -331,7 +377,7 @@ impl<'io> StockExecution<'io> {
                     &invocation,
                     result,
                     projection,
-                    tool,
+                    (&tool.definition, tool.executor.is_code_mode()),
                     _hook_context,
                 )
                 .await?
