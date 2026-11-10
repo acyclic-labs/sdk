@@ -344,7 +344,7 @@ async fn check_replies(
     // transports one frame; it does not stand in for tool admission or execution.
     let source = format!(
         "let result; try {{ result = {{ok:true,value:await tools[{tool_name}]({{}})}}; }} \
-         catch (error) {{ result = {{ok:false,value:String(error.message)}}; }}"
+         catch (error) {{ result = {{ok:false,value:String(error.message),class:error.class}}; }}"
     );
     let success = value.unwrap_or_else(|| {
         serde_json::json!([
@@ -355,9 +355,14 @@ async fn check_replies(
     let encoded = serde_json::to_string(&success).unwrap();
     let maximum = encoded.len().max(literal.len()).saturating_add(4096);
     let expected = canonical_reply(definitions, &encoded, maximum).await;
-    let refusal = serde_json::Value::String(text.to_string());
-    let expected_refusal: Result<_, String> =
-        Ok(serde_json::json!({"ok": false, "value": &refusal}));
+    // Refusals use the same canonical cause producer as settled host calls.
+    let cause =
+        crate::executor::ToolFailureCause::of(&crate::Error::Invalid(text.to_owned()), &mut None)
+            .expect("canonical host refusal");
+    let (refusal, _) = crate::tool::value(&cause, u64::MAX, None).expect("canonical refusal value");
+    let expected_refusal: Result<_, String> = Ok(serde_json::json!({
+        "ok": false, "value": &cause.message, "class": cause.class,
+    }));
     for kind in 0..3 {
         let work = native_work(false);
         let baseline = work.live_allocation_bytes();
