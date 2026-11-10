@@ -133,12 +133,7 @@ pub struct Args {
     #[arg(long, value_name = "AGENT_PATH@EVENT_OFFSET", conflicts_with_all = ["agent", "resume", "host_workspace"])]
     pub fork_from: Option<String>,
     /// Version-one continuation JSON: {"version":1,"override_item":...}.
-    #[arg(
-        long = "override",
-        global = true,
-        value_name = "FILE",
-        requires = "fork_from"
-    )]
+    #[arg(long = "override", global = true, value_name = "FILE")]
     pub override_file: Option<PathBuf>,
     /// Render the interactive conversation without a full-screen terminal.
     #[arg(long)]
@@ -156,6 +151,9 @@ pub struct Args {
 impl Args {
     /// Normalize the exec shorthand before validating its input identity.
     pub fn prepare_input(&mut self) -> Result<(), &'static str> {
+        if self.override_file.is_some() && self.fork_from.is_none() {
+            return Err("--override requires --fork-from AGENT_PATH@EVENT_OFFSET");
+        }
         if self.fork_from.is_some() && !matches!(self.command, None | Some(Command::Exec { .. })) {
             return Err(
                 "--fork-from requires an execution; use graphcoder --fork-from AGENT_PATH@EVENT_OFFSET exec 'Continue'",
