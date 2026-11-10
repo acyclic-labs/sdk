@@ -285,7 +285,10 @@ mod tests {
                 provider.clone(),
             ),
         )?
-        .state_directory(state.path());
+        .state_directory(state.path())
+        // This lifecycle control executes no tools. Keep its small model's
+        // request free of the unrelated coding-tool catalogue.
+        .without_default_tools();
         let directory = Directory::for_config(&config)?;
         assert_eq!(
             directory.0,
@@ -325,7 +328,6 @@ mod tests {
         });
         let result = async {
             readiness.await.map_err(storage)??;
-            eprintln!("service control: owner published");
             attachment.await.map_err(storage)??;
             // Reattachment observes the owner, never starts a replacement or
             // dispatches a model to decide whether that owner is ready.
@@ -333,12 +335,10 @@ mod tests {
             directory.start(Path::new("nonexistent-service-executable"), &[])?;
             let first = Conversation::open(directory.connect().await?);
             let second = Conversation::open(directory.connect().await?);
-            eprintln!("service control: two clients attached");
             let mut events = second.observe(None).await?;
             let inbox = first
                 .send("shared-operation", "finish after I detach")
                 .await?;
-            eprintln!("service control: prompt committed");
             let mut entering = std::pin::pin!(entering);
             loop {
                 tokio::select! {
@@ -354,7 +354,6 @@ mod tests {
                     }
                 }
             }
-            eprintln!("service control: model held");
             drop(first);
             assert_eq!(
                 second
@@ -362,7 +361,6 @@ mod tests {
                     .await?,
                 inbox
             );
-            eprintln!("service control: duplicate commit replayed after detach");
             release
                 .send(())
                 .map_err(|()| Error::Storage("model gate ended".into()))?;
@@ -374,7 +372,6 @@ mod tests {
             };
             assert_eq!(second.output_text(&entry).await?, "settled after detach");
             assert_eq!(provider.request_count(), 1);
-            eprintln!("service control: turn settled");
             drop((second, events));
             let reattached = Conversation::open(directory.connect().await?);
             assert_eq!(reattached.settled().await?, 1);
@@ -383,7 +380,6 @@ mod tests {
         .await;
         let _ = stop.send(());
         server.await.map_err(storage)??;
-        eprintln!("service control: owner stopped");
         result?;
         drop(directory.own()?);
         Ok(())
