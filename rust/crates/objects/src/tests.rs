@@ -1167,7 +1167,7 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
     assert_eq!(replacement.references, [children[1]]);
     // Negative control: looking up the digest again observes another envelope.
     assert_ne!(deleted.references, replacement.references);
-    #[cfg(objects_server)]
+
     {
         use prost::Message as _;
         let encoded = crate::convert::wire_delete(deleted.clone()).encode_to_vec();
@@ -2141,7 +2141,7 @@ async fn a_commit_flushes_only_its_unflushed_closure_in_one_batch()
 }
 
 /// One remote put member: the digest it claims, its body and references.
-#[cfg(objects_server)]
+
 fn wire_member(claimed: &[u8], body: &[u8], references: &[Digest]) -> crate::wire::PutBlobRequest {
     crate::wire::PutBlobRequest {
         digest: Some(Digest::of(claimed).into()),
@@ -2150,7 +2150,6 @@ fn wire_member(claimed: &[u8], body: &[u8], references: &[Digest]) -> crate::wir
     }
 }
 
-#[cfg(objects_server)]
 #[tokio::test]
 async fn a_remote_put_excludes_collection_until_its_flush_finishes()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -2189,7 +2188,6 @@ async fn a_remote_put_excludes_collection_until_its_flush_finishes()
     Ok(())
 }
 
-#[cfg(objects_server)]
 #[tokio::test]
 async fn a_remote_put_batch_waits_for_durability_once_and_fails_members_alone()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -3767,7 +3765,7 @@ async fn a_put_hashes_its_body_once() -> Result<(), Box<dyn std::error::Error>> 
     let (put, bytes) = hashed(blobs.put_sealed(sealed, Vec::new())).await;
     put?;
     once(bytes, 0);
-    #[cfg(objects_server)]
+
     {
         // A received body is hashed once, where it crosses the trust boundary.
         let served = body(8);

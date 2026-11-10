@@ -25,7 +25,7 @@ acyclic-inference = { path = "../crates/inference", default-features = false, fe
 acyclic-machines = { path = "../crates/machines", default-features = false, features = ["test-support"] }
 acyclic-model-render = { path = "../crates/model-render" }
 acyclic-native-runtime = { path = "../crates/native-runtime" }
-acyclic-objects = { path = "../crates/objects", default-features = false, features = ["binary", "test-support"] }
+acyclic-objects = { path = "../crates/objects", default-features = false, features = ["test-support"] }
 acyclic-protobuf-json = { path = "../crates/protobuf-json" }
 acyclic-stream = { path = "../crates/stream", default-features = false, features = ["test-support"] }
 libfuzzer-sys = "0.4"
