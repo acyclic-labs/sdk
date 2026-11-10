@@ -60,52 +60,61 @@ impl LiveCatalog {
 impl ToolSource for LiveCatalog {
     fn refresh(&self) -> BoxProviderFuture<'_, Result<()>> {
         Box::pin(async move {
-            let _refresh = self.refresh.lock().await;
-            let generation = self.transport.tools_generation();
-            if self
-                .snapshot
-                .lock()
-                .map_err(|_| Error::Storage("MCP source lock poisoned".into()))?
-                .generation
-                == generation
-            {
-                return Ok(());
-            }
-            let tools = match native::discover(|cursor| self.transport.list(cursor)).await {
-                Ok(tools) => tools,
-                // An optional source's last admitted catalog remains usable.
-                // Leave its generation dirty for the next request's refresh.
-                Err(_) if !self.server.required => return Ok(()),
-                Err(error) => return Err(error),
+            let deadline = tokio::time::Instant::now()
+                + std::time::Duration::from_millis(u64::from(self.server.startup_timeout_ms));
+            let refresh = async {
+                let _refresh = self.refresh.lock().await;
+                let generation = self.transport.tools_generation();
+                if self
+                    .snapshot
+                    .lock()
+                    .map_err(|_| Error::Storage("MCP source lock poisoned".into()))?
+                    .generation
+                    == generation
+                {
+                    return Ok(());
+                }
+                let tools = match native::discover(|cursor| self.transport.list(cursor)).await {
+                    Ok(tools) => tools,
+                    // An optional source's last admitted catalog remains usable.
+                    // Leave its generation dirty for the next request's refresh.
+                    Err(_) if !self.server.required => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+                let (tools, _) = register(
+                    self.name.clone(),
+                    &self.server,
+                    Connected {
+                        transport: self.transport.clone(),
+                        tools,
+                        binding: self.binding,
+                        generation,
+                    },
+                    self.limits,
+                    &|| Ok(()),
+                )?;
+                let names: BTreeSet<String> = tools
+                    .definitions(None)?
+                    .into_iter()
+                    .map(|tool| tool.name)
+                    .collect();
+                let mut snapshot = self
+                    .snapshot
+                    .lock()
+                    .map_err(|_| Error::Storage("MCP source lock poisoned".into()))?;
+                let removed: Vec<_> = snapshot.names.difference(&names).cloned().collect();
+                snapshot.removed.extend(removed);
+                snapshot.removed.retain(|name| !names.contains(name));
+                snapshot.names = names;
+                snapshot.tools = tools;
+                snapshot.generation = generation;
+                Ok(())
             };
-            let (tools, _) = register(
-                self.name.clone(),
-                &self.server,
-                Connected {
-                    transport: self.transport.clone(),
-                    tools,
-                    binding: self.binding,
-                    generation,
-                },
-                self.limits,
-                &|| Ok(()),
-            )?;
-            let names: BTreeSet<String> = tools
-                .definitions(None)?
-                .into_iter()
-                .map(|tool| tool.name)
-                .collect();
-            let mut snapshot = self
-                .snapshot
-                .lock()
-                .map_err(|_| Error::Storage("MCP source lock poisoned".into()))?;
-            let removed: Vec<_> = snapshot.names.difference(&names).cloned().collect();
-            snapshot.removed.extend(removed);
-            snapshot.removed.retain(|name| !names.contains(name));
-            snapshot.names = names;
-            snapshot.tools = tools;
-            snapshot.generation = generation;
-            Ok(())
+            match tokio::time::timeout_at(deadline, refresh).await {
+                Ok(result) => result,
+                Err(_) if !self.server.required => Ok(()),
+                Err(_) => Err(startup_timeout()),
+            }
         })
     }
     fn snapshot(&self) -> Result<ToolRegistry> {
@@ -126,5 +135,34 @@ impl ToolSource for LiveCatalog {
     }
     fn capability(&self) -> Option<&str> {
         Some(&self.capability)
+    }
+    fn recover(
+        &self,
+        definition: &crate::tool::ToolDefinition,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<Arc<crate::tool::Tool>>> {
+        let binding = recovery_binding(self.binding, &self.server, self.limits)?;
+        let Some(name) = definition.name.strip_prefix(&format!("mcp.{}.", self.name)) else {
+            return Ok(None);
+        };
+        if definition.revision.len() != 128 || !definition.revision.starts_with(&binding) {
+            return Ok(None);
+        }
+        let definition = crate::model::clone_tool_definition(definition, io)?;
+        let output_schema = definition
+            .output_schema
+            .pointer("/then/properties/structuredContent")
+            .cloned();
+        Ok(Some(Arc::new(crate::tool::Tool {
+            hook_names: &[],
+            executor: Arc::new(super::super::remote::RemoteTool {
+                server: self.name.clone(),
+                name: name.to_owned(),
+                output_schema,
+                transport: self.transport.clone(),
+            }),
+            definition,
+            projection: Arc::new(crate::tool::JsonToolProjection),
+        })))
     }
 }

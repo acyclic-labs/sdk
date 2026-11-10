@@ -208,7 +208,7 @@ fn register(
             && !server.disabled_tools.contains(&tool.name)
     });
     catalog.tools.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-    catalog.revision = blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
+    let revision = blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
         &(
             "harness/mcp-install/v1",
             connected.binding,
@@ -221,6 +221,11 @@ fn register(
     )?)
     .to_hex()
     .to_string();
+    catalog.revision = format!(
+        "{}{}",
+        recovery_binding(connected.binding, server, limits)?,
+        revision
+    );
     let mut tools = ToolRegistry::default();
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
     catalog.install_checked(
@@ -241,6 +246,29 @@ fn register(
         .0
         .insert(format!("mcp:call:{}", catalog.server));
     Ok((tools, capabilities))
+}
+
+fn recovery_binding(
+    binding: [u8; 32],
+    server: &McpServer,
+    limits: McpClientLimits,
+) -> Result<String> {
+    Ok(
+        blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
+            &(
+                "harness/mcp-recovery-binding/v1",
+                binding,
+                server.tool_timeout_ms,
+                limits.tool_bytes,
+                &server.enabled_tools,
+                &server.disabled_tools,
+            ),
+            u64::MAX,
+            &mut None,
+        )?)
+        .to_hex()
+        .to_string(),
+    )
 }
 
 #[cfg(test)]
