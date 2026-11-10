@@ -32,7 +32,8 @@ function scan(t, files, untracked = {}) {
       writeFileSync(join(directory, path), content);
     }
   };
-  write({ "scripts/check-boundaries.mjs": checker, ...files });
+  write({ "scripts/check-boundaries.mjs": checker,
+    "scripts/wasm-source-policy.mjs": readFileSync(join(root, "scripts/wasm-source-policy.mjs")), ...files });
   execFileSync("git", ["init", "--quiet", directory]);
   execFileSync("git", ["add", "."], { cwd: directory });
   write(untracked);
@@ -109,4 +110,21 @@ test("the source guard ignores untracked local reports and checks tracked dist f
   const result = scan(t, { "dist/consumer.rs": content });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /dist\/consumer.rs/);
+});
+
+test("the repository boundary check rejects manual caller-array copies in nested wasm hosts", t => {
+  const path = "rust/crates/harness/src/wasm/agents/actor_host/failures.rs";
+  const source = readFileSync(join(root, path), "utf8");
+  assert.equal(scan(t, { [path]: source }).status, 0);
+  const files = {};
+  for (const [index, copy] of ["key.to_vec()", "key.copy_to(&mut bytes)", "key.copy_to_uninit(&mut bytes)", "key.raw_copy_to_ptr(ptr)", "Uint8Array::new(&key)"].entries()) {
+    const restored = source.replace("IdempotencyKey::new(key)", "IdempotencyKey::new(" + copy + ")");
+    assert.notEqual(restored, source);
+    files[path.replace("failures.rs", `nested/copy-${index}.rs`)] = restored;
+  }
+  const result = scan(t, files);
+  assert.equal(result.status, 1, result.stderr);
+  for (const file of Object.keys(files)) {
+    assert.ok(result.stderr.includes(file + ": copy caller arrays through acyclic_stream::javascript_bytes::snapshot"), result.stderr);
+  }
 });
