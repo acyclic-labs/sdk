@@ -1449,6 +1449,8 @@ mod tests {
             through: 3,
             file: settled.output.clone(),
         });
+        // Seal the admission index through the same rule as the real writer.
+        let settled = settled.with_observed_prefix(0);
         let conversation = agent.conversation()?;
         assert!(matches!(
             provider
