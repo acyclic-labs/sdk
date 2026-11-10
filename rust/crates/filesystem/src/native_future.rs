@@ -140,8 +140,8 @@ mod tests {
     #[test]
     fn actual_boxed_future_drops_under_original_live_custody() -> Result<()> {
         let cancellation = CancellationToken::new();
-        let work = NativeMaterializationWork::new(budget(2), &cancellation)
-            .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+        let work =
+            NativeMaterializationWork::new(budget(2), &cancellation).map_err(|(cause, _)| cause)?;
         let baseline = work.remaining()?.peak_allocation_bytes;
         let dropped = AtomicBool::new(false);
         let future = NativeFutureBundle::new(&work, || DropProbe {
