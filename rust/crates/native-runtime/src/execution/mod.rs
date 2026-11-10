@@ -141,7 +141,7 @@ impl Grant {
         ))
     }
 
-    fn roots<a>(
+    fn roots<'a>(
         roots: &'a acyclic_collections::CompiledPrefixIndex<BoundPath, ()>,
         path: &Path,
         meter: Option<&dyn crate::NativeReadMeter>,
