@@ -133,15 +133,20 @@ impl<'io> StockExecution<'io> {
             let retained = self
                 .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
                 .await?;
+            let (name, revision) = invocation
+                .name
+                .rsplit_once('@')
+                .map_or((invocation.name.as_str(), None), |(name, revision)| {
+                    (name, Some(revision))
+                });
             let definition = retained
                 .request
                 .as_ref()
                 .and_then(|request| {
-                    request
-                        .request()
-                        .tools
-                        .iter()
-                        .find(|tool| tool.name == invocation.name)
+                    request.request().tools.iter().find(|tool| {
+                        tool.name == name
+                            && revision.is_none_or(|revision| tool.revision == revision)
+                    })
                 })
                 .ok_or(Error::Indeterminate(operation_id))?;
             match self.stock.tools.recover(definition, self.io)? {
