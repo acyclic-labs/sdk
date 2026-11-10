@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 /// One tool assembled from three independently replaceable values.
 #[derive(Clone)]
@@ -48,7 +49,7 @@ impl ModelSelection {
 pub struct ToolRegistry {
     data: Arc<RegistryData>,
     sources: Vec<Arc<dyn ToolSource>>,
-    source_ceiling: Option<Arc<[String]>>,
+    source_ceiling: Option<Arc<BTreeSet<String>>>,
 }
 
 /// A shared, event-invalidated tool catalog. Refresh runs before model dispatch;
@@ -79,22 +80,19 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
 
 impl ToolRegistry {
     pub(crate) fn restrict_sources(&mut self, allowed: &[String]) {
-        self.source_ceiling = Some(
-            allowed
-                .iter()
-                .filter(|name| self.source_allowed(name))
-                .cloned()
-                .collect(),
-        );
+        let allowed = allowed
+            .iter()
+            .filter(|name| self.source_allowed(name))
+            .cloned()
+            .collect();
+        self.source_ceiling = Some(Arc::new(allowed));
     }
 
-    fn source_allowed(&self, name: &str) -> bool {
+    pub(super) fn source_allowed(&self, name: &str) -> bool {
         self.source_ceiling
             .as_ref()
-            .is_none_or(|allowed| allowed.iter().any(|allowed| allowed == name))
+            .is_none_or(|allowed| allowed.contains(name))
     }
-
-
     pub(crate) fn fixed_definitions(
         &self,
         grants: &crate::Capabilities,
@@ -112,7 +110,9 @@ impl ToolRegistry {
         tool: &ToolDefinition,
         grants: &crate::Capabilities,
     ) -> Result<bool> {
-        if !self.source_allowed(&tool.name) { return Ok(false); }
+        if !self.source_allowed(&tool.name) {
+            return Ok(false);
+        }
         for source in &self.sources {
             let snapshot = source.snapshot()?;
             if source
@@ -195,8 +195,10 @@ impl ToolRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<Arc<Tool>>> {
         for source in &self.sources {
-            if let Some(tool) = source.snapshot()?.resolve(name, io)? {
-                return Ok(self.source_allowed(name).then_some(tool));
+            if let Some(tool) = source.snapshot()?.resolve(name, io)?
+                && self.source_allowed(&tool.definition.name)
+            {
+                return Ok(Some(tool));
             }
         }
         Ok(self.get_shared(name, None, io)?.cloned())
