@@ -133,7 +133,12 @@ pub struct Args {
     #[arg(long, value_name = "AGENT_PATH@EVENT_OFFSET", conflicts_with_all = ["agent", "resume", "host_workspace"])]
     pub fork_from: Option<String>,
     /// Version-one continuation JSON: {"version":1,"override_item":...}.
-    #[arg(long = "override", value_name = "FILE", requires = "fork_from")]
+    #[arg(
+        long = "override",
+        global = true,
+        value_name = "FILE",
+        requires = "fork_from"
+    )]
     pub override_file: Option<PathBuf>,
     /// Render the interactive conversation without a full-screen terminal.
     #[arg(long)]
@@ -404,6 +409,24 @@ pub struct Serve {
 mod tests {
     use super::*;
 
+    #[test]
+    fn fork_override_is_accepted_after_exec() {
+        let mut args = Args::try_parse_from([
+            "graphcoder",
+            "--fork-from",
+            "agents/original@4",
+            "exec",
+            "Continue",
+            "--override",
+            "continuation.json",
+        ])
+        .unwrap();
+        assert!(args.prepare_input().is_ok());
+        assert_eq!(
+            args.override_file.as_deref(),
+            Some(std::path::Path::new("continuation.json"))
+        );
+    }
     #[test]
     fn native_workspace_owner_requires_explicit_state_and_excludes_agent_inputs() {
         assert!(Args::try_parse_from(["graphcoder", "--host-workspace"]).is_err());
