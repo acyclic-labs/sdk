@@ -78,7 +78,7 @@ async function outside(image, binary, mock, output) {
   const processes = new Processes({ transcripts: join(output, "transcripts") });
   const cancellation = commandCancellation();
   const name = `graphcoder-no-fuse-${randomUUID()}`;
-  let creating;
+  let creating, started = false;
   const docker = async args => {
     const result = await processes.run("docker", args);
     process.stdout.write(result.stdout);
@@ -93,8 +93,17 @@ async function outside(image, binary, mock, output) {
     try {
       const created = creating && (await creating).code === 0;
       if (created) {
-        const result = await cleanup.run("docker", ["rm", "--force", name]);
-        assert.equal(result.code, 0, result.stderr);
+        try {
+          const stopped = await cleanup.run("docker", ["stop", name]);
+          assert.equal(stopped.code, 0, stopped.stderr);
+          if (started) {
+            const copied = await cleanup.run("docker", ["cp", `${name}:/tmp/evidence/.`, output]);
+            assert.equal(copied.code, 0, copied.stderr);
+          }
+        } finally {
+          const removed = await cleanup.run("docker", ["rm", "--force", name]);
+          assert.equal(removed.code, 0, removed.stderr);
+        }
       }
     } finally { await cleanup.close(); await processes.close(); }
   } };
@@ -121,8 +130,8 @@ async function outside(image, binary, mock, output) {
       const copied = await copy.closed;
       assert.equal(copied.code, 0, copied.stderr);
       // Preserve the caller's executable ownership, including owner-only modes.
-      await docker(["cp", "--archive", binary, `${name}:/graphcoder`]);
-      await docker(["cp", "--archive", mock, `${name}:/harness-mock-model`]);
+      await docker(["cp", "--archive", "--follow-link", binary, `${name}:/graphcoder`]);
+      await docker(["cp", "--archive", "--follow-link", mock, `${name}:/harness-mock-model`]);
       // Inspect only the contract's fields: unrelated daemon configuration
       // (for example logging-driver credentials) must not enter evidence.
       const format = '{"Privileged":{{json .HostConfig.Privileged}},"CapAdd":{{json .HostConfig.CapAdd}},'
@@ -137,13 +146,13 @@ async function outside(image, binary, mock, output) {
         image: id, config, sourceArchive: await sha256File(archive),
       }, null, 2) + "\n");
     }, run: async () => {
-      try { await docker(["start", "--attach", name]); }
-      finally { await docker(["cp", `${name}:/tmp/evidence/.`, output]); }
+      started = true;
+      await docker(["start", "--attach", name]);
       const code = await docker(["inspect", "--format", "{{.State.ExitCode}}", name]);
       assert.equal(code, "0", "Docker container failed");
-      const report = JSON.parse(await readFile(join(output, "container.json")));
-      assert.equal(report.status, "PASS");
     } });
+    const report = JSON.parse(await readFile(join(output, "container.json")));
+    assert.equal(report.status, "PASS");
     console.log(`docker-no-fuse PASS ${JSON.stringify({ cases, output })}`);
   } finally { cancellation.dispose(); }
 }
