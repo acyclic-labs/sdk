@@ -7,6 +7,28 @@ use crate::{
 };
 
 impl Conversation {
+    /// Bounded authored-file previews with the original publication follow.
+    pub async fn agent_file_previews(
+        &self,
+        paths: Vec<String>,
+        after: Option<GenerationRef>,
+        bytes: u64,
+    ) -> Result<crate::client_files::FilePreviews> {
+        match self
+            .connection
+            .execute(&AgentCommand::AgentFilePreviews {
+                agent: self.agent().clone(),
+                paths,
+                after,
+                bytes,
+            })
+            .await?
+        {
+            AgentReply::FilePreviews { snapshot } => Ok(snapshot),
+            _ => Err(unexpected()),
+        }
+    }
+
     /// Authored agent files, observed at one committed generation.
     pub async fn agent_files(
         &self,

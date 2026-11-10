@@ -90,6 +90,12 @@ pub enum AgentReply {
         #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
         snapshot: acyclic_harness_core::client_files::ClientFiles,
     },
+    /// Bounded previews, without full-file replacement descriptors.
+    FilePreviews {
+        /// Exactly the requested paths and display credit.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        snapshot: acyclic_harness_core::client_files::FilePreviews,
+    },
     /// Exact generation produced by the conditional publication.
     ClientFilesPublished {
         /// Committed generation returned by the original filesystem publisher.
@@ -478,6 +484,29 @@ fn validate_reply(
                                         acyclic_harness_core::AgentId::from_bytes(agent.id_bytes()),
                                     )
                         })
+                    })
+                }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::FilePreviews { snapshot },
+            AgentCommand::AgentFilePreviews {
+                paths,
+                after,
+                bytes,
+                ..
+            },
+        ) => {
+            return if after.as_ref() != Some(&snapshot.generation)
+                && snapshot.files.len() == paths.len()
+                && paths.iter().all(|path| {
+                    snapshot.files.get(path).is_some_and(|value| {
+                        value
+                            .as_ref()
+                            .is_none_or(|text| text.len() as u64 <= *bytes)
                     })
                 }) {
                 Ok(())
