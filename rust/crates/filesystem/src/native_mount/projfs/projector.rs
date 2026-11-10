@@ -160,7 +160,7 @@ impl Projector {
             })
             .map_err(|error| format!("clearing retired negative paths: {error}"))?;
         lock_recover(&self.state).negative_cache_dirty = false;
-        self.changed.notify_all();
+        self.signal_changed();
         Ok(())
     }
 
@@ -588,7 +588,7 @@ impl Projector {
             if let Err(failure) = result {
                 state.failure.get_or_insert(failure);
             }
-            self.changed.notify_all();
+            self.signal_changed();
             return (state, true);
         }
         let source = runtime.source.as_ref();
@@ -757,76 +757,62 @@ impl Projector {
         }
     }
 
-    pub(super) fn settle(&self) -> Result<(), NativeMountError> {
-        // Drop owner state before retiring this control's failure observation.
+    pub(super) fn settle(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         let _settling = Settling(self);
-        let mut state = lock_recover(&self.state);
-        state.settlers += 1;
-        let target = state.notified;
-        let mut deadline = None;
-        // A previous failed cache clear is retried by this explicit control,
-        // even when the source's listing basis has not changed.
-        if state.negative_cache_dirty && state.failure.is_none() {
-            state.retry = true;
-            self.wake();
-        }
-        while !state.stopping
-            && (state.startup.is_some()
-                || state.processed < target
-                || state.relisting
-                || !state.stale.is_empty()
-                || !state.pending.is_empty()
-                || !state.unplaced.is_empty()
-                || state.negative_cache_dirty
-                || !state.vacated.is_empty())
-        {
-            // A failed control still owns the work accepted through its cut.
-            // Return its error only after the active pass has returned deferred
-            // path custody; its caller can then safely end the work scope.
-            if !state.relisting
-                && state.processed >= target
-                && let Some(failure) = state.report_failure()
-            {
-                return Err(NativeMountError::Driver(failure));
+        let target = {
+            let mut state = lock_recover(&self.state);
+            state.settlers += 1;
+            if state.negative_cache_dirty && state.failure.is_none() {
+                state.retry = true;
+                self.wake();
             }
-            if state.startup.is_some()
-                || state.processed < target
-                || state.relisting
-                || !state.stale.is_empty()
-                || state.negative_cache_dirty
-            {
-                state = self
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                continue;
-            }
-            let deadline =
-                *deadline.get_or_insert_with(|| self.clock.instant() + HELD_SETTLE_LIMIT);
-            let remaining = deadline.saturating_duration_since(self.clock.instant());
-            if remaining.is_zero() {
-                let held = state
-                    .pending
-                    .keys()
-                    .chain(state.unplaced.iter())
-                    .next()
-                    .cloned();
-                return Err(NativeMountError::Driver(format!(
-                    "a superseded placeholder is held open and cannot be replaced: {held:?}"
-                )));
-            }
-            state = self
-                .changed
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
-        }
-        if let Some(failure) = state.report_failure() {
-            return Err(NativeMountError::Driver(failure));
-        }
-        if state.stopping {
-            return Err(std::io::Error::from(std::io::ErrorKind::NotConnected).into());
-        }
-        Ok(())
+            state.notified
+        };
+        let cancellation = work.cancellation_wait()?;
+        let mut cancellation = std::pin::pin!(cancellation);
+        acyclic_native_runtime::wait_native_future(
+            async {
+                loop {
+                    let changed = self.progress.notified();
+                    let mut changed = std::pin::pin!(changed);
+                    changed.as_mut().enable();
+                    work.remaining()?;
+                    {
+                        let mut state = lock_recover(&self.state);
+                        if state.stopping {
+                            return Err(
+                                std::io::Error::from(std::io::ErrorKind::NotConnected).into()
+                            );
+                        }
+                        // Report only after the accepted pass has returned its
+                        // physical path custody, retaining the original failure.
+                        if !state.relisting
+                            && state.processed >= target
+                            && let Some(failure) = state.report_failure()
+                        {
+                            return Err(NativeMountError::Driver(failure));
+                        }
+                        let pending = state.startup.is_some()
+                            || state.processed < target
+                            || state.relisting
+                            || !state.stale.is_empty()
+                            || !state.pending.is_empty()
+                            || !state.unplaced.is_empty()
+                            || state.negative_cache_dirty
+                            || !state.vacated.is_empty();
+                        if !pending {
+                            return Ok(());
+                        }
+                    }
+                    let _ = futures::future::select(changed, cancellation.as_mut()).await;
+                }
+            },
+            &work.runtime_meter(),
+            std::future::pending(),
+        )
+        .map_err(|error| NativeMountError::from(work.runtime_error(error)))?
     }
 }

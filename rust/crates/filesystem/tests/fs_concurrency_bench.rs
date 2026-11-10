@@ -206,7 +206,7 @@ async fn measure(
                     }
                     LivePublicationObservation::Conflict { .. } => {
                         let rebased = checkout
-                            .rebase_head(u32::try_from(writers)?, B, cancel)
+                            .rebase_head(Some(u32::try_from(writers)?), B, cancel)
                             .await?;
                         measured.rebase_calls += 1;
                         measured.rebase_items += rebased.work.items_examined;

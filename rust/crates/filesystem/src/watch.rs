@@ -1182,9 +1182,6 @@ impl crate::source_watch::HostChangeSink for WindowsRootSink {
         size_of::<Self>() as u64
     }
 
-    fn delivery_lost(&self) {
-        lose_delivery(&self.delivery.shared, &self.delivery.fenced);
-    }
     fn host_changed(
         &self,
         changes: &[crate::source_watch::HostChange],

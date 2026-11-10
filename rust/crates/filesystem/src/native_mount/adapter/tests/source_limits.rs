@@ -291,10 +291,7 @@ fn native_source_io_projection_rejects_foreign_root_and_resource_before_allocati
         assert_eq!(foreign_root.receipt(), foreign_prefix);
     }
     drop(lease);
-    source
-        .shutdown_accepted_cleanup()?
-        .into_result()?
-        .into_result()?;
+    source.shutdown_accepted_cleanup()?.into_result()?;
     Ok(())
 }
 
@@ -351,18 +348,8 @@ fn native_source_io_last_physical_lease_retires_after_caller_cancellation()
     assert_eq!(root.receipt(), closing_prefix);
     drop(lease);
     drop(last_lease);
-    assert!(
-        source
-            .shutdown_accepted_cleanup()?
-            .into_result()?
-            .into_result()?
-    );
-    assert!(
-        !source
-            .shutdown_accepted_cleanup()?
-            .into_result()?
-            .into_result()?
-    );
+    assert!(source.shutdown_accepted_cleanup()?.into_result()?);
+    assert!(!source.shutdown_accepted_cleanup()?.into_result()?);
     Ok(())
 }
 
@@ -990,10 +977,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     borrowed.create_file(&fenced, metadata(), None, &root)?;
     drop(retry);
     drop(file);
-    source
-        .shutdown_accepted_cleanup()?
-        .into_result()?
-        .into_result()?;
+    source.shutdown_accepted_cleanup()?.into_result()?;
     Ok(())
 }
 
