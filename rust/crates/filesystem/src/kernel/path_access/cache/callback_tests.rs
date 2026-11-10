@@ -38,8 +38,7 @@ fn callbacks() {
                         .bytes,
                     bytes
                 );
-                assert_eq!(cache.extra_resident().unwrap(), 0);
-                cache.reconcile(&mut accounting).unwrap();
+                assert_eq!(cache.lock_state().retained_owned_bytes, 0);
             })
         })
         .collect();

@@ -168,30 +168,7 @@ impl NativeMountDrainProof {
     }
 }
 
-/// Admit off the executor, then release the session lock before awaiting control.
-pub(in crate::native_mount) async fn with_live_session_async(
-    session: &Arc<CustomerSession>,
-    work: &NativeMaterializationWork,
-    control: NativeSessionControl,
-) -> Result<(), MountLifecycleError> {
-    let admission_work = work.clone();
-    let completion = control_session(session.clone(), move |owner| {
-        owner
-            .as_ref()
-            .map(|session| session.start_control(&admission_work, control))
-            .transpose()
-            .map(Option::flatten)
-            .map_err(Into::into)
-    })
-    .await?;
-    if let Some(completion) = completion {
-        completion
-            .await
-            .map_err(|cause| NativeMountError::from(work.runtime_error(cause)))??;
-    }
-    Ok(())
-}
-
+/// Admit on the source original invocation off the executor before awaiting control.
 pub(in crate::native_mount) async fn with_session_work_async<
     F: MountFilesystem + ?Sized + 'static,
 >(
