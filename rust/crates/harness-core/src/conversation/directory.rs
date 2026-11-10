@@ -44,7 +44,6 @@ pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = u32::MAX as usize;
 
 impl PrivateDirectoryPage {
     /// The one conversion from filesystem names into the public Unicode page.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn from_filesystem(
         generation: GenerationRef,
         page: acyclic_fs::DirectoryPage,
