@@ -403,10 +403,7 @@ fn native_prepared_inventory_tracks_request_and_cached_hash_storage() -> Result<
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 type SuffixWork = (u64, u64, u64, u64);
 
-#[cfg(all(
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 fn measure_suffix(
     count: usize,
     schema_size: usize,
