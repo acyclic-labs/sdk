@@ -36,6 +36,8 @@ export async function pty(processes, binary, fixture, input, capture) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const failures = new FailureHistory();
   let unsubscribe, frames;
+  let firstPaint;
+  const launchStarted = performance.now();
   try {
     frames = new TerminalFrames(screen, frame);
     const running = await processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
@@ -52,6 +54,10 @@ export async function pty(processes, binary, fixture, input, capture) {
       if (failure || !frames.ready()) return;
       try {
         const { visible, diagnostic } = screenSnapshot(screen, { completeLines: !settled });
+        if (firstPaint === undefined && frames.available() && visible.includes("GraphCoder")) {
+          firstPaint = performance.now() - launchStarted;
+          process.stderr.write(`pty-startup: ${JSON.stringify({ case: fixture.id, first_paint_ms: firstPaint })}\n`);
+        }
         const action = input.actions[index];
         const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(diagnostic, action?.when, action?.assert);
         if (refusal) {
@@ -117,7 +123,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     }
     const visible = screenText(screen);
     if (result) {
-      try { capture({ ...result, snapshots, deltas, visible, actions: index }); }
+      try { capture({ ...result, snapshots, deltas, first_paint_ms: firstPaint, visible, actions: index }); }
       catch (error) { (errors ??= []).push(error); }
     }
     if (failure) {

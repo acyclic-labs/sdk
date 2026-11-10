@@ -218,7 +218,8 @@
       "target": "Source-anchored viewport and bounded transcripts",
       "owner": "client-perf (#1425)",
       "cases": [
-        "pty-scrolling"
+        "pty-scrolling",
+        "tui-render-work"
       ],
       "gaps": [
         "A 50-line scroll screenshot does not prove large-transcript bounds, source anchors or resize stability."

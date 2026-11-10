@@ -182,6 +182,7 @@ request-count and final project-byte assertions.
 | --- | --- |
 | `E2E_PLUGIN_BINARY` | Matching normal `acyclic` executable |
 | `E2E_PROVIDER_TEST_BINARY` | `acyclic-harness-providers` library test executable |
+| `E2E_TUI_TEST_BINARY` | `acyclic-harness-tui --features tui` library test executable (`tui-render-work`, including its two negative controls) |
 | `E2E_CODEX`, `E2E_CLAUDE`, `E2E_PI` | Optional declared package entries; default pinned `plugin/tests/hosts/node_modules/` installation |
 
 The driver admits the hosts required by the selected cases before execution,
