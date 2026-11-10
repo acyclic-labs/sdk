@@ -494,7 +494,7 @@ async fn lazy_view(
     let source = held_source(
         root,
         config,
-        original.as_ref().map(|state| state.source),
+        original.as_ref().map(|state| state.source.clone()),
         native_mounts,
         &work,
         &cancellation,

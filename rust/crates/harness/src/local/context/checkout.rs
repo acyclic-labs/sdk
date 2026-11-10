@@ -91,7 +91,7 @@ impl LocalHarness {
             publisher,
             directory: crate::context::native_discovery::LazyDiscovery {
                 view,
-                cut,
+                cut: cut.clone(),
                 work: &work,
             },
         };
@@ -263,7 +263,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
         revision: Option<&'a Self::Revision>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(Self::Revision, u32)>>> {
         Box::pin(async move {
-            let cut = revision.copied().unwrap_or(self.directory.cut);
+            let cut = revision.unwrap_or(&self.directory.cut);
             let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                 work: self.directory.work,
                 cancellation: self.directory.work.cancellation(),
@@ -271,7 +271,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
             let Some(stat) = self
                 .directory
                 .view
-                .stat_at_snapshot(&cut, &format!("/{path}"), &mut accounting)
+                .stat_at_snapshot(cut, &format!("/{path}"), &mut accounting)
                 .await?
             else {
                 return Ok(None);
@@ -281,7 +281,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                     "instruction entry is not a directory".into(),
                 ));
             }
-            Ok(Some((cut, 0)))
+            Ok(Some((cut.clone(), 0)))
         })
     }
 
@@ -306,7 +306,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
             let (bytes, _allocation) = match self
                 .directory
                 .view
-                .read_at_snapshot(*cut, &format!("/{path}"), None, maximum, &mut accounting)
+                .read_at_snapshot(cut, &format!("/{path}"), None, maximum, &mut accounting)
                 .await
             {
                 Ok(file) => file,
