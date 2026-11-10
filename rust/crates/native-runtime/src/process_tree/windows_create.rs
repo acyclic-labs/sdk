@@ -795,6 +795,17 @@ pub(in crate::process_tree) fn spawn_suspended(
         command.stderr.as_ref().map(|stdio| &stdio.0),
         STD_ERROR_HANDLE,
     )?;
+    let security = command
+        .boundary
+        .as_ref()
+        .map(crate::execution::PreparedExecution::windows_policy);
+    if let Some(boundary) = &command.boundary {
+        let handles = [&stdin, &stdout, &stderr]
+            .into_iter()
+            .filter_map(|handle| handle.as_ref().map(AsRawHandle::as_raw_handle))
+            .collect::<Vec<_>>();
+        boundary.validate_windows_stdio(&handles)?;
+    }
     let job = job.map(JobHandle);
     let process = super::spawner::run(move || {
         let job = job;
@@ -802,6 +813,7 @@ pub(in crate::process_tree) fn spawn_suspended(
             &mut plan,
             [stdin, stdout, stderr],
             job.as_ref().map(|job| job.0),
+            security.as_ref().map(|policy| policy.handle()),
         )
     })?;
     Ok(Child {
@@ -873,6 +885,7 @@ fn create(
     plan: &mut Plan,
     standard: [Option<OwnedHandle>; 3],
     job: Option<HANDLE>,
+    security: Option<HANDLE>,
 ) -> io::Result<OwnedHandle> {
     let raw = standard.each_ref().map(|handle| {
         handle
@@ -888,7 +901,14 @@ fn create(
     }
     let console = console::shared()?;
     let jobs = job.map(|job| [job]);
-    let mut attributes = Attributes::new(3)?;
+    let security = security.map(|handle| [handle]);
+    let mut attributes = Attributes::new(3 + u32::from(security.is_some()))?;
+    if let Some(security) = &security {
+        // Native ProcThreadAttributeSecurityEnvironment (35), INPUT bit set.
+        // The Arc policy and its kernel environment outlive process creation
+        // and remain held by the original ProcessTree until retirement.
+        attributes.set(0x0002_0023, security)?;
+    }
     if !inherited.is_empty() {
         attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)?;
     }

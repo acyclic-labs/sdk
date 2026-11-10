@@ -284,6 +284,10 @@ fn spawn_in_job(
         None => (None, None, Ok(()), super::events::Events::start()?),
     };
     *custody = Some(super::ProcessTree {
+        _execution_policy: command
+            .boundary
+            .as_ref()
+            .map(crate::execution::PreparedExecution::windows_policy),
         child: None,
         guard: Guard::empty(meter.is_none()),
         output_taken: false,

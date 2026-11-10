@@ -16,6 +16,10 @@ use std::{
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+pub(crate) mod windows;
+#[cfg(windows)]
+pub use windows::ambient_read_roots;
 
 /// Filesystem authority of an execution, including all its descendants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +63,8 @@ pub struct ExecutionGrant {
     access: ExecutionAccess,
     #[cfg(target_os = "linux")]
     compiled: Option<Arc<linux::Policy>>,
+    #[cfg(windows)]
+    compiled: Option<Arc<windows::Policy>>,
 }
 
 /// A definitive refusal before guest execution. The ordinary tool result
@@ -128,7 +134,7 @@ impl Grant {
         Ok(false)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn cwd_root(&self, cwd: &Path) -> io::Result<&BoundPath> {
         if cwd.starts_with(&self.workspace.path) {
             return Ok(&self.workspace);
@@ -262,7 +268,12 @@ impl BoundPath {
         {
             use std::os::windows::fs::OpenOptionsExt;
             options
-                .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS);
+                .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+                // A bound Windows root cannot be renamed while the grant is live.
+                .share_mode(
+                    windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ
+                        | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
+                );
         }
         options.open(path).map_err(failure)
     }
@@ -311,7 +322,9 @@ impl BoundPath {
             let child = linux::open_beneath(&root, relative, _meter)?;
             #[cfg(target_os = "macos")]
             let child = macos::open_beneath(root, relative, false, _meter)?;
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(windows)]
+            let child = windows::open_beneath(&root, relative, false, _meter)?;
+            #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
             {
                 crate::meter::native_control_attempt(
                     _meter,
@@ -321,7 +334,7 @@ impl BoundPath {
                 Ok(true)
             }
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         Err(unavailable(
             "native grant attenuation is unavailable on this platform",
         ))
@@ -435,7 +448,7 @@ impl ExecutionGrant {
                 filter,
             }),
             access,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(windows, target_os = "linux"))]
             compiled: None,
         })
     }
@@ -470,7 +483,22 @@ impl ExecutionGrant {
             macos::Prepared::new(&self.policy, self.access, None, None)?;
             Ok(self)
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(windows)]
+        {
+            if self
+                .compiled
+                .as_ref()
+                .is_some_and(|policy| policy.access == self.access)
+            {
+                return Ok(self);
+            }
+            let compiled = Arc::new(windows::Policy::new(&self.policy, self.access)?);
+            Ok(Self {
+                compiled: Some(compiled),
+                ..self
+            })
+        }
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ))
@@ -665,11 +693,19 @@ impl ExecutionGrant {
         )?;
         #[cfg(target_os = "macos")]
         let platform = macos::Prepared::new(&self.policy, self.access, _cwd, _meter)?;
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(windows)]
+        let platform = windows::Prepared::new(
+            &self.policy,
+            self.access,
+            self.compiled.as_ref(),
+            _cwd,
+            _meter,
+        )?;
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ));
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         Ok(PreparedExecution {
             platform,
             grant: self.clone(),
@@ -684,6 +720,8 @@ pub struct PreparedExecution {
     platform: linux::Prepared,
     #[cfg(target_os = "macos")]
     platform: macos::Prepared,
+    #[cfg(windows)]
+    platform: windows::Prepared,
     grant: ExecutionGrant,
 }
 
@@ -697,6 +735,18 @@ impl std::fmt::Debug for PreparedExecution {
 }
 
 impl PreparedExecution {
+    #[cfg(windows)]
+    pub(crate) fn windows_policy(&self) -> Arc<windows::Policy> {
+        Arc::clone(&self.platform.policy)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn validate_windows_stdio(
+        &self,
+        handles: &[windows_sys::Win32::Foundation::HANDLE],
+    ) -> io::Result<()> {
+        windows::validate_stdio(handles)
+    }
     #[cfg(target_os = "macos")]
     pub(crate) fn validate_command(&self, command: &crate::ProcessCommand) -> io::Result<()> {
         macos::validate_stdio(command.sandbox_stdio()).map_err(failure)

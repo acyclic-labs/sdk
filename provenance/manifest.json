@@ -2,6 +2,15 @@
   "$schema": "../compatibility/schemas/provenance.schema.json",
   "imports": [
     {
+      "sourceRepository": "https://github.com/microsoft/mxc",
+      "sourceCommit": "03efb6167cf76e908a158dd8f7e181f68a6710ad",
+      "sourcePath": "external/windows-sdk/ProcessSecurityEnvironment.fbs and LICENSE.md",
+      "destinationPath": "rust/crates/native-runtime/src/execution/windows",
+      "license": "MIT",
+      "auditResult": "approved",
+      "reviewer": "Codex: native PSEC ABI schema and license only; execution, policy translation, object binding and custody adapter implemented in the SDK"
+    },
+    {
       "sourceRepository": "https://github.com/bmwill/diffy",
       "sourceCommit": "4aa58708a7eef6efd9c1ec04b7af5e53865ec627",
       "sourcePath": "src/diff/myers.rs (bidirectional middle-snake search), src/diff/cleanup.rs (edit alignment), LICENSE-MIT",

@@ -142,6 +142,8 @@ mod wait_tests;
 
 /// One child and descendants that remain in its operating-system containment.
 pub struct ProcessTree {
+    #[cfg(windows)]
+    _execution_policy: Option<std::sync::Arc<crate::execution::windows::Policy>>,
     child: Option<Child>,
     guard: platform::Guard,
     output_taken: bool,
