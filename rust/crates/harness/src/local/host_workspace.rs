@@ -246,7 +246,7 @@ impl HostWorkspace {
                 .ok_or_else(|| Error::Invalid(format!("host child has no {name} volume")))
         };
         let project = bound("project")?;
-        let scratch = bound(crate::filesystem::HOME_VOLUME)?;
+        bound(crate::filesystem::HOME_VOLUME)?;
         if project.class() != VolumeClass::Project {
             return Err(Error::Invalid(
                 "host child project volume class differs".into(),
@@ -297,7 +297,7 @@ impl HostWorkspace {
             .for_scope(&signed)?;
         let (workspace, mounts) = self
             .workspace
-            .bound_task_view(view, &project, scratch, &*child_owner, &authority)
+            .bound_task_view(view, &project, volumes, &*child_owner, &authority)
             .await?;
         verify_root(&self.mount_root)?;
         let mut result = Self {
