@@ -362,6 +362,8 @@ pub enum Command {
     NewSession { title: Option<String> },
     /// Rename the selected session by conditionally writing ui/title.
     Rename { title: String },
+    /// Give the selected session a stable alias for -r NAME.
+    Name { name: String },
     /// Freeze the selected session and release its owned resources.
     Archive,
     /// Read one immutable page of the selected session's saved turns.

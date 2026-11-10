@@ -521,6 +521,66 @@ mod tests {
             };
             connection.execute(&create_title).await?;
             let selected = connection.select(agent.clone()).await?;
+            let name = AgentCommand::NameSession {
+                agent: agent.clone(),
+                name: "fix parser/branch".into(),
+                id: crate::agent::IntentId::try_from("name-independent-session")
+                    .map_err(storage)?,
+            };
+            connection.execute(&name).await?;
+            connection.execute(&name).await?;
+            assert_eq!(
+                super::sessions::select(&connection, "fix parser/branch")
+                    .await?
+                    .root(),
+                &agent
+            );
+            assert!(
+                restricted_remote.execute(&name).await.is_err(),
+                "a tree credential cannot author directory names"
+            );
+            assert!(
+                restricted_remote
+                    .execute(&AgentCommand::ResolveSession {
+                        name: "fix parser/branch".into()
+                    })
+                    .await
+                    .is_err(),
+                "name discovery requires directory admission"
+            );
+            let another = roots.iter().find(|other| *other != &agent).unwrap();
+            assert!(
+                connection
+                    .execute(&AgentCommand::NameSession {
+                        agent: another.clone(),
+                        name: "fix parser/branch".into(),
+                        id: crate::agent::IntentId::try_from("conflicting-name")
+                            .map_err(storage)?,
+                    })
+                    .await
+                    .is_err(),
+                "an existing alias cannot silently move to another session"
+            );
+            assert!(
+                connection
+                    .execute(&AgentCommand::NameSession {
+                        agent: tree.root().clone(),
+                        name: "not-in-directory".into(),
+                        id: crate::agent::IntentId::try_from("name-checkout-owner")
+                            .map_err(storage)?,
+                    })
+                    .await
+                    .is_err()
+            );
+            assert!(
+                connection
+                    .execute(&AgentCommand::ResolveSession {
+                        name: "not-in-directory".into()
+                    })
+                    .await
+                    .is_err(),
+                "failed membership admission must publish no alias"
+            );
             let selection = AgentCommand::SelectSession {
                 agent: agent.clone(),
                 id: crate::agent::IntentId::try_from("explicit-reattach").map_err(storage)?,
@@ -570,6 +630,13 @@ mod tests {
             assert_eq!(
                 snapshot.files["ui/title"].as_ref().unwrap(),
                 "Renamed session "
+            );
+            assert_eq!(
+                super::sessions::select(&connection, "fix parser/branch")
+                    .await?
+                    .root(),
+                &agent,
+                "display title edits retain direct aliases"
             );
             let stale = AgentCommand::PublishAgentFiles {
                 agent: agent.clone(),

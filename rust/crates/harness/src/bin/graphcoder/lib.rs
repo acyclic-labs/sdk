@@ -315,6 +315,7 @@ async fn run_inner(
             Some(
                 Command::Sessions(_)
                     | Command::NewSession { .. }
+                    | Command::Name { .. }
                     | Command::Rename { .. }
                     | Command::Archive
             )
@@ -588,6 +589,14 @@ async fn connected(
         return Ok(());
     }
     match &args.command {
+        Some(Command::Name { name }) => {
+            let operation = args
+                .operation
+                .clone()
+                .unwrap_or_else(|| OperationId::new().to_string());
+            acyclic_harness::local::sessions::name(&connection, name.clone(), &operation).await?;
+            return Ok(());
+        }
         Some(Command::Rename { title }) => {
             acyclic_harness::local::sessions::rename(
                 &connection,

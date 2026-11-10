@@ -22,7 +22,12 @@ pub async fn select(
             || args.new_session
             || matches!(
                 args.command,
-                Some(Command::NewSession { .. } | Command::Rename { .. } | Command::Archive)
+                Some(
+                    Command::NewSession { .. }
+                        | Command::Name { .. }
+                        | Command::Rename { .. }
+                        | Command::Archive
+                )
             )
             || args.command.is_none() && args.prompt.is_none())
     {
@@ -41,17 +46,14 @@ async fn select_inner(
     }
     if let Some(resume) = &args.resume {
         if let Some(name) = resume {
-            if name.contains('/') || acyclic_harness::agent::AgentId::try_from(name.clone()).is_ok()
-            {
-                return Ok((sessions::select(&connection, name).await?, terminal));
-            }
+            return Ok((sessions::select(&connection, name).await?, terminal));
         }
-        return choose(connection, terminal, resume.as_deref()).await;
+        return choose(connection, terminal, None).await;
     }
     if args.continue_session
         || matches!(
             args.command,
-            Some(Command::Rename { .. } | Command::Archive)
+            Some(Command::Name { .. } | Command::Rename { .. } | Command::Archive)
         )
     {
         let selected = sessions::latest(&connection)

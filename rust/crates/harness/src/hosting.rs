@@ -437,6 +437,8 @@ where
                 | AgentCommand::NewSession { .. }
                 | AgentCommand::ForkSession { .. }
                 | AgentCommand::MergeSession { .. }
+                | AgentCommand::NameSession { .. }
+                | AgentCommand::ResolveSession { .. }
                 | AgentCommand::SelectSession { .. }
                 | AgentCommand::LatestSession {}
         ) || command
@@ -585,6 +587,23 @@ where
                     .await
                     .map_err(|error| Error::Turn(Box::new(error)))?;
                 Ok(AgentReply::Merged { commit })
+            }
+            AgentCommand::NameSession { agent, name, id } => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                self.bound.name_session(agent, name, id).await?;
+                Ok(AgentReply::Root {
+                    agent: agent.clone(),
+                })
+            }
+            AgentCommand::ResolveSession { name } => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                Ok(AgentReply::Root {
+                    agent: self.bound.resolve_session(name).await?,
+                })
             }
             AgentCommand::SelectSession { agent, id } => {
                 if !self.platform.sessions() {
@@ -1661,6 +1680,7 @@ where
             let query = match call.command() {
                 AgentCommand::Bind { .. }
                 | AgentCommand::Root {}
+                | AgentCommand::ResolveSession { .. }
                 | AgentCommand::LatestSession {}
                 | AgentCommand::Sessions { .. }
                 | AgentCommand::Children { .. }
@@ -1678,6 +1698,7 @@ where
                 | AgentCommand::ClientFiles { .. }
                 | AgentCommand::Read { .. } => true,
                 AgentCommand::NewSession { .. }
+                | AgentCommand::NameSession { .. }
                 | AgentCommand::SelectSession { .. }
                 | AgentCommand::ForkSession { .. }
                 | AgentCommand::Pause { .. }

@@ -553,7 +553,9 @@ fn validate_reply(
         }
         (
             AgentReply::Root { agent },
-            AgentCommand::NewSession { .. } | AgentCommand::ForkSession { .. },
+            AgentCommand::NewSession { .. }
+            | AgentCommand::ForkSession { .. }
+            | AgentCommand::ResolveSession { .. },
         ) => {
             return if agent.parent().is_none() {
                 Ok(())
@@ -564,6 +566,18 @@ fn validate_reply(
         (
             AgentReply::Root { agent },
             AgentCommand::SelectSession {
+                agent: requested, ..
+            },
+        ) => {
+            return if agent == requested {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Root { agent },
+            AgentCommand::NameSession {
                 agent: requested, ..
             },
         ) => {

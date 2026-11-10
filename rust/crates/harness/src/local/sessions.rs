@@ -93,12 +93,21 @@ pub async fn latest(connection: &Connection) -> Result<Option<Connection>> {
     }
 }
 
-/// Select a canonical path or a root's complete stable id. Naming does not grant access.
+/// Select a canonical path, complete stable id or exact indexed alias.
+/// Naming does not grant access.
 pub async fn select(connection: &Connection, name: &str) -> Result<Connection> {
-    let agent = if name.contains('/') {
-        AgentPath::try_from(name.to_owned()).map_err(storage)?
+    let agent = if let Ok(id) = crate::agent::AgentId::try_from(name.to_owned()) {
+        AgentPath::root(&id)
+    } else if let Ok(path) = AgentPath::try_from(name.to_owned()) {
+        path
     } else {
-        AgentPath::root(&crate::agent::AgentId::try_from(name.to_owned()).map_err(storage)?)
+        let AgentReply::Root { agent } = connection
+            .execute(&AgentCommand::ResolveSession { name: name.into() })
+            .await?
+        else {
+            return Err(unexpected());
+        };
+        agent
     };
     connection.select(agent).await
 }
@@ -160,6 +169,22 @@ pub async fn page(connection: &Connection, page: AgentPageRequest) -> Result<Pag
     }))
     .await?;
     Ok(Page { items, next })
+}
+
+/// Bind an additional alias through the scope's shared immutable name index.
+pub async fn name(connection: &Connection, name: String, operation: &str) -> Result<()> {
+    let id = IntentId::try_from(operation).map_err(storage)?;
+    let AgentReply::Root { .. } = connection
+        .execute(&AgentCommand::NameSession {
+            agent: connection.root().clone(),
+            name,
+            id,
+        })
+        .await?
+    else {
+        return Err(unexpected());
+    };
+    Ok(())
 }
 
 /// Rename by one conditional file publication; a competing rename is a conflict.

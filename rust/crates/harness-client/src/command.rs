@@ -142,6 +142,22 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
+    /// Bind a stable alias in the admitted session directory.
+    NameSession {
+        /// Existing independent session.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Exact alias; changing a title leaves aliases usable.
+        name: String,
+        /// Stable identity of the binding request.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+    },
+    /// Resolve an exact alias without enumerating sessions.
+    ResolveSession {
+        /// Alias in this checkout's name index.
+        name: String,
+    },
     /// Page the explicitly admitted root-session directory.
     Sessions {
         /// Bounded directory credit and its opaque continuation.
@@ -587,6 +603,9 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
+            Self::NameSession { name, .. } | Self::ResolveSession { name } if name.is_empty() => {
+                Err(CommandError::Invalid)
+            }
             Self::ClientFiles { paths, .. }
             | Self::AgentFiles { paths, .. }
             | Self::AgentFilePreviews { paths, .. } => {
@@ -717,6 +736,7 @@ impl AgentCommand {
     pub const fn agent(&self) -> Option<&AgentPath> {
         match self {
             Self::Root {}
+            | Self::ResolveSession { .. }
             | Self::LatestSession {}
             | Self::Sessions { .. }
             | Self::NewSession { .. } => None,
@@ -744,6 +764,7 @@ impl AgentCommand {
             | Self::Usage { agent, .. }
             | Self::Events { agent, .. }
             | Self::AgentFilePreviews { agent, .. }
+            | Self::NameSession { agent, .. }
             | Self::SelectSession { agent, .. }
             | Self::AgentFiles { agent, .. }
             | Self::PublishAgentFiles { agent, .. }
@@ -769,6 +790,8 @@ impl AgentCommand {
             Self::Pause { .. } => "pause",
             Self::MergeSession { .. } => "merge_session",
             Self::AgentFilePreviews { .. } => "agent_file_previews",
+            Self::NameSession { .. } => "name_session",
+            Self::ResolveSession { .. } => "resolve_session",
             Self::SelectSession { .. } => "select_session",
             Self::AgentFiles { .. } => "agent_files",
             Self::PublishAgentFiles { .. } => "publish_agent_files",
