@@ -488,7 +488,10 @@ fn validate_reply(
                 Err(CommandError::Invalid)
             };
         }
-        (AgentReply::Root { agent }, AgentCommand::NewSession { .. }) => {
+        (
+            AgentReply::Root { agent },
+            AgentCommand::NewSession { .. } | AgentCommand::ForkSession { .. },
+        ) => {
             return if agent.parent().is_none() {
                 Ok(())
             } else {

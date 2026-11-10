@@ -145,6 +145,17 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
+    /// Fork a parentless session at a settled turn, retaining the source.
+    ForkSession {
+        /// Source session within the admitted directory.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable branch identity; retain the complete request on uncertainty.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// Zero-based inclusive settled conversation offset.
+        at: u64,
+    },
     /// Snapshot explicit paths in a named client session; wait on its original
     /// filesystem publication producer when `after` is still current.
     ClientFiles {
@@ -652,6 +663,7 @@ impl AgentCommand {
             Self::Bind { agent } => agent.as_ref(),
             Self::Spawn { parent: agent, .. }
             | Self::Fork { parent: agent, .. }
+            | Self::ForkSession { agent, .. }
             | Self::Prompt { agent, .. }
             | Self::Cancel { agent, .. }
             | Self::Compact { agent, .. }
@@ -689,6 +701,7 @@ impl AgentCommand {
             Self::LatestSession {} => "latest_session",
             Self::Sessions { .. } => "sessions",
             Self::NewSession { .. } => "new_session",
+            Self::ForkSession { .. } => "fork_session",
             Self::AgentFiles { .. } => "agent_files",
             Self::PublishAgentFiles { .. } => "publish_agent_files",
             Self::Archive { .. } => "archive",

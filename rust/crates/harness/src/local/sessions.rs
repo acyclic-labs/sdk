@@ -43,6 +43,28 @@ pub async fn create(connection: &Connection, operation: &str) -> Result<Connecti
     connection.select(agent).await
 }
 
+/// Fork a session at one settled turn. The source keeps its later history and
+/// project files; the returned session remains paused for inspection.
+pub async fn fork(
+    connection: &Connection,
+    source: AgentPath,
+    at: u64,
+    operation: &str,
+) -> Result<Connection> {
+    let id = IntentId::try_from(operation).map_err(storage)?;
+    let AgentReply::Root { agent } = connection
+        .execute(&AgentCommand::ForkSession {
+            agent: source,
+            at,
+            id,
+        })
+        .await?
+    else {
+        return Err(unexpected());
+    };
+    connection.select(agent).await
+}
+
 /// Read the latest committed directory entry without walking any sessions.
 pub async fn latest(connection: &Connection) -> Result<Option<Connection>> {
     let AgentReply::LatestSession { agent } =
