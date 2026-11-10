@@ -22,6 +22,14 @@ pub(super) fn custody(
 }
 
 impl Window {
+    /// Transfers the original selection owner while retiring its range bytes.
+    pub fn into_source(self) -> super::source::ReadSource {
+        super::source::ReadSource {
+            source: Some(self.source),
+            custody: self._hold,
+        }
+    }
+
     pub async fn first(
         context: &ToolContext,
         input: &ReadFileInput,

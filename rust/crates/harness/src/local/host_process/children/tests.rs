@@ -795,21 +795,22 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     let writer = fs::OpenOptions::new()
         .write(true)
         .open(format!("/proc/{pid}/fd/2"))?;
+    let key = running.claim.agent.to_string();
     // Reject a forged/noop control owner before parking on its real process.
     running.wake.wake_by_ref();
-    assert_eq!(sessions.ready.take(), BTreeSet::from(["held".into()]));
+    assert_eq!(sessions.ready.take(), HashSet::from([key.clone()]));
     running.process.take_output_progress();
-    sessions.arm("held", &mut running);
-    assert!(running.armed.is_some() || sessions.ready.queue().keys.contains("held"));
+    sessions.arm(&key, &mut running);
+    assert!(running.armed.is_some() || sessions.ready.queue().keys.contains(&key));
     running.process.queue_stdin(b"exit\n".to_vec())?;
     assert!(running.process.pump_stdin()?);
     // The production owner already holds the sole readiness observation.
     // Hand it the process without installing a competing test-side wait.
     // `writer` stays live through settlement, so stderr cannot reach EOF.
-    sessions.children.insert("held".into(), running);
+    sessions.children.insert(key.clone(), running);
     // The same owner registration and pump as the deployed coordination
     // server. Every pass waits for the native producer or actual I/O progress.
-    while sessions.children.contains_key("held") {
+    while sessions.children.contains_key(&key) {
         futures::executor::block_on(std::future::poll_fn(|cx| sessions.ready.poll(cx)));
         sessions.pump()?;
     }
