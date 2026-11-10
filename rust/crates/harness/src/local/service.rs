@@ -482,6 +482,20 @@ mod tests {
                     "sessions sharing one repo cannot overwrite each other"
                 );
             }
+            let AgentReply::Diff { items } = connection
+                .execute(&AgentCommand::Diff {
+                    agent: roots.first().unwrap().clone(),
+                    page: AgentPageRequest::default(),
+                })
+                .await?
+            else {
+                return Err(Error::Invalid("missing session diff".into()));
+            };
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.path == "/shared.txt" || item.path == "shared.txt")
+            );
             let agent = roots
                 .iter()
                 .find(|agent| *agent != connection.root())
