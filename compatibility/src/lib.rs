@@ -96,22 +96,21 @@ pub fn shared_protocols() -> PathBuf {
 }
 
 impl Compiler {
-    /// Compile the caller's explicit source root and selected services.
-    /// Build scripts pass their compile-time manifest root so Cargo tracks
-    /// relocation as a compiler input, including with a shared target.
+    /// Compile messages and selected services; only protocol changes rerun codegen.
     ///
     /// # Errors
     /// Returns filesystem and protobuf compilation errors.
     pub fn compile(
         &self,
-        manifest: &std::path::Path,
         mut config: Config,
         services: Builder,
         protos: &[&str],
         descriptor: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let include = self.includes().to_owned();
-
+        let manifest = PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is unset")?,
+        );
         let output =
             PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is unset")?).join(descriptor);
         config.file_descriptor_set_path(&output);
@@ -122,10 +121,7 @@ impl Compiler {
             &[manifest.join("proto"), shared_protocols(), include],
         )?;
         std::fs::write(&output, canonicalize(&std::fs::read(&output)?, protos)?)?;
-        println!(
-            "cargo:rerun-if-changed={}",
-            manifest.join("proto").display()
-        );
+        println!("cargo:rerun-if-changed=proto");
         println!("cargo:rerun-if-changed={}", shared_protocols().display());
         println!("cargo:rerun-if-env-changed=PROTOC");
         println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");

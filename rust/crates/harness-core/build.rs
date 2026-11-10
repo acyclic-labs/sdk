@@ -7,10 +7,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(fuzzing)");
     let compiler = acyclic_proto_build::Compiler::new()?;
     // Crate-owned protocol sources make the published archive independently buildable.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let proto = root.join("proto/harness/v2/harness.proto");
-    let include = root.join("proto");
-    println!("cargo:rerun-if-changed={}", include.display());
+    let proto = "proto/harness/v2/harness.proto";
+    let include = "proto";
+    println!("cargo:rerun-if-changed=proto");
     println!("cargo:rerun-if-env-changed=PROTOC");
     println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
     println!(
@@ -34,7 +33,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.file_descriptor_set_path(&descriptor);
     config.compile_protos(
         &[proto],
-        &[include, acyclic_proto_build::shared_protocols()],
+        &[
+            std::path::PathBuf::from(include),
+            acyclic_proto_build::shared_protocols(),
+        ],
     )?;
     let digest = blake3::hash(&std::fs::read(descriptor)?);
     println!(
