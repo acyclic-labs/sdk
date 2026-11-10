@@ -7,7 +7,7 @@ use acyclic_harness_core::{
     test_support::ScriptedEvent,
 };
 
-fn wait(id: &str, timeout: u64) -> ScriptedTurn {
+fn wait(id: &str, timeout: Option<u64>) -> ScriptedTurn {
     ScriptedTurn::Events(vec![
         ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
             id.into(),
@@ -22,18 +22,22 @@ fn wait(id: &str, timeout: u64) -> ScriptedTurn {
 
 #[tokio::test]
 async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() -> Result {
-    for (answer, reserved) in [(true, false), (false, false), (true, true)] {
+    for (answer, reserved) in [(true, 0), (false, 0), (true, MAX_QUEUED + 2)] {
         let path = AgentPath::root(&id(226));
         let stream = Arc::new(MemoryStream::default());
         let (filesystem, binding) = private_in(&stream, &path).await?;
-        let model = Arc::new(ScriptedModelProvider::new([
+        let mut turns = vec![
             ScriptedTurn::Text("reply body".into()),
-            wait("first-input", 10),
-            wait("second-input", 20),
+            wait("first-input", (reserved == 0).then_some(10)),
+            wait("second-input", Some(20)),
             ScriptedTurn::Text("both waits finished".into()),
-            ScriptedTurn::Text("reserved turn finished".into()),
-            ScriptedTurn::Text("follow-up finished".into()),
-        ]));
+        ];
+        if reserved > 0 {
+            turns.extend(
+                (0..reserved + 1).map(|_| ScriptedTurn::Text("reserved turn finished".into())),
+            );
+        }
+        let model = Arc::new(ScriptedModelProvider::new(turns));
         let executors = StockExecutors::new(
             (
                 Model::new("test".into(), "text".into(), "1".into())?,
@@ -95,11 +99,30 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         assert_eq!(
             first.phase,
             Phase::Waiting {
-                deadline_unix_ms: Some(110),
+                deadline_unix_ms: (reserved == 0).then_some(110),
                 input: true
             }
         );
-        let reply = |name| {
+        assert!(
+            first.pending_notices.is_some(),
+            "parking consumed frozen notices"
+        );
+        host.send(
+            &path,
+            &super::super::user(),
+            &InboxRecord::Notice {
+                id: intent("quiet-while-parked"),
+                notice: NoticePayload::Quiet(Notice {
+                    source: "filesystem".into(),
+                    kind: "files.changed".into(),
+                    body: serde_json::json!({"paths":["after"]}),
+                    wake: false,
+                    coalesce_key: None,
+                }),
+            },
+        )
+        .await?;
+        let message = |name| {
             InboxRecord::Message(Message {
                 from: super::super::user(),
                 id: intent(name),
@@ -107,13 +130,15 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                 attachments: None,
             })
         };
-        if reserved {
-            host.send(
-                &path,
-                &super::super::user(),
-                &requested("independent-before-reply", &path),
-            )
-            .await?;
+        if reserved > 0 {
+            for index in 0..reserved {
+                host.send(
+                    &path,
+                    &super::super::user(),
+                    &requested(&format!("independent-before-reply-{index}"), &path),
+                )
+                .await?;
+            }
             host.send(
                 &path,
                 &super::super::user(),
@@ -133,7 +158,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             );
         }
         let Delivered::Committed { inbox } = host
-            .send(&path, &super::super::user(), &reply("first-reply"))
+            .send(&path, &super::super::user(), &message("first-reply"))
             .await?
         else {
             return Err("reply was not committed".into());
@@ -158,7 +183,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             Reply::Pending
         ));
         assert!(
-            second.queued.len() == if reserved { 2 } else { 0 },
+            second.queued.len() == reserved.min(MAX_QUEUED),
             "already admitted reply remained wakeable"
         );
         assert_eq!(
@@ -176,7 +201,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         assert_eq!(host.state(&path).await?.phase, second.phase);
         assert_eq!(model.requests().len(), 3);
         if answer {
-            host.send(&path, &super::super::user(), &reply("second-reply"))
+            host.send(&path, &super::super::user(), &message("second-reply"))
                 .await?;
         } else {
             control.advance_to(120)?;
@@ -188,12 +213,19 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             Reply::Answered { sequence: 1, .. }
         ));
         assert_eq!(settled.phase, Phase::Idle);
+        assert!(
+            settled.pending_notices.is_none(),
+            "admitted notices survived settlement"
+        );
         assert_eq!(
             settled.conversation_tail,
-            if reserved { 4 } else { 2 },
+            if reserved > 0 { 3 + reserved as u64 } else { 2 },
             "resuming a wait invented another turn"
         );
-        assert_eq!(model.requests().len(), if reserved { 6 } else { 4 });
+        assert_eq!(
+            model.requests().len(),
+            if reserved > 0 { 5 + reserved } else { 4 }
+        );
     }
     Ok(())
 }

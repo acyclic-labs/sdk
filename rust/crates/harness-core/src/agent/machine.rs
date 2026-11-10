@@ -102,6 +102,8 @@ pub struct AgentState {
     /// Exclusive inbox cursor included at an admitted model boundary. Payloads
     /// remain in the original inbox; checkpoint cost is constant per agent.
     pub steered_through: u64,
+    /// Latest committed steerable input, including records outside the queue window.
+    pub steering_tail: u64,
     /// Cancelled inputs before this sequence, including goal continuations.
     #[serde(default)]
     pub dropped_before: u64,
@@ -252,6 +254,7 @@ impl AgentState {
             conversation_tail: adopted.conversation_tail,
             pending_notices: None,
             steered_through: 0,
+            steering_tail: 0,
             dropped_before: 0,
             conversation_base: adopted.conversation_tail,
             committed_actions: false,
@@ -857,7 +860,8 @@ pub(super) fn failed_step(
 // queued inputs retain their own turn and cannot release an input wait.
 fn wake_input(state: &AgentState) -> bool {
     if control(state).input {
-        state.queued.iter().any(|input| input.steering)
+        state.steering_tail > state.steered_through.max(state.dropped_before)
+            || state.queued.iter().any(|input| input.steering)
     } else {
         !state.queued.is_empty()
     }
@@ -1090,6 +1094,9 @@ fn admit(
         _ => {}
     }
     if let Some(input) = input(sequence, record).filter(|_| admitted.enqueue) {
+        if input.steering {
+            state.steering_tail = state.steering_tail.max(sequence.saturating_add(1));
+        }
         // The response the waiting turn needs is taken now, out of order;
         // this step consumes it. Any other input joins the window, or, once
         // the window is full or already overflowed, stays in the inbox to be

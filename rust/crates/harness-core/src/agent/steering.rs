@@ -39,59 +39,60 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
     from: u64,
     until: Option<u64>,
 ) -> Result<BoundarySelection, Error> {
-    let limit = match until {
-        Some(until) => u32::try_from(
-            until
-                .checked_sub(from)
-                .ok_or(Error::Record("steering cursor precedes its source range"))?,
-        )
-        .ok()
-        .filter(|count| *count <= super::MAX_QUEUED as u32)
-        .ok_or(Error::Record("steering range exceeds one inbox window"))?,
-        None => super::MAX_QUEUED as u32,
-    };
+    if until.is_some_and(|until| until < from) {
+        return Err(Error::Record("steering cursor precedes its source range"));
+    }
     let mut selection = BoundarySelection {
         from,
         through: from,
         inputs: Vec::new(),
     };
-    if limit == 0 {
-        return Ok(selection);
-    }
-    let records = provider
-        .read(ReadRequest {
-            key: None,
-            path: agent.inbox()?,
-            from,
-            limit,
-            at_least: Default::default(),
-        })
-        .await;
-    let mut records = match records {
-        Ok(records) => records,
-        Err(acyclic_stream::StreamError::NotFound) if until.is_none() => return Ok(selection),
-        Err(error) => return Err(Error::Stream(error)),
-    };
-    while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
-        if record.sequence != selection.through {
-            return Err(Error::Record("steering inbox is not contiguous"));
+    loop {
+        let room = super::MAX_QUEUED - selection.inputs.len();
+        let limit = until.map_or(room as u64, |until| {
+            (until - selection.through).min(room as u64)
+        }) as u32;
+        if limit == 0 {
+            break;
         }
-        let input = InboxRecord::decode(&record.value)?;
-        let queued = match input {
-            InboxRecord::Cancel(_) | InboxRecord::Archive(_) => break,
-            InboxRecord::Notice { .. } | InboxRecord::Message(_) => Some(input),
-            // These records retain their own ordered turns. They cannot stop
-            // a later steering reply from reaching a parked model boundary.
-            // Conversation entries retain the monotonic observed frontier so
-            // reply lookup still finds the original admitting turn afterwards.
-            _ => None,
+        let records = provider
+            .read(ReadRequest {
+                key: None,
+                path: agent.inbox()?,
+                from: selection.through,
+                limit,
+                at_least: Default::default(),
+            })
+            .await;
+        let mut records = match records {
+            Ok(records) => records,
+            Err(acyclic_stream::StreamError::NotFound) if until.is_none() => break,
+            Err(error) => return Err(Error::Stream(error)),
         };
-        selection.through = record
-            .sequence
-            .checked_add(1)
-            .ok_or(Error::Record("steering inbox cursor overflow"))?;
-        if let Some(input) = queued {
-            selection.inputs.push((record.sequence, input));
+        let mut read = 0;
+        let mut barrier = false;
+        while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
+            if record.sequence != selection.through {
+                return Err(Error::Record("steering inbox is not contiguous"));
+            }
+            let input = InboxRecord::decode(&record.value)?;
+            if matches!(input, InboxRecord::Cancel(_) | InboxRecord::Archive(_)) {
+                barrier = true;
+                break;
+            }
+            selection.through = record
+                .sequence
+                .checked_add(1)
+                .ok_or(Error::Record("steering inbox cursor overflow"))?;
+            read += 1;
+            // Independent records keep their ordered turns. Page past them
+            // without retaining them or capping how far a reply can arrive.
+            if matches!(input, InboxRecord::Notice { .. } | InboxRecord::Message(_)) {
+                selection.inputs.push((record.sequence, input));
+            }
+        }
+        if barrier || read < limit {
+            break;
         }
     }
     if until.is_some_and(|until| until != selection.through) {

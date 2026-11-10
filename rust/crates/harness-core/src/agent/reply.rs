@@ -7,7 +7,8 @@
 //! queued and read back in inbox order, and an approval response taken out of
 //! order resumes the waiting turn instead of starting an entry. So the entry
 //! answering a request is found by binary search over the agent's own committed
-//! range. A steering message joins the preceding entry through its admitted
+//! range. A steering message joins its first admitting entry through the monotonic
+//! observed prefix retained on every entry and its admitted
 //! exclusive cursor, verifying its identity at the original inbox sequence.
 //! A goal run joins its original request to its terminal conversation
 //! entry through the one reference committed with that entry; no output is copied.
