@@ -675,15 +675,21 @@ fn validate_reply(
             return Ok(());
         }
         (AgentReply::ChildWakes { items, next }, AgentCommand::ChildWakes { page, .. }) => {
-            if items.array_windows::<2>().any(|[a, b]| a.child >= b.child)
+            if items
+                .array_windows::<2>()
+                .any(|[a, b]| a.status.checked_add(1) != Some(b.status))
                 || page.cursor().is_some_and(|after| {
-                    items
-                        .first()
-                        .is_some_and(|item| item.child.as_str() <= after)
+                    after.parse::<u64>().ok() != items.first().map(|item| item.status)
+                        && !items.is_empty()
                 })
-                || next
-                    .as_deref()
-                    .is_some_and(|next| items.last().is_none_or(|item| item.child.as_str() != next))
+                || next.as_deref().is_some_and(|next| {
+                    items
+                        .last()
+                        .and_then(|item| item.status.checked_add(1))
+                        .map(|n| n.to_string())
+                        .as_deref()
+                        != Some(next)
+                })
             {
                 return Err(CommandError::Invalid);
             }
@@ -717,19 +723,13 @@ fn validate_reply(
         (AgentReply::History { items, next }, AgentCommand::History { page, .. }) => {
             if items
                 .array_windows::<2>()
-                .any(|[a, b]| a.status.checked_add(1) != Some(b.status))
-                || page.cursor().is_some_and(|after| {
-                    after.parse::<u64>().ok() != items.first().map(|item| item.status)
-                        && !items.is_empty()
-                })
-                || next.as_deref().is_some_and(|next| {
-                    items
-                        .last()
-                        .and_then(|item| item.status.checked_add(1))
-                        .map(|n| n.to_string())
-                        .as_deref()
-                        != Some(next)
-                })
+                .any(|[newer, older]| older.conversation.checked_add(1) != Some(newer.conversation))
+            {
+                return Err(CommandError::Invalid);
+            }
+            if items
+                .iter()
+                .any(|item| item.conversation == 0 || item.context_tail > item.conversation)
             {
                 return Err(CommandError::Invalid);
             }
