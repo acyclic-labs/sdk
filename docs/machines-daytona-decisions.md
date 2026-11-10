@@ -19,22 +19,19 @@ reply never authorizes redispatch. Explicit recover reads the original key label
 Mutation settlement uses its response plus at most one inspection. There are
 no readiness loops or fabricated operation/watch/cleanup receipts.
 
-Machines without attach_volume use the shared copied workspace
-(harness-core workspace/copied.rs). At bind it copies the selected volume in
-through the workspace facade. At settlement it publishes the authored changes
-under the original turn and authority. The path is selected by attachment
-capability, so every non-attached provider uses it, not only Daytona.
-
-Shell execution uses request/response exec when a provider declares binary duplex
-Exec Unsupported. Daytona v0 exposes text session input/logs, not the exact-byte
-stdin/EOF/channel/terminal-cleanup contract, so the adapter declares binary
-duplex Exec Unsupported by design. Other unavailable lifecycle mechanisms are
-also explicitly Unsupported.
+Remaining work: the shared selected-volume copy-in/commit-out workspace is not
+implemented. The existing authority, observation and physical-volume refusal
+remains. Hosted ProviderRef selection is wired, but does not make that workspace
+admission succeed. The adapter also refuses the current binary duplex Exec
+contract: Daytona v0 exposes text session input/logs, not the admitted exact-byte
+stdin/EOF/channel/terminal-cleanup contract. Thus this branch is not Cloud Swarm
+ready. Unavailable lifecycle mechanisms are explicitly Unsupported.
 
 The deterministic HTTP fixture exercises the production native HTTP transport,
 records host-injected authorization on every exchange, refuses unbound origins
 before toolbox I/O, and checks lost-create recovery without redispatch. Native
 file coverage uses the real local Machines provider and the same file suite.
+Validation results are recorded in the task handoff and WORK.md after bb2.
 
 Sources checked 2026-11-09:
 
