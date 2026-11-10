@@ -61,6 +61,8 @@ function declaredFeatures(item, features) {
 
 // Projection keeps the original requested feature policy. Never substitute
 // the declared closure for flags: Cargo resolves dependencies and target cfg.
+/** @param {any} selection
+ * @param {{manifest?: boolean, target?: string, targets?: string}} [options] */
 export function cargoFeatureArguments(selection, { manifest = false, target, targets } = {}) {
   if (manifest && selection.packages.length !== 1) {
     throw new Error("STEP_FAILED cargo-feature-projection: manifest selection requires one package; recovery: node scripts/check-feature-matrix.mjs --list");

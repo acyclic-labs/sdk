@@ -63,8 +63,8 @@ const libraryOnly = [
 // Explicit shipped combinations share defining-package admission with the
 // generated matrix. They remain independent compiler invocations.
 export function clippySelections(inventory) {
-  return [...withTests.map(set => [set, "all-targets"]), ...libraryOnly.map(set => [set, undefined])]
-    .map(([set, targets]) => {
+  return [...withTests.map(set => ({ set, targets: "all-targets" })), ...libraryOnly.map(set => ({ set, targets: undefined }))]
+    .map(({ set, targets }) => {
       const names = [];
       let index = 0;
       while (set[index] === "-p") { names.push(set[index + 1]); index += 2; }

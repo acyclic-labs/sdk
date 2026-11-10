@@ -125,7 +125,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     finally {
       unsubscribe();
       unsubscribe = undefined;
-      await new Promise(resolve => screen.write("", resolve));
+      await new Promise(resolve => screen.write("", () => resolve(undefined)));
       frame(true);
     }
     const visible = screenText(screen);
