@@ -101,6 +101,50 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         std::fs::read(first.path.join("shared.txt")).map_err(storage)?,
         b"shared"
     );
+    let original = first
+        .binding_owner
+        .as_ref()
+        .expect("keyed owner")
+        .downgrade();
+    drop(first);
+    let third = workspace
+        .bound_task_view(
+            view().await?,
+            &harness.project,
+            harness.scratch.clone(),
+            &owner.original,
+            &authority,
+        )
+        .await?;
+    assert!(Arc::ptr_eq(
+        second.binding.as_ref().expect("second binding"),
+        third.binding.as_ref().expect("completed binding"),
+    ));
+    assert!(matches!(
+        workspace
+            .bound_task_view(
+                view().await?,
+                &harness.project,
+                harness.project.clone(),
+                &owner.original,
+                &authority,
+            )
+            .await,
+        Err(Error::Conflict(_)),
+    ));
+    drop(second);
+    assert!(original.upgrade().is_some());
+    drop(third);
+    assert!(original.upgrade().is_none());
+    workspace
+        .bound_task_view(
+            view().await?,
+            &harness.project,
+            harness.project.clone(),
+            &owner.original,
+            &authority,
+        )
+        .await?;
     Ok(())
 }
 

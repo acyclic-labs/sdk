@@ -88,6 +88,8 @@ pub struct LocalWorkspace {
     /// Original auxiliary binding, retained while this view or its selections
     /// can still execute against its shared physical projections.
     pub(super) binding: Option<Arc<Mounts>>,
+    // Keyed custody outlives preparation, including views with no auxiliary mounts.
+    binding_owner: Option<acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>>,
     bindings: acyclic_fs::kernel::allocation::RetainedArc<bindings::Bindings>,
     pub(super) context_line: String,
     /// Custody of this owner's tool process trees; absent in an embedded
@@ -454,6 +456,7 @@ pub(super) async fn open(
         context_line,
         mounts,
         binding: None,
+        binding_owner: None,
         bindings: bindings::Bindings::new(&cancellation)?,
         processes,
     })

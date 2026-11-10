@@ -60,7 +60,7 @@ impl LocalWorkspace {
             }
             mounts
         };
-        self.mount_task_view(view, owner, Some(mounts), authority)
+        self.mount_task_view(view, owner, Some((mounts, selection.binding)), authority)
             .await
     }
 
@@ -180,7 +180,10 @@ impl LocalWorkspace {
         &'a self,
         view: workspace::View,
         owner: &'a dyn super::owner::ViewOwner,
-        mounts: Option<Arc<workspace::Mounts>>,
+        mounts: Option<(
+            Arc<workspace::Mounts>,
+            acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>,
+        )>,
         authority: &'a crate::filesystem::NativeMountAuthority,
     ) -> BoxProviderFuture<'a, Result<Arc<LocalWorkspace>>> {
         Box::pin(async move {
@@ -188,6 +191,7 @@ impl LocalWorkspace {
             // live mount needs its own namespace so retiring it cannot
             // detach a replacement owner's mount at the same path.
             owner.verify().await?;
+            let (mounts, binding_owner) = mounts.unzip();
             let mut workspace = LocalWorkspace {
                 shutdown: self.shutdown.clone(),
                 native_mount_probe: self.native_mount_probe.clone(),
@@ -200,6 +204,7 @@ impl LocalWorkspace {
                     Arc::clone(&self.mounts),
                 ))),
                 binding: mounts.clone(),
+                binding_owner,
                 bindings: self.bindings.clone(),
                 mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
                 context_line: self.context_line().into(),
@@ -318,6 +323,7 @@ impl LocalWorkspace {
             processes: self.processes.clone(),
             mounts: Arc::clone(&mounts),
             binding: self.binding.clone(),
+            binding_owner: self.binding_owner.clone(),
             bindings: self.bindings.clone(),
             // This cached physical handle must not retain its owning cache.
             state: StateArc::new(AsyncMutex::new(State::new(
