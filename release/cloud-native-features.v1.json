@@ -155,7 +155,6 @@
         }
       ],
       "features": {
-        "binary": "Canonical binary request codec shared with JavaScript bindings.",
         "conformance": "Shared backend qualification and request-accounting probes.",
         "javascript": "JavaScript credential and byte ownership bindings.",
         "test-support": "Dev-only deterministic fixtures, injected failures and allocation observations."
