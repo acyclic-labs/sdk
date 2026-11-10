@@ -397,10 +397,21 @@ fn pending_registration_replays_changes_across_history_done() -> TestResult {
         &[floor + 1, floor + 1, floor + 2],
     );
     assert!(events.try_recv().is_err());
+    drop(suspended);
+    assert!(wait_for_arm(hub, &registration, arms));
+    let suspended = suspend_callbacks(hub);
+    // Native retirement and replay run before the controlled replay below.
+    // Give that injected batch its own original cut, independent of unrelated
+    // host events that advanced the real stream during the queue handoff.
+    while events.try_recv().is_ok() {}
     let stream = {
         let mut state = hub.state();
         let shard = state.of(&registration).ok_or("missing shard")?;
         assert_eq!(shard.arms, arms + 1, "pending routes need their own replay");
+        shard.replaying = true;
+        for route in shard.routes.values_mut().flatten() {
+            route.floor = floor;
+        }
         shard.stream
     };
     hub.deliver(
