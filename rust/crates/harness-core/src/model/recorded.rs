@@ -160,10 +160,17 @@ impl Cursor {
         let Some(call) = calls.get(*next) else {
             return admit(None);
         };
-        let result = admit(Some((*next, call)))?;
-        *next += 1;
-        self.used += 1;
-        Ok(result)
+        match admit(Some((*next, call))) {
+            Ok(result) => {
+                *next += 1;
+                self.used += 1;
+                Ok(result)
+            }
+            Err(error) => {
+                self.next.retire_if(key, |next| *next == 0);
+                Err(error)
+            }
+        }
     }
 
     #[cfg(test)]
@@ -220,8 +227,35 @@ struct Replay {
     // Original source coordinates: copy the outcome only if it is requested.
     tools: FixedIndex<ReplayTool, crate::NativeCustody, 48>,
     /// Turns that went live; each stays live.
-    live: FixedIndex<bool, crate::NativeCustody, 16>,
+    live: FixedIndex<LiveTurn, crate::NativeCustody, 16>,
     diverged: bool,
+}
+
+#[derive(Default)]
+struct LiveTurn {
+    accepted: bool,
+    pending: usize,
+}
+
+impl LiveTurn {
+    fn unclaimed(&self) -> bool {
+        !self.accepted && self.pending == 0
+    }
+}
+
+impl Replay {
+    fn release_live(&mut self, operation: OperationId, accepted: bool) {
+        let key = operation.into_bytes();
+        let turn = self
+            .live
+            .get_retained_mut(key, |_| true, |_| {})
+            .expect("original live admission retains its funded turn slot");
+        turn.accepted |= accepted;
+        turn.pending -= 1;
+        if turn.unclaimed() {
+            self.live.retire_if(key, LiveTurn::unclaimed);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -315,10 +349,7 @@ impl ReplayAdmission<'_> {
             )
             .expect("original replay admission owns its registration");
         *selection = Some(ReplaySelection::Live);
-        *replay
-            .live
-            .get_retained_mut(self.dispatch.operation_id.into_bytes(), |_| true, |_| {})
-            .expect("original live admission retains its funded turn slot") = true;
+        replay.release_live(self.dispatch.operation_id, true);
         let first = !std::mem::replace(&mut replay.diverged, true);
         self.accepted = true;
         drop(replay);
@@ -336,13 +367,13 @@ impl ReplayAdmission<'_> {
 impl Drop for ReplayAdmission<'_> {
     fn drop(&mut self) {
         if !self.accepted {
-            if let Some(selection) = self.owner.lock().dispatches.get_retained_mut(
-                dispatch_key(self.dispatch),
-                |selection| matches!(selection, Some(ReplaySelection::Pending)),
-                |_| {},
-            ) {
-                *selection = None;
-            }
+            let mut replay = self.owner.lock();
+            replay
+                .dispatches
+                .retire_if(dispatch_key(self.dispatch), |selection| {
+                    matches!(selection, Some(ReplaySelection::Pending))
+                });
+            replay.release_live(self.dispatch.operation_id, false);
         }
     }
 }
@@ -355,7 +386,9 @@ enum ReplayPreparation<'a, T> {
 /// Serves a [`Recording`] while requests match it, then the live provider.
 /// Native live-turn storage is admitted before calling that provider. Accepting
 /// its returned generation object only publishes into the retained turn slot;
-/// it never grows or resizes a membership table.
+/// it never grows or resizes a membership table. Refusal retires only the
+/// admission's provisional registrations. Overlapping live admissions share
+/// their turn slot until every pending producer refuses or one accepts.
 /// Recorded tool registration likewise funds fixed-width nodes before accepting
 /// source consumption, borrowing original call IDs and verifying their complete
 /// identity. Index work per tool is independent of retained replay history;
@@ -450,96 +483,130 @@ impl RecordedModel {
             }
             None => {}
         }
-        // Retained dispatches and live turns cannot select another recording.
-        // Only a new replay candidate needs the request's semantic identity.
-        let key = if live
-            .get(
-                dispatch.operation_id.into_bytes(),
-                &mut NativeIndexWork(work),
-            )?
-            .copied()
-            .unwrap_or(false)
-        {
-            None
-        } else {
-            Some(request.replay_key()?)
-        };
-        let output = if let Some(key) = key {
-            cursor.select(
-                &self.recording,
-                key,
-                &mut NativeIndexWork(work),
-                |candidate| {
-                    let Some((index, call)) = candidate else {
-                        return Ok(None);
-                    };
-                    // Stage only this answer's fixed keys. All node admission and
-                    // full source-identity checks precede the returned-object
-                    // builder; refusal leaves every earlier settlement selected.
-                    let io = NativeIndexWork(work).preparation()?;
-                    let mut staged = Vec::new();
-                    crate::executor::stock_vec_reserve(&mut staged, call.tools.len(), io.as_ref())?;
-                    for (ordinal, (call_id, _)) in call.tools.iter().enumerate() {
-                        let identity = ToolCoordinate {
-                            key,
-                            index,
-                            ordinal,
-                        };
-                        let lookup = tool_key(dispatch.operation_id, call_id, io.as_ref())?;
-                        let slot = tools.get_or_try_insert_with(
-                            lookup,
-                            &mut NativeIndexWork(work),
-                            |_| {
-                                Ok(ReplayTool {
-                                    identity,
-                                    selected: None,
-                                })
-                            },
-                        )?;
-                        self.recording
-                            .verify_tool(slot.identity, call_id, work, io.as_ref())?;
-                        staged.push(lookup);
-                    }
-                    let output = build(call)?;
-                    // The lock retains the exact admitted slots. Publication has
-                    // no allocation, cancellation check or other fallible work.
-                    for (ordinal, lookup) in staged.into_iter().enumerate() {
-                        tools
-                            .get_retained_mut(lookup, |_| true, |_| {})
-                            .expect("original tool admission retains its funded slot")
-                            .selected = Some(ToolCoordinate {
-                            key,
-                            index,
-                            ordinal,
-                        });
-                    }
-                    *selection = Some(ReplaySelection::Recorded { key, index });
-                    Ok(Some(output))
-                },
-            )?
-        } else {
-            None
-        };
-        match output {
-            Some(output) => Ok(ReplayPreparation::Recorded(output)),
-            None => {
-                // Fund the permanent live-turn slot before invoking the live
-                // provider. Acceptance only publishes into retained storage;
-                // a refused builder leaves the original turn non-live.
-                live.get_or_try_insert_with(
+        let result = (|| {
+            // Retained dispatches and live turns cannot select another recording.
+            // Only a new replay candidate needs the request's semantic identity.
+            let key = if live
+                .get(
                     dispatch.operation_id.into_bytes(),
                     &mut NativeIndexWork(work),
-                    |_| Ok(false),
-                )?;
-                *selection = Some(ReplaySelection::Pending);
-                Ok(ReplayPreparation::Live(ReplayAdmission {
-                    owner: self,
-                    dispatch,
+                )?
+                .is_some_and(|turn| turn.accepted)
+            {
+                None
+            } else {
+                Some(request.replay_key()?)
+            };
+            let output = if let Some(key) = key {
+                cursor.select(
+                    &self.recording,
                     key,
-                    accepted: false,
-                }))
+                    &mut NativeIndexWork(work),
+                    |candidate| {
+                        let Some((index, call)) = candidate else {
+                            return Ok(None);
+                        };
+                        // Stage only this answer's fixed keys. All node admission and
+                        // full source-identity checks precede the returned-object
+                        // builder; refusal leaves every earlier settlement selected.
+                        let io = NativeIndexWork(work).preparation()?;
+                        let mut staged = Vec::new();
+                        crate::executor::stock_vec_reserve(
+                            &mut staged,
+                            call.tools.len(),
+                            io.as_ref(),
+                        )?;
+                        let output = (|| {
+                            for (ordinal, (call_id, _)) in call.tools.iter().enumerate() {
+                                let identity = ToolCoordinate {
+                                    key,
+                                    index,
+                                    ordinal,
+                                };
+                                let lookup = tool_key(dispatch.operation_id, call_id, io.as_ref())?;
+                                let slot = tools.get_or_try_insert_with(
+                                    lookup,
+                                    &mut NativeIndexWork(work),
+                                    |_| {
+                                        Ok(ReplayTool {
+                                            identity,
+                                            selected: None,
+                                        })
+                                    },
+                                )?;
+                                staged.push(lookup);
+                                self.recording.verify_tool(
+                                    slot.identity,
+                                    call_id,
+                                    work,
+                                    io.as_ref(),
+                                )?;
+                            }
+                            build(call)
+                        })();
+                        let output = match output {
+                            Ok(output) => output,
+                            Err(error) => {
+                                for lookup in staged {
+                                    tools.retire_if(lookup, |slot| slot.selected.is_none());
+                                }
+                                return Err(error);
+                            }
+                        };
+                        // The lock retains the exact admitted slots. Publication has
+                        // no allocation, cancellation check or other fallible work.
+                        for (ordinal, lookup) in staged.into_iter().enumerate() {
+                            tools
+                                .get_retained_mut(lookup, |_| true, |_| {})
+                                .expect("original tool admission retains its funded slot")
+                                .selected = Some(ToolCoordinate {
+                                key,
+                                index,
+                                ordinal,
+                            });
+                        }
+                        *selection = Some(ReplaySelection::Recorded { key, index });
+                        Ok(Some(output))
+                    },
+                )
+            } else {
+                Ok(None)
+            };
+            match output? {
+                Some(output) => Ok(ReplayPreparation::Recorded(output)),
+                None => {
+                    // Fund the permanent live-turn slot before invoking the live
+                    // provider. Acceptance only publishes into retained storage;
+                    // a refused builder leaves the original turn non-live.
+                    let turn = live.get_or_try_insert_with(
+                        dispatch.operation_id.into_bytes(),
+                        &mut NativeIndexWork(work),
+                        |_| Ok(LiveTurn::default()),
+                    )?;
+                    let Some(pending) = turn.pending.checked_add(1) else {
+                        let io = NativeIndexWork(work).preparation()?;
+                        return Err(crate::executor::stock_boundary(
+                            io.as_ref(),
+                            crate::wire::ErrorCode::Conflict,
+                            "replay pending admission count overflows",
+                        ));
+                    };
+                    turn.pending = pending;
+                    *selection = Some(ReplaySelection::Pending);
+                    Ok(ReplayPreparation::Live(ReplayAdmission {
+                        owner: self,
+                        dispatch,
+                        key,
+                        accepted: false,
+                    }))
+                }
             }
+        })();
+        if result.is_err() {
+            live.retire_if(dispatch.operation_id.into_bytes(), LiveTurn::unclaimed);
+            dispatches.retire_if(dispatch_key(dispatch), Option::is_none);
         }
+        result
     }
 
     fn selected_call(
@@ -889,7 +956,7 @@ mod tests {
         let event = ModelEvent::Completed {
             metadata: Value::Null,
         };
-        let bound = FixedIndex::<bool, crate::NativeCustody, 16>::insertion_bound(1).unwrap();
+        let bound = FixedIndex::<LiveTurn, crate::NativeCustody, 16>::insertion_bound(1).unwrap();
         let dispatch_bound =
             FixedIndex::<Option<ReplaySelection>, crate::NativeCustody, 52>::insertion_bound(1)
                 .unwrap();
@@ -935,14 +1002,49 @@ mod tests {
             )
             .map_err(|(error, _)| error)?;
             let retained = funded.live_allocation_bytes();
+            // Concurrent admissions of one turn share its funded slot. Dropping
+            // either registration cannot invalidate the surviving producer.
+            let other = ModelDispatch {
+                step: 1,
+                ..dispatch(0)
+            };
+            let ReplayPreparation::Live(first) =
+                trial.prepare(&request, dispatch(0), Some(&funded), |_| Ok(()))?
+            else {
+                unreachable!()
+            };
+            let ReplayPreparation::Live(second) =
+                trial.prepare(&request, other, Some(&funded), |_| Ok(()))?
+            else {
+                unreachable!()
+            };
+            if population == 1 {
+                drop(second);
+                first.accept();
+            } else {
+                second.accept();
+                drop(first);
+            }
             for operation in 0..population {
+                // The overlapping survivor already accepted its own dispatch.
+                let current = ModelDispatch {
+                    step: 2,
+                    ..dispatch(operation)
+                };
                 let before = funded.receipt();
-                let ReplayPreparation::Live(admission) =
-                    trial.prepare(&request, dispatch(operation), Some(&funded), |_| Ok(()))?
-                else {
+                let mut preparation = None;
+                let physical = acyclic_test_support::measure(|| {
+                    preparation = Some(trial.prepare(&request, current, Some(&funded), |_| Ok(())));
+                });
+                let ReplayPreparation::Live(admission) = preparation.unwrap()? else {
                     return Err(Error::Invalid("empty recording selected an answer".into()));
                 };
                 let prepared = funded.receipt();
+                assert!(
+                    physical.count_total
+                        <= prepared.allocation_operations - before.allocation_operations,
+                    "live turn allocated without original funding: {physical:?}"
+                );
                 assert!(
                     prepared.items_examined - before.items_examined
                         <= dispatch_bound.examined_items + 2 * bound.examined_items
@@ -1069,12 +1171,25 @@ mod tests {
             let refused = NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(error, _)| error)?;
             let trial = trial();
+            let retained = refused.live_allocation_bytes();
             assert!(
                 matches!(
                     trial.generate_with_native_work(&request, dispatch, &refused),
                     Err(Error::NativeWork { .. })
                 ),
                 "returned-object admission must refuse synchronously at allocation {allocations}",
+            );
+            assert_eq!(
+                refused.live_allocation_bytes(),
+                retained,
+                "refused returned-object admission retained index funding"
+            );
+            assert!(
+                trial
+                    .lock()
+                    .dispatches
+                    .get(dispatch_key(dispatch), &mut NativeIndexWork(None))?
+                    .is_none()
             );
             assert_eq!(
                 trial.unused(),
@@ -1342,10 +1457,26 @@ mod tests {
             Arc::new(Recording::default()),
             divergences.clone(),
         );
-        assert!(matches!(
-            live_trial.generate_with_native_work(&request, dispatch, &funded),
-            Err(Error::NativeBoundary { .. })
-        ));
+        let retained = funded.live_allocation_bytes();
+        for step in 0..3 {
+            let refused_dispatch = ModelDispatch { step, ..dispatch };
+            assert!(matches!(
+                live_trial.generate_with_native_work(&request, refused_dispatch, &funded),
+                Err(Error::NativeBoundary { .. })
+            ));
+            assert_eq!(
+                funded.live_allocation_bytes(),
+                retained,
+                "refused live builder retained index funding"
+            );
+            assert!(
+                live_trial
+                    .lock()
+                    .dispatches
+                    .get(dispatch_key(refused_dispatch), &mut NativeIndexWork(None))?
+                    .is_none()
+            );
+        }
         assert!(!live_trial.diverged());
         let ReplayPreparation::Live(pending) =
             live_trial.prepare(&request, dispatch, None, |_| Ok(()))?
@@ -1359,6 +1490,14 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         drop(pending);
+        assert!(
+            live_trial
+                .lock()
+                .dispatches
+                .get(dispatch_key(dispatch), &mut NativeIndexWork(None))?
+                .is_none(),
+            "dropping unaccepted admission retained its index entry"
+        );
         assert!(!live_trial.diverged());
         let mut portable = live_trial.generate(&request, dispatch);
         assert!(
