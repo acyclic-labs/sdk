@@ -258,8 +258,10 @@ Already reached deadlines succeed. Advancing time announces a clock event;
 delivery completion remains the runtime's original completion or applied cut.
 The clock owns one shared event and no background task or OS timer.
 
-`Runtime::pause_with` owns its admitted placement, cancellation, delivery cleanup,
-conditional pause decision and resource transition independently of its waiter.
+`Runtime::pause_with` closes admission without cancelling active work, joins its
+completion and settles its retained publication before the conditional pause
+decision and resource transition. This control owns its admitted placement and
+transition independently of its waiter.
 Queued controls use the same fence, so resume cannot overtake pending resource
 parking. A precommit failure invalidates the resident cut and withdraws only the
 tentative gate; delivery follows the durable state without requiring resume.
