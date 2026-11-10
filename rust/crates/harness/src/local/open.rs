@@ -554,9 +554,7 @@ impl Opening {
             approval_models: self.config.approval_models,
             agent,
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-            models: self
-                .models
-                .map(|models| models as Arc<dyn crate::model::ModelResolver>),
+            models: self.models,
             #[cfg(not(any(
                 test,
                 feature = "hooks",

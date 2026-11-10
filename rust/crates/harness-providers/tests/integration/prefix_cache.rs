@@ -58,6 +58,7 @@ fn holds(body: &[u8], needle: &[u8]) -> bool {
 
 /// One recorded generation request: the agent that sent it and its exact body.
 struct Sent {
+    url: String,
     agent: &'static str,
     body: Bytes,
     cached: Cached,
@@ -92,6 +93,7 @@ impl Scripted {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let agent = state.0;
         state.2.push(Sent {
+            url: request.url,
             agent,
             body: request.body,
             cached,

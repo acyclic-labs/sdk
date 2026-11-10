@@ -9,7 +9,7 @@ struct Routes {
     misroute: bool,
 }
 
-impl ModelResolver for Routes {
+impl Routes {
     fn resolve(&self, selection: &str) -> acyclic_harness::Result<ModelBinding> {
         let provider = match selection {
             "recorded/model" => self.root.clone(),
@@ -29,7 +29,7 @@ fn scripted(path: &'static str, steps: Vec<Step>) -> Arc<Scripted> {
     })
 }
 
-async fn run_roles(misroute: bool) -> TestResult<bool> {
+async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
     let parent = scripted(
         "messages",
         vec![
@@ -40,13 +40,32 @@ async fn run_roles(misroute: bool) -> TestResult<bool> {
             text("delegated"),
         ],
     );
-    let child = scripted("responses", vec![program("add", "1 + 1"), text("two")]);
+    let native_parts = vec![
+        json!({"thought":true,"text":"Count privately","thoughtSignature":"signed-thought+/=="}),
+        json!({"functionCall":{"id":"add","name":"code","args":{"code":"1 + 1"}},"thoughtSignature":"signed-tool+/=="}),
+    ];
+    let (path, first) = if adapter == Adapter::Gemini {
+        (
+            "models/luna:streamGenerateContent",
+            Step {
+                gemini: Some(harness_mock_model::Gemini {
+                    parts: native_parts.clone(),
+                    thought_tokens: 2,
+                    ..Default::default()
+                }),
+                ..Step::default()
+            },
+        )
+    } else {
+        ("responses", program("add", "1 + 1"))
+    };
+    let child = scripted(path, vec![first, text("two")]);
     let root_model = Arc::new(resolve(
         Adapter::Anthropic,
         PromptCache::Native,
         parent.clone(),
     )?);
-    let mut catalog = registry(Adapter::Responses, PromptCache::Native, child.clone())?;
+    let mut catalog = registry(adapter, PromptCache::Native, child.clone())?;
     let mut spec = catalog
         .catalog()
         .get("recorded")
@@ -70,7 +89,10 @@ async fn run_roles(misroute: bool) -> TestResult<bool> {
         Ok(Arc::new(acyclic_harness::filesystem::StockExecutors::new(
             (root.model().clone(), root), tools, (limits, CompactionPolicy::Disabled),
             Arc::new(acyclic_harness::filesystem::Grants(grants)),
-        ).with_models(routes.clone()).with_agent_tools(&selected).with_templates()))
+        ).with_models(Arc::new(ModelResolver::new("recorded/model", {
+            let routes = routes.clone();
+            move |selection| routes.resolve(selection)
+        }))).with_agent_tools(&selected).with_templates()))
     };
     let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -281,7 +303,15 @@ async fn run_roles(misroute: bool) -> TestResult<bool> {
     assert!(sent.2.len() >= 3, "child never used its own provider");
     for request in &sent.2 {
         let body: Value = serde_json::from_slice(&request.body)?;
-        assert_eq!(body["model"], "luna");
+        if adapter == Adapter::Gemini {
+            assert!(
+                request
+                    .url
+                    .ends_with("/models/luna:streamGenerateContent?alt=sse")
+            );
+        } else {
+            assert_eq!(body["model"], "luna");
+        }
     }
     extends(
         "responses",
@@ -291,6 +321,21 @@ async fn run_roles(misroute: bool) -> TestResult<bool> {
     )?;
     extends("responses", "later turn", &sent.2[1].body, &sent.2[2].body)?;
     assert!(sent.2[1].cached.read > 0);
+    if adapter == Adapter::Gemini {
+        let body: Value = serde_json::from_slice(&sent.2[1].body)?;
+        let parts: Vec<_> = body["contents"]
+            .as_array()
+            .ok_or("contents")?
+            .iter()
+            .flat_map(|content| content["parts"].as_array().into_iter().flatten())
+            .collect();
+        for original in &native_parts {
+            assert!(
+                parts.contains(&original),
+                "native reasoning or tool signature changed: {original}"
+            );
+        }
+    }
     let parent = parent.state.lock().unwrap_or_else(|p| p.into_inner());
     for request in &parent.2 {
         let body: Value = serde_json::from_slice(&request.body)?;
@@ -301,9 +346,10 @@ async fn run_roles(misroute: bool) -> TestResult<bool> {
 
 #[tokio::test]
 async fn role_models_route_across_providers_and_resume_with_stable_prefixes() -> TestResult {
-    assert!(run_roles(false).await?);
+    assert!(run_roles(Adapter::Responses, false).await?);
+    assert!(run_roles(Adapter::Gemini, false).await?);
     assert!(
-        run_roles(true).await?,
+        run_roles(Adapter::Responses, true).await?,
         "negative control did not expose forced parent routing"
     );
     Ok(())

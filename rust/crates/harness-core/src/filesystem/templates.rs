@@ -346,6 +346,7 @@ mod tests {
 
 impl<A, O> Templates<A, O> {
     /// The root selection already admitted by the host configuration.
+    #[must_use]
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.model = model;
         self
@@ -419,10 +420,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
                 crate::conversation::ContentAccess { ceiling, io: None },
             )
             .await?;
-            selected.model = selected
-                .model
-                .or_else(|| creation.model.clone())
-                .or_else(|| self.model.clone());
+            selected.model = selected.model.or_else(|| creation.model.clone());
             Ok(selected)
         })
     }

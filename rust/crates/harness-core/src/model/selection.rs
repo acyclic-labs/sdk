@@ -3,13 +3,54 @@ use super::{Model, ModelProvider};
 use crate::Result;
 use std::sync::Arc;
 
-/// A model and the provider that serves it.
+/// A model selection's bound provider.
 pub type ModelBinding = (Model, Arc<dyn ModelProvider>);
 
-/// Resolves durable provider/model selections through the host's catalog.
-pub trait ModelResolver: acyclic_stream::ProviderPlatform {
-    /// Unknown or unavailable selections fail without using another provider.
-    fn resolve(&self, selection: &str) -> Result<ModelBinding>;
+/// Resolves model selections to providers once: every composition resolving through one
+/// resolver reuses the provider of a selection it already resolved; an unseen selection,
+/// or a new resolver over a changed catalog, resolves anew.
+pub struct ModelResolver {
+    default: String,
+    resolve: Box<Resolve>,
+    resolved: std::sync::Mutex<std::collections::BTreeMap<String, ModelBinding>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type Resolve = dyn Fn(&str) -> Result<ModelBinding> + Send + Sync;
+#[cfg(target_arch = "wasm32")]
+type Resolve = dyn Fn(&str) -> Result<ModelBinding>;
+
+impl ModelResolver {
+    /// The catalog default used when the root configuration selects no model.
+    pub fn default_model(&self) -> &str {
+        &self.default
+    }
+
+    /// Resolves through `resolve`, selecting `default` when nothing else selects a model.
+    pub fn new(
+        default: impl Into<String>,
+        resolve: impl Fn(&str) -> Result<ModelBinding> + acyclic_stream::ProviderPlatform + 'static,
+    ) -> Self {
+        Self {
+            default: default.into(),
+            resolve: Box::new(resolve),
+            resolved: Default::default(),
+        }
+    }
+
+    /// Reuses the original protected provider binding for this selection.
+    pub fn resolve(&self, selection: &str) -> Result<ModelBinding> {
+        let mut resolved = self
+            .resolved
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(model) = resolved.get(selection) {
+            return Ok(model.clone());
+        }
+        let model = (self.resolve)(selection)?;
+        resolved.insert(selection.into(), model.clone());
+        Ok(model)
+    }
 }
 
 /// Checks the public provider/model address, allowing slashes in model names.

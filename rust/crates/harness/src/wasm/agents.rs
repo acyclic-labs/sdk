@@ -195,7 +195,7 @@ struct WasmAgentRecord {
 pub struct WasmAgentRegistry {
     tools: ToolRegistry,
     model: Option<(Model, Arc<dyn ModelProvider>, CompactionPolicy)>,
-    models: Option<Arc<dyn crate::model::ModelResolver>>,
+    models: Option<Arc<crate::model::ModelResolver>>,
     workspace: Option<Workspace>,
 }
 
@@ -207,7 +207,7 @@ struct Workspace {
 
 impl WasmAgentRegistry {
     /// Retains the host catalog for durable per-agent selections.
-    pub fn bind_models(&mut self, models: Arc<dyn crate::model::ModelResolver>) {
+    pub fn bind_models(&mut self, models: Arc<crate::model::ModelResolver>) {
         self.models = Some(models);
     }
 

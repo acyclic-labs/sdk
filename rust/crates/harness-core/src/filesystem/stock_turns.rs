@@ -150,7 +150,7 @@ pub struct StockExecutors {
     tools: ToolRegistry,
     /// The model family's native declarations, decoded on the first turn.
     native: crate::tools::native::Cache,
-    models: Option<Arc<dyn crate::model::ModelResolver>>,
+    models: Option<Arc<crate::model::ModelResolver>>,
     limits: Limits,
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
@@ -163,7 +163,7 @@ pub struct StockExecutors {
 impl StockExecutors {
     /// Binds child and resumed selections through the same protected catalog.
     #[must_use]
-    pub fn with_models(mut self, models: Arc<dyn crate::model::ModelResolver>) -> Self {
+    pub fn with_models(mut self, models: Arc<crate::model::ModelResolver>) -> Self {
         self.models = Some(models);
         self
     }
@@ -176,7 +176,8 @@ impl StockExecutors {
         {
             None => Ok((self.model.clone(), self.provider.clone())),
             Some(selection)
-                if selection == format!("{}/{}", self.model.provider, self.model.name) =>
+                if selection.split_once('/')
+                    == Some((self.model.provider.as_str(), self.model.name.as_str())) =>
             {
                 Ok((self.model.clone(), self.provider.clone()))
             }
