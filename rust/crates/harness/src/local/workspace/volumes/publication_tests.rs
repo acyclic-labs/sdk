@@ -420,9 +420,8 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     Ok(())
 }
 
-// Disconnect retirement attempts every volume. A volume a cancelled worker still
-// owns reports its conflict, but cannot strand a later volume's projection
-// until the harness drops and abandons it unpublished.
+// Disconnect retirement waits for every worker's physical cleanup. A volume a
+// worker still owns cannot prevent an idle later volume from retiring first.
 #[tokio::test]
 async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
@@ -457,16 +456,24 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         .await?;
     let root_path = projection_root(&scratch.destination, HOME_PATH)?;
     drop(scratch.enter(root_path, HOME_PATH, false).await?);
-    assert!(matches!(
-        retire(&table).await,
-        Err(Error::Conflict(message)) if message.contains("native workers")
-    ));
+    let mut retirement = Box::pin(retire(&table));
     assert!(
-        scratch.native().await.is_none(),
-        "a conflict stranded a later projection"
+        futures::poll!(&mut retirement).is_pending(),
+        "retirement completed while a worker still owned its projection"
     );
-    assert!(!scratch.destination.exists());
-    busy.abandon(busy_claim).await?;
+    let release_worker = async {
+        // Retirement has started each projection. This lock waits for the
+        // idle projection's physical cleanup, while the busy claim stays held.
+        assert!(
+            scratch.native().await.is_none(),
+            "a busy worker stranded a later projection"
+        );
+        assert!(!scratch.destination.exists());
+        busy.abandon(busy_claim).await
+    };
+    let (retired, released) = futures::join!(retirement, release_worker);
+    released?;
+    retired?;
     assert!(busy.native().await.is_none());
     assert!(!busy.destination.exists());
     Ok(())
