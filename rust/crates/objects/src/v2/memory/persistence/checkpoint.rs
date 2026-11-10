@@ -57,6 +57,8 @@ impl Journal {
         tail.bytes = output.bytes;
         tail.operations = output.operations;
         tail.inline_bytes = 0;
+        tail.checkpoint_bytes = output.bytes;
+        tail.checkpoint_operations = output.operations;
         Ok(reclaimed)
     }
 

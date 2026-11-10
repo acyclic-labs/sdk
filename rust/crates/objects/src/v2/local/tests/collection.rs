@@ -201,3 +201,109 @@ async fn dominant_inline_bytes_trigger_owned_maintenance_after_reopen()
     assert_eq!(provider.get(get("second"), 1024).await?.body, body);
     Ok(())
 }
+
+#[tokio::test]
+async fn metadata_history_compacts_before_the_journal_limit_refuses_commits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let limits = LocalOptions {
+        maximum_journal_bytes: 256 * 1024,
+        ..LocalOptions::default()
+    };
+    let provider = LocalObjects::open(root.path(), limits).await?;
+    provider
+        .create_bucket(wire::CreateBucketRequest {
+            name: "customer.inputs".into(),
+            mutation: None,
+        })
+        .await?;
+    let body = Bytes::from_static(b"x");
+    // Live objects that fill most of the journal's room once compacted, as on a long-lived host:
+    // later compactions must still find room rather than refuse or rewrite on every commit.
+    for live in 0..600 {
+        let mut request = put(&format!("live/{live:04}"));
+        request.mutation = None;
+        provider.put(request, body.clone()).await?;
+    }
+    // Each round leaves no new live object, so the journal is all history: well over its limit
+    // in total, and refused as over quota once full unless it is compacted along the way.
+    for round in 0..4_000 {
+        let key = format!("k{}", round % 8);
+        let mut request = put(&key);
+        request.mutation = None;
+        provider.put(request, body.clone()).await?;
+        provider
+            .delete(wire::DeleteObjectRequest {
+                bucket: bucket(),
+                object_key: key,
+                ..Default::default()
+            })
+            .await?;
+    }
+    let journal = std::fs::metadata(root.path().join("mutations.log"))?.len();
+    assert!(journal < limits.maximum_journal_bytes, "{journal}");
+    let mut request = put("kept");
+    request.mutation = None;
+    provider.put(request, body.clone()).await?;
+    drop(provider);
+    let provider = LocalObjects::open(root.path(), limits).await?;
+    assert_eq!(provider.get(get("kept"), 1).await?.body, body);
+    Ok(())
+}
+
+/// Opens a copy of a real store at `$OBJECTS_STORE` and writes one object into its filesystem
+/// bucket: `OBJECTS_STORE=… cargo test -p acyclic-objects --features local --release -- --ignored
+/// --nocapture real_store`.
+#[tokio::test]
+#[ignore = "needs a copy of a real store"]
+async fn real_store_accepts_a_write() -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(path) = std::env::var("OBJECTS_STORE") else {
+        return Ok(());
+    };
+    let root = std::path::PathBuf::from(path);
+    let journal = |root: &Path| std::fs::metadata(root.join("mutations.log")).map(|m| m.len());
+    let started = std::time::Instant::now();
+    let provider = LocalObjects::open(&root, LocalOptions::default()).await?;
+    println!(
+        "opened in {:?}, journal {} bytes",
+        started.elapsed(),
+        journal(&root)?
+    );
+    println!(
+        "state (buckets, objects, uploads, receipts, body bytes): {:?}",
+        provider.core.shape()?
+    );
+    let started = std::time::Instant::now();
+    let request = wire::PutObjectHeader {
+        bucket: Some(wire::BucketRef {
+            name: "filesystem-objects".into(),
+        }),
+        object_key: "probe/journal-pressure".into(),
+        ..Default::default()
+    };
+    let result = provider.put(request, Bytes::from_static(b"probe")).await;
+    println!(
+        "put in {:?}: {result:?}, journal {} bytes",
+        started.elapsed(),
+        journal(&root)?
+    );
+    result?;
+    drop(provider);
+    let started = std::time::Instant::now();
+    let provider = LocalObjects::open(&root, LocalOptions::default()).await?;
+    let body = provider
+        .get(
+            wire::GetObjectRequest {
+                bucket: Some(wire::BucketRef {
+                    name: "filesystem-objects".into(),
+                }),
+                object_key: "probe/journal-pressure".into(),
+                ..Default::default()
+            },
+            16,
+        )
+        .await?
+        .body;
+    println!("reopened in {:?}, probe {:?}", started.elapsed(), body);
+    Ok(())
+}

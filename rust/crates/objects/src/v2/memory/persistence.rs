@@ -139,6 +139,10 @@ struct Tail {
     bytes: u64,
     operations: u64,
     inline_bytes: u64,
+    /// Journal bytes and frames right after the last checkpoint (zero until one is written in
+    /// this process): the live state, which history pressure measures its room against.
+    checkpoint_bytes: u64,
+    checkpoint_operations: u64,
 }
 pub(super) struct Journal {
     root: PathBuf,
@@ -198,6 +202,23 @@ fn corrupt<T>(_: T) -> LocalOpenError {
 }
 
 impl MemoryObjects {
+    /// Buckets, objects, uploads, receipts and body bytes held, for tests of real stores.
+    #[cfg(test)]
+    pub(in crate::v2) fn shape(&self) -> Result<(usize, usize, usize, usize, usize), Error> {
+        let state = self.lock_state()?;
+        let objects = state
+            .buckets
+            .values()
+            .map(|bucket| bucket.objects.len())
+            .sum();
+        Ok((
+            state.buckets.len(),
+            objects,
+            state.uploads.len(),
+            state.receipts.len(),
+            state.object_bytes,
+        ))
+    }
     pub(in crate::v2) fn local_maintenance_due(&self) -> Result<bool, Error> {
         let _state = self.lock_state()?;
         let journal = self.journal.as_ref().ok_or(Error::from(Unavailable))?;
@@ -324,6 +345,8 @@ pub(crate) fn open(
                 bytes,
                 operations,
                 inline_bytes,
+                checkpoint_bytes: 0,
+                checkpoint_operations: 0,
             }),
             poisoned: AtomicBool::new(false),
             _owner: owner,
@@ -467,10 +490,31 @@ fn repair_tail(
 }
 
 impl Journal {
+    /// Whether a checkpoint should replace the journal: inline bodies dominate it, or its
+    /// history (frames that replay to far less state) presses on a journal limit. Without the
+    /// second, a store whose bodies all live in segments grows its journal until every commit is
+    /// refused as over quota. History presses once the journal is past half a limit and history
+    /// written since the last checkpoint has used half the room that checkpoint left, so a live
+    /// state near the limit is not rewritten on every mutation.
     fn maintenance_due(&self) -> Result<bool, Error> {
         let tail = self.tail.lock().map_err(|_| Error::from(Unavailable))?;
-        Ok(tail.inline_bytes >= MINIMUM_MAINTENANCE_INLINE_BYTES
-            && tail.inline_bytes >= tail.bytes.saturating_sub(tail.inline_bytes))
+        let inline = tail.inline_bytes >= MINIMUM_MAINTENANCE_INLINE_BYTES
+            && tail.inline_bytes >= tail.bytes.saturating_sub(tail.inline_bytes);
+        let presses = |used: u64, checkpoint: u64, limit: u64| {
+            used >= limit / 2
+                && used.saturating_sub(checkpoint) >= limit.saturating_sub(checkpoint) / 2
+        };
+        let bytes = presses(
+            tail.bytes,
+            tail.checkpoint_bytes,
+            self.limits.maximum_journal_bytes,
+        );
+        let operations = presses(
+            tail.operations,
+            tail.checkpoint_operations,
+            self.limits.maximum_journal_operations,
+        );
+        Ok(inline || bytes || operations)
     }
     /// Checks the bodies a staged mutation added or replaced, and every staged multipart part,
     /// against the per-object limit. Bodies `before` already held passed when they were admitted.
