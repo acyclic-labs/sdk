@@ -12,6 +12,30 @@ pub async fn select(
     connection: Connection,
     terminal: Option<Tty>,
 ) -> Result<(Connection, Option<Tty>), Failure> {
+    let original = connection.root().clone();
+    let (selected, terminal) = select_inner(args, connection, terminal).await?;
+    if selected.root() != &original
+        && args.agent.is_none()
+        && selected.root().parent().is_none()
+        && (args.resume.is_some()
+            || args.continue_session
+            || args.new_session
+            || matches!(
+                args.command,
+                Some(Command::NewSession { .. } | Command::Rename { .. } | Command::Archive)
+            )
+            || args.command.is_none() && args.prompt.is_none())
+    {
+        sessions::selected(&selected, &OperationId::new().to_string()).await?;
+    }
+    Ok((selected, terminal))
+}
+
+async fn select_inner(
+    args: &Args,
+    connection: Connection,
+    terminal: Option<Tty>,
+) -> Result<(Connection, Option<Tty>), Failure> {
     if args.agent.is_some() || args.fork_from.is_some() {
         return Ok((connection, terminal));
     }
@@ -22,7 +46,7 @@ pub async fn select(
                 return Ok((sessions::select(&connection, name).await?, terminal));
             }
         }
-        return picker(connection, terminal, resume.as_deref()).await;
+        return choose(connection, terminal, resume.as_deref()).await;
     }
     if args.continue_session
         || matches!(
@@ -57,6 +81,16 @@ pub async fn select(
 /// The existing event-driven terminal chooser renders only the current page.
 /// Advancing is an explicit user action; it never searches hidden pages.
 pub async fn picker(
+    connection: Connection,
+    terminal: Option<Tty>,
+    filter: Option<&str>,
+) -> Result<(Connection, Option<Tty>), Failure> {
+    let (selected, terminal) = choose(connection, terminal, filter).await?;
+    sessions::selected(&selected, &OperationId::new().to_string()).await?;
+    Ok((selected, terminal))
+}
+
+async fn choose(
     connection: Connection,
     terminal: Option<Tty>,
     filter: Option<&str>,

@@ -437,6 +437,7 @@ where
                 | AgentCommand::NewSession { .. }
                 | AgentCommand::ForkSession { .. }
                 | AgentCommand::MergeSession { .. }
+                | AgentCommand::SelectSession { .. }
                 | AgentCommand::LatestSession {}
         ) || command
             .agent()
@@ -584,6 +585,15 @@ where
                     .await
                     .map_err(|error| Error::Turn(Box::new(error)))?;
                 Ok(AgentReply::Merged { commit })
+            }
+            AgentCommand::SelectSession { agent, id } => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                self.bound.select_session(agent, id).await?;
+                Ok(AgentReply::Root {
+                    agent: agent.clone(),
+                })
             }
             AgentCommand::LatestSession {} => {
                 if !self.platform.sessions() {
@@ -1617,6 +1627,7 @@ where
                 | AgentCommand::ClientFiles { .. }
                 | AgentCommand::Read { .. } => true,
                 AgentCommand::NewSession { .. }
+                | AgentCommand::SelectSession { .. }
                 | AgentCommand::ForkSession { .. }
                 | AgentCommand::Pause { .. }
                 | AgentCommand::MergeSession { .. }

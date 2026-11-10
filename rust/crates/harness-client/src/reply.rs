@@ -555,6 +555,18 @@ fn validate_reply(
                 Err(CommandError::Invalid)
             };
         }
+        (
+            AgentReply::Root { agent },
+            AgentCommand::SelectSession {
+                agent: requested, ..
+            },
+        ) => {
+            return if agent == requested {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
         (AgentReply::Root { .. }, AgentCommand::Root {})
         | (AgentReply::Bound { .. }, AgentCommand::Bind { .. })
         | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })

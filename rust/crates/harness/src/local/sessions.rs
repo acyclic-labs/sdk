@@ -65,6 +65,21 @@ pub async fn fork(
     connection.select(agent).await
 }
 
+/// Persist an explicit user attach, without changing read-only selection.
+pub async fn selected(connection: &Connection, operation: &str) -> Result<()> {
+    let id = IntentId::try_from(operation).map_err(storage)?;
+    let AgentReply::Root { .. } = connection
+        .execute(&AgentCommand::SelectSession {
+            agent: connection.root().clone(),
+            id,
+        })
+        .await?
+    else {
+        return Err(unexpected());
+    };
+    Ok(())
+}
+
 /// Read the latest committed directory entry without walking any sessions.
 pub async fn latest(connection: &Connection) -> Result<Option<Connection>> {
     let AgentReply::LatestSession { agent } =
