@@ -11,8 +11,8 @@ use crate::{
     Error, IdempotencyKey, Result,
     conversation::{
         Attachment, ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef,
-        MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
-        PrivateDirectoryPage, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeRef,
+        MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryPage, ReferencedAttachments, VolumeClass,
+        VolumeOperation, VolumeRef,
     },
     core::{AuthorityVerifier, Scope},
     resources::{GenerationRef, ProviderRef, WorkspaceRef},

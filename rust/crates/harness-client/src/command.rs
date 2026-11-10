@@ -3,9 +3,10 @@
 
 use acyclic_harness_core::{
     agent::{AgentPath, IntentId},
-    conversation::FileRef,
+    conversation::{FileRef, validate_content_path},
     interaction::ApprovalBinding,
     model::ModelContent,
+    resources::GenerationRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -340,6 +341,22 @@ pub enum AgentCommand {
         /// Visible rows and complete encoded reply bytes, including continuation.
         page: AgentPageRequest,
     },
+    /// One authorized private directory page at its original immutable cut.
+    Directory {
+        /// Exact selected agent; paths never select a different private volume.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Normalized private-volume directory, or empty for its visible root.
+        path: String,
+        /// None selects the initial immutable generation.
+        #[cfg_attr(
+            feature = "wasm",
+            tsify(type = "WasmResourceRefWire & { kind: 'generation' } | undefined")
+        )]
+        generation: Option<GenerationRef>,
+        /// Shared row/byte credit; its cursor is the preceding page's last name.
+        page: AgentPageRequest,
+    },
     /// A bounded projection of an original input's committed call admissions and
     /// completions, read through its agent's original private grant.
     Usage {
@@ -415,6 +432,17 @@ pub enum AgentCommand {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReadTarget {
+    /// A private path selected at one immutable directory generation.
+    Private {
+        /// Normalized path under the selected agent's original private grant.
+        path: String,
+        /// Exact generation returned by directory discovery.
+        #[cfg_attr(
+            feature = "wasm",
+            tsify(type = "WasmResourceRefWire & { kind: 'generation' }")
+        )]
+        generation: GenerationRef,
+    },
     /// Immutable request owned by an exact original waiting-status record.
     Approval {
         /// Zero-based sequence in this agent's original status stream.
@@ -507,6 +535,40 @@ impl AgentCommand {
                 .validate_user_input(&mut None)
                 .map_err(|_| CommandError::Invalid),
             Self::Decide { binding, .. } => binding.validate().map_err(|_| CommandError::Invalid),
+            Self::Read {
+                target: ReadTarget::Private { path, generation },
+                ..
+            } => {
+                validate_content_path(path, &mut None).map_err(|_| CommandError::Invalid)?;
+                generation
+                    .validate(&mut None)
+                    .map_err(|_| CommandError::Invalid)
+            }
+            Self::Directory {
+                path,
+                generation,
+                page,
+                ..
+            } => {
+                if generation.is_none() && page.cursor().is_some() {
+                    return Err(CommandError::Invalid);
+                }
+                if !path.is_empty() {
+                    validate_content_path(path, &mut None).map_err(|_| CommandError::Invalid)?;
+                }
+                if let Some(generation) = generation {
+                    generation
+                        .validate(&mut None)
+                        .map_err(|_| CommandError::Invalid)?;
+                }
+                if let Some(after) = page.cursor() {
+                    validate_content_path(after, &mut None).map_err(|_| CommandError::Invalid)?;
+                    if after.contains('/') {
+                        return Err(CommandError::Invalid);
+                    }
+                }
+                Ok(())
+            }
             Self::Stage { digest, text, .. } if !is_digest(digest) || text.is_empty() => {
                 Err(CommandError::Invalid)
             }
@@ -551,6 +613,7 @@ impl AgentCommand {
             | Self::History { agent, .. }
             | Self::ProjectHeads { agent }
             | Self::Diff { agent, .. }
+            | Self::Directory { agent, .. }
             | Self::Approvals { agent, .. }
             | Self::Decide { agent, .. }
             | Self::Reply { agent, .. }
@@ -585,6 +648,7 @@ impl AgentCommand {
             Self::History { .. } => "history",
             Self::ProjectHeads { .. } => "project_heads",
             Self::Diff { .. } => "diff",
+            Self::Directory { .. } => "directory",
             Self::Approvals { .. } => "approvals",
             Self::Decide { .. } => "decide",
             Self::Reply { .. } => "reply",
