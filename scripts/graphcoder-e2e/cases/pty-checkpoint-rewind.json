@@ -10,6 +10,20 @@
         "when": {
           "user": "remember REWIND_E2E_FACT"
         },
+        "tools": [
+          {
+            "id": "write-at-cut",
+            "name": "shell",
+            "arguments": {
+              "command": "node -e \"require('node:fs').writeFileSync('rewind-file.txt','at cut');process.stdout.write('REWIND_FILE_WRITTEN')\""
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "REWIND_FILE_WRITTEN"
+        },
         "text": [
           "REWIND_E2E_FIRST"
         ]
@@ -26,6 +40,20 @@
         "when": {
           "user": "discard this turn"
         },
+        "tools": [
+          {
+            "id": "write-after-cut",
+            "name": "shell",
+            "arguments": {
+              "command": "node -e \"require('node:fs').writeFileSync('rewind-file.txt','after cut');process.stdout.write('REWIND_FILE_CHANGED')\""
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "REWIND_FILE_CHANGED"
+        },
         "text": [
           "REWIND_E2E_DISCARDED"
         ]
@@ -33,6 +61,21 @@
       {
         "when": {
           "user": "continue after rewind",
+          "contains": "REWIND_E2E_CHECKPOINT"
+        },
+        "tools": [
+          {
+            "id": "read-rewound-file",
+            "name": "shell",
+            "arguments": {
+              "command": "node -e \"process.stdout.write('REWIND_FILE=' + require('node:fs').readFileSync('rewind-file.txt','utf8'))\""
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "REWIND_FILE=at cut",
           "contains": "REWIND_E2E_CHECKPOINT"
         },
         "text": [
@@ -81,7 +124,7 @@
           },
           "after_request": {
             "path": "responses",
-            "step": 1
+            "step": 2
           },
           "prompt": "discard this turn"
         },
@@ -163,7 +206,7 @@
     }
   ],
   "assert": {
-    "requests": 5,
+    "requests": 8,
     "last_model_contains": [
       "REWIND_E2E_CHECKPOINT",
       "REWIND_E2E_DONE"
@@ -171,6 +214,9 @@
     "last_model_absent": [
       "REWIND_E2E_DISCARDED",
       "discard this turn"
+    ],
+    "tool_contains": [
+      "REWIND_FILE=at cut"
     ]
   }
 }

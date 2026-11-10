@@ -3,8 +3,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 
 export function expand(value, bindings) {
-  if (typeof value === "string") return value.replace(/\{\{(support|workspace|url|repository|provider)\}\}/g,
-    (token, key) => bindings[key] ?? token);
+  if (typeof value === "string") return value.replace(/\{\{(support|workspace|url|repository|provider|session:[a-z][a-z0-9_-]*)\}\}/g,
+    (token, key) => key.startsWith("session:") ? bindings.sessions?.[key.slice(8)] ?? token : bindings[key] ?? token);
   if (Array.isArray(value)) return value.map(item => expand(item, bindings));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value)
     .map(([key, item]) => [key, expand(item, bindings)]));

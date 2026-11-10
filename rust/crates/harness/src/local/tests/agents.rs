@@ -3346,6 +3346,37 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         records(&**agents.provider(), root.conversation().map_err(agent)?).await?,
         source
     );
+    let source_conversation = Conversation::open(connection.select(root.clone()).await?);
+    let mut closing = source_conversation.observe(None).await?;
+    crate::local::sessions::archive(&connection.select(root.clone()).await?, "archive-source")
+        .await?;
+    loop {
+        if let crate::local::Event::Status(status) = closing.next().await?
+            && matches!(
+                status.phase,
+                crate::agent::Phase::Done {
+                    outcome: crate::agent::AgentOutcome::Archived
+                }
+            )
+        {
+            break;
+        }
+    }
+    let archived_branch =
+        crate::local::sessions::fork(&connection, root.clone(), 1, "fork-archived-source").await?;
+    assert_eq!(
+        Conversation::open(archived_branch)
+            .turn_at(1, &future)
+            .await?
+            .answer,
+        "later"
+    );
+    assert!(agents.state(root).await.map_err(agent)?.closed);
+    assert_eq!(
+        provider.requests().len(),
+        3,
+        "forking retained archived history cannot dispatch a model"
+    );
     Ok(())
 }
 

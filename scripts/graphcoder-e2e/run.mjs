@@ -73,6 +73,7 @@ const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "
 function expand(value, fixture) {
   return expandFixture(value, { support: directory.replaceAll("\\", "/"),
     provider: fixture.provider,
+    sessions: fixture.sessions,
     repository: resolve(directory, "../..").replaceAll("\\", "/"),
     workspace: fixture.workspace.replaceAll("\\", "/"),
     ...(port ? { url: `http://127.0.0.1:${port}/${nativeCases.has(fixture.id) ? 'native-' : ''}${fixture.id}/v1` } : {}) });
@@ -155,8 +156,15 @@ async function execute(test, prepared) {
         // The service belongs to the case, rather than to a terminal whose
         // original custody owner correctly retires all of its descendants.
         const service = await processes.startOwned(binary,
-          [...fixture.args, "--local-service", "--signal-ready"],
+          [...fixture.args, ...(input.endpoint ? ["serve", "127.0.0.1:0"] : ["--local-service", "--signal-ready"])],
           { cwd: fixture.workspace, env: inputFixture.env });
+        if (input.endpoint) {
+          const publication = await new Spool(service.child.stdout, service.closed,
+            { transcript: join(artifact, "endpoint.jsonl") }).next(() => true);
+          fixture.env.ACYCLIC_API_KEY = publication.credential;
+          fixture.args.push("--endpoint", publication.endpoint);
+          continue;
+        }
         await new Promise((resolve, reject) => {
           const ready = bytes => {
             service.child.stdout.off("data", ready);
@@ -215,6 +223,15 @@ async function execute(test, prepared) {
           running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: messageId }) + "\n");
         } else running.child.stdin.end();
         const result = await closed(running); captures.push(result);
+        if (input.capture_root) {
+          executionSucceeded(result);
+          const root = JSON.parse(result.stdout);
+          assert.equal(root.kind, "root");
+          assert.equal(typeof root.agent, "string");
+          fixture.sessions ??= {};
+          assert.ok(!Object.hasOwn(fixture.sessions, input.capture_root));
+          fixture.sessions[input.capture_root] = root.agent;
+        }
         if ((input.exit ?? 0) === 0) executionSucceeded(result);
         else assert.equal(result.code, input.exit, `exit ${result.code} (signal ${result.signal}), expected ${input.exit}; stderr: ${result.stderr.trim() || "(empty)"}\nstdout tail: ${result.stdout.slice(-1500)}`);
         if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}; stdout tail: ${result.stdout.slice(-1500) || "(empty)"}`);

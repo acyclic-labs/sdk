@@ -554,9 +554,17 @@ async fn connected(
     terminal = selected_terminal;
     let connection = match &args.agent {
         Some(agent) => {
-            connection
+            let selected = connection
                 .select(acyclic_harness::agent::AgentPath::try_from(agent.clone())?)
-                .await?
+                .await?;
+            if selected.root().parent().is_none() && selected.root() != connection.root() {
+                acyclic_harness::local::sessions::selected(
+                    &selected,
+                    &OperationId::new().to_string(),
+                )
+                .await?;
+            }
+            selected
         }
         None => connection,
     };

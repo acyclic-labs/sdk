@@ -61,7 +61,8 @@ async fn select_inner(
             .ok_or("No previous session for this checkout; start graphcoder or graphcoder new")?;
         return Ok((selected, terminal));
     }
-    let interactive = args.command.is_none()
+    let interactive = args.endpoint.is_none()
+        && args.command.is_none()
         && args.prompt.is_none()
         && args.input_format == crate::InputFormat::Text
         && args.output_format == crate::OutputFormat::Text

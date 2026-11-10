@@ -400,17 +400,18 @@ export class ProcessObservationFailed extends Error {
 // The ConPTY host admits the launch paths plus typed options; the case owner holds the only deadline.
 export function conptyArgs(binary, args) {
   const flags = new Map();
-  let resume = false;
+  let resume;
   for (let index = 0; index < args.length; index++) {
-    if (args[index] === "--resume" && !resume) { resume = true; continue; }
-    assert.ok(["--workspace", "--settings-root", "--catalog", "--model", "--operation", "--diagnostic-records", "--diagnostic-record-bytes"].includes(args[index])
+    if (["--resume", "--continue"].includes(args[index]) && !resume) { resume = args[index]; continue; }
+    assert.ok(["--workspace", "--settings-root", "--catalog", "--model", "--operation", "--endpoint", "--agent", "--diagnostic-records", "--diagnostic-record-bytes"].includes(args[index])
       && !flags.has(args[index]) && index + 1 < args.length, `ConPTY host cannot launch argument ${args[index]}`);
     flags.set(args[index], args[++index]);
   }
   const [workspace, catalog, settings, model] = ["--workspace", "--catalog", "--settings-root", "--model"].map(flag => flags.get(flag));
   assert.ok(workspace && catalog && settings && model, "ConPTY host requires --workspace, --settings-root, --catalog and --model");
   const operation = flags.get("--operation");
-  return [binary, workspace, catalog, settings, model, ...(resume ? ["--resume"] : []),
+  return [binary, workspace, catalog, settings, model, ...(resume ? [resume] : []),
+    ...["--endpoint", "--agent"].flatMap(flag => flags.has(flag) ? [flag, flags.get(flag)] : []),
     ...(operation === undefined ? [] : ["--operation", operation]),
     ...["--diagnostic-records", "--diagnostic-record-bytes"].flatMap(flag => flags.has(flag) ? [flag, flags.get(flag)] : [])];
 }
