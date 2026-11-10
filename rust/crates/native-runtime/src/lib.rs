@@ -16,7 +16,7 @@ use std::sync::{Arc, LazyLock, Weak};
 use std::task::{Context, Poll, Waker};
 // Source-root identity is a compiler input: a shared target must not reuse
 // native owner metadata from another checkout. This has no runtime storage.
-const _: &str = env!("CARGO_MANIFEST_DIR");
+const _: Option<&str> = option_env!("ACYCLIC_BUILD_SOURCE_ROOT");
 
 mod delivery;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
