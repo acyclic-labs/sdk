@@ -245,6 +245,18 @@ pub struct SearchRoot {
 }
 
 impl SearchRoot {
+    /// Creates missing descendant directories using search access only, never
+    /// following a link. Names are visible on return, without a persistence
+    /// barrier; use for disposable projections reconstructed from durable state.
+    pub fn create_directories(&self, relative: &Path) -> Result<Self, DemandError> {
+        Ok(Self {
+            root: self
+                .root
+                .create_search_directories(relative, &mut crate::native_host::ordinary_work())?,
+            path: self.path.join(relative),
+        })
+    }
+
     /// The descendant directory at `relative`, held for search only. No
     /// component is followed through a link.
     pub fn open_search_directory(&self, relative: &Path) -> Result<Self, DemandError> {

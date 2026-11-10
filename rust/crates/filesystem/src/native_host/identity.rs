@@ -128,7 +128,7 @@ pub(crate) fn directory_has_ancestor<W: NativeHostWork>(
         let parent = Dir::from_std_file(open_unix(
             current.as_ref().unwrap_or(directory).as_raw_fd(),
             c"..",
-            cwd_metadata_flags(),
+            directory_metadata_flags(),
             work,
         )?);
         let next = directory_identity(&parent, work)?;

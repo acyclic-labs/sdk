@@ -391,6 +391,8 @@ mod binding_paths {
 // naming any binding there is SDK custody and is replaced; anything else is
 // refused as authored content.
 pub(super) fn link(root: &Path, mounts: &mut Mounts, bindings: &Path) -> Result<()> {
+    let held_root = acyclic_fs::hold_search_root(root)
+        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
             continue;
@@ -403,7 +405,12 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts, bindings: &Path) -> Result<
         let target = source.destination.as_path();
         let relative = Path::new(relative);
         if let Some(parent) = relative.parent() {
-            create_mount_directory(root, parent)?;
+            // Alias parents are disposable projection state. Creating or
+            // validating them needs search access, never directory listing
+            // or durable admission through the mounted projection.
+            held_root
+                .create_directories(parent)
+                .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         }
         let path = root.join(relative);
         let previous =
@@ -608,6 +615,7 @@ pub(super) fn recover_volume_after_crash(
     Ok(())
 }
 
+#[cfg(any(windows, test))]
 pub(super) fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
     let root =
         acyclic_fs::hold_root(root).map_err(acyclic_fs::NativeTreeMaterializationError::from)?;

@@ -1,5 +1,15 @@
 use super::*;
 
+/// A no-follow directory capability for metadata and relative lookup, without
+/// requesting directory-list access: O_PATH on Linux and O_EVTONLY on Darwin.
+pub(super) const fn directory_metadata_flags() -> i32 {
+    #[cfg(target_os = "linux")]
+    let access = libc::O_PATH;
+    #[cfg(target_os = "macos")]
+    let access = libc::O_EVTONLY;
+    access | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW
+}
+
 pub(crate) fn unix_name<W: NativeHostWork, T>(
     name: &OsStr,
     work: &mut W,
@@ -62,10 +72,20 @@ pub(crate) fn open_unix_directory<W: NativeHostWork>(
     create: bool,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+    #[cfg(target_os = "linux")]
+    let flags = flags | libc::O_NOATIME;
+    open_unix_directory_with_flags(parent, name, create, flags, work)
+}
+
+pub(super) fn open_unix_directory_with_flags<W: NativeHostWork>(
+    parent: &Dir,
+    name: &OsStr,
+    create: bool,
+    flags: i32,
+    work: &mut W,
+) -> Result<Dir, W::Error> {
     unix_name(name, work, |name, work| {
-        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
-        #[cfg(target_os = "linux")]
-        let flags = flags | libc::O_NOATIME;
         let open =
             |work: &mut W| open_unix(parent.as_raw_fd(), name, flags, work).map(Dir::from_std_file);
         match open(work) {

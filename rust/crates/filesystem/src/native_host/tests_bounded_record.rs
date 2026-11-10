@@ -61,7 +61,7 @@ fn held_canonical_directory_needs_search_permission_without_directory_read_permi
     let expected = wanted.canonicalize()?;
     let mut work = ordinary_work();
     let directory = unix_name(wanted.as_os_str(), &mut work, |name, work| {
-        open_unix(libc::AT_FDCWD, name, cwd::cwd_metadata_flags(), work).map(Dir::from_std_file)
+        open_unix(libc::AT_FDCWD, name, directory_metadata_flags(), work).map(Dir::from_std_file)
     })?;
     std::fs::set_permissions(&wanted, std::fs::Permissions::from_mode(0o100))?;
     let result = canonical_directory_path_held(directory, &mut work);
