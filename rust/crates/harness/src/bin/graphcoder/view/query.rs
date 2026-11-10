@@ -216,7 +216,7 @@ mod tests {
             }
             assert!(!queries.page.as_ref().unwrap().page_boundary(
                 &mut top,
-                -isize::from(height),
+                -isize::try_from(height)?,
                 height
             ));
         }

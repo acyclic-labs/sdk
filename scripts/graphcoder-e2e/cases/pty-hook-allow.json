@@ -1,5 +1,6 @@
 {
   "id": "pty-hook-allow",
+  "adapter": "messages",
   "workspace": {
     "kind": "plain",
     "files": {}
@@ -11,9 +12,9 @@
         "tools": [
           {
             "id": "write",
-            "name": "write",
+            "name": "Write",
             "arguments": {
-              "path": "approved.txt",
+              "file_path": "approved.txt",
               "content": "APPROVED_E2E\n"
             }
           }
