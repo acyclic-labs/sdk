@@ -158,10 +158,10 @@ pub fn applied_len(request: &CommitRequest, skipped: &[u32]) -> usize {
         .sum()
 }
 
-fn settled_effects<'r: 's, 's>(
+pub(crate) fn settled_effects<'r: 's, 's>(
     request: &'r CommitRequest,
     skipped: &'s [u32],
-) -> impl Iterator<Item = (bool, &'r crate::CommitEffect)> + 's {
+) -> impl Iterator<Item = (bool, &'r crate::CommitEffect)> + Clone + 's {
     settled_effects_with(request, skipped, |index, skip| {
         (index as u64).cmp(&u64::from(skip))
     })
@@ -170,8 +170,8 @@ fn settled_effects<'r: 's, 's>(
 fn settled_effects_with<'r: 's, 's>(
     request: &'r CommitRequest,
     mut skipped: &'s [u32],
-    mut compare: impl FnMut(usize, u32) -> std::cmp::Ordering + 's,
-) -> impl Iterator<Item = (bool, &'r crate::CommitEffect)> + 's {
+    mut compare: impl FnMut(usize, u32) -> std::cmp::Ordering + Clone + 's,
+) -> impl Iterator<Item = (bool, &'r crate::CommitEffect)> + Clone + 's {
     request
         .effects
         .iter()

@@ -46,7 +46,7 @@ impl CommitReceipt {
     /// `InvalidArgument`; inconsistent receipt members return `InvalidResponse`.
     /// Neither owner is changed.
     pub fn validate_request(&self, request: &CommitRequest) -> Result<(), StreamError> {
-        use crate::request::effect_condition;
+        use crate::request::effect_conditions;
         if !crate::preparation::shaped(request)
             || request.mutations().count() > MAX_ITEMS
             || request.conditions().count() > MAX_ITEMS
@@ -71,9 +71,8 @@ impl CommitReceipt {
             return Err(StreamError::InvalidResponse);
         }
         let mut published = 0_usize;
-        for (index, effect) in request.effects.iter().enumerate() {
-            let skipped =
-                u32::try_from(index).is_ok_and(|index| self.skipped.binary_search(&index).is_ok());
+        for (skipped, effect) in crate::preparation::settled_effects(request, &self.skipped) {
+            let mut condition_for = effect_conditions(effect);
             for mutation in &effect.mutations {
                 let path = crate::CommitMutation::path(mutation);
                 let append = self
@@ -86,7 +85,7 @@ impl CommitReceipt {
                     .binary_search_by(|fork| fork.destination.cmp(path))
                     .ok()
                     .and_then(|index| self.forks.get(index));
-                let condition = effect_condition(effect, path);
+                let condition = condition_for(path);
                 let matches = match mutation {
                     CommitMutation::Append { records, .. } => {
                         if records.is_empty() || records.len() > MAX_ITEMS {

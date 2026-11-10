@@ -547,9 +547,9 @@ pub(crate) fn fact_path(fact: &crate::CommittedMutation) -> &StreamPath {
 /// Selects conditions for ascending mutation paths within one canonical effect.
 /// Each comparison consumes a condition or completes one query; no lookup
 /// searches conditions that an earlier mutation already passed.
-pub(crate) fn effect_conditions(
-    effect: &CommitEffect,
-) -> impl FnMut(&StreamPath) -> Option<&CommitCondition> {
+pub(crate) fn effect_conditions<'a>(
+    effect: &'a CommitEffect,
+) -> impl FnMut(&StreamPath) -> Option<&'a CommitCondition> + 'a {
     effect_conditions_with(effect, || {})
 }
 
@@ -563,7 +563,7 @@ fn effect_conditions_with<'a>(
             break None;
         };
         visit();
-        match condition_path(condition).cmp(path) {
+        match CommitCondition::path(condition).cmp(path) {
             std::cmp::Ordering::Less => {
                 conditions.next();
             }
