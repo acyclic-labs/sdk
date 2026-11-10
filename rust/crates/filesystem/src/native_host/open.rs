@@ -595,9 +595,11 @@ pub fn check_native_root_name_prefix(name: &str) {
     let (examined, encoded) = (prefix.len() as u64 + 1, 0);
     #[cfg(windows)]
     let (examined, encoded) = (prefix.encode_utf16().count() as u64 + 1, 0);
-    let work =
-        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .unwrap_or_else(|(error, _)| panic!("native root work: {error}"));
+    let work = NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .unwrap_or_else(|(error, _)| panic!("native root work: {error}"));
     let live = work.live_allocation_bytes();
     let before = work.receipt();
     assert!(matches!(
@@ -627,9 +629,9 @@ pub fn check_native_root_name_prefix(name: &str) {
     );
     assert_eq!(work.live_allocation_bytes(), live);
     let denied = NativeMaterializationWork::new(
-        WorkBudget {
+        crate::WorkBudget {
             items_examined: 0,
-            ..WorkBudget::UNBOUNDED
+            ..crate::WorkBudget::UNBOUNDED
         },
         &crate::CancellationToken::new(),
     )
