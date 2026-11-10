@@ -1,3 +1,4 @@
+use crate::native_host::NativeHostWork;
 use crate::native_mount::shared::outcome::{CallbackFailure, source_refusal};
 
 use super::{
@@ -94,8 +95,9 @@ impl Projector {
         directories: Vec<MountPath>,
     ) -> Result<(), String> {
         if directories.is_empty() {
-            return Ok(());
+            return self.clear_negative_paths(projection);
         }
+        lock_recover(&self.state).negative_cache_dirty = true;
         let wanted = std::thread::available_parallelism()
             .map_or(1, usize::from)
             .min(MATERIALIZE_WORKERS);
@@ -111,7 +113,34 @@ impl Projector {
             queue.run(materialize);
         });
         drop(helpers);
-        queue.finish()
+        queue.finish()?;
+        self.clear_negative_paths(projection)
+    }
+
+    /// The caller holds `tree`, serializing cache acknowledgement with every
+    /// namespace pass that dirties it. A failed clear retains that obligation.
+    fn clear_negative_paths(&self, projection: Projection<'_>) -> Result<(), String> {
+        if !lock_recover(&self.state).negative_cache_dirty {
+            return Ok(());
+        }
+        // A completed namespace pass must retire negative kernel lookups from
+        // the previous generation before revalidation acknowledges visibility.
+        let mut cleared = 0;
+        (&mut &*projection.work)
+            .attempt_io(super::WriteOperations.delta(1), || {
+                // SAFETY: the physical context stays live throughout this pass.
+                unsafe {
+                    windows::Win32::Storage::ProjectedFileSystem::PrjClearNegativePathCache(
+                        projection.context,
+                        Some(&mut cleared),
+                    )
+                }
+                .map_err(std::io::Error::other)
+            })
+            .map_err(|error| format!("clearing retired negative paths: {error}"))?;
+        lock_recover(&self.state).negative_cache_dirty = false;
+        self.changed.notify_all();
+        Ok(())
     }
 
     pub(super) fn materialize_directory(
@@ -167,6 +196,7 @@ impl Projector {
                 else {
                     return Ok(Vec::new());
                 };
+                let since = lock_recover(&self.state).releases;
                 let placed = match basis {
                     Some(basis) => with_creating_name(
                         &projection.runtime.creating_name,
@@ -178,8 +208,11 @@ impl Projector {
                 }?;
                 if placed == Placed::Retry {
                     names.remove(entry.component.as_slice());
-                    lock_recover(&self.state).stale.insert(directory.clone());
-                    self.wake();
+                    let mut state = lock_recover(&self.state);
+                    state.unplaced.insert(child);
+                    if state.held(since) {
+                        self.wake();
+                    }
                     continue;
                 }
                 if is_directory {
@@ -194,6 +227,9 @@ impl Projector {
                     continue;
                 }
                 let child = directory.child(name.clone());
+                if state.unplaced.contains(&child) {
+                    continue;
+                }
                 if *was_directory {
                     drop(state);
                     self.remove_tree(projection, &child);
@@ -552,7 +588,8 @@ impl Projector {
             starting: false,
         };
         state.retry = false;
-        state.relisting = !state.stale.is_empty();
+        state.relisting =
+            !state.stale.is_empty() || !state.unplaced.is_empty() || state.negative_cache_dirty;
         let through = state.notified;
         let mut listings = state
             .directories
@@ -565,6 +602,10 @@ impl Projector {
             .map(|(path, _)| path.clone())
             .collect::<Vec<_>>();
         listings.extend(state.stale.drain());
+        // This pass owns the deferred creations until its listings complete.
+        // A failure must return that custody, even with an unchanged basis.
+        let unplaced = std::mem::take(&mut state.unplaced);
+        listings.extend(unplaced.iter().filter_map(|path| path.parent()));
         listings.sort_by_key(|path| path.components().len());
         listings.dedup();
         let superseded = state
@@ -596,10 +637,17 @@ impl Projector {
         }
         self.replace_pending(projection, &mut failure);
         self.clear_vacated(projection);
+        if failure.is_none() {
+            let _tree = lock_recover(&self.tree);
+            if let Err(error) = self.clear_negative_paths(projection) {
+                failure.get_or_insert(error);
+            }
+        }
         state = lock_recover(&self.state);
         state.relisting = false;
         state.processed = state.processed.max(through);
         if let Some(failure) = failure {
+            state.unplaced.extend(unplaced);
             state.failure.get_or_insert(failure);
         }
         self.changed.notify_all();
@@ -682,7 +730,7 @@ impl Projector {
     pub(super) fn retry(&self) {
         let mut state = lock_recover(&self.state);
         state.releases = state.releases.wrapping_add(1);
-        if !state.pending.is_empty() {
+        if !state.pending.is_empty() || !state.unplaced.is_empty() {
             state.retry = true;
             self.wake();
         }
@@ -692,12 +740,20 @@ impl Projector {
         let mut state = lock_recover(&self.state);
         let target = state.notified;
         let mut deadline = None;
+        // A previous failed cache clear is retried by this explicit control,
+        // even when the source's listing basis has not changed.
+        if state.negative_cache_dirty && state.failure.is_none() {
+            state.retry = true;
+            self.wake();
+        }
         while !state.stopping
             && (state.startup.is_some()
                 || state.processed < target
                 || state.relisting
                 || !state.stale.is_empty()
                 || !state.pending.is_empty()
+                || !state.unplaced.is_empty()
+                || state.negative_cache_dirty
                 || !state.vacated.is_empty())
         {
             if let Some(failure) = state.failure.take() {
@@ -707,6 +763,7 @@ impl Projector {
                 || state.processed < target
                 || state.relisting
                 || !state.stale.is_empty()
+                || state.negative_cache_dirty
             {
                 state = self
                     .changed
@@ -718,7 +775,12 @@ impl Projector {
                 *deadline.get_or_insert_with(|| self.clock.instant() + HELD_SETTLE_LIMIT);
             let remaining = deadline.saturating_duration_since(self.clock.instant());
             if remaining.is_zero() {
-                let held = state.pending.keys().next().cloned();
+                let held = state
+                    .pending
+                    .keys()
+                    .chain(state.unplaced.iter())
+                    .next()
+                    .cloned();
                 return Err(NativeMountError::Driver(format!(
                     "a superseded placeholder is held open and cannot be replaced: {held:?}"
                 )));

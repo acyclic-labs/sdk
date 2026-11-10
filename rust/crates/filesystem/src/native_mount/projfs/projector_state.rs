@@ -187,6 +187,9 @@ pub(super) struct ProjectorState {
     pub(super) startup: Option<crate::NativeMaterializationWork>,
     pub(super) written: HashMap<MountPath, WrittenEntry>,
     pub(super) pending: HashMap<MountPath, WrittenEntry>,
+    /// Creations waiting for a handle release or a changed source listing.
+    pub(super) unplaced: HashSet<MountPath>,
+    pub(super) negative_cache_dirty: bool,
     pub(super) directories: HashMap<MountPath, Materialized>,
     pub(super) stale: HashSet<MountPath>,
     pub(super) relist: HashSet<MountPath>,

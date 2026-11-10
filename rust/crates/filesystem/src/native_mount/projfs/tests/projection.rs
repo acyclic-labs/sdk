@@ -55,6 +55,102 @@ fn materialization_queue_retains_original_errors_and_retires_panicking_items() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_failed_negative_cache_clear_is_retried_without_a_source_change()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = windows_checkout_source().await?;
+    let (_root, _destination, mut session) = mount_source(&source)?;
+    let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+    let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
+    let context = driver.context.ok_or("missing ProjFS context")?;
+    let basis = super::ReadBasis::sample(source.as_ref()).ok_or("source has no stable basis")?;
+    let denied = crate::NativeMaterializationWork::new(
+        crate::WorkBudget {
+            backend_write_operations: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        },
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
+    {
+        let _tree = lock_recover(&runtime.projector.tree);
+        runtime
+            .projector
+            .materialize_locked(
+                Projection {
+                    runtime: &runtime,
+                    work: &denied,
+                    context,
+                    starting: false,
+                },
+                vec![MountPath::root()],
+            )
+            .expect_err("zero write allowance must refuse the native cache clear");
+        assert!(lock_recover(&runtime.projector.state).negative_cache_dirty);
+    }
+    let work = setup_work()?;
+    let before = work.receipt().backend_write_operations;
+    session.revalidate(&work)?;
+    assert!(work.receipt().backend_write_operations > before);
+    assert!(!lock_recover(&runtime.projector.state).negative_cache_dirty);
+    assert!(basis.still_describes(source.as_ref(), &MountPath::root(), None));
+    drop(runtime);
+    session.stop()?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_relist_retains_its_deferred_creations() -> Result<(), Box<dyn std::error::Error>>
+{
+    let source = windows_checkout_source().await?;
+    let (_root, destination, mut session) = mount_source(&source)?;
+    let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+    let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
+    let denied = crate::NativeMaterializationWork::new(
+        crate::WorkBudget {
+            backend_write_operations: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        },
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
+    let work = setup_work()?;
+    let name = windows_path("deferred.txt");
+    let scope = session.begin_original_work(&denied)?;
+    let basis = {
+        let _tree = lock_recover(&runtime.projector.tree);
+        source.create_file(&name, FileMetadata::default(), None, &work)?;
+        source.write_range(&name, 0, Bytes::from_static(b"recovered"))?;
+        let basis =
+            super::ReadBasis::sample(source.as_ref()).ok_or("source has no stable basis")?;
+        // Model the accepted cut after a busy creation: the source is current,
+        // but this child has not reached the real native namespace yet.
+        let mut state = lock_recover(&runtime.projector.state);
+        state
+            .directories
+            .get_mut(&MountPath::root())
+            .ok_or("missing materialized root")?
+            .basis = Some(basis);
+        state.unplaced.insert(name);
+        basis
+    };
+    let refused = session.revalidate(&denied);
+    drop(scope);
+    assert!(
+        refused.is_err(),
+        "the deferred write exceeded its allowance"
+    );
+    session.revalidate(&work)?;
+    assert_eq!(
+        std::fs::read(destination.join("deferred.txt"))?,
+        b"recovered"
+    );
+    assert!(basis.still_describes(source.as_ref(), &MountPath::root(), None));
+    drop(runtime);
+    session.stop()?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn directory_link_projection_has_no_target_sized_conversion()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];

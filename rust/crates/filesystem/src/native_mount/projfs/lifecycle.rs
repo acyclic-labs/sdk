@@ -42,6 +42,9 @@ impl Projector {
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                 }
             }
+            // Capture and prepare while the source is live, off the dropping
+            // executor. A current-thread caller cannot synchronously drive it.
+            owner.retain_projection_cleanup();
             let result = owner.stop_physical().and_then(|()| {
                 let credit = owner
                     .worker_close_credit
@@ -75,6 +78,23 @@ impl Projector {
 }
 
 impl ProjFsSession {
+    /// A customer retirement owns its namespace cleanup, including a mount
+    /// dropped without an explicit preparation. A refusal keeps its cause, so
+    /// physical retirement preserves data instead of deleting it.
+    fn retain_projection_cleanup(&mut self) {
+        let customer = self
+            .runtime
+            .as_ref()
+            .is_some_and(|runtime| matches!(runtime.source.native_original_work(), Ok(Some(_))));
+        if !customer || self.shared.is_some() || self.projection_cleanup.is_some() {
+            return;
+        }
+        if let Err(error) = self.prepare_projection_cleanup() {
+            self.capture_failure.get_or_insert(error);
+            self.capture_attempted = true;
+        }
+    }
+
     pub(in crate::native_mount) fn has_retirement_owner(&self) -> bool {
         self.controller.is_some()
     }
