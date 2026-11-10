@@ -36,7 +36,7 @@ test-support = ["acyclic-auth/test-support", "acyclic-native-runtime/test-suppor
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
-acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 pin-project-lite = "0.2.16"
 http-body = { version = "1" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
@@ -56,6 +56,7 @@ tokio = { version = "1.48.0", default-features = false, features = ["sync", "tim
 libc = { version = "0.2.175" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
 object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"] }
 quick-xml = { version = "0.41.0" }
 # object_store uses reqwest 0.13; keep its TLS provider aligned with the SDK.

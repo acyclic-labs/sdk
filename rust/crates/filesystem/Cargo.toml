@@ -57,8 +57,6 @@ bytes.workspace = true
 futures.workspace = true
 ed25519-dalek = "=3.0.0"
 hex.workspace = true
-notify = { workspace = true }
-dirs = { workspace = true }
 parking_lot.workspace = true
 pin-project-lite = "0.2.17"
 serde.workspace = true
@@ -129,6 +127,8 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+notify = { workspace = true }
+dirs = { workspace = true }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 loom = { version = "=0.7.3", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }

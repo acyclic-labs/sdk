@@ -159,7 +159,7 @@ pub fn tool_approval_request(
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
     paid: (String, acyclic_fs::NativeCustody),
-    work: acyclic_fs::acyclic_fs::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     (route, target): (
         crate::interaction::ApprovalRoute,
         Option<&crate::agent::TargetRecord>,
@@ -222,7 +222,7 @@ pub fn tool_approval_request(
 
 fn copy_approval_subject(
     invocation: &ToolInvocation,
-    work: acyclic_fs::acyclic_fs::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     route: crate::interaction::ApprovalRoute,
     target: Option<&crate::agent::TargetRecord>,
 ) -> Result<(ApprovalSubject, acyclic_fs::NativeCustody)> {
@@ -297,7 +297,7 @@ pub(crate) fn tool_approval_binding(
     policy: &ComponentIdentity,
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
-    work: acyclic_fs::acyclic_fs::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(OperationId, [u8; 32])> {
     #[cfg(target_arch = "wasm32")]
     let _ = work;
