@@ -9,7 +9,7 @@ regressions=(
   source_callbacks_share_the_real_cache_without_lock_inversion
   reopening_waits_for_the_retiring_native_owner
   journal_write_bound_exhausts_a_narrow_index_domain_and_rejects_truncation
-  malformed_lineage_shape_never_enters_the_graph
+  persisted_lineage_names_require_exact_canonical_bytes
   foreign_work_is_refused_before_activating_a_real_source
   shared_access_oracle_detects_a_corrupted_decision
 )

@@ -50,51 +50,6 @@ async fn malformed_lineage_shape_never_enters_the_graph() {
             .await,
         Err(WorkspaceLineageError::IncompatibleState)
     ));
-
-    // Stored names are identities: normalization must not silently change them
-    // during registration or when recovering a record written by an adapter.
-    for (name, parent_name, valid) in [
-        ("caf\u{e9}", "parent", true),
-        ("cafe\u{301}", "parent", false),
-        ("child", "cafe\u{301}", false),
-    ] {
-        let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
-        let record = WorkspaceLineageRecord {
-            version: LINEAGE_VERSION,
-            revision: 1,
-            ready: true,
-            workspace_id: workspace(name),
-            workspace_name: name.to_owned(),
-            parent_workspace_id: Some(workspace(parent_name)),
-            parent_workspace_name: Some(parent_name.to_owned()),
-            fork_generation: generation(1),
-            initial_generation: generation(2),
-        };
-        if valid {
-            graph.register(record.clone()).await.unwrap();
-        } else {
-            assert!(matches!(
-                graph.register(record.clone()).await,
-                Err(WorkspaceLineageError::IncompatibleState)
-            ));
-            assert!(
-                graph
-                    .store
-                    .compare_and_swap(record.workspace_id, 0, record.clone())
-                    .await
-                    .unwrap()
-            );
-        }
-        let recovered = graph.resolve(record.workspace_id).await;
-        if valid {
-            assert_eq!(recovered.unwrap(), record);
-        } else {
-            assert!(matches!(
-                recovered,
-                Err(WorkspaceLineageError::IncompatibleState)
-            ));
-        }
-    }
 }
 
 #[tokio::test]
