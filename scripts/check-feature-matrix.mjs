@@ -8,15 +8,14 @@
 // from the manifests, so a new crate or feature is covered without editing
 // this script.
 //
-// Usage: check-feature-matrix.mjs [WORKERS] [--each-feature] [--list]
+// Usage: check-feature-matrix.mjs [WORKERS] [--list]
 //        [--windows-msvc | --target=TRIPLE] [--package=NAME ...]
-// --each-feature remains accepted; isolated feature checks are always enabled.
 // Every extra worker uses its own target directory, so Cargo's build lock never
 // serializes them; the compiler cache still deduplicates their dependencies.
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { localCargoPackages, metadata } from "./publish-cargo-crates.mjs";
+import { localCargoPackages } from "./publish-cargo-crates.mjs";
 import { featureSets, selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
 import { runCommand } from "./run-command.mjs";
 export { enabled, featureSets } from "./cargo-feature-selection.mjs";
@@ -70,10 +69,11 @@ async function main() {
   const selected = args.filter(arg => arg.startsWith("--package=")).map(arg => arg.slice(10));
   const workers = Number(args.find(arg => /^\d+$/u.test(arg)) ?? 1);
   if (!Number.isSafeInteger(workers) || workers < 1) throw new Error("WORKERS must be a positive integer");
-  // Every publishable local crate, in publication order (the publish check
-  // already proves the order lists each exactly once).
+  // Discover every publishable local crate independently of release ordering.
+  // Private workspace consumers still contribute their dependency requests.
   const consumers = localCargoPackages();
-  const inventory = metadata(undefined, consumers);
+  const inventory = new Map(consumers.filter(item => item.source === null
+    && (item.publish === null || item.publish.includes("crates-io"))).map(item => [item.name, item]));
   const items = [...inventory.values()];
   const sets = selectFeaturePackages(items, selected).flatMap(item => featureSets(item, consumers)
     .map(args => ({ name: item.name, args, selection: selectCargoFeatures(inventory, [item.name], args.slice(5)) })));

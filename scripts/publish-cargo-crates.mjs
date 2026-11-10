@@ -40,7 +40,8 @@ export function localCargoPackages() {
   return packages;
 }
 
-export function metadata(releaseVersion, packages = localCargoPackages()) {
+export function metadata(releaseVersion) {
+  const packages = localCargoPackages();
   const publishable = packages.filter(item => item.source === null && (item.publish === null || item.publish.includes("crates-io")));
   const byName = new Map(publishable.map(item => [item.name, item]));
   if (new Set(order).size !== order.length || order.some(name => !byName.has(name)) || byName.size !== order.length) {

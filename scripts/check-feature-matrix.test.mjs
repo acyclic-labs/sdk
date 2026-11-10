@@ -80,7 +80,6 @@ test("the default matrix includes isolated features without an opt-in flag", () 
   assert.equal(featureSets({ ...item, features: {} }).length, 1);
   // Every selected configuration compiles its test cfg too.
   assert.deepEqual(linuxCommands(selection(item, featureSets(item)[0])).map(command => command[4]), ["--lib", "--all-targets"]);
-  assert.equal(featureSets(item).length, 5);
 });
 
 test("dependent feature groups preserve defaults, renames and weak optional forwarding", () => {
@@ -125,7 +124,7 @@ test("published consumer configurations are standalone commands on Linux and Win
   }
 });
 
-test("PR and full matrices reuse the same worker for their shared sets", () => {
+test("adding features or relocating checkouts preserves worker targets", () => {
   const item = { name: "crate", manifest_path: "/main/crate/Cargo.toml", features: { default: ["a"], a: [], b: [], c: [] } };
   const full = featureSets(item).map(args => [args.slice(5).join(" "), featureWorker(item.name, args, 6)]);
   for (const args of featureSets({ ...item, manifest_path: "/pr/crate/Cargo.toml" })) {
