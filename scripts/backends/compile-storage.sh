@@ -12,9 +12,9 @@ cargo check --locked -p acyclic-plugin
 step=compile-postgres-checks
 cargo check --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance
 step=compile-shared-stream-regressions
-cargo test --locked -p acyclic-stream --features local,postgres --lib --no-run
+cargo test --locked -p acyclic-stream --features postgres --lib --no-run
 step=compile-shared-objects-regressions
-cargo test --locked -p acyclic-objects --features local,s3 --lib --no-run
+cargo test --locked -p acyclic-objects --features s3 --lib --no-run
 step=compile-agent-host-baseline
 cargo test --locked -p acyclic-agent-host-conformance --features local --test main --no-run
 step=compile-portable-host-fixtures

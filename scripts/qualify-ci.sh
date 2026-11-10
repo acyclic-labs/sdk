@@ -187,7 +187,7 @@ native_mount_tests() {
 
 # Native-host fork/capture/merge conformance uses the shared harness tests.
 fork_join_conformance() {
-  cargo test -p acyclic-harness --all-features --locked --lib \
+ cargo test -p acyclic-harness --all-features --locked --lib \
     local::host_workspace::tests:: -- --test-threads=4
 }
 
@@ -203,7 +203,7 @@ native_host_contracts() {
   npm ci --prefix plugin/tests/hosts --no-audit --no-fund
   bun run --cwd plugin/tests/hosts test:shim
   cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4
-  cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4
+ cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4
 }
 
 # Every shipped browser feature set, with its unit and integration tests,
@@ -212,11 +212,11 @@ web_warning_closures() {
   local features
   for features in browser wasm browser,test-support wasm,test-support; do
     RUSTFLAGS="$warning_rustflags" \
-      cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
+ cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
         --features "$features" --target wasm32-unknown-unknown --lib --tests
   done
   RUSTFLAGS="$warning_rustflags" \
-    cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
+ cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
       --target wasm32-unknown-unknown --lib
 }
 
@@ -240,11 +240,11 @@ case "$lane" in
       cargo check --locked -p acyclic-harness-fuzz --bins
     # Stream Loom models are crate-private; only a cfg(loom) build compiles them.
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" \
-      cargo check --locked -p acyclic-stream --features model-checking --lib
+ cargo check --locked -p acyclic-stream --features model-checking --lib
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
-      cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features model-checking --lib
+ cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features model-checking --lib
     # Compile native implementations and their unit tests together.
-    cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --lib --tests
+ cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --lib --tests
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness-core --features model-checking --test main mcp_loom::
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
@@ -340,7 +340,7 @@ case "$lane" in
     ;;
   linux-runtime)
     cargo fetch --locked
-    cargo test -p acyclic-fs --locked --lib -- \
+ cargo test -p acyclic-fs --locked --lib -- \
       --ignored --test-threads=1
     fork_join_conformance
     ;;
@@ -405,7 +405,7 @@ case "$lane" in
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
     # Run capture admission and publication in the shipped libc ABI. Path
     # statx and held-descriptor fstat can expose different optional metadata.
-    cargo test -p acyclic-fs --locked \
+ cargo test -p acyclic-fs --locked \
       --target "$target" --lib native_capture::
     ;;
   policy)
@@ -474,7 +474,7 @@ case "$lane" in
   wasm-tests)
     # Compile target-specific test code without a browser or native dev-deps.
     for features in browser,test-support wasm,test-support; do
-      cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
+ cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
         --features "$features" --target wasm32-unknown-unknown --lib --tests
     done
     ;;
@@ -489,7 +489,7 @@ case "$lane" in
     # compiles or omits, so lint each browser build as it ships.
     cargo clippy -p acyclic-fs-wasm --target wasm32-unknown-unknown \
       --all-targets --all-features --locked -- -D warnings
-    cargo clippy -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features wasm \
+ cargo clippy -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features wasm \
       --target wasm32-unknown-unknown --locked -- -D warnings
     cargo clippy -p acyclic-machines-wasm -p acyclic-inference-wasm -p acyclic-objects-wasm \
       --target wasm32-unknown-unknown --all-targets --all-features --locked -- -D warnings
@@ -622,7 +622,7 @@ case "$lane" in
       return "$status"
     }
     CARGO_BUILD_JOBS=2 background napi native_binding
-    CARGO_BUILD_JOBS=1 background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
+ CARGO_BUILD_JOBS=1 background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
     trap 'status=$?; finish_macos "$status" || status=$?; exit "$status"' EXIT
     CARGO_BUILD_JOBS=8 sdk_workspace nextest --all-features --locked
