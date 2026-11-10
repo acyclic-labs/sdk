@@ -44,7 +44,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 17 records forced continuation provenance in the creation profile.
 /// Version 18 settles a definitive turn failure as a failed conversation entry.
 /// Version 19 scopes status addresses by the agent's complete ancestry.
-pub const RECORD_VERSION: u32 = 19;
+/// Version 20 retains immutable paged child membership roots without reserved slots.
+pub const RECORD_VERSION: u32 = 20;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.

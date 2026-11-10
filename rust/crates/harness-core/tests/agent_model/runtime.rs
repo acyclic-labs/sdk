@@ -28,7 +28,6 @@ impl TurnDriver for Spawner {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
             Ok(TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
@@ -63,7 +62,6 @@ async fn same_phase_settlement_after_creation_advances_without_appending_status(
         super::script(
             (0..3)
                 .map(|_| TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: vec![Out::Conversation(b"answer".to_vec())],
                     wait: Wait::Input,
@@ -141,7 +139,6 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
             self.count.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: if self.pause {
@@ -252,7 +249,6 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
                     cancellation.cancelled().await;
                 }
                 Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: Wait::Input,
@@ -350,7 +346,6 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
         let directory = tempfile::tempdir()?;
         let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
         let idle = || TurnStep {
-            reserved_children: 0,
             checkpoint: None,
             outs: Vec::new(),
             wait: Wait::Input,
@@ -371,7 +366,6 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
                 ..idle()
             },
             TurnStep {
-                reserved_children: 0,
                 checkpoint: Some(vec![7; if oversized { MAX_CHECKPOINT_BYTES } else { 8 }]),
                 outs: vec![
                     Out::Conversation(b"first".to_vec()),
@@ -410,15 +404,18 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
         let parent_before = host.state(&root).await?;
         assert_eq!(parent_before.open_children.len(), 3);
         agents.push(root.clone());
-        agents.extend(parent_before.open_children.iter().cloned());
-        for child in &parent_before.open_children {
-            host.drain(child).await?;
+        for id in parent_before.open_children.page(None, 3).await? {
+            let child = root.child(&id)?;
+            agents.push(child.clone());
+            host.drain(&child).await?;
         }
-        let child = parent_before
-            .open_children
-            .first()
-            .expect("spawned child")
-            .clone();
+        let child = root.child(
+            &parent_before
+                .open_children
+                .first()
+                .await?
+                .expect("spawned child"),
+        )?;
         let before = host.state(&child).await?;
         assert_eq!(before.parent.as_ref(), Some(&root));
         let Delivered::Committed { inbox } = host.send(&child, &user(), &input).await? else {
@@ -453,7 +450,7 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
         host.drain(&root).await?;
         let mut expected_children = parent_before.open_children;
         if oversized {
-            expected_children.remove(&child);
+            expected_children.remove(&child).await?;
         }
         let parent_committed = host.state(&root).await?;
         assert_eq!(parent_committed.open_children, expected_children);
@@ -577,7 +574,6 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         let clock = Arc::new(clock);
         let within = ActorReference::new(b"account", b"agents", b"owner")?;
         let waiting = |checkpoint: &[u8], timeout, outs| TurnStep {
-            reserved_children: 0,
             checkpoint: Some(checkpoint.to_vec()),
             outs,
             wait: Wait::Until(Until::sleep(timeout)),
@@ -618,8 +614,8 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         );
         let first = host.state(&root).await?;
         assert_eq!(first.open_children.len(), 3);
-        for child in &first.open_children {
-            host.drain(child).await?;
+        for child in first.open_children.page(None, 3).await? {
+            host.drain(&root.child(&child)?).await?;
         }
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
         let first_actor = snapshot.state().ok_or("missing waiting actor")?.clone();
@@ -722,7 +718,6 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
     let host = AgentHost::new(
         provider.clone(),
         super::script(vec![TurnStep {
-            reserved_children: 3,
             checkpoint: Some(vec![7; 8]),
             outs: vec![spawn("existing-a"), spawn("existing-b")],
             wait: Wait::Approval {
@@ -749,7 +744,6 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
     host.drain(&root).await?;
     let paused = host.state(&root).await?;
     assert_eq!(paused.open_children.len(), 2);
-    assert_eq!(paused.reserved_children, 3);
     assert_eq!(
         paused.turn.as_ref().map(|turn| turn.checkpoint.as_slice()),
         Some([7; 8].as_slice())
@@ -762,7 +756,6 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
         provider,
         super::script(vec![
             TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: vec![
                     spawn("recorded-a"),
@@ -774,7 +767,6 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
             },
             // Once that turn settles, the unrelated queued input can run.
             TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: Vec::new(),
                 wait: Wait::Input,
@@ -800,14 +792,13 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
         if decision == "unrelated" {
             assert_eq!(state.turn, paused.turn);
             assert_eq!(state.phase, paused.phase);
-            assert_eq!(state.reserved_children, 3);
             assert_eq!(state.open_children, paused.open_children);
         } else {
             assert_eq!(state.phase, Phase::Idle);
             assert_eq!(state.turn, None);
-            assert_eq!(state.reserved_children, 0);
             assert_eq!(state.open_children.len(), 5);
-            for child in state.open_children {
+            for id in state.open_children.page(None, 5).await? {
+                let child = root.child(&id)?;
                 assert_eq!(host.state(&child).await?.parent.as_ref(), Some(&root));
             }
         }
@@ -1217,54 +1208,6 @@ async fn reply_waits_require_original_committed_requests() -> Result {
 }
 
 #[tokio::test]
-async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
-    // Every open child is in the root's checkpoint, so a root at the limit
-    // is the largest the child set makes it; that state must commit.
-    let provider = Arc::new(MemoryStream::default());
-    let host = AgentHost::new(
-        provider,
-        Spawner(AtomicUsize::new(1)),
-        ActorReference::new(b"account", b"agents", b"owner")?,
-        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
-        Arc::new(SystemClock),
-    )?;
-    let root = host.create(&intent("create"), adopted(id(1))).await?;
-    let request = |n: usize| {
-        InboxRecord::Spawn(SpawnRequest {
-            profile: acyclic_harness_core::agent::CreationConfig {
-                continuation: None,
-                context: acyclic_harness_core::agent::SpawnContext::Fork,
-                template: None,
-                peers: Default::default(),
-            },
-            history: None,
-            by: user(),
-            id: intent(&format!("s{n}")),
-            brief: Some(Box::new(super::driver::file("task").expect("file"))),
-        })
-    };
-    let mut last = 0;
-    for n in 0..=MAX_OPEN_CHILDREN {
-        let Delivered::Committed { inbox } = host.send(&root, &user(), &request(n)).await? else {
-            return Err("spawn request was not committed".into());
-        };
-        last = inbox;
-    }
-    let failures = host.runtime().drain().await;
-    assert!(failures.is_empty(), "{failures:?}");
-    let state = host.state(&root).await?;
-    assert_eq!(state.open_children.len(), MAX_OPEN_CHILDREN);
-    let (spawn, _) = requested_child(&root, last)?;
-    assert_eq!(
-        host.spawned(&root, last, &spawn).await?,
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
-        }
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
@@ -1313,5 +1256,42 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(host.state(&root).await?.open_children.len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_root_crosses_the_former_child_ceiling_with_a_paged_checkpoint() -> Result {
+    // The original actor runtime commits membership roots, not its population.
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider,
+        Spawner(AtomicUsize::new(1)),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    let request = |n: usize| {
+        let Wake::Inbox { record, .. } = super::spawn_request(n as u64) else {
+            unreachable!()
+        };
+        record
+    };
+    let mut last = 0;
+    for n in 0..257 {
+        let Delivered::Committed { inbox } = host.send(&root, &user(), &request(n)).await? else {
+            return Err("spawn request was not committed".into());
+        };
+        last = inbox;
+    }
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let state = host.state(&root).await?;
+    assert_eq!(state.open_children.len(), 257);
+    let (spawn, child) = requested_child(&root, last)?;
+    assert_eq!(
+        host.spawned(&root, last, &spawn).await?,
+        SpawnOutcome::Spawned { child }
+    );
     Ok(())
 }

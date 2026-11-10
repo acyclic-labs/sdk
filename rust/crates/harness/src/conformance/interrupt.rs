@@ -47,7 +47,7 @@ impl TurnDriver for Waiting {
             };
             Ok(TurnStep {
                 checkpoint: None,
-                reserved_children: 0,
+
                 drops: None,
                 outs: vec![Out::Conversation(output)],
                 wait: Wait::Input,
