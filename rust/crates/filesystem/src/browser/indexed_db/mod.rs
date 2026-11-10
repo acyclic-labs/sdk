@@ -187,9 +187,9 @@ impl IndexedDbObjectStore {
         }
         Ok(ObjectRead {
             bytes,
-            retention: ObjectReadRetention::Owned {
-                logical_bytes: length,
-            },
+            // blob_bytes keeps the original funding in the carrier through its
+            // final alias. There is no scratch credit to transfer or retain again.
+            retention: ObjectReadRetention::Shared,
         })
     }
 }

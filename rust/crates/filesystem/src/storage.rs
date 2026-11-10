@@ -725,7 +725,8 @@ pub struct ByteRange {
 /// How the bytes returned by one immutable-object read remain resident.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectReadRetention {
-    /// The returned view shares backend-owned immutable storage and adds no operation-owned byte buffer.
+    /// The returned view shares immutable backing that retains its own funding,
+    /// including an owned carrier lease. No caller-owned scratch buffer transfers.
     Shared,
     /// The backend allocated this exact logical byte capacity and transfers ownership to the caller until the value is dropped.
     Owned {
