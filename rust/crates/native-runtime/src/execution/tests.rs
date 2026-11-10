@@ -17,6 +17,15 @@ fn sandbox_denies_outside_write() {
     std::fs::create_dir(&volume).unwrap();
     std::fs::write(&outside, "original").unwrap();
     std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+    #[cfg(target_os = "macos")]
+    let fifo = {
+        use std::os::unix::ffi::OsStrExt;
+        let path = workspace.join("fifo");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a terminated fixture pathname; no reader or writer is opened.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        path.canonicalize().unwrap()
+    };
     let inherited = std::fs::OpenOptions::new()
         .write(true)
         .open(&outside)
@@ -48,6 +57,30 @@ fn sandbox_denies_outside_write() {
         }
         .compile_native()
         .unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            // A real FIFO with no writer must refuse as cwd without waiting;
+            // final regular files must still work in read-root attenuation.
+            assert!(grant.prepare_launch(Some(&fifo), None).is_err());
+            let narrower = grant
+                .attenuate(
+                    grant.workspace(),
+                    ExecutionAccess::ReadOnly,
+                    [outside.clone()],
+                    ExecutionNetwork::Off,
+                )
+                .unwrap();
+            grant.check_attenuation(&narrower).unwrap();
+            let fifo_read = grant
+                .attenuate(
+                    grant.workspace(),
+                    ExecutionAccess::ReadOnly,
+                    [fifo.clone()],
+                    ExecutionNetwork::Off,
+                )
+                .unwrap();
+            grant.check_attenuation(&fifo_read).unwrap();
+        }
         let expanded = ExecutionGrant::new(
             &workspace,
             ExecutionAccess::WorkspaceWrite,

@@ -251,6 +251,13 @@ impl BoundPath {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_PATH | libc::O_CLOEXEC);
         }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Binding or verifying a special-file root must never wait for a
+            // peer. Identity admission is independent of later guest I/O.
+            options.custom_flags(libc::O_NONBLOCK);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;
@@ -303,7 +310,7 @@ impl BoundPath {
             #[cfg(target_os = "linux")]
             let child = linux::open_beneath(&root, relative, _meter)?;
             #[cfg(target_os = "macos")]
-            let child = macos::open_beneath(root, relative, _meter)?;
+            let child = macos::open_beneath(root, relative, false, _meter)?;
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 crate::meter::native_control_attempt(

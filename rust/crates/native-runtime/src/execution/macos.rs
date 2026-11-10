@@ -93,7 +93,7 @@ impl Prepared {
         let cwd = if relative.as_os_str().is_empty() {
             root
         } else {
-            open_beneath(root, relative, meter)?
+            open_beneath(root, relative, true, meter)?
         };
         Ok(Self {
             profile,
@@ -254,6 +254,7 @@ fn rule(profile: &mut String, operations: &str, root: &super::BoundPath) -> io::
 pub(super) fn open_beneath(
     mut root: File,
     relative: &Path,
+    directory: bool,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<File> {
     use std::{ffi::CString, os::fd::FromRawFd, os::unix::ffi::OsStrExt};
@@ -263,7 +264,7 @@ pub(super) fn open_beneath(
             return Err(refused("execution cwd is not a rooted descendant"));
         };
         let name = CString::new(name.as_bytes()).map_err(refused)?;
-        let directory = if components.peek().is_some() {
+        let directory = if directory || components.peek().is_some() {
             libc::O_DIRECTORY
         } else {
             0
@@ -277,7 +278,11 @@ pub(super) fn open_beneath(
                     libc::openat(
                         root.as_raw_fd(),
                         name.as_ptr(),
-                        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | directory,
+                        libc::O_RDONLY
+                            | libc::O_CLOEXEC
+                            | libc::O_NOFOLLOW
+                            | libc::O_NONBLOCK
+                            | directory,
                     )
                 };
                 if fd == -1 {
