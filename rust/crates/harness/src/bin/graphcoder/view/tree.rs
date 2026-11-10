@@ -127,6 +127,11 @@ impl Sidebar {
         self.source
             .view
             .set_viewport(if visible { credit } else { 1 }, 0, 16);
+        self.source.view.descend(
+            self.search
+                .as_ref()
+                .is_some_and(|search| !search.text.is_empty()),
+        );
         self.source.view.frame(now);
         self.children = self.has_children();
         self.retain_files(visible, bytes);
@@ -217,7 +222,7 @@ impl Sidebar {
                         || Ok(path.id().to_string()),
                     )
                     .ok()?;
-                title_matches(&title, &search.text).then_some(index)
+                title_matches(&first_line(&title), &search.text).then_some(index)
             })
             .collect();
     }
@@ -350,6 +355,20 @@ impl Sidebar {
         shown: bool,
         area: Rect,
     ) -> Option<Intent> {
+        if shown
+            && self.focused
+            && let (InputEvent::Paste(text) | InputEvent::CommittedText(text)) = event
+            && let Some(search) = self.search.as_mut().filter(|search| search.editing)
+        {
+            search.text.push_str(&first_line(text));
+            search.seeking = true;
+            search.exhausted = false;
+            search.error = None;
+            self.source.view.home();
+            self.selected = 0;
+            self.filter();
+            return Some(Intent::Consumed);
+        }
         if let InputEvent::Mouse(mouse) = event {
             if shown && area.contains(Position::new(mouse.column, mouse.row)) {
                 match mouse.kind {

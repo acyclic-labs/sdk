@@ -126,6 +126,7 @@ mod tests {
             (
                 LiveExplorer<Counted<MemoryStream>>,
                 acyclic_stream::testing::Requests,
+                Arc<Counted<MemoryStream>>,
             ),
             Box<dyn std::error::Error>,
         > {
@@ -202,10 +203,10 @@ mod tests {
             live.view.scroll(-100);
             live.view.frame(0);
             assert!(live.view.rows().iter().all(|(_, row)| matches!(row, Row::Agent { path, .. } if root.contains(path) && path != &root)));
-            Ok((live, requests))
+            Ok((live, requests, provider))
         }
-        let (small, small_work) = open(10).await?;
-        let (mut large, large_work) = open(10_000).await?;
+        let (mut small, small_work, small_provider) = open(10).await?;
+        let (mut large, large_work, _) = open(10_000).await?;
         let snapshot = |view: &Explorer| -> Result<String, crate::ui::Error> {
             let projection = crate::ui::View::new(1)?;
             let mut text = String::new();
@@ -301,6 +302,61 @@ mod tests {
             futures::future::poll_fn(|cx| large.poll_changed(0, cx)).await;
         }
         assert!(large.view.reader_ref().issued() - before <= 16);
+        let Row::Agent {
+            path: parent,
+            status: Some(status),
+            ..
+        } = &small.view.rows()[0].1
+        else {
+            return Err("visible parent".into());
+        };
+        let (parent, mut status) = (parent.clone(), status.clone());
+        let nested = parent.child(&AgentId::from_bytes([7; 16]))?;
+        small_provider
+            .append(AppendRequest {
+                path: StreamPath::new(nested.as_str())?,
+                records: vec![b"nested".as_slice().into()],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::new(b"nested".to_vec())?,
+            })
+            .await?;
+        small_provider
+            .append(AppendRequest {
+                path: nested.status()?,
+                records: vec![status.append_record()?],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::new(b"nested-status".to_vec())?,
+            })
+            .await?;
+        status.cursor += 1;
+        small_provider
+            .append(AppendRequest {
+                path: parent.status()?,
+                records: vec![status.append_record()?],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::new(b"parent-changed".to_vec())?,
+            })
+            .await?;
+        small.view.descend(true);
+        loop {
+            small.view.frame(0);
+            if small.view.rows().iter().any(|(_, row)| matches!(row, Row::Agent { path, status: Some(_), .. } if path == &nested)) { break; }
+            futures::future::poll_fn(|cx| small.poll_changed(0, cx)).await;
+        }
+        assert!(
+            small.view.expanded.is_empty(),
+            "search must not retain expansion intent for visited nodes"
+        );
+        small.view.descend(false);
+        small.view.frame(0);
+        assert!(
+            small
+                .view
+                .rows()
+                .iter()
+                .all(|(_, row)| !matches!(row, Row::Agent { path, .. } if path == &nested)),
+            "leaving search restores collapsed traversal"
+        );
         Ok(())
     }
 
@@ -725,6 +781,7 @@ pub struct Explorer {
     /// Logical expansion intent and the page each agent was seen on. Only
     /// the viewport requests data; cache pressure never collapses intent.
     expanded: BTreeMap<AgentPath, u32>,
+    descend: bool,
     hover: Option<AgentPath>,
     focus: Option<AgentPath>,
     recent: VecDeque<AgentPath>,
@@ -791,6 +848,7 @@ impl Explorer {
             velocity: 0,
             frame_ms: 16,
             expanded: BTreeMap::new(),
+            descend: false,
             hover: None,
             focus: None,
             recent: VecDeque::new(),
@@ -844,6 +902,16 @@ impl Explorer {
                 Some(next) => self.anchor = next,
                 None => break,
             }
+        }
+    }
+
+    /// Traverse collapsed descendants while searching. This changes traversal
+    /// intent, never expands or collects a subtree; the same reader admits only
+    /// the visible windows and the ancestor pages needed to resume them.
+    pub fn descend(&mut self, descend: bool) {
+        if self.descend != descend {
+            self.descend = descend;
+            self.home();
         }
     }
 
@@ -1176,7 +1244,7 @@ impl Explorer {
                 if let Some(agent) = self
                     .child(parent, *page, *offset)
                     .and_then(|c| agent_of(&c))
-                    && self.expanded.contains_key(&agent)
+                    && (self.descend || self.expanded.contains_key(&agent))
                     && let Some(first) = agent.children().ok().and_then(|c| self.first_of(c, 0))
                 {
                     return Some(first);
@@ -1188,20 +1256,35 @@ impl Explorer {
     }
 
     fn sibling(&self, parent: &StreamPath, page: u32, offset: u32) -> Option<Pos> {
-        let listing = self.reader.cache().listing(parent, page)?;
-        if (offset as usize) + 1 < listing.children.len() {
-            return Some(Pos::Row {
-                parent: parent.clone(),
-                page,
-                offset: offset + 1,
-            });
+        let (mut parent, mut page, mut offset) = (parent.clone(), page, offset);
+        loop {
+            let listing = self.reader.cache().listing(&parent, page)?;
+            if (offset as usize) + 1 < listing.children.len() {
+                return Some(Pos::Row {
+                    parent,
+                    page,
+                    offset: offset + 1,
+                });
+            }
+            if listing.next.is_some()
+                && let Some(next) = self.first_of(parent.clone(), page.checked_add(1)?)
+            {
+                return Some(next);
+            }
+            if parent == self.root {
+                return None;
+            }
+            let current = owner(&parent)?;
+            let Pos::Row {
+                parent: above,
+                page: at,
+                offset: index,
+            } = self.locate(&current)?
+            else {
+                return None;
+            };
+            (parent, page, offset) = (above, at, index);
         }
-        if listing.next.is_some() {
-            return self
-                .first_of(parent.clone(), page + 1)
-                .or_else(|| self.up(parent));
-        }
-        self.up(parent)
     }
 
     fn up(&self, parent: &StreamPath) -> Option<Pos> {
@@ -1270,7 +1353,7 @@ impl Explorer {
             else {
                 return pos;
             };
-            if !self.expanded.contains_key(&agent) {
+            if !self.descend && !self.expanded.contains_key(&agent) {
                 return pos;
             }
             let Ok(children) = agent.children() else {
@@ -1342,7 +1425,7 @@ impl Explorer {
                     .and_then(|(s, tail)| cache.record(s, tail.checked_sub(1)?).cloned());
                 Row::Agent {
                     latest,
-                    expanded: self.expanded.contains_key(&path),
+                    expanded: self.descend || self.expanded.contains_key(&path),
                     path,
                     status,
                     conversation,
@@ -1613,13 +1696,13 @@ impl Explorer {
         for parent in owners {
             let mut agent = owner(&parent);
             while let Some(current) = agent {
-                let Some(page) = self.expanded.get(&current) else {
+                let Some(Pos::Row { page, .. }) = self.locate(&current) else {
                     break;
                 };
                 let Some(listing) = parent_listing(&current) else {
                     break;
                 };
-                if !out.insert((listing, *page)) {
+                if !out.insert((listing, page)) {
                     break;
                 }
                 agent = current.parent();
