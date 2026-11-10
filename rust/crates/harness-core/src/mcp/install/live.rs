@@ -16,6 +16,7 @@ pub(super) struct LiveCatalog {
     server: McpServer,
     transport: Arc<dyn McpToolTransport>,
     binding: [u8; 32],
+    identity: String,
     limits: McpClientLimits,
     refresh: tokio::sync::Mutex<()>,
     snapshot: Mutex<Snapshot>,
@@ -32,6 +33,7 @@ impl LiveCatalog {
         let generation = connected.generation;
         let transport = connected.transport.clone();
         let binding = connected.binding;
+        let identity = recovery_binding(binding, &server, limits)?;
         let (tools, capabilities) = register(name.clone(), &server, connected, limits, &|| Ok(()))?;
         let names = tools
             .definitions(None)?
@@ -44,6 +46,7 @@ impl LiveCatalog {
             server,
             transport,
             binding,
+            identity,
             limits,
             refresh: tokio::sync::Mutex::new(()),
             snapshot: Mutex::new(Snapshot {
@@ -141,11 +144,10 @@ impl ToolSource for LiveCatalog {
         definition: &crate::tool::ToolDefinition,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<Arc<crate::tool::Tool>>> {
-        let binding = recovery_binding(self.binding, &self.server, self.limits)?;
         let Some(name) = definition.name.strip_prefix(&format!("mcp.{}.", self.name)) else {
             return Ok(None);
         };
-        if definition.revision.len() != 128 || !definition.revision.starts_with(&binding) {
+        if definition.revision.len() != 128 || !definition.revision.starts_with(&self.identity) {
             return Ok(None);
         }
         let definition = crate::model::clone_tool_definition(definition, io)?;

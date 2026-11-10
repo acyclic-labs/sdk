@@ -332,7 +332,12 @@ impl StockExecution<'_> {
                 .tools
                 .fixed_definitions(self.stock.tool_scope.grants(), io)?
                 .iter()
-                .all(|fixed| request.tools.iter().any(|retained| retained == fixed))
+                .all(|fixed| {
+                    request
+                        .tools
+                        .binary_search_by(|retained| retained.name.cmp(&fixed.name))
+                        .is_ok_and(|index| request.tools[index] == *fixed)
+                })
         } else {
             request.tools == tools
         };
