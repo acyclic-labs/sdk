@@ -221,7 +221,11 @@ mod tests {
             futures::future::poll_fn(|cx| large.poll_changed(0, cx)).await;
         }
         assert!(matches!(&large.view.rows()[0].0, Pos::Row { page: 1, .. }));
-        assert!(large.view.reader_ref().issued() - before <= 16);
+        assert!(
+            large.view.reader_ref().issued() - before <= 16,
+            "post-scroll requests: {}",
+            large.view.reader_ref().issued() - before
+        );
         Ok(())
     }
 
@@ -733,7 +737,8 @@ impl Explorer {
         &self.reader
     }
 
-    /// Viewport rows, overscan rows and the frame interval.
+    /// Viewport rows, overscan rows and the frame interval. Zero overscan
+    /// disables speculative row traversal, including velocity lookahead.
     pub fn set_viewport(&mut self, height: usize, overscan: usize, frame_ms: u64) {
         self.height = height.clamp(1, MAX_ROWS);
         self.overscan = overscan.min(MAX_ROWS);
@@ -1217,9 +1222,13 @@ impl Explorer {
         }
         // Lookahead in the scroll direction, overscan behind.
         let rtt_rows = (self.reader.rtt_ms() / self.frame_ms).max(1);
-        let ahead = (self.overscan as u64)
-            .saturating_add(self.velocity.unsigned_abs().saturating_mul(rtt_rows))
-            .min(MAX_LOOKAHEAD as u64) as usize;
+        let ahead = if self.overscan == 0 {
+            0
+        } else {
+            (self.overscan as u64)
+                .saturating_add(self.velocity.unsigned_abs().saturating_mul(rtt_rows))
+                .min(MAX_LOOKAHEAD as u64) as usize
+        };
         let (forward, backward) = if self.velocity < 0 {
             (self.overscan, ahead)
         } else {
