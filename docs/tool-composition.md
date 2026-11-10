@@ -61,7 +61,7 @@ Use it for multi-step reads, filters and loops, for example:
 
 ```javascript
 const files = await tools.read({ path: "README.md" });
-files
+export default files
 ```
 
 Each currently granted model tool is an async function in the frozen `tools`
@@ -73,7 +73,8 @@ resumption reruns deterministic JavaScript against the same inner call receipts.
 Programs should derive call order and arguments only from their code and tool
 results. Ambient time and randomness are absent.
 
-The model receives only the final expression, or `{ error }` for an uncaught
+Programs are ES modules with top-level `await`. The model receives the awaited
+default export, or `{ error }` for an uncaught
 exception. `Promise.all` submits independent calls in one program; bounded host
 credit feeds them to ordinary settlement. Each settled call publishes a
 `code.call` JSON log under the turn's existing `tools/.results/` directory before

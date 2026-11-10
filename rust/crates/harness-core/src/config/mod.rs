@@ -18,9 +18,14 @@
 //! the caller retains authorization, generation and publication ownership.
 //! [`compose_with_evidence`] retains those original observations through a
 //! layered fold, including absent roots, pinned generations and its refusal.
+
+mod plugin;
 pub mod policy;
 mod types;
 
+pub use plugin::{
+    AfterSource, Event, PluginEntry, PluginManifest, PluginSource, Plugins, RequestMatch, Start,
+};
 pub use types::{
     Action, Admission, AdmissionStatus, AgentConfig, Effort, Form, Host, Link, Policy, PolicyRule,
     Sampling, utc,
@@ -34,6 +39,9 @@ pub use evaluate::{
     Surface, Tree, compose, compose_result, compose_with_evidence, evaluate, evaluate_decision,
     prepare,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use evaluate::compile_module;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[doc(hidden)]
@@ -80,6 +88,9 @@ pub fn composes(path: &str) -> bool {
 
 /// `sys/types/config.d.ts`: the settings and record declarations, generated
 /// from the kernel's own decode types.
+///
+/// Export these declarations for an external TypeScript checker with
+/// `cargo run --locked -p acyclic-harness-core --example config-types`.
 #[must_use]
 pub fn typescript() -> &'static str {
     static TEXT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -107,18 +118,15 @@ pub fn typescript() -> &'static str {
             Admission,
             AdmissionStatus,
             Link,
-            Form
-        );
-        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-        declarations!(
-            crate::plugins::Plugins,
-            crate::plugins::PluginEntry,
-            crate::plugins::PluginSource,
-            crate::plugins::PluginManifest,
-            crate::plugins::AfterSource,
-            crate::plugins::Start,
-            crate::plugins::Event,
-            crate::hooks::RequestMatch
+            Form,
+            Plugins,
+            PluginEntry,
+            PluginSource,
+            PluginManifest,
+            AfterSource,
+            Start,
+            Event,
+            RequestMatch
         );
         text
     })

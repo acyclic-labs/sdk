@@ -17,6 +17,10 @@ impl FileTool {
                 "byte ranges and projections are mutually exclusive",
             ));
         }
+        if let Some(ReadSelection::Directory { after, limit }) = &input.0.selection {
+            return super::directory::read(context, &input.0, after.as_deref(), *limit, work, io)
+                .await;
+        }
         let mut source = super::source::ReadSource::decode(
             context,
             &input.0.path,
@@ -27,18 +31,21 @@ impl FileTool {
             let (layer, selected) = context
                 .effective_tool_path(
                     &input.0.path,
-                    source.source.as_ref().map(FileReadSource::volume),
+                    source
+                        .source
+                        .as_ref()
+                        .map(super::version::SelectedVersion::volume),
                     io,
                 )
                 .await?;
             input.0.path = layer.into_owned();
             if let Some((selected, custody)) = selected {
                 source = super::source::ReadSource {
-                    source: Some(FileReadSource::Authored(selected)),
+                    source: Some(FileReadSource::Authored(selected).into()),
                     custody,
                 };
             }
-            if let Some(FileReadSource::Content(file)) = &source.source {
+            if let Some(super::version::SelectedVersion::Content(file)) = &source.source {
                 context.authorize_tool_file_read(&input.0.path, file, io)?;
             }
         }
@@ -58,7 +65,7 @@ impl FileTool {
         {
             return super::notebook_read::read(context, &input.0, source, 0, None, work, io).await;
         }
-        if input.0.selection.is_none() {
+        if input.0.selection.is_none() || input.0.selection == Some(ReadSelection::Text) {
             return self
                 .read_path_range(context, &input.0, source, work, io)
                 .await;
@@ -109,7 +116,7 @@ impl FileTool {
         if end > window.source.byte_length() {
             return Err(invalid("read result belongs to another selection"));
         }
-        if input.range.is_none() {
+        if input.range.is_none() && input.selection.is_none() {
             let media = crate::model::image_media_type(&bytes)
                 .map(|_| ReadSelection::Image {
                     detail: crate::model::ImageDetail::Auto,

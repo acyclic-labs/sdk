@@ -31,7 +31,7 @@ impl Window {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         let original = match original.source {
-            Some(FileReadSource::Content(file)) => {
+            Some(super::version::SelectedVersion::Content(file)) => {
                 let range = content_range(&file, range, work)?;
                 let bytes = context.read_file_range(&file, range, io).await?;
                 return Ok(Self {
@@ -46,8 +46,8 @@ impl Window {
             },
         };
         let expected = original.source.as_ref().and_then(|source| match source {
-            FileReadSource::Authored(file) => Some(file),
-            FileReadSource::Content(_) => None,
+            super::version::SelectedVersion::Authored(file) => Some(file),
+            super::version::SelectedVersion::Content(_) => None,
         });
         let hold;
         let (source, bytes, retained) = context
@@ -59,7 +59,7 @@ impl Window {
             )
             .await?;
         hold = custody(io, retained)?;
-        if expected.is_some_and(|expected| expected != &source) {
+        if expected.is_some_and(|expected| !expected.matches_source(&source)) {
             return Err(executor::rejection(
                 work,
                 "range belongs to another source selection",

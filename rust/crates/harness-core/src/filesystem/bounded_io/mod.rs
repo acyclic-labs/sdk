@@ -159,7 +159,7 @@ impl PreparationIo {
         Ok(())
     }
 
-    pub(in crate::filesystem) fn temporary(io: Option<&Self>) -> Result<Option<Self>> {
+    pub(crate) fn temporary(io: Option<&Self>) -> Result<Option<Self>> {
         #[cfg(not(target_arch = "wasm32"))]
         return io
             .and_then(Self::original_native_work)
