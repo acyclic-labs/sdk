@@ -3,7 +3,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiler = acyclic_proto_build::Compiler::new()?;
     let native_transport = std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32";
     compiler.compile(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
         compiler.config(),
         acyclic_proto_build::services(native_transport),
         &["proto/filesystem/v2/filesystem.proto"],
