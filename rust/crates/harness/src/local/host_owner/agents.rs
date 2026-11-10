@@ -500,7 +500,7 @@ impl HostDriver {
             .stage(agent, snapshot(agent, inbox), &bytes, bytes.len() as u64)
             .await?;
         let entry = ConversationEntry {
-            observed_through: agent.steered_through.max(inbox.saturating_add(1)),
+            observed_through: 0,
             inbox,
             input,
             output,
@@ -510,7 +510,8 @@ impl HostDriver {
             tool_results: None,
             steering: None,
             notices: None,
-        };
+        }
+        .with_observed_prefix(agent.steered_through);
         outs.push(Out::Conversation(entry.encode().map_err(storage)?));
         Ok(TurnStep {
             drops,
