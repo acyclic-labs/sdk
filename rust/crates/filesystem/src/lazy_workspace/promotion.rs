@@ -188,43 +188,42 @@ impl<
         let Some(parent) = parent_path(path) else {
             return Ok(());
         };
-        crate::heap_future::in_borrowed_frame!(
-            ctx,
-            |ctx| async move {
-                let parent = self.namespace_path(parent, ctx)?;
-                let result = async {
-                    for depth in 1..=parent.value.components().len() {
-                        let (prefix, allocation) = parent.value.prefix_with_accounting(
-                            depth,
-                            self.workspace.limits(),
-                            ctx,
-                            cancellation(ctx),
-                        )?;
-                        let bytes = prefix.retained_bytes();
-                        let prefix = Owned::new(prefix, allocation, bytes);
-                        let result = async {
-                            let (found, _allocation) = transaction
-                                .checkout
-                                .lookup_no_follow_with_accounting(
-                                    &prefix.value,
-                                    ctx,
-                                    cancellation(ctx),
-                                    true,
-                                )
-                                .await?;
-                            if let Some(record) = found.record {
-                                return if record.kind == FileKind::Directory {
-                                    Ok(())
-                                } else {
-                                    Err(crate::FsError::NotDirectory.into())
-                                };
-                            }
-                            let (text, allocation) = prefix
-                                .value
-                                .unicode_text_with_accounting(ctx, cancellation(ctx))?;
-                            let bytes = text.capacity() as u64;
-                            let text = Owned::new(text, allocation, bytes);
-                            let result = async {
+        crate::heap_future::in_borrowed_frame!(ctx, |ctx| async move {
+            let parent = self.namespace_path(parent, ctx)?;
+            let result = async {
+                for depth in 1..=parent.value.components().len() {
+                    let (prefix, allocation) = parent.value.prefix_with_accounting(
+                        depth,
+                        self.workspace.limits(),
+                        ctx,
+                        cancellation(ctx),
+                    )?;
+                    let bytes = prefix.retained_bytes();
+                    let prefix = Owned::new(prefix, allocation, bytes);
+                    let result = async {
+                        let (found, _allocation) = transaction
+                            .checkout
+                            .lookup_no_follow_with_accounting(
+                                &prefix.value,
+                                ctx,
+                                cancellation(ctx),
+                                true,
+                            )
+                            .await?;
+                        if let Some(record) = found.record {
+                            return if record.kind == FileKind::Directory {
+                                Ok(())
+                            } else {
+                                Err(crate::FsError::NotDirectory.into())
+                            };
+                        }
+                        let (text, allocation) = prefix
+                            .value
+                            .unicode_text_with_accounting(ctx, cancellation(ctx))?;
+                        let bytes = text.capacity() as u64;
+                        let text = Owned::new(text, allocation, bytes);
+                        let result =
+                            async {
                                 let source = self.source.reference();
                                 match self.source_lookup(source, &text.value, ctx).await? {
                                     Some(node) if node.kind == SourceNodeKind::Directory => {
@@ -246,20 +245,18 @@ impl<
                                 }
                             }
                             .await;
-                            text.retire(ctx)?;
-                            result
-                        }
-                        .await;
-                        prefix.retire(ctx)?;
-                        result?;
+                        text.retire(ctx)?;
+                        result
                     }
-                    Ok(())
+                    .await;
+                    prefix.retire(ctx)?;
+                    result?;
                 }
-                .await;
-                parent.retire(ctx)?;
-                result
-            },
-            erase_task
-        )
+                Ok(())
+            }
+            .await;
+            parent.retire(ctx)?;
+            result
+        })
     }
 }
