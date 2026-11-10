@@ -234,13 +234,15 @@ async fn concurrent_publication() -> Result<()> {
         result
     };
     let (written, read) = futures::join!(writer, reader);
-    written?;
     read?;
+    // The import won the destination edit while this writer held its old
+    // authorization cut. Its refusal must preserve the imported version.
+    assert!(matches!(written, Err(Error::Conflict(_))));
     assert_eq!(
         host.read(&parent_workspace, None, "/GOAL.md", 64, None)
             .await?
             .as_ref(),
-        b"parent replacement"
+        b"child replacement"
     );
     Ok(())
 }
