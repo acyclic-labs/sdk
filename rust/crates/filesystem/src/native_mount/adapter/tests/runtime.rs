@@ -18,8 +18,9 @@ fn nfs_callback_protocol_cases() {
 fn macos_explicit_file_fsync_reaches_mount_source() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write as _;
 
-    let source = Arc::new(source(FilesystemProfile::Posix)?);
-    let temporary = tempfile::tempdir()?;
+    let source =
+        Arc::new(source(FilesystemProfile::Posix).expect("POSIX mount source must initialize"));
+    let temporary = tempfile::tempdir().expect("native mount destination must be created");
     let mut mount = crate::mount_native(
         crate::NativeMountRequest {
             mount_id: crate::MountId::new(),
@@ -29,14 +30,28 @@ fn macos_explicit_file_fsync_reaches_mount_source() -> Result<(), Box<dyn std::e
             shared: false,
         },
         Arc::clone(&source) as Arc<dyn MountFilesystem>,
-    )?;
+    )
+    .expect("native writable mount must start");
     let path = temporary.path().join("explicit-fsync");
-    let mut file = std::fs::File::create(&path)?;
-    file.write_all(b"durable")?;
-    file.sync_all()?;
-    assert_eq!(std::fs::read(&path)?, b"durable");
-    drop(file);
-    assert!(mount.stop()?);
+    let native_io = (|| -> Result<(), (&'static str, std::io::Error)> {
+        let mut file = std::fs::File::create(&path).map_err(|error| ("create", error))?;
+        file.write_all(b"durable")
+            .map_err(|error| ("write", error))?;
+        file.sync_all().map_err(|error| ("fsync", error))?;
+        assert_eq!(
+            std::fs::read(&path).map_err(|error| ("read", error))?,
+            b"durable"
+        );
+        Ok(())
+    })();
+    // Close the physical writer before retirement, including on I/O refusal.
+    // The retirement result retains any original callback-side failure.
+    let retired = mount.stop();
+    assert!(
+        native_io.is_ok(),
+        "native I/O: {native_io:?}; retirement: {retired:?}"
+    );
+    assert!(retired?);
     Ok(())
 }
 
