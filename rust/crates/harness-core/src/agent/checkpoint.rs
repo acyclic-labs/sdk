@@ -1,5 +1,5 @@
 //! Agent checkpoint: persistent membership roots and raw turn bytes.
-use super::{AgentState, Error};
+use super::{AgentRecord, AgentState, Error};
 use acyclic_actors::guest::{Checkpoint, CodecIdentity};
 use prost::Message as _;
 

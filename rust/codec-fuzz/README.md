@@ -305,49 +305,22 @@ The producer checks the same complete state separately; no simulated decoder
 or alternate field-loss implementation is used.
 
 The checkpoint's shared wire oracle uses its original prost type and writer
-to derive malformed variants of each admitted input. Short or long child IDs,
-duplicate children,
-incorrect archive/awaited bitmap widths and unmatched turn body/inbox fields
-must receive the original typed malformed-checkpoint refusal. No alternate
-protobuf parser or capture producer is needed. The following production
-guard mutations must fail when replaying the retained
-`harness_codecs/agent-v13-checkpoint-wait` input through `harness_codecs`:
+to derive malformed parent and turn fields. Membership is represented by
+persistent roots, so the former embedded child arrays and bitmap controls
+have been deleted with that decoder. Historical receipts remain historical;
+they do not qualify the persistent index.
 
 | PATCH | Required runtime assertion |
 | --- | --- |
-| `agent-checkpoint-duplicate-child.patch` | `checkpoint admitted a duplicate child` |
-| `agent-checkpoint-child-id.patch` | `checkpoint admitted an invalid child id width` |
-| `agent-checkpoint-bitmap-width.patch` | `checkpoint admitted an invalid bitmap width` |
-| `agent-checkpoint-short-archive.patch` | index-out-of-bounds panic while decoding the short archive bitmap |
-| `agent-checkpoint-short-awaited.patch` | `checkpoint admitted a short awaited bitmap` |
 | `agent-checkpoint-turn-pair.patch` | `checkpoint admitted an incomplete turn` |
 | `agent-checkpoint-embedded-parent.patch` | `checkpoint admitted an embedded parent` |
-| `agent-checkpoint-embedded-open-children.patch` | `checkpoint admitted embedded open children` |
-| `agent-checkpoint-embedded-archive-children.patch` | `checkpoint admitted embedded archive children` |
-| `agent-checkpoint-embedded-awaited-children.patch` | `checkpoint admitted embedded awaited children` |
 | `agent-checkpoint-embedded-turn.patch` | `checkpoint admitted an embedded turn` |
-| `agent-checkpoint-child-depth.patch` | `checkpoint reconstructs deep children` |
 
-The child-depth relation places the original writer's payload beyond the former
-agent depth cap through the production path constructor and parser. The
-original child IDs must still reconstruct under the new parent. Its mutation
-reintroduces the former child-construction cap; no parallel parser or
-additional target is used.
-
-The embedded-field controls put one nonempty ownership field at a time back
-into the shared payload through the production writer. Each removes only
-that field's production guard. Use `agent-v13-checkpoint-archive` for the
-archive field, and `agent-v13-checkpoint-wait` for the other four fields.
-The original prost fields remain intact, so a second invalid field cannot
-mask an omitted guard.
-
-The existing round-trip check lives beside that same private wire type.
-Short bitmap derivatives retain the writer's child count and the awaited
-bitmap's valid empty representation. The archive-width mutation exposes the
-actual indexing hazard; the awaited-width mutation silently drops membership
-bits unless the shared refusal oracle rejects it.
-These finite refusal checks supplement the arbitrary-input target; they do
-not establish complete source-branch coverage or a fuzz campaign.
+Replay these controls against newly generated checkpoint captures. The
+`agent-checkpoint-child-depth.patch` mutation reintroduces the former
+construction cap; run the production path round-trip control
+`agent_model::layout_round_trips_beyond_the_former_depth_cap` against it. Checkpoints no longer
+reconstruct whole child paths from an embedded child array.
 
 `agent-checkpoint-parent-report.patch` instead removes the actual terminal
 report from `machine::shed`. Its component control uses the production
