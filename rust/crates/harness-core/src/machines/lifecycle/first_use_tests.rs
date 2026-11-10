@@ -206,6 +206,10 @@ macro_rules! forward {
                 self.inner.assurance()
             }
 
+            fn capability(&self, capability: acyclic_machines::ProviderCapability) -> acyclic_machines::Support {
+                self.inner.capability(capability)
+            }
+
             async fn create(&self, request: CreateMachine) -> std::result::Result<MutationOutcome, ProviderError> {
                 self.creates.fetch_add(1, Ordering::Relaxed);
                 self.inner.create(request).await
@@ -232,6 +236,9 @@ macro_rules! forward {
 }
 
 forward! {
+        download_file(machine: MachineId, access: FileAccess) -> FileRead;
+        upload_file(machine: MachineId, access: FileAccess, data: Vec<u8>) -> ();
+        exec_request(machine: MachineId, command: ExecCommand) -> acyclic_machines::TextExecResult;
         read_file(machine: MachineId, access: FileAccess, limit: u32) -> FileRead;
         write_file(machine: MachineId, access: FileAccess, data: Vec<u8>, truncate: bool) -> FileWrite;
         exec(machine: MachineId, command: ExecCommand) -> ExecStream;
