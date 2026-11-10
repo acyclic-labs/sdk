@@ -3,7 +3,46 @@ import test from "node:test";
 import { selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
 import { clippySelections } from "./clippy-feature-sets.mjs";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
-import { featureSets, featureWorker, linuxCommands, windowsCommands, selectFeaturePackages } from "./check-feature-matrix.mjs";
+import { featureSets, featureWorker, linuxCommands, windowsCommands, selectFeaturePackages, consumerSelections, consumerCommand } from "./check-feature-matrix.mjs";
+
+test("consumer projections retain standalone checks and declared renamed, optional and target feature combinations", () => {
+  const crate = (name, features, dependencies = [], publish = null) => ({
+    name, id: name, source: null, publish, features, dependencies,
+    targets: [{ kind: ["lib"] }], manifest_path: `${name}/Cargo.toml`,
+  });
+  const dependency = (features, extra = {}) => ({ name: "core", rename: "engine", path: "../core",
+    features, uses_default_features: false, optional: true, ...extra });
+  const core = crate("core", { default: ["filesystem"], filesystem: [], http: [], conformance: [] });
+  const consumer = crate("consumer", {
+    default: ["native"], native: ["dep:engine", "engine/filesystem"],
+    http: ["engine?/http"], both: ["native", "http"],
+  }, [dependency([]), dependency(["conformance"], { optional: false, kind: "dev", target: "cfg(windows)" })], []);
+  const binary = { ...crate("cli", {}, [dependency([], { optional: false, uses_default_features: true })]), targets: [{ kind: ["bin"] }] };
+  const packages = [core, consumer, binary];
+  const selections = consumerSelections(packages);
+  const projected = selections.filter(selection => selection.packages[0].name === "core");
+  const features = projected.map(selection => selection.roots[0].features.join(","));
+  assert.ok(features.includes(""), "standalone no-default must precede consumer checks");
+  assert.ok(features.includes("default,filesystem"), "dependency defaults are preserved");
+  assert.ok(features.includes("filesystem"));
+  assert.ok(features.includes("filesystem,http"), "a consumer's grouped feature forwards both capabilities");
+  assert.ok(features.includes("conformance"), "dev and target declarations get their own checks");
+  assert.ok(!features.includes("http"), "weak forwarding cannot activate an optional dependency");
+  assert.equal(new Set(features).size, features.length);
+  assert.ok(!selections.some(selection => selection.packages[0].name === "consumer"), "unpublished consumers contribute selections, not roots");
+  for (const selection of selections) {
+    const command = consumerCommand(selection);
+    assert.equal(command.filter(arg => arg === "--manifest-path").length, 1, "package unification would hide missing cfgs");
+    assert.equal(command[command.indexOf("--manifest-path") + 1], selection.packages[0].manifest_path);
+    assert.ok(command.includes("--no-default-features"));
+    assert.ok(!command.includes("--all-targets"), "dev dependencies cannot fund the production check");
+  }
+  assert.ok(!consumerCommand(selections.find(selection => selection.packages[0].name === "cli")).includes("--lib"));
+  assert.deepEqual(consumerSelections(packages, ["core"]), projected);
+  // The previous grouped invocation cannot satisfy standalone admission.
+  const standalone = command => command.filter(arg => arg === "--manifest-path").length === 1;
+  assert.equal(standalone(["check", "-p", "core", "-p", "consumer"]), false);
+});
 
 test("feature package selection refuses missing members and empty inventories", () => {
   const items = [{ name: "alpha" }, { name: "beta" }];
@@ -101,6 +140,17 @@ test("shipped feature admission uses actual defining packages and preserves inde
   // Original locked Cargo output, not a handwritten metadata fixture. Mutate
   // only the admitted package boundary for the refusal controls below.
   const inventory = new Map(localCargoPackages().map(item => [item.name, item]));
+  const consumers = consumerSelections([...inventory.values()]);
+  for (const item of inventory.values()) {
+    if (item.source !== null || (item.publish !== null && !item.publish.includes("crates-io"))) continue;
+    const standalone = consumers.find(selection => selection.packages[0].id === item.id
+      && selection.flags.length === 1 && selection.flags[0] === "--no-default-features");
+    assert.ok(standalone, `${item.name} must compile without features supplied by consumers`);
+    const command = consumerCommand(standalone);
+    assert.ok(!command.includes("-p"), "excluded workspaces need their own manifest");
+    assert.equal(command[command.indexOf("--manifest-path") + 1], item.manifest_path);
+    assert.ok(!command.includes("--all-targets"), "test dependencies cannot mask native-watch omissions");
+  }
   const shipped = clippySelections(inventory);
   for (const { selection, targets } of shipped) {
     const args = cargoFeatureArguments(selection, { targets });

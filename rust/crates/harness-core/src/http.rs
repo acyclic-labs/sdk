@@ -3,10 +3,11 @@ use crate::Result;
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, ProviderPlatform};
 use bytes::Bytes;
 use std::collections::BTreeMap;
-#[cfg(not(target_arch = "wasm32"))]
+// Native work has the same availability as NativeFutureBundle and NativeWork.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 /// Native response payload custody shared by protocol codecs.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub mod owned_bytes;
 /// One streaming HTTP request. Headers may contain credentials; deliberately not Debug.
 pub struct HttpRequest {
@@ -33,7 +34,7 @@ pub struct HttpResponse {
     pub retry_after: Option<std::time::Duration>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl HttpResponse {
     /// Admits the concrete body stream before boxing it on the issued ledger.
     /// Charges received bytes once; downstream codecs charge their own copies/decoding.
@@ -86,7 +87,7 @@ pub trait HttpTransport: ProviderPlatform {
     /// Deadlines are measured on it; timers only wake their measurement.
     fn now(&self) -> std::time::Duration;
     /// `delay` admitted on the original invocation ledger before it exists.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn delay_with_native_work(
         &self,
         _: std::time::Duration,
@@ -99,13 +100,13 @@ pub trait HttpTransport: ProviderPlatform {
         })
     }
     /// Whether this transport funds its native callback frames before allocation.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;
         Ok(false)
     }
     /// Issues one HTTP exchange on the original invocation ledger.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn send_with_native_work<'a>(
         &'a self,
         _: HttpRequest,
