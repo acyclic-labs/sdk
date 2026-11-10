@@ -81,6 +81,606 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
     serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))
 }
 
+async fn run(
+    task: std::sync::Arc<crate::runtime::TaskContext>,
+    tool: crate::tool::Tool,
+    arguments: serde_json::Value,
+) -> Result<crate::tool::ToolResult> {
+    let context =
+        crate::runtime::ToolContext::new(task, crate::OperationId::new(), "settings-file")?;
+    let invocation = crate::tool::ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: context.call_id().into(),
+        name: tool.definition.name.clone(),
+        arguments,
+    };
+    tool.executor.execute(invocation, Some(context)).await
+}
+
+#[tokio::test]
+async fn off_markers_require_end_of_file_across_effective_reads_and_discovery() -> Result<()> {
+    use crate::{
+        Capabilities, filesystem::FilesystemContentPublisher, runtime::ContentBindings,
+        wire::ErrorCode,
+    };
+    use serde_json::json;
+
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let project = volume(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
+    let task = std::sync::Arc::new(harness.harness.agent_context(
+        &Capabilities::default(),
+        ContentBindings {
+            volume: harness.journal.clone(),
+            reader: harness.client_reader()?,
+            writer: Some(FilesystemContentPublisher::new(
+                harness.files.clone(),
+                &harness.journal,
+                &harness.verifier,
+                &harness.signed,
+                harness.limits.file_bytes,
+                None,
+            )?),
+        },
+    )?);
+    let header_bytes = crate::context::ContextDiscoveryLimits::default().header_bytes as usize;
+    let path = "skills/marker-control/SKILL.md";
+    let mut observed = Vec::new();
+    for body in [
+        format!("{}off: true\n", " ".repeat(header_bytes + 1)),
+        format!("off: true{}\nnot a marker", " ".repeat(header_bytes)),
+    ] {
+        write(&harness, path, &body).await?;
+        let read = run(
+            task.clone(),
+            crate::tool::files::read()?,
+            json!({"path": format!("{}{path}", crate::layers::EFFECTIVE_PATH)}),
+        )
+        .await;
+        let skills = harness
+            .skills_with_work(None, &mut crate::context::DiscoveryWork::default())
+            .await;
+        observed.push((
+            read.err().map(|error| error.code()),
+            skills
+                .as_ref()
+                .is_ok_and(|skills| skills.iter().all(|skill| skill.source.path != path)),
+            skills.err().map(|error| error.code()),
+        ));
+    }
+    assert_eq!(
+        observed,
+        [
+            (Some(ErrorCode::NotFound), true, None),
+            (None, false, Some(ErrorCode::Invalid)),
+        ],
+        "classification must reach EOF at the original generation; a prefix cannot disable a body"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn effective_media_versions_require_current_source_authority() -> Result<()> {
+    use crate::{
+        Capabilities,
+        filesystem::FilesystemContentPublisher,
+        runtime::{Bindings, ContentBindings, RuntimeScope},
+    };
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let project = volume(directory.path()).await?;
+    let harness = open(directory.path(), &project).await?;
+    let path = "authority-control.png";
+    let grant = ContentGrant::verify(
+        &harness.verifier,
+        &harness.signed,
+        &harness.scratch,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
+    // Reuse the recorded encoder output and its provenance in notebook-output.md.
+    let file = harness
+        .files
+        .put_content(
+            &harness.scratch,
+            &grant,
+            path,
+            include_bytes!("../../../../harness-core/tests/fixtures/notebook-output.png"),
+            "image/png",
+            path,
+            u64::MAX,
+            &IdempotencyKey::new("media-authority-control")?,
+            None,
+            ContentAccess::default(),
+        )
+        .await?;
+    let version =
+        serde_json::to_string(&file).map_err(|error| Error::Invalid(error.to_string()))?;
+    let private = || -> Result<_> {
+        Ok(ContentBindings {
+            volume: harness.journal.clone(),
+            reader: harness.client_reader()?,
+            writer: Some(FilesystemContentPublisher::new(
+                harness.files.clone(),
+                &harness.journal,
+                &harness.verifier,
+                &harness.signed,
+                harness.limits.file_bytes,
+                None,
+            )?),
+        })
+    };
+    for (grants, authorized) in [
+        (Capabilities::default(), false),
+        (Capabilities::new([file.read_capability(&mut None)?]), false),
+        (
+            Capabilities::new([harness.scratch.directory_read_capability("", &mut None)?]),
+            true,
+        ),
+    ] {
+        let bindings = Bindings {
+            scope: RuntimeScope::new(
+                Capabilities::new(["tool:call:read"]),
+                harness.limits.clone(),
+            )?,
+            artifacts: Some(ContentBindings {
+                volume: harness.scratch.clone(),
+                reader: harness.client_reader()?,
+                writer: None,
+            }),
+            ..Bindings::local()
+        }
+        .build()?;
+        let task = Arc::new(bindings.agent_context(&grants, private()?)?);
+        let result = run(
+            task,
+            crate::tool::files::read()?,
+            json!({
+                "path": format!("{}{path}", crate::layers::EFFECTIVE_PATH),
+                "version": version, "selection": {"kind": "image", "detail": "auto"}
+            }),
+        )
+        .await;
+        if authorized {
+            let result = result?;
+            assert_eq!(
+                result.value["file"]["content"],
+                serde_json::to_value(&file).map_err(|error| Error::Invalid(error.to_string()))?
+            );
+        } else {
+            let error = result.expect_err("an old file reference cannot grant a mounted read");
+            assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn system_reads_keep_the_run_generation_and_require_original_authority() -> Result<()> {
+    use crate::{
+        Capabilities,
+        filesystem::{FilesystemContentPublisher, WorkspaceMutation, workspace_ref},
+        runtime::{Bindings, ContentBindings, RuntimeScope},
+        tool::files::FileReadSource,
+    };
+    use acyclic_stream::OwnedBytes;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let project = volume(directory.path()).await?;
+    let path = "sys/models/catalog.json";
+    let original = OwnedBytes::from_static(b"{\"version\":1}");
+    let config =
+        volume_config(directory.path(), project, text())?.system_file(path, original.clone());
+    let metadata = config.system_files.clone();
+    let harness = LocalHarness::open(config).await?;
+    let private = || -> Result<_> {
+        Ok(ContentBindings {
+            volume: harness.journal.clone(),
+            reader: harness.client_reader()?,
+            writer: Some(FilesystemContentPublisher::new(
+                harness.files.clone(),
+                &harness.journal,
+                &harness.verifier,
+                &harness.signed,
+                harness.limits.file_bytes,
+                None,
+            )?),
+        })
+    };
+    let task = Arc::new(
+        harness
+            .harness
+            .agent_context(&Capabilities::default(), private()?)?,
+    );
+    let effective = format!("{}{path}", crate::layers::EFFECTIVE_PATH);
+    let first = run(
+        task.clone(),
+        crate::tool::files::read()?,
+        json!({"path": effective}),
+    )
+    .await?;
+    assert_eq!(first.value["text"], "{\"version\":1}");
+    let source: FileReadSource = serde_json::from_value(first.value["file"].clone())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let FileReadSource::Authored(selected) = source else {
+        panic!("original authored identity")
+    };
+    let shared = harness.files.system_layer(&metadata).await?;
+    assert_eq!(
+        (&shared.volume, &shared.generation),
+        (&selected.volume, &selected.generation)
+    );
+    assert!(
+        ContentGrant::verify(
+            &harness.verifier,
+            &harness.signed,
+            &selected.volume,
+            VolumeOperation::Write,
+            1,
+            &mut None,
+        )
+        .is_err()
+    );
+
+    // A versioned effective read follows its original generation even after
+    // the home entry is replaced by an off marker. Ordinal reads use the same
+    // selection, while an unversioned read observes the new disabled entry.
+    let note = format!("{}notes.txt", crate::layers::EFFECTIVE_PATH);
+    write(&harness, "notes.txt", "first\nsecond\n").await?;
+    let before = run(
+        task.clone(),
+        crate::tool::files::read()?,
+        json!({"path": note}),
+    )
+    .await?;
+    let home_source: FileReadSource = serde_json::from_value(before.value["file"].clone())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let FileReadSource::Authored(home_selected) = home_source else {
+        panic!("authored home")
+    };
+    let version = format!(
+        "authored-file-v1:{}",
+        serde_json::to_string(&home_selected).map_err(|error| Error::Invalid(error.to_string()))?
+    );
+    write(&harness, "notes.txt", "off: true").await?;
+    let reread = run(
+        task.clone(),
+        crate::tool::files::read()?,
+        json!({
+            "path": note, "version": version
+        }),
+    )
+    .await?;
+    assert_eq!(reread.value, before.value);
+    let line = run(task.clone(), crate::tool::files::read()?, json!({
+        "path": note, "version": version, "selection": {"kind": "lines", "offset": 1, "limit": 1}
+    })).await?;
+    assert_eq!(line.value["text"], "second\n");
+    assert_eq!(line.value["file"], before.value["file"]);
+    assert!(
+        run(
+            task.clone(),
+            crate::tool::files::read()?,
+            json!({"path": note})
+        )
+        .await
+        .is_err()
+    );
+
+    // A legacy built-in copy inherits the seed's source. Changing only the
+    // body or appending after that body must retain the authored home source.
+    let skill_path = "skills/swarm-topology/SKILL.md";
+    let seed_body = std::str::from_utf8(crate::seed::file(skill_path).expect("built-in skill"))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    for (body, inherited) in [
+        (seed_body.to_owned(), true),
+        (format!("{seed_body}\nuser appendix\n"), false),
+        (
+            seed_body.replace("# Choose the dependency graph", "# User dependency graph"),
+            false,
+        ),
+    ] {
+        write(&harness, skill_path, &body).await?;
+        let result = run(
+            task.clone(),
+            crate::tool::files::read()?,
+            json!({
+                "path": format!("{}{skill_path}", crate::layers::EFFECTIVE_PATH)
+            }),
+        )
+        .await?;
+        let source: FileReadSource = serde_json::from_value(result.value["file"].clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let FileReadSource::Authored(source) = source else {
+            panic!("layer retains authored identity")
+        };
+        let expected = if inherited {
+            &harness.seed.0
+        } else {
+            &harness.scratch
+        };
+        assert_eq!(&source.volume, expected);
+        for header_bytes in [16_384, 1_024] {
+            let mut work = crate::context::DiscoveryWork {
+                limits: crate::context::ContextDiscoveryLimits {
+                    header_bytes,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let skills = harness.skills_with_work(None, &mut work).await?;
+            let selected = skills
+                .iter()
+                .find(|skill| skill.source.path == skill_path)
+                .expect("layered skill");
+            assert_eq!(&selected.source.root.volume, expected);
+        }
+    }
+
+    // Neither a home shadow nor a subsequent trusted host commit changes this run.
+    write(&harness, path, "home shadow").await?;
+    let reference = workspace_ref(
+        selected.volume.provider().clone(),
+        &selected.volume.storage_name(&mut None)?,
+    )?;
+    harness
+        .files
+        .apply(
+            &reference,
+            None,
+            &[WorkspaceMutation::PutFile {
+                path: format!("/{path}"),
+                bytes: OwnedBytes::from_static(b"changed"),
+            }],
+            &IdempotencyKey::new("replace-system-catalog")?,
+        )
+        .await?;
+    let direct = format!("{}{path}", crate::layers::SYSTEM_PATH);
+    for path in [&effective, &direct] {
+        let result = run(
+            task.clone(),
+            crate::tool::files::read()?,
+            json!({"path": path}),
+        )
+        .await?;
+        assert_eq!(result.value["text"], first.value["text"]);
+        assert_eq!(result.value["file"], first.value["file"]);
+        assert!(
+            run(
+                task.clone(),
+                crate::tool::files::write()?,
+                json!({"path": path, "content": "forbidden"})
+            )
+            .await
+            .is_err()
+        );
+    }
+    // A content version of that later commit names the pinned volume, yet its
+    // generation is outside this run, exactly like an authored version.
+    let system_grant = ContentGrant::verify_directory_read(
+        &harness.verifier,
+        &harness.signed,
+        &selected.volume,
+        "",
+        &mut None,
+    )?;
+    let (newer, _) = harness
+        .files
+        .read_private_path(
+            &selected.volume,
+            &system_grant,
+            &selected.path,
+            None,
+            u64::MAX,
+            ContentAccess::default(),
+        )
+        .await?;
+    let newer = serde_json::to_string(&newer).map_err(|error| Error::Invalid(error.to_string()))?;
+    for path in [&effective, &direct] {
+        let refusal = run(
+            task.clone(),
+            crate::tool::files::read()?,
+            json!({"path": path, "version": newer}),
+        )
+        .await
+        .expect_err("a later host generation is outside the run");
+        assert!(
+            refusal.to_string().contains("differs from this run"),
+            "{refusal}"
+        );
+    }
+    // Absence has a generation, without listing a directory or manufacturing a
+    // file identity. A subsequent write cannot change that original selection.
+    let reader = harness.client_reader()?;
+    let absent_path = "selection-control.ts";
+    let (absent_generation, generation_hold) = reader
+        .select_private_generation(
+            &harness.scratch,
+            "",
+            absent_path,
+            None,
+            ContentAccess::default(),
+        )?
+        .await?;
+    write(&harness, absent_path, "export default {};\n").await?;
+    let range = acyclic_fs::ByteRange {
+        offset: 0,
+        length: 1,
+    };
+    let absent = reader
+        .read_private_range(
+            &harness.scratch,
+            "",
+            absent_path,
+            Some(&absent_generation),
+            range,
+            ContentAccess::default(),
+        )?
+        .await
+        .err()
+        .expect("the original generation has no settings module");
+    assert_eq!(absent.code(), crate::wire::ErrorCode::NotFound);
+    let (present, bytes, present_hold) = reader
+        .read_private_range(
+            &harness.scratch,
+            "",
+            absent_path,
+            None,
+            range,
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert_ne!(present.generation, absent_generation);
+    assert_eq!(&bytes[..], b"e");
+    let no_read = Capabilities::default();
+    let denied_selection = reader
+        .select_private_generation(
+            &harness.scratch,
+            "",
+            absent_path,
+            Some(&absent_generation),
+            ContentAccess {
+                ceiling: Some(&no_read),
+                io: None,
+            },
+        )?
+        .await
+        .err()
+        .expect("an immutable selection never grants read authority");
+    assert_eq!(
+        denied_selection.code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    cancellation.cancel();
+    let before = work.receipt();
+    let cancelled = match reader.select_private_generation(
+        &harness.scratch,
+        "",
+        absent_path,
+        None,
+        ContentAccess {
+            ceiling: None,
+            io: Some(&io),
+        },
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("cancelled selection must refuse before allocating its future"),
+    };
+    assert_eq!(cancelled.code(), crate::wire::ErrorCode::Cancelled);
+    assert_eq!(work.receipt().items_examined, before.items_examined);
+    assert_eq!(work.receipt().bytes_hashed, before.bytes_hashed);
+    drop(present);
+    drop(present_hold);
+    drop(absent_generation);
+    drop(generation_hold);
+
+    // Deferring effective-path authorization grants nothing: the selected layer
+    // still requires the caller's original volume and directory read authority.
+    let denied = Bindings {
+        scope: RuntimeScope::new(
+            Capabilities::new([String::from("tool:call:read")]),
+            harness.limits.clone(),
+        )?,
+        content: Some(ContentBindings {
+            volume: harness.project.clone(),
+            reader: harness.client_reader()?,
+            writer: None,
+        }),
+        system: Some(shared),
+        ..Bindings::local()
+    }
+    .build()?;
+    let denied = Arc::new(denied.agent_context(&Capabilities::default(), private()?)?);
+    let refusal = run(
+        denied,
+        crate::tool::files::read()?,
+        json!({"path": effective}),
+    )
+    .await
+    .expect_err("directory grant required");
+    assert!(
+        refusal
+            .to_string()
+            .contains("original directory read grant"),
+        "{refusal}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn effective_skill_reads_stay_within_the_reader_allowance() -> Result<()> {
+    use crate::{Capabilities, filesystem::FilesystemContentPublisher, runtime::ContentBindings};
+    use serde_json::json;
+
+    // The built-in skill is larger than this allowance; a short home override
+    // and its effective selection must not request the seed's whole length.
+    const FILE_BYTES: u64 = 1024;
+    let skill_path = "skills/swarm-topology/SKILL.md";
+    assert!(crate::seed::file(skill_path).expect("built-in skill").len() as u64 > FILE_BYTES);
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let project = volume(directory.path()).await?;
+    let harness = LocalHarness::open(volume_config(directory.path(), project, text())?.limits(
+        crate::conversation::Limits {
+            file_bytes: FILE_BYTES,
+            ..Default::default()
+        },
+    ))
+    .await?;
+    let task = std::sync::Arc::new(harness.harness.agent_context(
+        &Capabilities::default(),
+        ContentBindings {
+            volume: harness.journal.clone(),
+            reader: harness.client_reader()?,
+            writer: Some(FilesystemContentPublisher::new(
+                harness.files.clone(),
+                &harness.journal,
+                &harness.verifier,
+                &harness.signed,
+                harness.limits.file_bytes,
+                None,
+            )?),
+        },
+    )?);
+    write(
+        &harness,
+        skill_path,
+        "user skill
+",
+    )
+    .await?;
+    let result = run(
+        task,
+        crate::tool::files::read()?,
+        json!({"path": format!("{}{skill_path}", crate::layers::EFFECTIVE_PATH)}),
+    )
+    .await?;
+    assert_eq!(
+        result.value["text"],
+        "user skill
+"
+    );
+    let source: crate::tool::files::FileReadSource =
+        serde_json::from_value(result.value["file"].clone())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let crate::tool::files::FileReadSource::Authored(source) = source else {
+        panic!("layer retains authored identity")
+    };
+    assert_eq!(source.volume, harness.scratch);
+    Ok(())
+}
+
 #[tokio::test]
 async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;

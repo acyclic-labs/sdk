@@ -205,6 +205,12 @@ impl FileTool {
                 "file path exceeds original task bound",
             ));
         }
+        if matches!(self, Self::Read) && path.starts_with(crate::layers::EFFECTIVE_PATH) {
+            // An alias has no volume authority. The async read resolves it once;
+            // The resolved read validates its version and original directory
+            // grant before returning any projection, even metadata-only media.
+            return Ok((None, None));
+        }
         version.map_or(Ok((None, None)), |version| {
             let (file, custody) =
                 super::version::decode_tool_version(context, path, version, work)?;

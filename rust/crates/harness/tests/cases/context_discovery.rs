@@ -31,32 +31,43 @@ struct CountingReader<'a> {
 }
 
 impl ContentResidencyVerifier for CountingReader<'_> {
-    fn read_private_prefix<'a>(
+    fn read_private_range<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,
         granted_prefix: &'a str,
         path: &'a str,
-        generation: &'a acyclic_harness::resources::GenerationRef,
-        maximum_bytes: u64,
-        access: acyclic_harness::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+        generation: Option<&'a acyclic_harness::resources::GenerationRef>,
+        range: acyclic_fs::ByteRange,
+        access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        acyclic_harness::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_harness::conversation::FilePathSelection,
+                acyclic_stream::OwnedBytes,
+                Option<acyclic_harness::conversation::ContentHold<'io>>,
+            ),
+        >,
+    >
+    where
+        'io: 'a,
     {
         self.reads.fetch_add(1, Ordering::Relaxed);
-        let read = self.inner.read_private_prefix(
+        let read = self.inner.read_private_range(
             volume,
             granted_prefix,
             path,
             generation,
-            maximum_bytes,
+            range,
             access,
         )?;
         acyclic_harness::conversation::BoundedContentFuture::new(None, || async move {
-            let bytes = read.await?;
+            let (selected, bytes, hold) = read.await?;
             *self
                 .prefix
                 .lock()
                 .map_err(|error| Error::Storage(error.to_string()))? = Some(bytes.clone());
-            Ok(bytes)
+            Ok((selected, bytes, hold))
         })
     }
 
@@ -178,7 +189,11 @@ async fn changed_skill_reads_one_pinned_prefix_without_directory_recapture() -> 
     // Inspect the real provider's retained allocation at the shared adapter
     // boundary. Equal contents alone would miss a copied prefix and its owner.
     use acyclic_harness::context::SkillReader;
-    let (prefix, pinned) = acyclic_harness::context::VolumeDiscovery {
+    let acyclic_harness::context::SkillPrefix {
+        bytes: prefix,
+        pinned,
+        ..
+    } = acyclic_harness::context::VolumeDiscovery {
         reader: &reader,
         root,
         io: None,

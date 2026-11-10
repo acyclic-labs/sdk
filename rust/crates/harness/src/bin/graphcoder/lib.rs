@@ -206,7 +206,7 @@ fn configure(
     registry: Registry,
 ) -> Result<LocalHarnessConfig, Box<dyn std::error::Error>> {
     let mut config = registry
-        .graphcoder(&args.workspace, args.model.clone())
+        .graphcoder(&args.workspace, args.model.clone())?
         .working_directory(&std::env::current_dir()?)?;
     if let Some(directory) = &args.host_state_directory {
         config = config.state_directory(directory);

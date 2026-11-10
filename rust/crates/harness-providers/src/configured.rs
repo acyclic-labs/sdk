@@ -17,13 +17,35 @@ impl Registry {
         self,
         workspace: impl Into<PathBuf>,
         selection: Option<String>,
-    ) -> LocalHarnessConfig {
+    ) -> acyclic_harness_core::Result<LocalHarnessConfig> {
+        // Publish only the model contract. Endpoint headers, credential policy,
+        // transport settings and secret bindings remain in the host registry.
+        #[derive(serde::Serialize)]
+        struct Catalog<'a> {
+            version: u32,
+            providers: std::collections::BTreeMap<
+                &'a str,
+                &'a std::collections::BTreeMap<String, crate::ModelSpec>,
+            >,
+        }
+        let bytes = serde_json::to_vec(&Catalog {
+            version: 1,
+            providers: self
+                .catalog()
+                .iter()
+                .map(|(name, spec)| (name.as_str(), &spec.models))
+                .collect(),
+        })
+        .map_err(|_| crate::invalid("cannot encode public model catalog"))?;
         let models = ModelResolver::new(self.default_model().to_owned(), move |selection| {
             let provider = Arc::new(self.resolve(selection)?);
             Ok((provider.model().clone(), provider as _))
         });
-        LocalHarnessConfig::resolving(workspace, Arc::new(models), selection)
-            .preset(&Preset::graphcoder())
-            .web_tools()
+        Ok(
+            LocalHarnessConfig::resolving(workspace, Arc::new(models), selection)
+                .system_file("sys/models/catalog.json", bytes.into())
+                .preset(&Preset::graphcoder())
+                .web_tools(),
+        )
     }
 }

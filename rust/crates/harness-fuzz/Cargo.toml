@@ -96,6 +96,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "layer_off_marker"
+path = "fuzz_targets/layer_off_marker.rs"
+required-features = ["core"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "local_state_directory"
 path = "fuzz_targets/local_state_directory.rs"
 required-features = ["runtime"]
@@ -110,14 +118,14 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 default = ["runtime"]
 mcp-stdio-codec = ["dep:acyclic-mcp", "dep:bytes", "dep:rmcp", "dep:tokio-util"]
 reader = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
-core = ["dep:acyclic-harness-core", "dep:futures"]
+core = ["dep:acyclic-harness-core", "acyclic-harness-core/filesystem", "dep:futures"]
 bounded-json = ["core", "dep:acyclic-native-runtime"]
 oidc = ["core", "acyclic-harness-core/oidc", "dep:bytes", "dep:acyclic-stream", "dep:p256", "dep:ed25519-dalek"]
 native-answer = ["native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime"]
 command-result = ["core", "dep:acyclic-harness"]
 graphcoder = ["dep:graphcoder", "graphcoder/test-support"]
-code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
-native-arguments = ["core", "acyclic-harness-core/filesystem"]
+code-mode = ["core", "dep:tokio"]
+native-arguments = ["core"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 native-settings = ["core", "dep:tempfile", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]

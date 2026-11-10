@@ -24,13 +24,26 @@ impl FileTool {
             work,
         )?;
         if input.0.path.starts_with(crate::layers::EFFECTIVE_PATH) {
-            let (path, selected, retained) = context.effective_tool_path(&input.0.path, io).await?;
-            let custody = super::window::custody(io, retained)?;
-            input.0.path = path.into_owned();
-            source = super::source::ReadSource {
-                source: selected.map(FileReadSource::Authored),
-                custody,
-            };
+            let (layer, selected) = context
+                .effective_tool_path(
+                    &input.0.path,
+                    source.source.as_ref().map(FileReadSource::volume),
+                    io,
+                )
+                .await?;
+            input.0.path = layer.into_owned();
+            if let Some((selected, custody)) = selected {
+                source = super::source::ReadSource {
+                    source: Some(FileReadSource::Authored(selected)),
+                    custody,
+                };
+            }
+            if let Some(FileReadSource::Content(file)) = &source.source {
+                context.authorize_tool_file_read(&input.0.path, file, io)?;
+            }
+        }
+        if let Some(original) = &source.source {
+            context.check_layer_version(original)?;
         }
         if let Some(ReadSelection::Lines { offset, limit }) = input.0.selection {
             return super::lines::read(context, &input.0, source, offset, limit, work, io).await;
