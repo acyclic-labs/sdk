@@ -5,12 +5,18 @@ use std::io;
 #[cfg(unix)]
 #[test]
 fn closed_spawn_arguments_preserve_original_credit_and_unwind() -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     if crate::delivery::isolated()? {
         return Ok(());
     }
+    let cwd = std::env::current_dir()?;
+    let search = crate::ExecutableSearch::from_environment(&cwd, |key| std::env::var_os(key));
+    let executable = search.resolve_native("true")?;
+    let program = CString::new(executable.as_os_str().as_bytes()).map_err(io::Error::other)?;
     for cut in 0..3 {
         for callback_panics in [false, true] {
             let returned = Arc::new(AtomicU64::new(0));
@@ -38,12 +44,7 @@ fn closed_spawn_arguments_preserve_original_credit_and_unwind() -> io::Result<()
             });
             let mut custody = None;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                ProcessTree::spawn_closed_measured(
-                    c"/bin/true",
-                    &[c"argument"],
-                    &meter,
-                    &mut custody,
-                )
+                ProcessTree::spawn_closed_measured(&program, &[c"argument"], &meter, &mut custody)
             }));
             if let Some(mut tree) = custody.take() {
                 tree.terminate(None)?;
@@ -82,8 +83,7 @@ fn closed_spawn_arguments_preserve_original_credit_and_unwind() -> io::Result<()
             }
             meter.deny_allocations.store(true, Ordering::Release);
             assert!(
-                ProcessTree::spawn_closed_measured(c"/bin/true", &[], &meter, &mut custody)
-                    .is_err()
+                ProcessTree::spawn_closed_measured(&program, &[], &meter, &mut custody).is_err()
             );
             assert!(custody.is_none());
             assert_eq!(returned.load(Ordering::Acquire), 1);

@@ -5,10 +5,14 @@ pub(crate) use std::sync::*;
 
 // Every retained native owner includes its lock storage in its admitted layout.
 // The pthread-backed standard mutex allocates separately on first acquisition.
+#[cfg(all(
+    not(loom),
+    not(target_arch = "wasm32"),
+    any(test, target_os = "linux", windows)
+))]
+pub(crate) use acyclic_native_runtime::InlineCondvar as Condvar;
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
-pub(crate) use acyclic_native_runtime::{
-    InlineCondvar as Condvar, InlineMutex as Mutex, InlineMutexGuard as MutexGuard,
-};
+pub(crate) use acyclic_native_runtime::{InlineMutex as Mutex, InlineMutexGuard as MutexGuard};
 
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 pub(crate) use acyclic_native_runtime::{InlineMutex, InlineMutexGuard};
