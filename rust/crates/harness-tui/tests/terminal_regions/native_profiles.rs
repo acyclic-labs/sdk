@@ -124,7 +124,7 @@ pub(super) mod linux {
                     return Err(io::Error::new(
                         io::Error::from(error).kind(),
                         format!(
-                            "emulator event admission failed: {error}; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture"
+                            "emulator event admission failed: {error}; recovery: cargo test -p acyclic-harness-tui --test main terminal_regions::native_profiles::linux -- --nocapture"
                         ),
                     ));
                 }
@@ -151,7 +151,7 @@ pub(super) mod linux {
                         if result? == 0 {
                             return Err(io::Error::new(
                                 io::ErrorKind::TimedOut,
-                                "emulator consumption deadline; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                                "emulator consumption deadline; recovery: cargo test -p acyclic-harness-tui --test main terminal_regions::native_profiles::linux -- --nocapture",
                             ));
                         }
                     }
@@ -170,7 +170,7 @@ pub(super) mod linux {
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
                         format!(
-                            "emulator producer closed or reported an error: {}; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                            "emulator producer closed or reported an error: {}; recovery: cargo test -p acyclic-harness-tui --test main terminal_regions::native_profiles::linux -- --nocapture",
                             diagnostic
                         ),
                     ));
@@ -181,7 +181,7 @@ pub(super) mod linux {
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
-                        "emulator event source failed; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                        "emulator event source failed; recovery: cargo test -p acyclic-harness-tui --test main terminal_regions::native_profiles::linux -- --nocapture",
                     ));
                 }
                 return Ok(());
@@ -192,7 +192,7 @@ pub(super) mod linux {
         let output = command.output().unwrap();
         assert!(
             output.status.success(),
-            "{command:?}: {}; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+            "{command:?}: {}; recovery: cargo test -p acyclic-harness-tui --test main terminal_regions::native_profiles::linux -- --nocapture",
             String::from_utf8_lossy(&output.stderr)
         );
         output.stdout
@@ -206,7 +206,7 @@ pub(super) mod linux {
         if copied != length {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                "original frame producer closed before its declared bytes; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                "original frame producer closed before its declared bytes; recovery: cargo test -p acyclic-harness-tui --test main terminal_regions::native_profiles::linux -- --nocapture",
             ));
         }
         output.write_all(b"\x1b[6n")?;
@@ -247,7 +247,7 @@ pub(super) mod linux {
             if !reply.starts_with(b"\x1b[") || !reply.ends_with(b"R") {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "emulator DSR reply missing; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                    "emulator DSR reply missing; recovery: cargo test -p acyclic-harness-tui --test main terminal_regions::native_profiles::linux -- --nocapture",
                 ));
             }
             control.write_all(b"R")?;
@@ -342,7 +342,7 @@ pub(super) mod linux {
                             rustix::fs::inotify::ReadFlags::IGNORED
                                 | rustix::fs::inotify::ReadFlags::QUEUE_OVERFLOW
                         ),
-                        "emulator socket watch lost; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture"
+                        "emulator socket watch lost; recovery: cargo test -p acyclic-harness-tui --test main terminal_regions::native_profiles::linux -- --nocapture"
                     );
                 }
                 let shell = format!(

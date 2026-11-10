@@ -15,7 +15,7 @@ async fn main() {
         } else if std::env::args().nth(1).as_deref() == Some("--fixture") {
             "node typescript/packages/stream/test/http-provider-conformance.mjs"
         } else {
-            "set ACYCLIC_CONFORMANCE_ENDPOINT and ACYCLIC_CONFORMANCE_TOKEN, then cargo run --locked -p acyclic-stream --features http,conformance --example provider-conformance"
+            "set ACYCLIC_CONFORMANCE_ENDPOINT and ACYCLIC_CONFORMANCE_TOKEN, then cargo run --locked -p acyclic-stream --features conformance --example provider-conformance"
         };
         eprintln!("STEP_FAILED stream-provider-conformance: {error}; recovery: {recovery}");
         std::process::exit(1);

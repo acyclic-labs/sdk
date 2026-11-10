@@ -80,7 +80,7 @@ mod tests {
     }
 
     fn ignores(root: &Path, paths: &[(&Path, bool)]) {
-        let recovery = "cargo test --locked -p acyclic-harness --features filesystem-local,native-execution --lib local::workspace::volumes::exclude::tests::";
+        let recovery = "cargo test --locked -p acyclic-harness --lib local::workspace::volumes::exclude::tests::";
         let mut child = std::process::Command::new("git")
             .args(["check-ignore", "--no-index", "-z", "--stdin"])
             .current_dir(root)
