@@ -43,7 +43,7 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            // V3 retains whether an actor wait also accepts inbox input.
+            // V4 retains whether an actor wait also accepts inbox input.
             version: "4".into(),
         });
     &IDENTITY
