@@ -95,13 +95,13 @@ cargo test --locked -p acyclic-agent-host-conformance --features local --test ma
 step=compile-postgres-checks
 cargo build --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance
 step=shared-stream-regressions
-cargo test --locked -p acyclic-stream --features local,postgres --lib
+cargo test --locked -p acyclic-stream --features postgres --lib
 step=postgres-cross-session
 cargo run --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance -- --postgres
 step=postgres-scale
 cargo run --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance -- --postgres --scale
 step=compile-shared-objects-regressions
-cargo test --locked -p acyclic-objects --features local,s3 --lib --no-run
+cargo test --locked -p acyclic-objects --features s3 --lib --no-run
 step=shared-objects-regressions
-cargo test --locked -p acyclic-objects --features local,s3 --lib
+cargo test --locked -p acyclic-objects --features s3 --lib
 step=complete

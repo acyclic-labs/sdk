@@ -11,8 +11,11 @@ export const policy = JSON.parse(readFileSync(new URL("../release/cloud-native-f
 
 export function checkCloudNativeFeatures(packages) {
   for (const [name, contract] of Object.entries(policy.packages)) {
-    if (contract.retired) continue;
     const item = packages.find(candidate => candidate.name === name);
+    if (contract.retired) {
+      if (item) throw new Error(`Cloud native feature policy: revived package ${name} needs a feature contract`);
+      continue;
+    }
     if (!item) throw new Error(`Cloud native feature policy: missing package ${name}`);
     for (const feature of Object.keys(item.features)) {
       if (!contract.features[feature]) {
