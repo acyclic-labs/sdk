@@ -49,7 +49,7 @@ pub(super) async fn read_selected<
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
@@ -74,7 +74,7 @@ pub(super) async fn read_selected_with_accounting<
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<crate::kernel::OwnedSourceChunk, WorkspaceError> {
@@ -99,7 +99,7 @@ pub(super) async fn read_selected_with_accounting<
             return Err(WorkspaceError::NotRegularFile);
         }
         let length = regular_file_bytes(record)?;
-        if length > maximum_bytes {
+        if maximum_bytes.is_some_and(|maximum| length > maximum) {
             return Err(WorkspaceError::ReadLimitExceeded);
         }
         if length > checkout.value.volume_config().limits.maximum_read_bytes {
@@ -445,7 +445,7 @@ pub(super) async fn plan<
     path: &str,
     offset: u64,
     length: u64,
-    maximum_spans: u32,
+    maximum_spans: Option<u32>,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<(WorkspaceExtentPlan, crate::AuthorityAllocation), WorkspaceError> {

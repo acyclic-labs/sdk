@@ -49,9 +49,8 @@ pub(crate) struct SourceFact {
     pub(crate) volume_id: VolumeId,
     pub(crate) root_identity: [u8; 16],
     pub(crate) mode: DurableSourceMode,
-    pub(crate) maximum_paths: u32,
-    pub(crate) maximum_extent_spans: u32,
-    pub(crate) maximum_queued_changes: u32,
+    pub(crate) maximum_paths: Option<u32>,
+    pub(crate) maximum_extent_spans: Option<u32>,
     pub(crate) capture_policy: Digest,
     pub(crate) state: DurableSourceState,
     pub(crate) generation_id: GenerationId,
@@ -90,9 +89,20 @@ pub(crate) fn encode_source_fact(value: SourceFact) -> Result<Vec<u8>, SourceFac
         DurableSourceMode::Pinned => 1,
         DurableSourceMode::Tracking => 2,
     });
-    encoder.u32(value.maximum_paths);
-    encoder.u32(value.maximum_extent_spans);
-    encoder.u32(value.maximum_queued_changes);
+    match value.maximum_paths {
+        None => encoder.u8(0),
+        Some(maximum) => {
+            encoder.u8(1);
+            encoder.u32(maximum);
+        }
+    }
+    match value.maximum_extent_spans {
+        None => encoder.u8(0),
+        Some(maximum) => {
+            encoder.u8(1);
+            encoder.u32(maximum);
+        }
+    }
     encoder.fixed(value.capture_policy.as_bytes());
     match value.state {
         DurableSourceState::Clean => encoder.u8(1),
@@ -125,11 +135,20 @@ pub(crate) fn decode_source_fact(
             2 => DurableSourceMode::Tracking,
             _ => return Err(invariant("unknown source mode").into()),
         },
-        maximum_paths: decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        maximum_extent_spans: decoder
-            .u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        maximum_queued_changes: decoder
-            .u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        maximum_paths: match decoder
+            .u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
+        {
+            0 => None,
+            1 => Some(decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+            _ => return Err(invariant("invalid source path allowance").into()),
+        },
+        maximum_extent_spans: match decoder
+            .u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
+        {
+            0 => None,
+            1 => Some(decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?),
+            _ => return Err(invariant("invalid source extent allowance").into()),
+        },
         capture_policy: Digest::from_bytes(
             decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         ),
@@ -167,10 +186,7 @@ pub(crate) fn decode_source_volume(
 }
 
 fn validate(value: SourceFact) -> Result<(), SourceFactError> {
-    if value.maximum_paths == 0
-        || value.maximum_extent_spans == 0
-        || value.maximum_queued_changes == 0
-    {
+    if value.maximum_paths == Some(0) || value.maximum_extent_spans == Some(0) {
         return Err(SourceFactError::ZeroBound);
     }
     Ok(())
@@ -214,11 +230,61 @@ fn invariant(message: &'static str) -> CanonicalDecodeError {
 #[cfg(all(test, feature = "native-watch", not(target_arch = "wasm32")))]
 mod tests {
     #[test]
-    fn source_authority_is_domain_separated() {
-        let volume = super::VolumeId::from_bytes([7; 16]);
+    fn source_fact_round_trips_and_authority_is_domain_separated()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let volume_id = VolumeId::from_bytes([7; 16]);
+        let value = SourceFact {
+            volume_id,
+            root_identity: [8; 16],
+            mode: DurableSourceMode::Tracking,
+            maximum_paths: Some(10),
+            maximum_extent_spans: Some(11),
+            capture_policy: Digest::from_bytes([4; 32]),
+            state: DurableSourceState::NeedsRescan(SourceInvalidation::RootChanged),
+            generation_id: GenerationId::new(Digest::from_bytes([9; 32])),
+        };
+        let encoded = encode_source_fact(value)?;
+        assert_eq!(decode_source_fact(&encoded, 4096)?, value);
+        let unbounded = SourceFact {
+            maximum_paths: None,
+            maximum_extent_spans: None,
+            ..value
+        };
+        assert_eq!(
+            decode_source_fact(&encode_source_fact(unbounded)?, 4096)?,
+            unbounded
+        );
+        for version in [0_u16, 2, u16::MAX] {
+            let mut obsolete = encoded.clone();
+            obsolete[DOMAIN.len()..DOMAIN.len() + 2].copy_from_slice(&version.to_le_bytes());
+            assert!(matches!(
+                decode_source_fact(&obsolete, 4096),
+                Err(SourceFactError::Decode(CanonicalDecodeError::UnsupportedVersion { found: actual, .. }))
+                    if actual == version
+            ));
+        }
         assert_ne!(
             super::source_authority_id(volume).into_bytes(),
             volume.into_bytes()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn source_fact_rejects_zero_bounds_and_unknown_tags() {
+        let value = SourceFact {
+            volume_id: VolumeId::from_bytes([1; 16]),
+            root_identity: [2; 16],
+            mode: DurableSourceMode::Pinned,
+            maximum_paths: Some(0),
+            maximum_extent_spans: Some(1),
+            capture_policy: Digest::from_bytes([4; 32]),
+            state: DurableSourceState::Clean,
+            generation_id: GenerationId::new(Digest::from_bytes([3; 32])),
+        };
+        assert!(matches!(
+            encode_source_fact(value),
+            Err(SourceFactError::ZeroBound)
+        ));
     }
 }

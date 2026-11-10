@@ -125,11 +125,9 @@ async fn rewrite(
 }
 
 #[tokio::test]
-async fn whole_file_rewrites_exceed_read_bounds_but_remain_generation_fenced() -> TestResult {
+async fn whole_file_rewrites_remain_generation_fenced() -> TestResult {
     let cancel = CancellationToken::new();
-    let mut limited = config();
-    limited.limits.maximum_read_bytes = 8;
-    let (volume, mut seed) = fixture(limited, &cancel).await?;
+    let (volume, mut seed) = fixture(config(), &cancel).await?;
     let content = stage(&seed, b"0123456789abcdef0123456789abcdef", &cancel).await?;
     seed.apply_authored_transaction(
         vec![AuthoredMutation::CreateFileFromContent {

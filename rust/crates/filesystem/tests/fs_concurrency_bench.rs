@@ -39,13 +39,7 @@ fn path(parts: &[String]) -> Result<NamespacePath> {
     Ok(NamespacePath::new(
         parts
             .iter()
-            .map(|part| {
-                LogicalName::new(
-                    NameEncoding::Utf8,
-                    part.as_bytes().to_vec(),
-                    config.limits.maximum_component_bytes,
-                )
-            })
+            .map(|part| LogicalName::new(NameEncoding::Utf8, part.as_bytes().to_vec()))
             .collect::<std::result::Result<Vec<_>, _>>()?,
         config.limits,
     )?)

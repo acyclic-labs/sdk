@@ -1,5 +1,6 @@
 //! Disposable, correctness-inert residency and storage-promotion speculation.
 
+mod active;
 mod controller;
 mod promotion;
 mod residency;

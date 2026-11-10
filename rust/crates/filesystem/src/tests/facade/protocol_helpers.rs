@@ -205,13 +205,14 @@ pub(super) async fn assert_authority_volume_identity_fails_closed() -> TestResul
     commit(&mut checkout, &cancel).await?;
     let authority = &volume.fs.inner.authority;
     let mut work = crate::AuthorityWork::new(B, &cancel);
+    let payload_bytes = work.remaining()?.authority_bytes_read;
     let (records, _) = authority
         .replay(
             volume_authority_id(volume.id),
             Sequence::GENESIS,
             crate::ReplayLimit {
                 records: 2,
-                payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES * 2,
+                payload_bytes,
             },
             &mut work,
         )

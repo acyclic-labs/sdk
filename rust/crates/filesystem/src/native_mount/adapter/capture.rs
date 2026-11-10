@@ -25,7 +25,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         if paths.is_empty() {
             return Ok(());
         }
-        let work = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation)?;
+        let work = self.operation_work()?;
         invoke(&self.runtime, &work, || {
             self.capture_host(source_root, paths, identity, scope, None, &work)
         })
@@ -64,7 +64,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                 .check()
                 .map_err(|_| MountSourceError::Cancelled)?;
             let _producer = self.capture_producer(self.reserve_capture_poll()?)?;
-            for _ in 0..3 {
+            loop {
                 let mut carrier = NativeDemandCarrier::Native(work);
                 let mut candidate = self
                     .checkout
@@ -110,7 +110,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                     return Ok(());
                 }
             }
-            Err(MountSourceError::Stale)
         })
         .map_err(MountSourceError::from)?
         .await
@@ -158,7 +157,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                 },
                 |checkout, candidate, prepared| {
                     let gate = self
-                        .capture_gate
+                        .capture_signal
+                        .gate
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
                     if gate.cancelled {

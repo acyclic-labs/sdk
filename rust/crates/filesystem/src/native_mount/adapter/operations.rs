@@ -1,4 +1,3 @@
-use crate::native_mount::retirement::SourceRetirementWait;
 impl<A, O> MountFilesystem for CheckoutMountSource<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -26,7 +25,7 @@ where
             lazy_owner: None,
             lazy_root: None,
             #[cfg(windows)]
-            capture_gate: &self.capture_gate,
+            capture_gate: &self.capture_signal.gate,
         })
     }
 

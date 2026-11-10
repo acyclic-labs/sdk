@@ -2,7 +2,7 @@ use crate::native_host::NativeHostWork;
 use crate::native_mount::shared::outcome::{CallbackFailure, source_refusal};
 
 use super::{
-    Arc, Carried, Condvar, EntryFacts, HELD_SETTLE_LIMIT, HashMap, KeyedLocks, MATERIALIZE_WORKERS,
+    Arc, Carried, Condvar, EntryFacts, HashMap, KeyedLocks, MATERIALIZE_WORKERS,
     MaterializeHelpers, MaterializeQueue, Materialized, MountFilesystem, MountPath,
     MountSourceError, Mutex, MutexGuard, NativeMountError, Owned,
     PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, Placed, Projection, Projector, ProjectorLifecycle,
@@ -42,7 +42,7 @@ impl Projector {
         state.startup = Some(work.clone());
         self.wake();
         drop(state);
-        self.settle()
+        self.settle(work)
     }
 
     pub(super) fn new() -> Self {
@@ -50,6 +50,7 @@ impl Projector {
             clock: super::super::clock::Clock::capture(),
             state: Mutex::new(ProjectorState::default()),
             tree: Mutex::new(()),
+            progress: tokio::sync::Notify::new(),
             paths: KeyedLocks::default(),
             changed: Condvar::new(),
             worker: Mutex::new(None),
@@ -59,10 +60,17 @@ impl Projector {
         }
     }
 
+    /// Publish one projector change to both native worker and future waiters.
+    /// Future registrations are enabled before observing the protected state.
+    pub(super) fn signal_changed(&self) {
+        self.changed.notify_all();
+        self.progress.notify_waiters();
+    }
+
     /// Signals new work: wakes `settle` waiters and this view's runner,
     /// its own lifecycle thread or the shared instance's projector service.
     pub(super) fn wake(&self) {
-        self.changed.notify_all();
+        self.signal_changed();
         if let Some(hook) = self.service.get() {
             hook.schedule();
         }
@@ -590,7 +598,7 @@ impl Projector {
                 state.failure.get_or_insert_with(|| error.to_string());
                 state.processed = state.notified;
                 state.retry = false;
-                self.changed.notify_all();
+                self.signal_changed();
                 return (state, false);
             }
         };
@@ -663,7 +671,7 @@ impl Projector {
             state.unplaced.extend(unplaced);
             state.failure.get_or_insert(failure);
         }
-        self.changed.notify_all();
+        self.signal_changed();
         (state, true)
     }
 

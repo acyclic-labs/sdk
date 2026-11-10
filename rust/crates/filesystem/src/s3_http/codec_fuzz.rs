@@ -3,7 +3,7 @@ use super::*;
 
 fn created() -> S3Result<Bytes> {
     let limits = FilesystemS3Limits::default();
-    encode_multipart_created("key", 2, limits.maximum_multipart_part_bytes, 0)
+    encode_multipart_created("key", Some(2), limits.maximum_multipart_part_bytes, 0)
 }
 
 fn etag() -> String {
@@ -97,10 +97,10 @@ fn check_versions() {
     // The declared count cannot allocate beyond the actual fixed-width entries,
     // even when the caller configured the widest representable part bound.
     let limits = FilesystemS3Limits {
-        maximum_multipart_parts: u32::MAX,
+        maximum_multipart_parts: Some(u32::MAX),
         ..FilesystemS3Limits::default()
     };
-    let initial = encode_multipart_created("key", u32::MAX, 1, 0).unwrap();
+    let initial = encode_multipart_created("key", Some(u32::MAX), Some(1), 0).unwrap();
     let mut count_only = encode_multipart_completing(&[(1, etag())])
         .unwrap()
         .to_vec();

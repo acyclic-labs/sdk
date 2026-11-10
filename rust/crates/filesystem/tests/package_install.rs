@@ -37,7 +37,8 @@ fn every_publication_cut_rolls_forward_without_pathnames_or_backups() -> io::Res
         Stage::IdentityPublished,
     ] {
         let root = tempfile::tempdir()?;
-        let request = request(root.path())?;
+        let mut request = request(root.path())?;
+        request.identity.version = "release-λ".repeat(8_193);
         assert!(
             package_install::install(&request, |stage| if stage == cut {
                 Err(io::Error::other("cut"))

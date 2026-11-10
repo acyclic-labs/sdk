@@ -229,8 +229,7 @@ async fn apply_generation_mutations_validated<S: AsyncObjectStore>(
     ),
     crate::FsError,
 > {
-    let (plan, plan_allocation) =
-        MutationPlan::compile_with_accounting(operations, config.limits, accounting)?;
+    let (plan, plan_allocation) = MutationPlan::compile_with_accounting(operations, accounting)?;
     let plan = Owned {
         value: plan,
         allocation: plan_allocation,

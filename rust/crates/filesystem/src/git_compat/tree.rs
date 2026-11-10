@@ -6,7 +6,7 @@ pub(super) async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncO
     root_display: String,
     root: NamespacePath,
     limits: VolumeLimits,
-    maximum_entries: usize,
+    maximum_entries: Option<usize>,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<(String, ResolvedFile<A, O>)>, bool), WorkspaceError> {
     let mut pending = vec![(root_display, root)];
@@ -30,7 +30,7 @@ pub(super) async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncO
             let has_more = page.has_more;
             after = page.entries.last().map(|entry| entry.name.clone());
             for entry in page.entries {
-                if visited >= maximum_entries {
+                if maximum_entries.is_some_and(|maximum| visited >= maximum) {
                     truncated = true;
                     break 'walk;
                 }
@@ -77,7 +77,7 @@ pub(super) async fn resolved_git_grep_files<A: AsyncAuthorityStore, O: AsyncObje
     root_display: String,
     root: NamespacePath,
     limits: VolumeLimits,
-    maximum_entries: usize,
+    maximum_entries: Option<usize>,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<(String, ResolvedFile<A, O>)>, bool), WorkspaceError> {
     if root_display.is_empty() {
@@ -140,7 +140,7 @@ pub struct GitGrepMatch {
     pub text: String,
 }
 
-/// Bounded machine-readable grep result.
+/// Machine-readable grep result with optional caller-selected truncation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitGrepResult {
     /// Literal matching lines in stable path/line order.
@@ -167,10 +167,11 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
     generation: &Generation<A, O>,
     host: &GitIgnorePolicy,
     root: Option<&str>,
-    maximum_entries: u32,
+    maximum_entries: impl Into<Option<u32>>,
 ) -> Result<Vec<GitTreeEntry>, WorkspaceError> {
+    let maximum_entries = maximum_entries.into();
     let root = root.unwrap_or("").trim_matches('/');
-    if maximum_entries == 0 || host.reserves(root) {
+    if maximum_entries == Some(0) || host.reserves(root) {
         return Ok(Vec::new());
     }
     let start = if root.is_empty() {
@@ -191,7 +192,7 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
             }]);
         }
     }
-    let maximum = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
+    let maximum = maximum_entries.map(|maximum| maximum as usize);
     let mut entries = Vec::new();
     let mut pending = vec![start];
     while let Some(directory) = pending.pop() {
@@ -231,7 +232,7 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
                     path: path.clone(),
                     kind: git_kind(entry.kind).to_owned(),
                 });
-                if entries.len() >= maximum {
+                if maximum.is_some_and(|maximum| entries.len() >= maximum) {
                     entries.sort_by(|left, right| left.path.cmp(&right.path));
                     return Ok(entries);
                 }
@@ -260,17 +261,20 @@ pub async fn grep_git_generation<
     host: &GitIgnorePolicy,
     pattern: &str,
     root: Option<&str>,
-    maximum_entries: u32,
-    maximum_file_bytes: u64,
-    maximum_matches: u32,
+    maximum_entries: impl Into<Option<u32>>,
+    maximum_file_bytes: impl Into<Option<u64>>,
+    maximum_matches: impl Into<Option<u32>>,
 ) -> Result<GitGrepResult, WorkspaceError> {
+    let maximum_entries = maximum_entries.into();
+    let maximum_file_bytes = maximum_file_bytes.into();
+    let maximum_matches = maximum_matches.into();
     if root.is_some_and(|root| host.reserves(root)) {
         return Ok(GitGrepResult {
             matches: Vec::new(),
             truncated: false,
         });
     }
-    if maximum_entries == 0 {
+    if maximum_entries == Some(0) {
         return Ok(GitGrepResult {
             matches: Vec::new(),
             truncated: true,
@@ -296,7 +300,7 @@ pub async fn grep_git_generation<
         checkout.volume_config(),
     )?;
     let root_display = root.trim_matches('/').to_owned();
-    let maximum_entries = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
+    let maximum_entries = maximum_entries.map(|maximum| maximum as usize);
     let (regular, mut truncated) = resolved_git_grep_files(
         &reader,
         host,
@@ -308,60 +312,139 @@ pub async fn grep_git_generation<
     )
     .await?;
     let mut matches = Vec::new();
-    let maximum_matches = usize::try_from(maximum_matches).unwrap_or(usize::MAX);
+    let maximum_matches = maximum_matches.map(|maximum| maximum as usize);
     for batch in regular.chunks(GREP_READ_CONCURRENCY) {
-        let mut requests = Vec::with_capacity(batch.len());
-        let mut selected = Vec::with_capacity(batch.len());
-        for (path, file) in batch {
-            if file.description().logical_bytes > maximum_file_bytes {
-                truncated = true;
-                continue;
+        let mut scans: Vec<_> = batch.iter().map(|_| GrepScan::default()).collect();
+        let allowance = maximum_matches.map(|maximum| maximum.saturating_sub(matches.len()));
+        loop {
+            let mut requests = Vec::with_capacity(batch.len());
+            let mut selected = Vec::with_capacity(batch.len());
+            for (index, (path, file)) in batch.iter().enumerate() {
+                let scan = &mut scans[index];
+                if maximum_file_bytes
+                    .is_some_and(|maximum| file.description().logical_bytes > maximum)
+                {
+                    truncated = true;
+                    continue;
+                }
+                let remaining = file.description().logical_bytes - scan.offset;
+                if scan.invalid || remaining == 0 {
+                    continue;
+                }
+                requests.push(ResolvedFileRangeReadRequest {
+                    file,
+                    range: ByteRange {
+                        offset: scan.offset,
+                        length: remaining.min(64 * 1024),
+                    },
+                });
+                selected.push((index, path, remaining.min(64 * 1024)));
             }
-            requests.push(ResolvedFileRangeReadRequest {
-                file,
-                range: ByteRange {
-                    offset: 0,
-                    length: file.description().logical_bytes,
-                },
-            });
-            selected.push(path);
-        }
-        if requests.is_empty() {
-            continue;
-        }
-        let reads = reader
-            .read_resolved_ranges(
-                &requests,
-                GREP_READ_CONCURRENCY,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(|failure| WorkspaceError::from(failure.error))?
-            .value;
-        for (path, read) in selected.into_iter().zip(reads) {
-            let bytes = read.bytes;
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                continue;
-            };
-            for (index, line) in text.lines().enumerate() {
-                if line.contains(pattern) {
-                    if matches.len() >= maximum_matches {
-                        return Ok(GitGrepResult {
-                            matches,
-                            truncated: true,
-                        });
-                    }
-                    matches.push(GitGrepMatch {
-                        path: path.clone(),
-                        line: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
-                        text: line.to_owned(),
-                    });
+            if requests.is_empty() {
+                break;
+            }
+            let reads = reader
+                .read_resolved_ranges(
+                    &requests,
+                    GREP_READ_CONCURRENCY,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| WorkspaceError::from(failure.error))?
+                .value;
+            for ((index, path, length), read) in selected.into_iter().zip(reads) {
+                if read.bytes.len() as u64 != length {
+                    return Err(WorkspaceError::Engine(
+                        "incomplete Git file range".to_owned(),
+                    ));
+                }
+                let scan = &mut scans[index];
+                scan.offset += read.bytes.len() as u64;
+                scan.push(path, pattern, &read.bytes, allowance);
+                if scan.offset == batch[index].1.description().logical_bytes
+                    && !scan.pending.is_empty()
+                {
+                    scan.line(path, pattern, &[], false, allowance);
                 }
             }
         }
+        for scan in scans {
+            for found in scan.matches {
+                if maximum_matches.is_some_and(|maximum| matches.len() >= maximum) {
+                    return Ok(GitGrepResult {
+                        matches,
+                        truncated: true,
+                    });
+                }
+                matches.push(found);
+            }
+        }
     }
+
     Ok(GitGrepResult { matches, truncated })
+}
+
+// One unfinished line and the result, rather than a complete file body. A
+// later invalid UTF-8 line discards earlier matches from this binary file.
+#[derive(Default)]
+struct GrepScan {
+    offset: u64,
+    number: u64,
+    pending: Vec<u8>,
+    matches: Vec<GitGrepMatch>,
+    invalid: bool,
+}
+
+impl GrepScan {
+    fn push(&mut self, path: &str, pattern: &str, mut bytes: &[u8], allowance: Option<usize>) {
+        while let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
+            self.line(path, pattern, &bytes[..newline], true, allowance);
+            if self.invalid {
+                return;
+            }
+            bytes = &bytes[newline + 1..];
+        }
+        self.pending.extend_from_slice(bytes);
+    }
+
+    fn line(
+        &mut self,
+        path: &str,
+        pattern: &str,
+        bytes: &[u8],
+        terminated: bool,
+        allowance: Option<usize>,
+    ) {
+        let bytes = if self.pending.is_empty() {
+            bytes
+        } else {
+            self.pending.extend_from_slice(bytes);
+            &self.pending
+        };
+        let bytes = if terminated {
+            bytes.strip_suffix(b"\r").unwrap_or(bytes)
+        } else {
+            bytes
+        };
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            self.invalid = true;
+            self.matches.clear();
+            self.pending.clear();
+            return;
+        };
+        self.number += 1;
+        // A finite result needs one extra match to distinguish truncation.
+        // Continue validating the file before exposing any of its matches.
+        if text.contains(pattern) && allowance.is_none_or(|maximum| self.matches.len() <= maximum) {
+            self.matches.push(GitGrepMatch {
+                path: path.to_owned(),
+                line: self.number,
+                text: text.to_owned(),
+            });
+        }
+        self.pending.clear();
+    }
 }
 
 /// Attributes UTF-8 lines across explicit compatibility history.
@@ -372,8 +455,9 @@ pub async fn blame_git_generations<
     history_newest_first: &[(GitCommit, Generation<A, O>)],
     host: &GitIgnorePolicy,
     path: &str,
-    maximum_file_bytes: u64,
+    maximum_file_bytes: impl Into<Option<u64>>,
 ) -> Result<Vec<GitBlameLine>, WorkspaceError> {
+    let maximum_file_bytes = maximum_file_bytes.into();
     let relative = path.trim_start_matches('/');
     let absolute = format!("/{relative}");
     // A commit recorded before its path became host-owned still never shows it.

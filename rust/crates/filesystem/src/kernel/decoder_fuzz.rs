@@ -338,7 +338,6 @@ fn check_inner<const PLANTED: bool>(input: &[u8]) -> Result<(), FsError> {
         maximum_object_bytes: 4096,
         maximum_page_bytes: 4096,
         maximum_page_items: 32,
-        maximum_name_bytes: 256,
         ..DecodeLimits::default()
     };
     let prefix = usize::from(u16::from_le_bytes([controls[3], controls[4]]));

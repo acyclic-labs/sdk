@@ -305,7 +305,7 @@ export function createFilesystemAdapter(extensions: {
         return adaptTransaction(await raw.beginTransaction(idempotencyKey));
       },
       async diff(from, to, maximumChanges): Promise<FsChangeSet> {
-        if (!Number.isSafeInteger(maximumChanges) || maximumChanges <= 0) {
+        if (maximumChanges !== undefined && (!Number.isSafeInteger(maximumChanges) || maximumChanges <= 0)) {
           throw new RangeError("maximum changes must be a positive safe integer");
         }
         return adaptChangeSet(

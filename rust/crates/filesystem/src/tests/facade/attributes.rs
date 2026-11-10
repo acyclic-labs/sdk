@@ -30,7 +30,6 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     let name = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.acyclic".to_vec(),
-        128,
     )?;
     assert!(
         ready!(

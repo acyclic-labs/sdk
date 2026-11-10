@@ -264,21 +264,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &CancellationToken,
     ) -> Result<crate::kernel::Owned<AuthoredTransactionResult>, FsError> {
         accounting.check()?;
-        let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
-            .unwrap_or(usize::MAX);
-        if input.mutations().len() > maximum || input.capacity() > maximum {
-            return Err(FsError::TooManyPendingMutations);
-        }
         let count = input
             .mutations()
             .iter()
             .try_fold(0_usize, |count, mutation| {
                 count.checked_add(authored_mutation_operation_count(mutation))
             })
-            .ok_or(FsError::TooManyPendingMutations)?;
-        if count > maximum {
-            return Err(FsError::TooManyPendingMutations);
-        }
+            .ok_or(WorkError::Overflow)?;
         crate::heap_future::in_borrowed_frame!(
             accounting,
             |accounting| self.apply_authored_transaction_validated(
@@ -375,8 +367,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         #[cfg(not(target_arch = "wasm32"))]
         self.validate_authored_input(&input, accounting)?;
         accounting.check()?;
-        let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
-            .unwrap_or(usize::MAX);
+        let maximum = usize::MAX;
         if maximum == 0 {
             return Err(FsError::TooManyPendingMutations);
         }

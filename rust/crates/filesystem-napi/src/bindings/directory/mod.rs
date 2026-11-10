@@ -93,7 +93,7 @@ impl NativeCheckout {
                     .as_ref()
                     .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                 maximum_entries,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             ),
         )

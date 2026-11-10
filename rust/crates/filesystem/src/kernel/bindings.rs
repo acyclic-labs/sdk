@@ -99,7 +99,6 @@ impl SelectedFileRecord {
         &mut self,
         parent: FileId,
         name: &LogicalName,
-        limits: DecodeLimits,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), FsError> {
         // A sole source edge is necessarily unchanged if its record survives.
@@ -113,7 +112,6 @@ impl SelectedFileRecord {
             parent,
             name,
             true,
-            limits.maximum_name_bytes,
             accounting,
         )
     }
@@ -134,8 +132,6 @@ impl SelectedFileRecord {
                     store,
                     None,
                     &self.edits.value,
-                    u32::try_from(self.edits.value.len())
-                        .map_err(|_| crate::WorkError::Overflow)?,
                     limits,
                     accounting,
                     cancellation,
@@ -177,7 +173,6 @@ pub(crate) fn push_edit(
     parent: FileId,
     name: &LogicalName,
     present: bool,
-    maximum_name_bytes: u32,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
     edits.ensure_for_push(usize::MAX, accounting)?;
@@ -187,11 +182,7 @@ pub(crate) fn push_edit(
     };
     accounting.admit(copied)?;
     let (name, mut allocation) = super::persistent_io::clone_key::<super::tree_mutation::TreeFormat>(
-        name,
-        maximum_name_bytes,
-        accounting,
-        None,
-        0,
+        name, accounting, None, 0,
     )?;
     let bytes = name.logical_owned_bytes();
     edits.value.push(FileBindingEdit {
@@ -245,7 +236,6 @@ pub(crate) async fn apply_with_accounting<S, M>(
     store: &S,
     root: Option<ObjectId>,
     mutations: &[M],
-    maximum_mutations: u32,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
@@ -259,7 +249,6 @@ where
             store,
             (root, None, None),
             mutations,
-            maximum_mutations,
             limits,
             accounting,
             cancellation,
@@ -318,7 +307,7 @@ impl Format for BindingFormat {
             super::types::NameEncoding::from_tag(encoding).map_err(|error| {
                 CanonicalDecodeError::Invariant(CanonicalInvariant::Name(error))
             })?;
-            let length = decoder.skip_bounded_bytes(limits.maximum_name_bytes)?;
+            let length = decoder.skip_bytes()?;
             nested_bytes = nested_bytes
                 .checked_add(usize_to_u64(length))
                 .ok_or(CanonicalDecodeError::LengthOverflow)?;
@@ -367,7 +356,6 @@ impl Format for BindingFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Binding,
-        maximum_bytes: u32,
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Binding, E> {
         let bytes = 16;
@@ -376,16 +364,15 @@ impl Format for BindingFormat {
         observe(ReadAllocationStep::Copied(bytes))?;
         Ok(Binding {
             parent,
-            name: key.name.try_clone(maximum_bytes, observe)?,
+            name: key.name.try_clone(observe)?,
         })
     }
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Binding,
-        maximum_bytes: u32,
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Binding, E> {
-        Self::try_clone_key(value, maximum_bytes, observe)
+        Self::try_clone_key(value, observe)
     }
 
     fn encode_with_accounting(
@@ -547,7 +534,7 @@ pub(super) fn decode_binding_page<E: From<CanonicalDecodeError>>(
         observe(ReadAllocationStep::BeforeItem)?;
         let key = Binding {
             parent: FileId::from_bytes(decoder.fixed(observe)?),
-            name: super::tree::decode_name(&mut decoder, limits.maximum_name_bytes, observe)?,
+            name: super::tree::decode_name(&mut decoder, observe)?,
         };
         match kind {
             DecodedPageKind::Leaf => {

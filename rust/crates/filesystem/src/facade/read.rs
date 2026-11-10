@@ -42,9 +42,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         );
         let before = readonly_standalone_live(accounting);
         let result = async {
-            if range.length > self.volume.config.limits.maximum_read_bytes {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;
@@ -54,7 +51,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
                 FileRangeRequest {
                     record,
                     range,
-                    maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
+                    maximum_spans: None,
                     limits: DecodeLimits::for_volume(self.volume.config),
                     budget: accounting.remaining()?,
                 },
@@ -116,9 +113,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
     ) -> W::Output<FileRangeRead, FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
-            if range.length > self.volume.config.limits.maximum_read_bytes {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
             let record = self
                 .resolve_file(path, &mut accounting, cancellation)
                 .await?;
@@ -171,9 +165,6 @@ pub(super) async fn read_symbolic_link_record_with_accounting<
     else {
         return Err(FsError::NotSymbolicLink);
     };
-    if target_bytes > volume.config.limits.maximum_read_bytes {
-        return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-    }
     accounting.check()?;
     if target_bytes == 0 {
         let bytes =
@@ -265,9 +256,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             else {
                 return Err(FsError::NotReparsePoint);
             };
-            if payload_bytes > self.volume.config.limits.maximum_read_bytes {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
             if payload_bytes == 0 {
                 return Ok(acyclic_stream::OwnedBytes::new());
             }
@@ -333,9 +321,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 offset,
                 length: u64::from(maximum_bytes),
             };
-            if requested_range.length > self.volume.config.limits.maximum_read_bytes {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
             let record = self
                 .lookup_content_record(&file, &mut accounting, cancellation)
                 .await?;
@@ -401,7 +386,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 FileRangeRequest {
                     record,
                     range,
-                    maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
+                    maximum_spans: None,
                     limits: DecodeLimits::for_volume(self.volume.config),
                     budget: accounting.remaining()?,
                 },
@@ -449,9 +434,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileRangeRead, FsError> {
-        if range.length > self.volume.config.limits.maximum_read_bytes {
-            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-        }
         let record = self
             .lookup_content_record(&file, accounting, cancellation)
             .await?;
@@ -498,15 +480,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileRangeRead, FsError> {
-        if range.length > self.volume.config.limits.maximum_read_bytes {
-            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-        }
         crate::kernel::read_file_range_with_accounting(
             &self.volume.fs.inner.objects,
             FileRangeRequest {
                 record: self.record,
                 range,
-                maximum_spans: self.volume.config.limits.maximum_mutations_per_batch,
+                maximum_spans: None,
                 limits: DecodeLimits::for_volume(self.volume.config),
                 budget: accounting.remaining()?,
             },
@@ -529,9 +508,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
         let result = async {
             let accounting = &mut accounting;
             let maximum_bytes = u64::from(maximum_bytes);
-            if maximum_bytes > self.volume.config.limits.maximum_read_bytes {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
             accounting.check()?;
             if self.record.kind != FileKind::Regular {
                 return Err(FsError::FileRead(FileRangeReadError::NotRegular));

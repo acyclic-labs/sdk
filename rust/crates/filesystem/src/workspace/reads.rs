@@ -5,7 +5,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     pub fn read<W: crate::facade::FsWork>(
         &self,
         path: &str,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> impl Future<Output = W::Output<acyclic_stream::OwnedBytes, WorkspaceError>> {

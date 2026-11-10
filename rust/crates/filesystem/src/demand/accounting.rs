@@ -65,6 +65,14 @@ impl DemandWork {
     pub(crate) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
+    pub(crate) fn cancellation_tokens(&self) -> [CancellationToken; 2] {
+        match self.native_invocation.as_ref().and_then(Weak::upgrade) {
+            Some(view) => view
+                .cancellation_tokens(&self.cancellation)
+                .map(Clone::clone),
+            None => [self.cancellation.clone(), self.cancellation.clone()],
+        }
+    }
     pub(crate) fn capture_custody(&self) -> Option<Arc<CaptureTransientCustody>> {
         self.capture_custody.as_ref().and_then(Weak::upgrade)
     }

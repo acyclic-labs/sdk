@@ -29,16 +29,11 @@ fn hint(byte: u8) -> ResidencyHint {
 fn options() -> SpeculationOptions {
     SpeculationOptions {
         residency: ResidencySpeculatorOptions {
-            maximum_active_operations: 8,
-            maximum_active_bytes: 128,
             speculative_cost_basis_points: 10_000,
             minimum_usefulness_samples: 8,
             ..ResidencySpeculatorOptions::default()
         },
         promotion: PromotionSpeculatorOptions {
-            maximum_active_operations: 8,
-            maximum_active_bytes: 128,
-            maximum_active_cost_units: 128,
             minimum_usefulness_samples: 8,
             ..PromotionSpeculatorOptions::default()
         },
