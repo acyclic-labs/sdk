@@ -127,6 +127,7 @@ pub(in crate::bindings) fn native_authored_transaction(
             metadata,
         },
         "create-directory" => AuthoredMutation::CreateDirectory {
+            file_id: None,
             path: native_path(&required(path, "path")?, config)?,
             metadata,
         },

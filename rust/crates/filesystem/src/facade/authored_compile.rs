@@ -140,7 +140,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 | AuthoredMutation::CreateDevice { .. }
                 | AuthoredMutation::CreateReparsePoint { .. }) => {
                     let (path, kind, payload, metadata, file_id) = match create {
-                        AuthoredMutation::CreateDirectory { path, metadata } => {
+                        AuthoredMutation::CreateDirectory {
+                            path,
+                            metadata,
+                            file_id,
+                        } => {
                             let entries = self
                                 .stage_empty_tree_with_accounting(accounting, cancellation)
                                 .await?;
@@ -149,7 +153,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                                 FileKind::Directory,
                                 FilePayload::Directory { entries },
                                 metadata,
-                                None,
+                                file_id,
                             )
                         }
                         AuthoredMutation::CreateSymbolicLink {
@@ -489,7 +493,7 @@ pub(super) fn clone_borrowed_authored_descriptor(
             Reidentify { path; file_id },
             CreateFile { path; bytes, metadata, file_id },
             CreateFileFromContent { path; content, metadata, file_id },
-            CreateDirectory { path; metadata },
+            CreateDirectory { path; metadata, file_id },
             CreateSymbolicLink { path; target, metadata, file_id },
             CreateEmptySpecial { path; kind, metadata, file_id },
             CreateDevice { path; kind, major, minor, metadata, file_id },

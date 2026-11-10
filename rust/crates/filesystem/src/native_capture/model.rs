@@ -76,7 +76,7 @@ pub struct CaptureOptions {
     /// Stable identity that the capability actually used for capture must own.
     pub expected_root_identity: NativeRootIdentity,
     /// Namespace of the held demand source, when capture authors its nodes.
-    /// New non-directory objects retain that source's file identities, so a lazy fork made
+    /// New objects retain that source's file identities, so a lazy fork made
     /// before the first capture shares the same base. Independent authored
     /// checkouts use `None` and keep their ordinary transaction identities.
     pub source_namespace: Option<[u8; 16]>,

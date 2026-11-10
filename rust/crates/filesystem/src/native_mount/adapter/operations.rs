@@ -524,6 +524,7 @@ where
     ) -> Result<MountWriteFacts, MountSourceError> {
         invoke(&self.runtime, work, || {
             self.create(path, work, |path| AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path,
                 metadata,
             })

@@ -29,6 +29,7 @@ async fn pinned_reader_batches_ranges_in_request_order() -> TestResult {
         writer
             .create(
                 AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path: path(name)?,
                     metadata: FileMetadata::default(),
                 },
@@ -375,6 +376,7 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     let directory_id = checkout
         .create(
             AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: directory.clone(),
                 metadata: FileMetadata::default(),
             },

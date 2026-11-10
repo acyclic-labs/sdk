@@ -37,10 +37,8 @@ impl<
         let mut transaction = accounted!(ctx, |work, cancel| self
             .workspace
             .begin_transaction(key, work, cancel))?;
-        if let Some(parent) = parent_path(path) {
-            accounted!(ctx, |work, cancel| transaction
-                .create_dir_all(parent, work, cancel))?;
-        }
+        self.stage_source_parents(&mut transaction, path, ctx)
+            .await?;
         self.apply_resolved_promotion(&mut transaction, path, lookup, maximum, ctx)
             .await?;
         self.commit(&mut transaction, permit, ctx).await
@@ -181,7 +179,6 @@ impl<
         result
     }
 
-    #[cfg(feature = "native-mount")]
     pub(super) async fn stage_source_parents(
         &self,
         transaction: &mut crate::Transaction<A, O>,
@@ -191,42 +188,43 @@ impl<
         let Some(parent) = parent_path(path) else {
             return Ok(());
         };
-        let parent = self.namespace_path(parent, ctx)?;
-        let result = async {
-            for depth in 1..=parent.value.components().len() {
-                let (prefix, allocation) = parent.value.prefix_with_accounting(
-                    depth,
-                    self.workspace.limits(),
-                    ctx,
-                    cancellation(ctx),
-                )?;
-                let bytes = prefix.retained_bytes();
-                let prefix = Owned::new(prefix, allocation, bytes);
-                let result =
-                    async {
-                        let (found, _allocation) = transaction
-                            .checkout
-                            .lookup_no_follow_with_accounting(
-                                &prefix.value,
-                                ctx,
-                                cancellation(ctx),
-                                true,
-                            )
-                            .await?;
-                        if let Some(record) = found.record {
-                            return if record.kind == FileKind::Directory {
-                                Ok(())
-                            } else {
-                                Err(crate::FsError::NotDirectory.into())
-                            };
-                        }
-                        let (text, allocation) = prefix
-                            .value
-                            .unicode_text_with_accounting(ctx, cancellation(ctx))?;
-                        let bytes = text.capacity() as u64;
-                        let text = Owned::new(text, allocation, bytes);
-                        let result =
-                            async {
+        crate::heap_future::in_borrowed_frame!(
+            ctx,
+            |ctx| async move {
+                let parent = self.namespace_path(parent, ctx)?;
+                let result = async {
+                    for depth in 1..=parent.value.components().len() {
+                        let (prefix, allocation) = parent.value.prefix_with_accounting(
+                            depth,
+                            self.workspace.limits(),
+                            ctx,
+                            cancellation(ctx),
+                        )?;
+                        let bytes = prefix.retained_bytes();
+                        let prefix = Owned::new(prefix, allocation, bytes);
+                        let result = async {
+                            let (found, _allocation) = transaction
+                                .checkout
+                                .lookup_no_follow_with_accounting(
+                                    &prefix.value,
+                                    ctx,
+                                    cancellation(ctx),
+                                    true,
+                                )
+                                .await?;
+                            if let Some(record) = found.record {
+                                return if record.kind == FileKind::Directory {
+                                    Ok(())
+                                } else {
+                                    Err(crate::FsError::NotDirectory.into())
+                                };
+                            }
+                            let (text, allocation) = prefix
+                                .value
+                                .unicode_text_with_accounting(ctx, cancellation(ctx))?;
+                            let bytes = text.capacity() as u64;
+                            let text = Owned::new(text, allocation, bytes);
+                            let result = async {
                                 let source = self.source.reference();
                                 match self.source_lookup(source, &text.value, ctx).await? {
                                     Some(node) if node.kind == SourceNodeKind::Directory => {
@@ -248,17 +246,20 @@ impl<
                                 }
                             }
                             .await;
-                        text.retire(ctx)?;
-                        result
+                            text.retire(ctx)?;
+                            result
+                        }
+                        .await;
+                        prefix.retire(ctx)?;
+                        result?;
                     }
-                    .await;
-                prefix.retire(ctx)?;
-                result?;
-            }
-            Ok(())
-        }
-        .await;
-        parent.retire(ctx)?;
-        result
+                    Ok(())
+                }
+                .await;
+                parent.retire(ctx)?;
+                result
+            },
+            erase_task
+        )
     }
 }

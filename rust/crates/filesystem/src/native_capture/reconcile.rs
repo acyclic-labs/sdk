@@ -296,9 +296,8 @@ impl CaptureBatch<'_> {
         } else {
             None
         };
-        let source_file_id = if let Some(namespace) = self
-            .source_namespace
-            .filter(|_| !exists_with_kind && host_kind != FileKind::Directory)
+        let source_file_id = if let Some(namespace) =
+            self.source_namespace.filter(|_| !exists_with_kind)
         {
             // Linux's metadata-only capture stat omits generation cookies.
             // One metered identity stat for a new source-backed object buys
@@ -617,6 +616,7 @@ impl CaptureBatch<'_> {
                 }
             } else {
                 AuthoredMutation::CreateDirectory {
+                    file_id,
                     path,
                     metadata: canonical_metadata,
                 }

@@ -150,6 +150,7 @@ async fn seed_volume(
     let mut authored = Vec::with_capacity(paths.len() * 2);
     for parts in &paths {
         authored.push(AuthoredMutation::CreateDirectory {
+            file_id: None,
             path: path(parts.get(..1).ok_or("missing directory")?)?,
             metadata: FileMetadata::default(),
         });

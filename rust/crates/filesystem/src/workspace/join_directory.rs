@@ -565,13 +565,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             let view = &rendered.value;
             let path = self.conflict_file_path(&view.key)?;
             let (path, bytes) = if view.kind == ConflictKind::Text {
-                let (
-                    ConflictValue::Text(base),
-                    ConflictValue::Text(ours),
-                    ConflictValue::Text(theirs),
-                ) = (&view.base, &view.ours, &view.theirs)
+                let (ConflictValue::Text(ours), ConflictValue::Text(theirs)) =
+                    (&view.ours, &view.theirs)
                 else {
                     return Err(WorkspaceError::InvalidMergeResolution);
+                };
+                let base = match &view.base {
+                    ConflictValue::Text(base) => Some(base.as_str()),
+                    ConflictValue::Absent => None,
+                    _ => return Err(WorkspaceError::InvalidMergeResolution),
                 };
                 let accounting = self.preview.accounting()?;
                 let merge = move || {

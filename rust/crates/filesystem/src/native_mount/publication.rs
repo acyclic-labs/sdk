@@ -257,6 +257,7 @@ mod tests {
         checkout
             .create(
                 crate::AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path: crate::kernel::NamespacePath::from_text_in_profile(
                         "/retained",
                         crate::FilesystemProfile::Portable,

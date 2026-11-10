@@ -81,6 +81,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     .value;
     through_every_object_cut!(checkout.create(
         crate::AuthoredMutation::CreateDirectory {
+            file_id: None,
             path: path("fault-directory")?,
             metadata: crate::kernel::FileMetadata::default()
         },
@@ -100,6 +101,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     ));
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateDirectory {
+            file_id: None,
             path: path("fault-authored-directory")?,
             metadata: FileMetadata::default(),
         }],

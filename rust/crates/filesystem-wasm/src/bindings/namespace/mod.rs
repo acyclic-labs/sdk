@@ -31,6 +31,7 @@ impl BrowserCheckout {
         let receipt = browser_call!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path,
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
             },)

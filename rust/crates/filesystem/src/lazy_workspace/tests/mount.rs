@@ -328,6 +328,7 @@ async fn replacement_directory_hides_old_source_children() {
     checkout
         .apply_authored_transaction(
             vec![AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: root.namespace_path("/d", accounting!()).unwrap().value,
                 metadata: FileMetadata::default(),
             }],
