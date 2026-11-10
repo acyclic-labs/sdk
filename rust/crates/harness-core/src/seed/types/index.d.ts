@@ -8,7 +8,7 @@ export type Path = string;
 /** Opaque immutable file or namespace selection; pass it back unchanged. */
 export type Version = string & { readonly __brand: 'Version' };
 /** The version of the last directory entry delivered by a listing. */
-export type Cursor = string & { readonly __brand: 'Cursor' };
+export type Cursor = Version;
 
 export interface File<T = unknown> {
   readonly path: Path;
