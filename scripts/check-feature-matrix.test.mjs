@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
 import { clippySelections } from "./clippy-feature-sets.mjs";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
-import { featureSets, featureWorker, linuxCommands, windowsCommands, selectFeaturePackages, consumerSelections, consumerCommand } from "./check-feature-matrix.mjs";
+import { featureSets, featureWorker, linuxCommands, windowsCommands, selectFeaturePackages, consumerSelections, consumerCommand, publishedMatrixPackages } from "./check-feature-matrix.mjs";
 
 test("consumer projections retain standalone checks and declared renamed, optional and target feature combinations", () => {
   const crate = (name, features, dependencies = [], publish = null) => ({
@@ -132,8 +134,26 @@ test("shipped feature admission uses actual defining packages and preserves inde
   // only the admitted package boundary for the refusal controls below.
   const inventory = new Map(localCargoPackages().map(item => [item.name, item]));
   const consumers = consumerSelections([...inventory.values()]);
-  for (const item of inventory.values()) {
-    if (item.source !== null || (item.publish !== null && !item.publish.includes("crates-io"))) continue;
+  const published = publishedMatrixPackages([...inventory.values()]);
+  const vendorPath = /(?:^|[\\/])rust[\\/]vendor[\\/]/;
+  assert.ok([...inventory.values()].some(item => vendorPath.test(item.manifest_path)),
+    "the real inventory must exercise vendored manifests");
+  for (const item of published) assert.ok(!vendorPath.test(item.manifest_path),
+    `${item.name} is a vendored dependency, not a standalone SDK root`);
+  for (const selection of consumers) {
+    assert.ok(!vendorPath.test(selection.packages[0].manifest_path),
+      "consumer commands must not restore standalone vendor roots");
+    assert.ok(published.some(item => item.id === selection.packages[0].id),
+      "vendored manifests must compile under the owning consumer lockfile");
+  }
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const adjacent = { ...published[0], id: "vendor-adjacent", name: "vendor-adjacent",
+    manifest_path: join(root, "rust", "vendor-sdk", "Cargo.toml") };
+  const vendored = { ...adjacent, id: "vendored", name: "vendored",
+    manifest_path: join(root, "rust", "vendor", "dependency", "Cargo.toml") };
+  assert.deepEqual(publishedMatrixPackages([vendored, adjacent]), [adjacent],
+    "exclude the vendor directory itself while retaining a nearby SDK package");
+  for (const item of published) {
     const standalone = consumers.find(selection => selection.packages[0].id === item.id
       && selection.flags.length === 1 && selection.flags[0] === "--no-default-features");
     assert.ok(standalone, `${item.name} must compile without features supplied by consumers`);
