@@ -442,14 +442,18 @@ where
                 input,
                 after,
                 wait,
+                observed_children,
             } => {
                 let agent = self.within_tree(agent)?;
-                let (input, page, settled) =
-                    self.bound.usage_page(agent, *input, *after, *wait).await?;
+                let (input, page, settled, open_children) = self
+                    .bound
+                    .usage_page(agent, *input, *after, *wait, *observed_children)
+                    .await?;
                 Ok(AgentReply::Usage {
                     input,
                     page,
                     settled,
+                    open_children,
                 })
             }
             AgentCommand::Events {
@@ -1051,7 +1055,7 @@ where
                 agent,
                 id,
                 binding,
-                approved,
+                verdict,
                 reason,
             } => {
                 let agent = self.within_tree(agent)?;
@@ -1061,7 +1065,7 @@ where
                 Ok(AgentReply::Delivered {
                     delivery: self
                         .bound
-                        .decide(agent, id, binding, approver, *approved, reason.clone())
+                        .decide(agent, id, binding, approver, *verdict, reason.clone())
                         .await?,
                 })
             }

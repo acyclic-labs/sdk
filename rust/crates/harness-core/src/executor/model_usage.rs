@@ -241,6 +241,25 @@ pub(crate) fn validate(
     Ok(())
 }
 
+/// Proven input occupancy bound of the original prepared context, independent of
+/// provider-reported billing counters. Unknown accounting is never zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum ContextUsage {
+    /// The original projection carries no verified accounting.
+    Unavailable,
+    /// Original request-bound count or upper bound and the verified capacity.
+    Counted {
+        /// Complete input count or proven upper bound, including framing and media.
+        input_tokens: u64,
+        /// Complete input plus output capacity.
+        capacity_tokens: u32,
+    },
+}
+
+mod context_usage;
+
 /// One bounded page of the original journal's model-call observations.
 /// A nonterminal row is replaced only by its exact completed dispatch.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -248,6 +267,8 @@ pub(crate) fn validate(
 pub struct ModelUsagePage {
     /// Admissions and completions in their original commit order.
     pub items: Vec<ModelUsageRecord>,
+    /// Last context preparation in this page; absence preserves the prior cut.
+    pub context: Option<ContextUsage>,
     /// Exclusive original journal position after every visited observation,
     /// including observations without usage. Resume here after a source event;
     /// an empty or short page does not establish that this turn has settled.
@@ -272,12 +293,23 @@ pub async fn usage_page(
     let records = journal.replay(operation, after, PAGE, None)?.await?;
     let (end, next) = super::event_page::page_continuation(after, records.len(), PAGE)?;
     let mut items = Vec::new();
+    let mut context = None;
     for record in records {
+        if let ExecutionEvent::ContextPrepared { projection, .. }
+        | ExecutionEvent::ContextCompacted { projection, .. } = &record.event
+        {
+            context = Some(context_usage::read(journal, projection).await?);
+        }
         if let Some(usage) = project_record(journal, operation, agent_path, &record).await? {
             items.push(usage);
         }
     }
-    Ok(ModelUsagePage { items, end, next })
+    Ok(ModelUsagePage {
+        items,
+        context,
+        end,
+        next,
+    })
 }
 
 pub(super) async fn project_record(

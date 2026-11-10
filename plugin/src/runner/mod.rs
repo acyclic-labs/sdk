@@ -290,6 +290,7 @@ async fn run(
         && (args.prompt.is_some()
             || args.endpoint.is_some()
             || args.host_workspace
+            || args.prices.is_some()
             || args.usage_jsonl.is_some()
             || args.transcripts.is_some())
     {
@@ -504,18 +505,32 @@ async fn drive(
         .operation
         .clone()
         .unwrap_or_else(|| OperationId::new().to_string());
+    // Read the explicitly selected original once, before any model work.
+    // Both consumers use the same price-record admission and estimator.
+    let price_file = args
+        .prices
+        .as_deref()
+        .map(acyclic_harness::local::read_regular_file)
+        .transpose()?;
+    let prices = price_file
+        .as_deref()
+        .map(acyclic_harness::executor::ModelPrices::from_jsonl)
+        .transpose()?
+        .unwrap_or_default();
     if interactive {
         if args.usage_jsonl.is_some() || args.transcripts.is_some() {
             return Err(
                 "--usage-jsonl and --transcripts require -p or --input-format jsonl".into(),
             );
         }
+        let price_file = price_file.map(String::from_utf8).transpose()?;
         return phase(|| {
             view::run(
                 conversation,
                 args.inline,
                 args.resume || args.agent.is_some(),
                 terminal,
+                price_file,
             )
         })
         .await;
@@ -581,7 +596,7 @@ async fn drive(
             conversation
                 .observation()
                 .await?
-                .write_usage_jsonl(usage.writer())
+                .write_usage_jsonl_with_prices(usage.writer(), &|row| prices.price(row))
                 .await?;
             usage
                 .finish()

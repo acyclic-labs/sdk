@@ -1,5 +1,6 @@
 {
   "id": "pty-approval-form-approve",
+  "adapter": "anthropic",
   "workspace": {
     "kind": "plain",
     "files": {}
@@ -21,7 +22,7 @@
       },
       {
         "when": {
-          "tool_result": "file"
+          "tool_result": "approved.txt"
         },
         "text": [
           "APPROVAL_E2E_DONE"
@@ -45,10 +46,41 @@
         {
           "when": {
             "contains": [
-              "E2E approval policy"
+              "E2E approval policy",
+              "approved.txt"
             ]
           },
-          "prompt": "/feedback "
+          "reject": {
+            "contains": [
+              "APPROVAL_E2E_DONE"
+            ]
+          },
+          "prompt": "/cost"
+        },
+        {
+          "send": "\u001b",
+          "when": {
+            "contains": [
+              "Subtree cost"
+            ],
+            "absent": [
+              "Original action"
+            ]
+          }
+        },
+        {
+          "reject": {
+            "contains": [
+              "APPROVAL_E2E_DONE"
+            ]
+          },
+          "prompt": "/feedback ",
+          "when": {
+            "contains": [
+              "Original action",
+              "approved.txt"
+            ]
+          }
         },
         {
           "when": {
@@ -61,10 +93,16 @@
         {
           "when": {
             "contains": [
-              "E2E approval policy"
+              "E2E approval policy",
+              "approved.txt"
             ],
             "absent": [
               "Enter saves locally"
+            ]
+          },
+          "reject": {
+            "contains": [
+              "APPROVAL_E2E_DONE"
             ]
           },
           "send": "y\r"
@@ -73,7 +111,7 @@
           "when": {
             "contains": [
               "APPROVAL_E2E_DONE",
-              "\u25cb"
+              "○"
             ]
           },
           "send": "\u0004"
