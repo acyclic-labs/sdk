@@ -3,7 +3,7 @@
 use super::{AgentPath, Error, MAX_RECORD_BYTES};
 use acyclic_stream::{
     CommitCondition, CommitMutation, CommitRequest, HeadProjection, HeadsRequest, StreamPath,
-    StreamProvider, StreamProviderExt as _,
+    StreamProvider,
 };
 use std::sync::Arc;
 

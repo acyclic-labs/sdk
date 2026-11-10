@@ -530,7 +530,7 @@ mod tests {
             connection.execute(&name).await?;
             connection.execute(&name).await?;
             assert_eq!(
-                super::sessions::select(&connection, "fix parser/branch")
+                crate::local::sessions::select(&connection, "fix parser/branch")
                     .await?
                     .root(),
                 &agent
@@ -632,7 +632,7 @@ mod tests {
                 "Renamed session "
             );
             assert_eq!(
-                super::sessions::select(&connection, "fix parser/branch")
+                crate::local::sessions::select(&connection, "fix parser/branch")
                     .await?
                     .root(),
                 &agent,
