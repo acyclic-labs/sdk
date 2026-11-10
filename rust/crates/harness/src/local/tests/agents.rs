@@ -56,12 +56,19 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let inbox = client.send("approval-input", "echo the request").await?;
     let (id, published_binding, delivery) = loop {
         let (event, delivery) = observed.observer.next_projected().await?;
-        if let Some(crate::local::Event::Status(StatusRecord {
-            phase: crate::agent::Phase::WaitingApproval { id, binding },
-            ..
-        })) = event?
-        {
-            break (id, binding, delivery);
+        match event? {
+            Some(crate::local::Event::Status(StatusRecord {
+                phase: crate::agent::Phase::WaitingApproval { id, binding },
+                ..
+            })) => break (id, binding, delivery),
+            Some(crate::local::Event::Turn(entry)) if entry.inbox == inbox => {
+                return Err(Error::Invalid(format!(
+                    "input settled before its expected approval: {:?}; {}",
+                    entry.outcome,
+                    client.turn(&entry).await?.answer
+                )));
+            }
+            _ => {}
         }
         let after = projection.event(&delivery).after;
         projection.accepted(&delivery.resource, after);
