@@ -12,6 +12,8 @@ pub(super) struct Bindings {
 pub(super) struct Binding {
     index: RetainedArc<Bindings>,
     pub(super) key: [u8; 32],
+    // Physical views omit the home mount but retain the same source identity.
+    scratch: [u8; 32],
     publication: crate::sync::SyncMutex<Publication>,
 }
 
@@ -61,6 +63,7 @@ impl Bindings {
     pub(super) fn select<'a>(
         index: &'a RetainedArc<Self>,
         key: [u8; 32],
+        scratch: [u8; 32],
         work: &NativeMaterializationWork,
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<(Selection, Option<OperationClaim<'a>>)> {
@@ -92,6 +95,11 @@ impl Bindings {
             drop(entries);
             let result =
                 result.ok_or_else(|| Error::Conflict("original binding result retired".into()))?;
+            if binding.scratch != scratch {
+                return Err(Error::Conflict(
+                    "project already has a different live scratch binding".into(),
+                ));
+            }
             return Ok((Selection { binding, result }, None));
         }
         // The old value may already be in Drop, waiting for this same index.
@@ -129,6 +137,7 @@ impl Bindings {
                 let binding = RetainedArc::new_with(accounting, || Binding {
                     index: index.clone(),
                     key,
+                    scratch,
                     publication: crate::sync::SyncMutex::new(Publication {
                         preparing: preparing.downgrade(),
                         mounts: std::sync::Weak::new(),
@@ -146,6 +155,10 @@ impl Bindings {
             .ok_or_else(|| Error::Conflict("binding insertion lost its original owner".into()))?;
         Ok((selection, Some(owner)))
     }
+}
+
+pub(super) fn volume_key(volume: &VolumeRef) -> Result<[u8; 32]> {
+    Ok(*blake3::hash(volume.storage_name(&mut None)?.as_bytes()).as_bytes())
 }
 
 impl Selection {
@@ -206,17 +219,23 @@ mod tests {
         let index = Bindings::new(&cancellation)?;
         let baseline = work.live_allocation_bytes();
         let key = *blake3::hash(b"original binding").as_bytes();
-        let (original, producer) = Bindings::select(&index, key, &work, &cancellation)?;
+        let (original, producer) = Bindings::select(&index, key, [0; 32], &work, &cancellation)?;
         let producer =
             producer.ok_or_else(|| Error::Conflict("original producer missing".into()))?;
         let old = original.binding.downgrade();
         let mut peers = Vec::new();
         for number in 0_u32..1024 {
             let peer = *blake3::hash(&number.to_le_bytes()).as_bytes();
-            peers.push(Bindings::select(&index, peer, &work, &cancellation)?);
+            peers.push(Bindings::select(
+                &index,
+                peer,
+                [0; 32],
+                &work,
+                &cancellation,
+            )?);
         }
         let before = work.receipt().items_examined;
-        let (observer, duplicate) = Bindings::select(&index, key, &work, &cancellation)?;
+        let (observer, duplicate) = Bindings::select(&index, key, [0; 32], &work, &cancellation)?;
         assert!(
             duplicate.is_none(),
             "same-key observer created another producer"
@@ -240,10 +259,11 @@ mod tests {
         }
         drop(original);
         assert!(old.upgrade().is_none());
-        let (replacement, successor) = Bindings::select(&index, key, &work, &cancellation)?;
+        let (replacement, successor) =
+            Bindings::select(&index, key, [0; 32], &work, &cancellation)?;
         assert!(successor.is_some());
         index.retire(key, old.as_ptr());
-        let retained = Bindings::select(&index, key, &work, &cancellation);
+        let retained = Bindings::select(&index, key, [0; 32], &work, &cancellation);
         assert!(
             retained.is_ok(),
             "late retirement removed the replacement owner"

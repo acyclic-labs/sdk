@@ -31,9 +31,10 @@ impl LocalWorkspace {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let key = *blake3::hash(project.storage_name(&mut None)?.as_bytes()).as_bytes();
+        let key = bindings::volume_key(project)?;
+        let scratch_key = bindings::volume_key(&scratch)?;
         let (selection, producer) =
-            bindings::Bindings::select(&self.bindings, key, &work, &cancellation)?;
+            bindings::Bindings::select(&self.bindings, key, scratch_key, &work, &cancellation)?;
         let mounts = if let Some(producer) = producer {
             let mounts = self
                 .bound_mounts(project, scratch, authority, &selection.binding)
@@ -43,17 +44,6 @@ impl LocalWorkspace {
             mounts
         } else {
             let mounts = selection.mounts().await?;
-            if mounts
-                .named(Some(crate::filesystem::HOME_VOLUME))?
-                .1
-                .view
-                .volume
-                != scratch
-            {
-                return Err(Error::Conflict(
-                    "project already has a different live scratch binding".into(),
-                ));
-            }
             // A retained result is physical custody, never fresh authority.
             // Recheck the actual caller against each retained auxiliary source.
             for (_, mount) in mounts.mounts() {

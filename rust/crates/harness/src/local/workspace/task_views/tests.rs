@@ -2,6 +2,90 @@ use super::super::owner::{AgentOwner, ViewOwner};
 use super::*;
 use tokio::sync::oneshot;
 
+#[tokio::test]
+async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = LocalHarness::open(
+        crate::LocalHarnessConfig::native_host(directory.path())
+            .workspace_mounting(WorkspaceMounting::Physical)
+            .state_directory(state.path().join("runtime")),
+    )
+    .await?;
+    let workspace = harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("workspace".into()))?;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let view = || async {
+        workspace
+            .view()
+            .open_related(
+                workspace.view().workspace().clone(),
+                &mut KernelAccounting::NativeOriginal {
+                    work: &work,
+                    cancellation: &cancellation,
+                },
+            )
+            .await
+            .map_err(storage)
+    };
+    let authority = crate::filesystem::NativeMountAuthority::admitted(
+        harness.verifier.clone(),
+        harness.signed.copy(&mut None)?,
+    );
+    let owner = AgentOwner(crate::agent::AgentPath::root(
+        &crate::agent::AgentId::from_bytes([1; 16]),
+    ));
+    let first = workspace
+        .bound_task_view(
+            view().await?,
+            &harness.project,
+            harness.scratch.clone(),
+            &owner,
+            &authority,
+        )
+        .await?;
+    let second = workspace
+        .bound_task_view(
+            view().await?,
+            &harness.project,
+            harness.scratch.clone(),
+            &owner,
+            &authority,
+        )
+        .await?;
+    assert!(Arc::ptr_eq(
+        first.binding.as_ref().expect("first binding"),
+        second.binding.as_ref().expect("reused binding"),
+    ));
+    assert!(
+        second
+            .mounts
+            .named(Some(crate::filesystem::HOME_VOLUME))
+            .is_err()
+    );
+    std::fs::write(first.path.join("shared.txt"), b"shared").map_err(storage)?;
+    assert_eq!(
+        std::fs::read(second.path.join("shared.txt")).map_err(storage)?,
+        b"shared"
+    );
+    assert!(matches!(
+        workspace
+            .bound_task_view(
+                view().await?,
+                &harness.project,
+                harness.project.clone(),
+                &owner,
+                &authority,
+            )
+            .await,
+        Err(Error::Conflict(_)),
+    ));
+    Ok(())
+}
+
 // Suspend the original owner's verification, after the real filesystem and
 // authority have prepared this binding. Dropping either endpoint ends the wait.
 struct PausedOwner {
@@ -103,8 +187,13 @@ async fn binding_preparation_releases_the_checkout_owner() -> Result<()> {
         // Register the real selection while its original producer is paused.
         // Its successful workspace can retire before this observer is polled.
         let key = *blake3::hash(harness.project.storage_name(&mut None)?.as_bytes()).as_bytes();
-        let (observer, duplicate) =
-            bindings::Bindings::select(&workspace.bindings, key, &work, &cancellation)?;
+        let (observer, duplicate) = bindings::Bindings::select(
+            &workspace.bindings,
+            key,
+            bindings::volume_key(&harness.scratch)?,
+            &work,
+            &cancellation,
+        )?;
         assert!(duplicate.is_none(), "observer created another producer");
         release
             .send(())
@@ -189,8 +278,13 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
         .as_ref()
         .ok_or_else(|| Error::NotFound("original binding owner".into()))?
         .key;
-    let (ready, duplicate) =
-        bindings::Bindings::select(&workspace.bindings, key, &work, &cancellation)?;
+    let (ready, duplicate) = bindings::Bindings::select(
+        &workspace.bindings,
+        key,
+        bindings::volume_key(&harness.scratch)?,
+        &work,
+        &cancellation,
+    )?;
     assert!(
         duplicate.is_none(),
         "ready binding created another producer"
@@ -224,7 +318,13 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
     );
     assert!(
         matches!(
-            bindings::Bindings::select(&workspace.bindings, key, &work, &cancellation),
+            bindings::Bindings::select(
+                &workspace.bindings,
+                key,
+                bindings::volume_key(&harness.scratch)?,
+                &work,
+                &cancellation
+            ),
             Err(Error::Conflict(_))
         ),
         "retired result was reconstructed from physical custody"
