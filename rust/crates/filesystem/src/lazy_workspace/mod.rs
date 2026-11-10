@@ -66,7 +66,7 @@ impl<A: 'static, O: 'static, D, S: Clone> LazyWorkspace<A, O, D, S> {
         Ok(Arc::new(Self {
             workspace: self.workspace.clone(),
             source: Arc::clone(&self.source),
-            retained_source: self.retained_source,
+            retained_source: self.retained_source.clone(),
             store: self.store.clone(),
             _allocation: allocation,
         }))

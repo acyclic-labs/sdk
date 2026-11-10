@@ -85,7 +85,7 @@ impl<
                 LazySnapshotRef::new(
                     cut.workspace_id,
                     generation,
-                    cut.source,
+                    cut.source.clone(),
                     cut.overlay,
                     cut.shadows,
                 ),
@@ -135,7 +135,7 @@ impl<
             revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
             pending_remove: None,
             selected_import_roots: Some([
-                (snapshot, self.workspace.volume.config),
+                (snapshot.clone(), self.workspace.volume.config),
                 (destination, self.workspace.volume.config),
                 (source, config),
             ]),

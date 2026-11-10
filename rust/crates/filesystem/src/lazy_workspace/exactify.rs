@@ -20,8 +20,13 @@ impl<
             return Err(LazyWorkspaceError::NotDirectory);
         }
         let cut = self.snapshot(ctx).await?;
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
-        let (paths, _) = self.enumerate_paths(root, cut, &state, ctx).await?;
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
+        let (paths, _) = self.enumerate_paths(root, &cut, &state, ctx).await?;
         let start = crate::Generation {
             workspace: self.workspace.clone(),
             id: cut.authored_generation,
@@ -60,9 +65,9 @@ impl<
         witness: &Self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<crate::Generation<A, O>>, LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         let witnessed = witness.state(ctx).await?;
-        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut) {
+        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut.clone()) {
             return Ok(None);
         }
         let live = self.source.reference(ctx)?;
@@ -75,7 +80,7 @@ impl<
             };
             if node.kind != SourceNodeKind::RegularFile
                 || self
-                    .source_lookup(live, path, ctx)
+                    .source_lookup(&live, path, ctx)
                     .await?
                     .is_none_or(|current| {
                         current.version != node.version
@@ -96,7 +101,7 @@ impl<
         let pinned = LazySnapshotRef::new(
             cut.workspace_id,
             cut.authored_generation,
-            cut.source,
+            cut.source.clone(),
             overlay,
             cut.shadows,
         );
@@ -169,7 +174,12 @@ impl<
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
         let workspace = &start.workspace;
         paths
             .value
@@ -268,7 +278,7 @@ impl<
     pub(super) async fn enumerate_paths(
         &self,
         root: &str,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         state: &LazyWorkspaceState,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Owned<Vec<String>>, bool), LazyWorkspaceError> {

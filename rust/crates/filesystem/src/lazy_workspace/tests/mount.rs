@@ -3,8 +3,8 @@ use super::*;
 #[tokio::test]
 async fn materialization_phase_denial_preserves_the_callers_owned_namespace() {
     let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
-    let reference = source.reference();
-    let node = source.versioned_node(reference).unwrap();
+    let reference = source.reference(accounting!()).unwrap();
+    let node = source.versioned_node(&reference).unwrap();
     let root = attach(&Fs::memory(), source, MemoryLazyWorkspaceStore::default())
         .await
         .unwrap();
@@ -535,8 +535,8 @@ async fn source_directory_identity_cannot_be_promoted_twice() {
     let mut source = CountingSource::new(Bytes::new());
     source.node.kind = SourceNodeKind::Directory;
     let source = Arc::new(source);
-    let reference = source.reference();
-    let node = source.versioned_node(reference).unwrap();
+    let reference = source.reference(accounting!()).unwrap();
+    let node = source.versioned_node(&reference).unwrap();
     let root = attach(&Fs::memory(), source, MemoryLazyWorkspaceStore::default())
         .await
         .unwrap();

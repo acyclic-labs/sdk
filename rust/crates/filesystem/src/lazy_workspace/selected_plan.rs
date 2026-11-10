@@ -53,7 +53,7 @@ impl SelectedImportPlan {
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) fn input_digest(
         &self,
-        destination: LazySnapshotRef,
+        destination: &LazySnapshotRef,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Digest, LazyWorkspaceError> {
         let domain = b"acyclic-fs-selected-import-v1\0";
@@ -91,7 +91,7 @@ impl<
         requested: &[NamespacePath],
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(SelectedImportPlan, KernelOwnedAllocation), LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         let mut roots = Owned::allocate(requested.len(), ctx)?;
         let result = async {
             for path in requested {
@@ -103,7 +103,7 @@ impl<
                     ctx,
                 )?;
             }
-            let (mut paths, mut used) = self.selected_paths(cut, &roots.value, ctx).await?;
+            let (mut paths, mut used) = self.selected_paths(&cut, &roots.value, ctx).await?;
             let mut entries = Owned::allocate(paths.value.len(), ctx)?;
             let mut checkout = self
                 .checkout(
@@ -111,8 +111,12 @@ impl<
                     ctx,
                 )
                 .await?;
-            let state =
-                LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+            let state = LazyWorkspaceState::new(
+                cut.workspace_id,
+                cut.source.clone(),
+                cut.overlay,
+                cut.shadows,
+            );
             let frozen = async {
                 for path in &mut paths.value {
                     let (lookup, source, guard) = self
@@ -203,16 +207,21 @@ impl<
 
     pub(super) async fn selected_paths(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         roots: &[String],
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Owned<Vec<String>>, bool), LazyWorkspaceError> {
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
         let mut paths = Owned::allocate(roots.len(), ctx)?;
         let mut used = false;
         let result = async {
             for root in roots {
-                let (mut selected, source) = self.enumerate_paths(root, cut, &state, ctx).await?;
+                let (mut selected, source) = self.enumerate_paths(root, &cut, &state, ctx).await?;
                 used |= source;
                 let moved = (|| {
                     for path in selected.value.drain(..) {

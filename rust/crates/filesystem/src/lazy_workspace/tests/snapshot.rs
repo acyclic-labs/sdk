@@ -11,7 +11,7 @@ async fn snapshot_validation_requires_available_indexes_and_generation() {
     .await
     .unwrap();
     let cut = root.snapshot(accounting!()).await.unwrap();
-    root.validate_snapshot(cut, accounting!()).await.unwrap();
+    root.validate_snapshot(&cut, accounting!()).await.unwrap();
     for (generation, overlay, shadows) in [
         (
             cut.authored_generation,
@@ -29,10 +29,15 @@ async fn snapshot_validation_requires_available_indexes_and_generation() {
             cut.shadows,
         ),
     ] {
-        let missing =
-            LazySnapshotRef::new(cut.workspace_id, generation, cut.source, overlay, shadows);
+        let missing = LazySnapshotRef::new(
+            cut.workspace_id,
+            generation,
+            cut.source.clone(),
+            overlay,
+            shadows,
+        );
         assert!(
-            root.validate_snapshot(missing, accounting!())
+            root.validate_snapshot(&missing, accounting!())
                 .await
                 .is_err()
         );
@@ -88,7 +93,7 @@ async fn frozen_views_and_write_replay_keep_the_original_generation() {
         .await
         .unwrap();
     let (bytes, source) = root
-        .read_at_snapshot(basis, "/authored.txt", None, 32, accounting!())
+        .read_at_snapshot(&basis, "/authored.txt", None, 32, accounting!())
         .await
         .unwrap();
     assert_eq!(bytes.bytes.as_slice(), b"before");
@@ -97,7 +102,7 @@ async fn frozen_views_and_write_replay_keep_the_original_generation() {
     let mut authored = Vec::new();
     loop {
         let (page, _, _) = root
-            .list_directory_at_snapshot(basis, "/", cursor, 16, accounting!())
+            .list_directory_at_snapshot(&basis, "/", cursor, 16, accounting!())
             .await
             .unwrap();
         authored.extend(
@@ -116,7 +121,7 @@ async fn frozen_views_and_write_replay_keep_the_original_generation() {
     assert!(matches!(commit, TransactionCommit::AlreadyCommitted(_)));
     assert_eq!(replayed.unwrap(), published);
     assert_eq!(
-        root.read_at_snapshot(published, "/new.txt", None, 32, accounting!())
+        root.read_at_snapshot(&published, "/new.txt", None, 32, accounting!())
             .await
             .unwrap()
             .0
@@ -188,7 +193,7 @@ async fn fork_retains_available_source_and_authored_cuts() {
         b"authored before"
     );
     assert_eq!(
-        root.read_at_snapshot(basis, "/source.txt", None, 64, accounting!())
+        root.read_at_snapshot(&basis, "/source.txt", None, 64, accounting!())
             .await
             .unwrap()
             .0
@@ -197,7 +202,7 @@ async fn fork_retains_available_source_and_authored_cuts() {
         b"source before"
     );
     assert_eq!(
-        root.stat_at_snapshot(basis, "/unobserved.txt", accounting!())
+        root.stat_at_snapshot(&basis, "/unobserved.txt", accounting!())
             .await
             .unwrap()
             .unwrap()
@@ -219,7 +224,7 @@ async fn fork_retains_available_source_and_authored_cuts() {
         .unwrap();
     assert_eq!(
         reopened
-            .read_at_snapshot(cut, "/source.txt", None, 64, accounting!())
+            .read_at_snapshot(&cut, "/source.txt", None, 64, accounting!())
             .await
             .unwrap()
             .0

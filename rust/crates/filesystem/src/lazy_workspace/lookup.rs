@@ -93,8 +93,11 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyLookup, KernelOwnedAllocation), LazyWorkspaceError> {
         let lookup = self.inspect(path, ctx).await?;
-        if let LazyLookup::Source { source, node } = lookup.0 {
-            let change = LazyOverlayChange::Observe { source, node };
+        if let LazyLookup::Source { ref source, node } = lookup.0 {
+            let change = LazyOverlayChange::Observe {
+                source: source.clone(),
+                node,
+            };
             let recorded = async {
                 let state = self.state(ctx).await?;
                 if self.overlay_fact(state.overlay, path, ctx).await? != Some(change.clone()) {
@@ -131,18 +134,23 @@ impl<
     /// Resolves a frozen cut, returning known absence and actual source participation.
     pub async fn lookup_at_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Option<LazyLookup>, bool, KernelOwnedAllocation), LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         let mut checkout = self
             .checkout(
                 crate::model::GenerationSelector::Exact(cut.authored_generation),
                 ctx,
             )
             .await?;
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
         let result = self
             .inspect_unauthored(
                 &mut checkout.value,
@@ -174,11 +182,11 @@ impl<
     /// Classifies a path at a frozen cut, preserving authenticated absence.
     pub async fn stat_at_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<LazyStat>, LazyWorkspaceError> {
-        let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
+        let (lookup, _, guard) = self.lookup_at_snapshot(&cut, path, ctx).await?;
         let result = Ok(lookup.as_ref().map(LazyLookup::stat));
         match lookup {
             Some(lookup) => self.retire_lookup((lookup, guard), ctx)?,
@@ -242,11 +250,11 @@ impl<
             }
             _ => {
                 if let Some(node) = basis.listed {
-                    (state.source, Some(node), false)
+                    (state.source.clone(), Some(node), false)
                 } else {
                     (
-                        state.source,
-                        self.source_lookup(state.source, path, ctx).await?,
+                        state.source.clone(),
+                        self.source_lookup(&state.source, path, ctx).await?,
                         true,
                     )
                 }

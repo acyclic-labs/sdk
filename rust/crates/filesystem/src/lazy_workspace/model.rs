@@ -301,6 +301,7 @@ impl LazyWorkspaceState {
     pub(super) fn require_ready_fork(&self) -> Result<(), LazyWorkspaceError> {
         if self
             .fork_origin
+            .as_ref()
             .is_some_and(|o| o.phase == LazyForkPhase::Prepared)
         {
             return Err(LazyWorkspaceError::Concurrent);

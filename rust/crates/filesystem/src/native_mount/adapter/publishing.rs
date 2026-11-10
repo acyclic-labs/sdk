@@ -91,7 +91,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                             crate::NativeTreeMaterializationError::InvalidLayout,
                         ))?;
                 let (context, mut proof) = original.publication_proof(
-                    context,
+                    context.clone(),
                     operation,
                     permit,
                     work,
@@ -181,7 +181,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
         let (operation, generation) = ack.ok_or(MountSourceError::Stale)?;
         if let Some(context) = context {
             *acknowledged = Some(crate::NativePublicationSnapshot {
-                context,
+                context: context.clone(),
                 operation,
                 generation,
             });
@@ -238,7 +238,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
             && let Some(context) = context
         {
             let (digest, evidence) = crate::lazy_workspace::publication_evidence(
-                context,
+                context.clone(),
                 operation,
                 permit,
                 &mut crate::kernel::KernelAccounting::native(work, cancellation),
@@ -248,7 +248,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
         }
         Ok(match &self.publication_evidence {
             Some((context, permit, digest, evidence)) => (
-                Some(*context),
+                Some(context.clone()),
                 super::publication::PublicationProof {
                     producer: None,
                     context: Some(*digest),

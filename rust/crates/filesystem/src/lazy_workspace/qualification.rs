@@ -34,15 +34,15 @@ pub(crate) enum NativeSnapshotContext {
     },
 }
 impl NativeSnapshotContext {
-    pub(crate) const fn workspace_id(self) -> WorkspaceId {
+    pub(crate) const fn workspace_id(&self) -> WorkspaceId {
         match self {
-            Self::Authored { workspace_id, .. } => workspace_id,
+            Self::Authored { workspace_id, .. } => *workspace_id,
             Self::Lazy(cut) | Self::Selected { cut, .. } => cut.workspace_id,
         }
     }
-    pub(crate) const fn config(self) -> VolumeConfig {
+    pub(crate) const fn config(&self) -> VolumeConfig {
         match self {
-            Self::Authored { config, .. } => config,
+            Self::Authored { config, .. } => *config,
             Self::Lazy(cut) | Self::Selected { cut, .. } => cut.config,
         }
     }
@@ -96,7 +96,7 @@ impl NativePublicationSnapshot {
         Ok(Some(LazySnapshotRef::new(
             cut.workspace_id,
             self.generation,
-            cut.source,
+            cut.source.clone(),
             cut.overlay,
             cut.shadows,
         )))

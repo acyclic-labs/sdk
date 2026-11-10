@@ -30,7 +30,7 @@ impl<
         let lazy = Self::bind(generation.workspace().clone(), source, store, ctx).await?;
         lazy.state(ctx)
             .await?
-            .validate_root_binding(lazy.workspace.id(), original)?;
+            .validate_root_binding(lazy.workspace.id(), original.clone())?;
         if lazy.source.reference(ctx)? != original {
             return Err(LazyWorkspaceError::StaleSource);
         }
@@ -55,7 +55,7 @@ impl<
                 .compare_and_swap_lazy_workspace(
                     workspace.id(),
                     0,
-                    LazyWorkspaceState::new(workspace.id(), reference, overlay, shadows),
+                    LazyWorkspaceState::new(workspace.id(), reference.clone(), overlay, shadows),
                     ctx,
                 )
                 .await?
@@ -358,14 +358,14 @@ impl<
 
     pub(crate) async fn source_lookup(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
         crate::heap_future::in_borrowed_frame!(ctx, |ctx| async move {
             let path = self.namespace_path(path, ctx)?;
             let result = accounted!(ctx, |work, cancel| self.source.lookup(
-                source,
+                source.clone(),
                 &path.value,
                 work,
                 cancel
@@ -432,7 +432,7 @@ impl<
     /// Validates a cut and its available indexes and generation without rebinding.
     pub async fn validate_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         ctx.charge(WorkCounters {
@@ -440,12 +440,12 @@ impl<
             ..WorkCounters::UNCHARGED
         })?;
         if cut.workspace_id != self.workspace.id()
-            || cut.source.identity != self.source.identity()
-            || cut
+            || cut.clone().source.identity != self.source.identity()
+            || cut.clone()
                 != LazySnapshotRef::new(
                     cut.workspace_id,
                     cut.authored_generation,
-                    cut.source,
+                    cut.source.clone(),
                     cut.overlay,
                     cut.shadows,
                 )

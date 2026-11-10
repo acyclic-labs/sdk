@@ -78,7 +78,7 @@ impl<
         {
             return Err(WorkspaceError::ForeignGeneration.into());
         }
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         let original = accounted!(ctx, |work, cancel| self
             .workspace
             .volume
@@ -131,7 +131,7 @@ impl<
         let snapshot = LazySnapshotRef::new(
             child.id(),
             original_generation,
-            cut.source,
+            cut.source.clone(),
             cut.overlay,
             cut.shadows,
         );
@@ -160,7 +160,7 @@ impl<
         if id == self.workspace.id() {
             return Err(LazyWorkspaceError::Concurrent);
         }
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         if let Some(state) = self.store.load_lazy_workspace(id, ctx).await? {
             let origin = self.fork_origin(&state, id, operation)?;
             return if origin.snapshot == cut {
@@ -183,11 +183,11 @@ impl<
             parent_workspace_id: Some(self.workspace.id()),
             fork_origin: Some(LazyForkOrigin {
                 operation_id: operation,
-                snapshot: cut,
+                snapshot: cut.clone(),
                 config: self.workspace.volume.config,
                 phase: LazyForkPhase::Prepared,
             }),
-            ..LazyWorkspaceState::new(id, cut.source, cut.overlay, cut.shadows)
+            ..LazyWorkspaceState::new(id, cut.source.clone(), cut.overlay, cut.shadows)
         };
         let swapped = self
             .store
@@ -205,7 +205,10 @@ impl<
         id: WorkspaceId,
         operation: crate::OperationId,
     ) -> Result<LazyForkOrigin, LazyWorkspaceError> {
-        let origin = state.fork_origin.ok_or(LazyWorkspaceError::Concurrent)?;
+        let origin = state
+            .fork_origin
+            .clone()
+            .ok_or(LazyWorkspaceError::Concurrent)?;
         if state.schema_version != LAZY_STATE_SCHEMA
             || state.workspace_id != id
             || state.parent_workspace_id != Some(self.workspace.id())

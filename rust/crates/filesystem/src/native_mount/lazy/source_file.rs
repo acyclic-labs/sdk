@@ -212,7 +212,7 @@ where
                     .map_err(lazy_error)?;
                 let node = match self
                     .lazy
-                    .source_lookup(source, &self.path, &mut accounting)
+                    .source_lookup(&source, &self.path, &mut accounting)
                     .await
                 {
                     Ok(node) => node,

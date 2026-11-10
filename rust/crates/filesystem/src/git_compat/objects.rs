@@ -197,7 +197,7 @@ pub struct GitGenerationRef {
 }
 
 /// One Git-visible tree, either fully authored or lazily source-backed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum GitTreeRef {
     /// Exact authenticated authored generation.
@@ -218,7 +218,7 @@ impl GitTreeRef {
 
     /// Workspace owning the authored component.
     #[must_use]
-    pub const fn workspace_id(self) -> WorkspaceId {
+    pub const fn workspace_id(&self) -> WorkspaceId {
         match self {
             Self::Exact(reference) => reference.workspace_id,
             Self::Lazy(reference) => reference.workspace_id,
@@ -227,7 +227,7 @@ impl GitTreeRef {
 
     /// Authenticated authored generation component.
     #[must_use]
-    pub const fn authored_generation(self) -> GenerationId {
+    pub const fn authored_generation(&self) -> GenerationId {
         match self {
             Self::Exact(reference) => reference.generation,
             Self::Lazy(reference) => reference.authored_generation,

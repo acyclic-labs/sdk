@@ -59,14 +59,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             work,
             cancellation: work.cancellation(),
         };
-        let input = plan.input_digest(destination, &mut ctx)?;
+        let input = plan.input_digest(&destination, &mut ctx)?;
         if let Some(generation) = self.operation_generation(key, &mut ctx).await? {
             return self
                 .finish_selected_import(
                     operation,
                     generation,
-                    destination,
-                    plan.source,
+                    destination.clone(),
+                    plan.source.clone(),
                     plan.source_config,
                     input,
                     &mut ctx,
@@ -86,7 +86,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             .await?;
         let effects = self
             .prepare_selected_import_into_checkout(
-                destination,
+                destination.clone(),
                 plan,
                 &mut checkout,
                 operation,
@@ -123,7 +123,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             operation,
             generation.id(),
             destination,
-            plan.source,
+            plan.source.clone(),
             plan.source_config,
             input,
             &mut ctx,
@@ -139,7 +139,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SelectedImportEffects, LazyWorkspaceError> {
-        self.validate_snapshot(destination, ctx).await?;
+        self.validate_snapshot(&destination, ctx).await?;
         if plan.source_used && plan.source.source != self.source.reference(ctx)? {
             return Err(LazyWorkspaceError::StaleSource);
         }
@@ -147,7 +147,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             return Err(LazyWorkspaceError::UnsupportedNode);
         }
         let current = self.snapshot(ctx).await?;
-        let (mut paths, _) = self.selected_paths(destination, &plan.roots, ctx).await?;
+        let (mut paths, _) = self.selected_paths(&destination, &plan.roots, ctx).await?;
         let baseline = self
             .workspace
             .checkout_accounted(
@@ -175,9 +175,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let mut changes = Owned::allocate(paths.value.len() + plan.entries.len(), ctx)?;
         let result = async {
             for path in &paths.value {
-                self.stage_selected_path(&mut baseline, destination, path, ctx)
+                self.stage_selected_path(&mut baseline, &destination, path, ctx)
                     .await?;
-                self.stage_selected_path(&mut transaction, current, path, ctx)
+                self.stage_selected_path(&mut transaction, &current, path, ctx)
                     .await?;
                 let before = self
                     .authored_record(&mut baseline.checkout, path, ctx)
@@ -235,7 +235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         continue;
                     }
                     if !self
-                        .stage_selected_path(&mut transaction, current, parent, ctx)
+                        .stage_selected_path(&mut transaction, &current, parent, ctx)
                         .await?
                         .is_some_and(|(record, _)| record.kind == FileKind::Directory)
                     {
@@ -333,7 +333,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
     async fn stage_selected_path(
         &self,
         transaction: &mut crate::Transaction<A, O>,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<(FileRecord, FileMetadata)>, LazyWorkspaceError> {
@@ -343,7 +343,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         {
             return Ok(Some(record));
         }
-        let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
+        let (lookup, _, guard) = self.lookup_at_snapshot(&cut, path, ctx).await?;
         let Some(lookup) = lookup else {
             crate::kernel::retire_allocation(guard, 0, ctx)?;
             return Ok(None);

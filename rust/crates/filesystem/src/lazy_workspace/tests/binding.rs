@@ -181,7 +181,7 @@ async fn attach_open_and_fork_demand_no_source_work() {
     let sealed_cut = LazySnapshotRef::new(
         cut.workspace_id,
         sealed_generation,
-        cut.source,
+        cut.source.clone(),
         cut.overlay,
         cut.shadows,
     );

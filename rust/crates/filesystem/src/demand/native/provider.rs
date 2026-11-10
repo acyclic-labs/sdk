@@ -49,7 +49,7 @@ impl DemandSource for NativeDemandSource {
                     allocation_operations: u64::from(path.depth() != 0),
                     ..WorkCounters::UNCHARGED
                 })?;
-                provider.check(source, context)?;
+                provider.check(&source, context)?;
                 provider.observe_parent(path, context)?;
                 let mut node = provider.metadata(path, context)?.as_ref().map(Self::node);
                 if node.is_some_and(|node| node.kind == SourceNodeKind::Directory)
@@ -57,7 +57,7 @@ impl DemandSource for NativeDemandSource {
                 {
                     node = provider.metadata(path, context)?.as_ref().map(Self::node);
                 }
-                provider.check(source, context)?;
+                provider.check(&source, context)?;
                 Ok(node)
             },
         )
@@ -147,7 +147,7 @@ impl DemandSource for NativeDemandSource {
             cancellation,
             Ok(WorkCounters::UNCHARGED),
             move |provider, path, context| {
-                provider.check(source, context)?;
+                provider.check(&source, context)?;
                 if provider.excluded.excludes(path) {
                     return Err(DemandError::Absent);
                 }
@@ -169,7 +169,7 @@ impl DemandSource for NativeDemandSource {
                 if provider.metadata(path, context)?.as_ref().map(version) != Some(expected) {
                     return Err(DemandError::StaleVersion);
                 }
-                provider.check(source, context)?;
+                provider.check(&source, context)?;
                 Ok(bytes)
             },
         )

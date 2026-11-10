@@ -307,11 +307,11 @@ impl NativeDemandSource {
 
     fn check(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         context: &mut CallbackWork,
     ) -> Result<(), DemandError> {
         context.check()?;
-        if source != self.reference() {
+        if source != &self.reference() {
             return Err(DemandError::StaleSource);
         }
         if self.root_named_while_watched() {

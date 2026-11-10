@@ -161,7 +161,11 @@ impl SourceReference {
                 SourceReference {
                     identity: head[..16].try_into().ok()?,
                     epoch: u64::from_le_bytes(head[16..24].try_into().ok()?),
-                    components: bytes.slice(start..end),
+                    components: if length == 0 {
+                        acyclic_stream::OwnedBytes::new()
+                    } else {
+                        bytes.slice(start..end)
+                    },
                 },
                 end,
             ))

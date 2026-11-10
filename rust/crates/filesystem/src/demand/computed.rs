@@ -120,7 +120,7 @@ pub trait ViewProvider<V: View>: Send + Sync {
     /// historical cut is a typed refusal, never a substitution of the head.
     fn pin(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         view: V,
         path: &NamespacePath,
         request: ViewRequest,
@@ -155,7 +155,7 @@ impl<V, P> Computed<V, P> {
 impl<V: View, P: ViewProvider<V>> Computed<V, P> {
     fn digest(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         fingerprint: &[u8; 32],
         path: &NamespacePath,
     ) -> [u8; 32] {
@@ -175,22 +175,22 @@ impl<V: View, P: ViewProvider<V>> Computed<V, P> {
     }
     fn node_version(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         cut: &PinnedView<V::Cut>,
         path: &NamespacePath,
         mut node: SourceNode,
     ) -> SourceNode {
-        node.file_identity = self.digest(source, &[0; 32], path);
-        node.version = SourceVersion(self.digest(source, &cut.fingerprint, path));
+        node.file_identity = self.digest(&source, &[0; 32], path);
+        node.version = SourceVersion(self.digest(&source, &cut.fingerprint, path));
         node
     }
     fn cursor_source(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         cut: &PinnedView<V::Cut>,
         directory: &NamespacePath,
     ) -> SourceReference {
-        let hash = self.digest(source, &cut.fingerprint, directory);
+        let hash = self.digest(&source, &cut.fingerprint, directory);
         let mut identity = [0; 16];
         identity.copy_from_slice(&hash[..16]);
         let mut epoch = [0; 8];
@@ -203,12 +203,12 @@ impl<V: View, P: ViewProvider<V>> Computed<V, P> {
     }
     fn check_version(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         cut: &PinnedView<V::Cut>,
         path: &NamespacePath,
         expected: SourceVersion,
     ) -> Result<(), DemandError> {
-        if SourceVersion(self.digest(source, &cut.fingerprint, path)) != expected {
+        if SourceVersion(self.digest(&source, &cut.fingerprint, path)) != expected {
             return Err(DemandError::StaleVersion);
         }
         Ok(())
@@ -239,12 +239,12 @@ impl<V: View, P: ViewProvider<V>> DemandSource for Computed<V, P> {
             ctx.check()?;
             let cut = self
                 .provider
-                .pin(source, self.view, path, ViewRequest::Node, &mut ctx)
+                .pin(&source, self.view, path, ViewRequest::Node, &mut ctx)
                 .await?;
             Ok(self
                 .view
                 .node(&cut.cut, path, &mut ctx)?
-                .map(|node| self.node_version(source, &cut, path, node)))
+                .map(|node| self.node_version(&source, &cut, path, node)))
         }
         .await;
         work.finish(result, &ctx)
@@ -269,7 +269,7 @@ impl<V: View, P: ViewProvider<V>> DemandSource for Computed<V, P> {
             let cut = self
                 .provider
                 .pin(
-                    source,
+                    &source,
                     self.view,
                     directory,
                     ViewRequest::Directory {
@@ -279,7 +279,7 @@ impl<V: View, P: ViewProvider<V>> DemandSource for Computed<V, P> {
                     &mut ctx,
                 )
                 .await?;
-            let cursor_source = self.cursor_source(source, &cut, directory);
+            let cursor_source = self.cursor_source(&source, &cut, directory);
             if cursor.is_some_and(|cursor| cursor.source != cursor_source) {
                 return Err(DemandError::StaleCursor);
             }
@@ -296,7 +296,7 @@ impl<V: View, P: ViewProvider<V>> DemandSource for Computed<V, P> {
                     &mut ctx,
                     cancellation,
                 )?;
-                entry.node = self.node_version(source, &cut, &path, entry.node);
+                entry.node = self.node_version(&source, &cut, &path, entry.node);
             }
             let next = page
                 .next
@@ -304,7 +304,7 @@ impl<V: View, P: ViewProvider<V>> DemandSource for Computed<V, P> {
             SourceDirectoryPage::stateless(
                 page.entries,
                 next,
-                SourceVersion(self.digest(source, &cut.fingerprint, directory)),
+                SourceVersion(self.digest(&source, &cut.fingerprint, directory)),
                 &mut ctx,
             )
         }
@@ -331,14 +331,14 @@ impl<V: View, P: ViewProvider<V>> DemandSource for Computed<V, P> {
             let cut = self
                 .provider
                 .pin(
-                    source,
+                    &source,
                     self.view,
                     path,
                     ViewRequest::Bytes { offset, length },
                     &mut ctx,
                 )
                 .await?;
-            self.check_version(source, &cut, path, expected)?;
+            self.check_version(&source, &cut, path, expected)?;
             bounded(
                 self.view.bytes(&cut.cut, path, offset..end, &mut ctx)?,
                 length,
@@ -361,9 +361,9 @@ impl<V: View, P: ViewProvider<V>> DemandSource for Computed<V, P> {
             ctx.check()?;
             let cut = self
                 .provider
-                .pin(source, self.view, path, ViewRequest::Open, &mut ctx)
+                .pin(&source, self.view, path, ViewRequest::Open, &mut ctx)
                 .await?;
-            self.check_version(source, &cut, path, expected)?;
+            self.check_version(&source, &cut, path, expected)?;
             let node = self
                 .view
                 .node(&cut.cut, path, &mut ctx)?

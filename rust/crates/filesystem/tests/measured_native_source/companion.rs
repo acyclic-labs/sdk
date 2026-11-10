@@ -100,7 +100,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
             std::borrow::Cow::Owned(directory.path().to_path_buf()),
             FilesystemProfile::Portable,
             VolumeLimits::default(),
-            Some(reference),
+            Some(reference.clone()),
             Some(observer.clone()),
             budget,
             &CancellationToken::new(),
