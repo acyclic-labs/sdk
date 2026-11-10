@@ -78,21 +78,24 @@ impl CheckoutTools {
             let _stop = shell::StopOnDrop(control.clone());
             let wake = control.wake();
             let check = owner_check(Arc::clone(&workspace), control);
-            let grant = match &self.execution_grant {
-                Some(grant) => Some(grant.clone()),
-                None => crate::filesystem::native_process::shell::workspace_grant(
-                    &state.mounts,
-                    &self.environment,
-                )?,
-            };
-            let execution = grant.map(|grant| {
-                Arc::new(crate::hooks::HookExecution {
-                    grant,
-                    environment: self.environment.clone(),
-                })
-            });
             let mounts = Arc::clone(&state.mounts);
             let (result, mut state) = workspace::volumes::native_scope(&mounts, async |claims| {
+                // Pin the active projections, after native_scope has mounted
+                // them. Binding the dormant backing directory would fence a
+                // different object and refuse every projected-volume hook.
+                let grant = match &self.execution_grant {
+                    Some(grant) => Some(grant.clone()),
+                    None => crate::filesystem::native_process::shell::workspace_grant(
+                        &state.mounts,
+                        &self.environment,
+                    )?,
+                };
+                let execution = grant.map(|grant| {
+                    Arc::new(crate::hooks::HookExecution {
+                        grant,
+                        environment: self.environment.clone(),
+                    })
+                });
                 let (result, (state, claims)) = with_workers((state, claims), check, |check| {
                     hooks.run_checked(
                         event,
