@@ -62,6 +62,7 @@ impl Hosted {
 /// own session credential carries, and its prompts attach the checkout files
 /// they mention.
 struct LocalUser {
+    sessions: bool,
     harness: Weak<LocalHarness>,
     /// The root's retained diff projection, which its continuation pages
     /// read without projecting again.
@@ -79,7 +80,7 @@ impl LocalUser {
 
 impl crate::hosting::Platform for LocalUser {
     fn sessions(&self) -> bool {
-        true
+        self.sessions
     }
 
     fn session_root(
@@ -555,6 +556,7 @@ impl LocalHarness {
         }
         .map_err(storage)?;
         let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser {
+            sessions: bound.admit_sessions().is_ok(),
             harness: Arc::downgrade(self),
             #[cfg(any(test, feature = "native-execution"))]
             diffs: crate::hosting::DiffPages::default(),

@@ -566,13 +566,12 @@ where
                 let agent = match self.bound.submit_root(prepared).await? {
                     RootSubmission::Created(agent) => agent,
                     RootSubmission::Unknown(prepared) => {
+                        let request = prepared.request().clone();
                         self.pending_roots
                             .lock()
                             .map_err(|_| Error::Record("session publication owner is poisoned"))?
                             .insert(path, prepared);
-                        return Err(Error::Record(
-                            "session creation is uncertain; resubmit the same intent",
-                        ));
+                        return Err(Error::Unknown(Box::new(request)));
                     }
                 };
                 Ok(AgentReply::Root { agent })
@@ -935,7 +934,7 @@ where
                 let parent = match command {
                     AgentCommand::Children { agent, .. } => self.within_tree(agent)?.children()?,
                     AgentCommand::Sessions { .. } if self.platform.sessions() => {
-                        StreamPath::new(crate::agent::AGENTS).map_err(Error::Stream)?
+                        self.bound.session_roots()?
                     }
                     _ => return Err(Error::Record("this host serves one tree")),
                 };
@@ -983,9 +982,21 @@ where
                     .children
                     .ok_or(Error::Stream(StreamError::InvalidResponse))?;
                 let mut items = Vec::with_capacity(listed.children.len());
+                let mut listed_paths = Vec::with_capacity(listed.children.len());
                 let mut paths = acyclic_stream::HeadSet::with_capacity(listed.children.len());
                 for child in listed.children {
-                    let agent = AgentPath::try_from(child.path.as_str().to_owned())?;
+                    let agent = if matches!(command, AgentCommand::Sessions { .. }) {
+                        let id = child
+                            .path
+                            .as_str()
+                            .rsplit('/')
+                            .next()
+                            .ok_or(Error::Record("session entry has no identity"))?;
+                        AgentPath::root(&crate::agent::AgentId::try_from(id.to_owned())?)
+                    } else {
+                        AgentPath::try_from(child.path.as_str().to_owned())?
+                    };
+                    listed_paths.push(child.path);
                     paths.push(agent.status()?);
                     items.push(ChildAgent {
                         agent,
@@ -1020,7 +1031,10 @@ where
                 for (index, item) in items.iter().enumerate() {
                     let next_bytes =
                         (index + 1 < items.len() || listed.next_after.is_some()).then(|| {
-                            children_cursor_bytes(&listed.hierarchy_version, &item.agent) as u64
+                            children_cursor_bytes(
+                                &listed.hierarchy_version,
+                                listed_paths[index].as_str(),
+                            ) as u64
                         });
                     if !credit.accept(item, next_bytes)? {
                         break;
@@ -1029,10 +1043,13 @@ where
                 let continued = credit.items < items.len() || listed.next_after.is_some();
                 items.truncate(credit.items);
                 let next = if continued {
-                    let last = items
-                        .last()
-                        .ok_or(Error::Record("children page cannot continue without a row"))?;
-                    Some(children_cursor(&listed.hierarchy_version, &last.agent))
+                    let last =
+                        listed_paths
+                            .get(items.len().checked_sub(1).ok_or(Error::Record(
+                                "children page cannot continue without a row",
+                            ))?)
+                            .ok_or(Error::Record("children page lost its source cursor"))?;
+                    Some(children_cursor(&listed.hierarchy_version, last.as_str()))
                 } else {
                     None
                 };
@@ -1303,13 +1320,13 @@ fn text(content: &ModelContent) -> Result<&str, Error> {
 
 /// AgentPath admits only fixed ASCII segments and hex identities, so this
 /// cursor's content needs no JSON escaping. Share its size with allocation.
-fn children_cursor_bytes(version: &CommitId, after: &AgentPath) -> usize {
-    version.as_bytes().len() * 2 + 1 + after.as_str().len()
+fn children_cursor_bytes(version: &CommitId, after: &str) -> usize {
+    version.as_bytes().len() * 2 + 1 + after.len()
 }
 
 /// A children page's continuation: the listing's hierarchy version, which a
 /// later page must name, and the last returned agent.
-fn children_cursor(version: &CommitId, after: &AgentPath) -> String {
+fn children_cursor(version: &CommitId, after: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut cursor = String::with_capacity(children_cursor_bytes(version, after));
     for byte in version.as_bytes() {
@@ -1317,7 +1334,7 @@ fn children_cursor(version: &CommitId, after: &AgentPath) -> String {
         cursor.push(char::from(HEX[usize::from(byte & 0xf)]));
     }
     cursor.push(':');
-    cursor.push_str(after.as_str());
+    cursor.push_str(after);
     cursor
 }
 

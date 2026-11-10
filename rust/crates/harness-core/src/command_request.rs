@@ -160,6 +160,8 @@ pub enum CommandQuery {
     Diff,
     /// Committed conversation cuts, newest first.
     History,
+    /// The paged root-session switcher.
+    Sessions,
     /// Markdown files in the private plans/ directory.
     Plan,
     /// Private GOAL.md.

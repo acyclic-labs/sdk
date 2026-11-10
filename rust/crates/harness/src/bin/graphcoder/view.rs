@@ -168,6 +168,8 @@ enum Prompt {
     Feedback,
     /// A command that runs once its yes arrives.
     Confirm(CommandRequest),
+    /// Explicit terminal-exit choice; quitting otherwise only detaches.
+    StopOrDetach,
 }
 
 #[derive(Default)]
@@ -183,6 +185,8 @@ struct View {
     stopped: Option<(u64, u64)>,
     /// A cancelled entry already marked its turn's stop.
     cancel_marked: bool,
+    /// The authored session title, projected only for this attached view.
+    title: String,
     /// The running turn's answer while it streams.
     reply: String,
     phase: Option<Phase>,
@@ -551,6 +555,9 @@ impl View {
             Span::raw(if self.busy() { "● " } else { "○ " }),
             Span::styled("GraphCoder", Style::default().add_modifier(Modifier::BOLD)),
         ];
+        if !self.title.is_empty() {
+            spans.push(Span::raw(format!(" · {}", self.title)));
+        }
         if self.outcome == Outcome::Cancelled && !self.busy() {
             spans.push(Span::raw(" ■ STOPPED"));
         }
@@ -558,6 +565,9 @@ impl View {
     }
 
     fn status(&self) -> String {
+        if matches!(self.prompt, Some(Prompt::StopOrDetach)) {
+            return "Stop or detach? s stops this turn; d or Ctrl+D detaches; Esc stays.".into();
+        }
         if let Some(Prompt::Confirm(CommandRequest::ClearAll {})) = &self.prompt {
             return "Clear all conversations? Enter yes or no.".into();
         }
@@ -571,7 +581,8 @@ impl View {
             ),
             (Some(Phase::Done { outcome }), _) => format!("conversation ended: {outcome:?}"),
             _ if self.busy() => "working · Esc or Ctrl+C interrupts".into(),
-            _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+D quits".into(),
+            _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+S sessions · Ctrl+D stop or detach"
+                .into(),
         }
     }
 }
@@ -627,12 +638,54 @@ fn terminal_events(
 /// Runs the terminal view; `resume` reopens the last conversation's recent
 /// turns, paged in from the stream as they show, otherwise the view starts
 /// empty.
+enum Next {
+    Exit,
+    Picker,
+    New,
+}
+
 pub async fn run(
+    mut conversation: Arc<Conversation>,
+    inline: bool,
+    mut resume: bool,
+    mut terminal: Option<Tty>,
+) -> Result<(), Failure> {
+    loop {
+        match run_current(Arc::clone(&conversation), inline, resume, terminal.take()).await? {
+            Next::Exit => return Ok(()),
+            Next::New => {
+                let connection = acyclic_harness::local::sessions::create(
+                    conversation.connection(),
+                    &acyclic_harness::OperationId::new().to_string(),
+                )
+                .await?;
+                conversation = Conversation::open(connection);
+                resume = false;
+            }
+            Next::Picker => {
+                let (connection, owned) =
+                    crate::sessions::picker(conversation.connection().clone(), None, None).await?;
+                conversation = Conversation::open(connection);
+                terminal = owned;
+                resume = true;
+            }
+        }
+    }
+}
+
+async fn run_current(
     conversation: Arc<Conversation>,
     inline: bool,
     resume: bool,
     terminal: Option<Tty>,
-) -> Result<(), Failure> {
+) -> Result<Next, Failure> {
+    let title = conversation
+        .agent_files(vec!["ui/title".into()], None)
+        .await?;
+    let mut title_future = std::pin::pin!(session::follow_title(
+        Arc::clone(&conversation),
+        title.generation.clone()
+    ));
     let mut ui = session::Session::open(&conversation).await?;
     if !resume && ui.open_view().is_some() {
         ui.select(&conversation, None).await?;
@@ -662,6 +715,7 @@ pub async fn run(
     };
     let mut events = conversation.observe(from).await?;
     let mut view = View {
+        title: session::title(&title),
         top: events.seen(),
         floor: if resume { 0 } else { events.seen() },
         ..View::default()
@@ -809,6 +863,11 @@ pub async fn run(
             )));
         }
         tokio::select! {
+            title = &mut title_future => {
+                let title = title?;
+                view.title = session::title(&title);
+                title_future.set(session::follow_title(Arc::clone(&conversation), title.generation));
+            }
             snapshot = &mut files_future => {
                 let snapshot = snapshot?;
                 let layout_changed = ui.snapshot.files.get("layout.json").and_then(Option::as_ref).map(|file| &file.file)
@@ -942,6 +1001,14 @@ pub async fn run(
                                         ));
                                         continue;
                                     }
+                                    Some(Prompt::StopOrDetach) => {
+                                        match text.trim().to_ascii_lowercase().as_str() {
+                                            "s" | "stop" => { conversation.cancel().await?; return Ok(Next::Exit); }
+                                            "d" | "detach" | "" => return view.exit().map(|()| Next::Exit),
+                                            _ => { view.prompt = Some(Prompt::StopOrDetach); }
+                                        }
+                                        continue;
+                                    }
                                     Some(Prompt::Confirm(request)) => {
                                         if matches!(text.trim(), "y" | "Y" | "yes") {
                                             view.request(&conversation, request).await?;
@@ -966,8 +1033,14 @@ pub async fn run(
                                 }
                                 match ui.catalog.resolve(&text, u64::MAX) {
                                     Ok(None) => {}
+                                    Ok(Some(CommandResolution::Submit { request: CommandRequest::New {} })) => {
+                                        return Ok(Next::New);
+                                    }
+                                    Ok(Some(CommandResolution::Select { query: CommandQuery::Sessions })) => {
+                                        return Ok(Next::Picker);
+                                    }
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
-                                        return view.exit();
+                                        return view.exit().map(|()| Next::Exit);
                                     }
                                     Ok(Some(CommandResolution::Select { query: selected @ (CommandQuery::Shortcuts | CommandQuery::Diff | CommandQuery::History) })) => {
                                         match ui.select(&conversation, Some(&selected)).await {
@@ -1045,7 +1118,8 @@ pub async fn run(
                                 conversation.cancel().await?;
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
-                            InputEffect::Quit => return view.exit(),
+                            InputEffect::Quit if matches!(view.prompt, Some(Prompt::StopOrDetach)) => return view.exit().map(|()| Next::Exit),
+                            InputEffect::Quit => { view.prompt = Some(Prompt::StopOrDetach); }
                             InputEffect::Scroll(rows) if queries.source().is_some() && credit != 0 => {
                                 queries.scroll(&mut overlay_top, rows, areas.overlay_rows(0),
                                     query_future.as_mut(), query::Source::newest);
@@ -1060,6 +1134,9 @@ pub async fn run(
                                     .saturating_add_signed(rows)
                                     .min(view.transcript.len().saturating_sub(page));
                             }
+                            InputEffect::Host(Action::App(AppAction::Sessions)) => return Ok(Next::Picker),
+                            InputEffect::Host(Action::App(AppAction::NewSession)) => return Ok(Next::New),
+                            InputEffect::Host(Action::App(AppAction::Quit)) => return view.exit().map(|()| Next::Exit),
                             InputEffect::Host(Action::App(AppAction::Find)) => {
                                 view.find(input.editor.text(), usize::from(areas.transcript.height));
                             }
