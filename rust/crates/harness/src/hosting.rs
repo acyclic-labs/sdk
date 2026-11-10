@@ -517,7 +517,7 @@ where
                 let agent = self.within_tree(agent)?;
                 let after = page
                     .cursor()
-                    .map(crate::agent::AgentId::parse)
+                    .map(|after| crate::agent::AgentId::try_from(after.to_owned()))
                     .transpose()
                     .map_err(|_| Error::Record("invalid completion cursor"))?;
                 let mut items = self

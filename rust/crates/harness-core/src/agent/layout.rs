@@ -124,7 +124,8 @@ impl AgentId {
         &self.0
     }
 
-    fn validate(value: &str) -> Result<(), Error> {
+    /// Validate borrowed canonical identity text without allocating an id.
+    pub fn validate(value: &str) -> Result<(), Error> {
         if value.len() == ID_HEX
             && value
                 .bytes()

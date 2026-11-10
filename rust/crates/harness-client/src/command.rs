@@ -567,7 +567,7 @@ impl AgentCommand {
             }
             Self::ChildWakes { page, .. } => {
                 if let Some(after) = page.cursor() {
-                    acyclic_harness_core::agent::AgentId::parse(after)
+                    acyclic_harness_core::agent::AgentId::validate(after)
                         .map_err(|_| CommandError::Invalid)?;
                 }
                 Ok(())
