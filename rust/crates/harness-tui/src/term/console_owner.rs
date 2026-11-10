@@ -119,10 +119,16 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
         #[cfg(not(loom))]
         {
             match timeout {
-                Some(timeout) => self.wake.wait_timeout(state, timeout).map(|value| value.0),
-                None => self.wake.wait(state),
+                Some(timeout) => self
+                    .wake
+                    .wait_timeout(state, timeout)
+                    .map(|value| value.0)
+                    .map_err(|_| io::ErrorKind::Other.into()),
+                None => self
+                    .wake
+                    .wait(state)
+                    .map_err(|_| io::ErrorKind::Other.into()),
             }
-            .map_err(|_| io::ErrorKind::Other.into())
         }
     }
     pub(crate) fn notifying(
