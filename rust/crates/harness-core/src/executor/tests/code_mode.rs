@@ -1331,9 +1331,9 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
 #[tokio::test]
 async fn large_call_names_stream_without_losing_results_or_receipts() -> Result<()> {
     let length = 65_536 + 1;
-    let name = "x".repeat(length);
+    let name = format!("acyclic.{}", "x".repeat(length));
     let code = format!(
-        "await tools['x'.repeat({length})]({{value:41}}); export default (await tools['example.echo']({{value:42}})).value"
+        "await tools['acyclic.' + 'x'.repeat({length})]({{value:41}}); export default (await tools['example.echo']({{value:42}})).value"
     );
     let (mut executor, model, echo) = executor(&code, allowed()?, true)?;
     let mut tool = executor
