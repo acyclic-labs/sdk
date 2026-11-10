@@ -18,6 +18,11 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
+name = "native_cut_custody"
+path = "tests/native_cut_custody.rs"
+required-features = ["native-watch", "memory"]
+
+[[test]]
 name = "browser_commit"
 path = "tests/browser_commit.rs"
 required-features = ["browser", "memory"]
