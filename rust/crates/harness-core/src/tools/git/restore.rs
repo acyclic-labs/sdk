@@ -37,7 +37,7 @@ where
     pub(super) async fn restore_paths(
         &self,
         operation_id: OperationId,
-        tree: GitTreeRef,
+        tree: &GitTreeRef,
         paths: &[String],
     ) -> Result<GitFilesystemResult, Error> {
         if let Some(replayed) = self.committed_restore(operation_id).await? {

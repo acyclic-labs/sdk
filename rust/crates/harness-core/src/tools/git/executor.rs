@@ -95,7 +95,7 @@ where
                 "Git merge has unresolved entries; conflicts have not been inspected",
             ));
         };
-        let current = self.generation(tree).await?;
+        let current = self.generation(&tree).await?;
         let Some(resolved) =
             acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await?
         else {
@@ -109,7 +109,7 @@ where
         // one this operation published, so later source writes cannot change
         // what the merge tracks. A transition that never published admits no
         // new paths.
-        let before = self.generation(*target_tree).await?;
+        let before = self.generation(target_tree).await?;
         let joined = self
             .current
             .operation_generation(
@@ -182,7 +182,7 @@ where
                     .await
             }
             GitFilesystemAction::RestorePaths { tree, paths } => {
-                self.restore_paths(operation_id, *tree, paths).await
+                self.restore_paths(operation_id, tree, paths).await
             }
             GitFilesystemAction::Join {
                 target_tree,
@@ -193,7 +193,7 @@ where
                 // The join is the deepest facade action; it is erased so it
                 // never sizes, or deepens, every other command's future.
                 acyclic_stream::erase_provider_future(|| {
-                    self.join(operation_id, *target_tree, *source, *rebase, tracked)
+                    self.join(operation_id, target_tree, *source, *rebase, tracked)
                 })
                 .await
             }
