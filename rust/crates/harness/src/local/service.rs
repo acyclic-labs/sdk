@@ -256,6 +256,142 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[tokio::test]
+    async fn session_directory_creates_independent_roots_and_pages_without_tree_escalation()
+    -> Result<()> {
+        use crate::client::{AgentCommand, AgentPageRequest, AgentReply};
+        let workspace = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        let provider = Arc::new(
+            ScriptedModelProvider::new(std::iter::empty::<ScriptedTurn>()).with_context_capacity(
+                crate::context::ModelContextCapacity {
+                    context_tokens: 32_768,
+                    output_tokens: Some(4096),
+                },
+            ),
+        );
+        let config = local_harness_config(
+            workspace.path(),
+            (
+                Model::new("scripted".into(), "test".into(), "1".into())?,
+                provider.clone(),
+            ),
+        )?
+        .state_directory(state.path())
+        .without_default_tools();
+        let local = Arc::new(super::super::LocalHarness::open(config).await?);
+        let tree = local.connect().await?;
+        assert!(
+            tree.execute(&AgentCommand::Sessions {
+                page: AgentPageRequest::default()
+            })
+            .await
+            .is_err()
+        );
+        assert!(
+            tree.execute(&AgentCommand::NewSession {
+                id: crate::agent::IntentId::try_from("denied").map_err(storage)?
+            })
+            .await
+            .is_err()
+        );
+        let hosted = local
+            .agents
+            .get()
+            .ok_or_else(|| Error::Invalid("missing owner".into()))?;
+        let server = Arc::clone(hosted.server());
+        let changes = server.bound().changes().map_err(storage)?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(storage)?;
+        let (ready, readiness) = tokio::sync::oneshot::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let remote = tokio::spawn(crate::server::serve(
+            listener,
+            crate::server::ServerConfig::new(crate::server::Hosted::new(
+                server,
+                local.clock.clone(),
+                local.clone(),
+                Some(Arc::new(changes)),
+            )),
+            move |endpoint| {
+                let observation = endpoint.observation.as_ref().unwrap();
+                let options = acyclic_harness_client::ConnectionOptions::from_env(
+                    Some(&endpoint.endpoint),
+                    Some(&observation.credential),
+                );
+                let _ = ready.send(options);
+            },
+            async {
+                let _ = stopped.await;
+            },
+        ));
+        let result = async {
+            let connection =
+                Connection::connect(&readiness.await.map_err(storage)?.map_err(storage)?).await?;
+            let mut roots = std::collections::BTreeSet::from([connection.root().clone()]);
+            for index in 0..4 {
+                let create = AgentCommand::NewSession {
+                    id: crate::agent::IntentId::try_from(format!("session-{index}"))
+                        .map_err(storage)?,
+                };
+                let AgentReply::Root { agent } = connection.execute(&create).await? else {
+                    return Err(Error::Invalid("missing session".into()));
+                };
+                let AgentReply::Root { agent: replay } = connection.execute(&create).await? else {
+                    return Err(Error::Invalid("missing replay".into()));
+                };
+                assert_eq!(agent, replay);
+                assert!(
+                    agent.parent().is_none(),
+                    "sessions must be independent roots"
+                );
+                assert!(roots.insert(agent.clone()));
+                assert!(
+                    tree.select(agent.clone()).await.is_err(),
+                    "the original tree credential cannot select a sibling"
+                );
+                let selected = connection.select(agent.clone()).await?;
+                assert_eq!(selected.root(), &agent);
+                let AgentReply::Settlement { .. } = selected
+                    .execute(&AgentCommand::Settlement { agent })
+                    .await?
+                else {
+                    return Err(Error::Invalid("selected session unavailable".into()));
+                };
+            }
+            let mut listed = std::collections::BTreeSet::new();
+            let mut cursor = None;
+            loop {
+                let page = AgentPageRequest::new(2, 65536, cursor).map_err(storage)?;
+                let AgentReply::Children { items, next } =
+                    connection.execute(&AgentCommand::Sessions { page }).await?
+                else {
+                    return Err(Error::Invalid("missing directory page".into()));
+                };
+                assert!(items.len() <= 2);
+                for item in items {
+                    assert!(listed.insert(item.agent));
+                }
+                cursor = next;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(listed, roots);
+            assert_eq!(
+                provider.request_count(),
+                0,
+                "directory operations cannot call the model"
+            );
+            Ok(())
+        }
+        .await;
+        let _ = stop.send(());
+        let served = remote.await.map_err(storage)?;
+        result.and(served)
+    }
+
+    #[tokio::test]
     async fn detached_clients_share_one_owner_and_one_prompt_commit() -> Result<()> {
         let workspace = tempfile::tempdir().map_err(storage)?;
         let state = tempfile::tempdir().map_err(storage)?;

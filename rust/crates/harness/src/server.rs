@@ -243,10 +243,21 @@ pub async fn serve<C: Composition>(
         None => format!("http://{address}"),
     };
     let observation = config.verifier.observation(RootCredential(Box::pin(async {
-        let minted = bound
-            .client_credential(server.root(), server.resource(), host.clock.clone())
-            .await
-            .map_err(failed)?;
+        let minted = if server.serves_sessions() {
+            bound
+                .session_credential(
+                    server.root(),
+                    server.resource(),
+                    &server.session_resource(),
+                    host.clock.clone(),
+                )
+                .await
+        } else {
+            bound
+                .client_credential(server.root(), server.resource(), host.clock.clone())
+                .await
+        }
+        .map_err(failed)?;
         Ok((minted.credential, minted.principal))
     })));
     let observation = tokio::select! {

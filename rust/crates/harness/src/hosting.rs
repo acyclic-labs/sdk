@@ -59,6 +59,26 @@ use std::sync::Arc;
 /// policy for the verified principal's command. Identity comes only from the
 /// session credential; the platform never supplies a caller here.
 pub trait Platform: ProviderPlatform + 'static {
+    /// Explicitly serve the roots of this placement as independent sessions.
+    /// Tree-only hosts retain their existing routing and credential boundary.
+    fn sessions(&self) -> bool {
+        false
+    }
+
+    /// Bind a new session to platform-owned resources. Requests cannot supply
+    /// volume grants, signing custody or an actor placement.
+    fn session_root(
+        &self,
+        agent: crate::agent::AgentId,
+    ) -> BoxProviderFuture<'_, crate::Result<RootRequest>> {
+        let _ = agent;
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "session creation is unavailable".into(),
+            ))
+        })
+    }
+
     /// The current policy for `principal` issuing `command`.
     fn policy<'a>(
         &'a self,
@@ -160,6 +180,9 @@ pub struct Server<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     platform: Arc<dyn Platform>,
     root: AgentPath,
     resource: String,
+    /// Only uncertain root publications retain process state; settled sessions
+    /// are discovered directly from the stream directory.
+    pending_roots: std::sync::Mutex<std::collections::BTreeMap<AgentPath, Prepared>>,
 }
 
 /// What serving a root came to.
@@ -279,6 +302,7 @@ where
         platform,
         root,
         resource,
+        pending_roots: Default::default(),
     })
 }
 
@@ -360,10 +384,36 @@ where
 
     /// `agent` when it is the root or one of its descendants.
     fn within_tree<'a>(&self, agent: &'a AgentPath) -> Result<&'a AgentPath, Error> {
-        self.root
-            .contains(agent)
+        (self.root.contains(agent) || self.platform.sessions())
             .then_some(agent)
             .ok_or(Error::NoSuchAgent)
+    }
+
+    /// Whether this platform admits an independent root-session directory.
+    pub fn serves_sessions(&self) -> bool {
+        self.platform.sessions()
+    }
+
+    /// Separate resource: a tree credential never acquires directory authority.
+    pub fn session_resource(&self) -> String {
+        format!(
+            "actors:/session-directory/{}",
+            acyclic_auth::encode_component(self.bound.within().namespace().as_str().as_bytes())
+        )
+    }
+
+    fn command_resource(&self, command: &AgentCommand) -> String {
+        if matches!(
+            command,
+            AgentCommand::Sessions { .. } | AgentCommand::NewSession { .. }
+        ) || command
+            .agent()
+            .is_some_and(|agent| !self.root.contains(agent))
+        {
+            self.session_resource()
+        } else {
+            self.resource.clone()
+        }
     }
 
     /// Delivers one context request to `agent`; its checkpoint settles in
@@ -418,6 +468,50 @@ where
             AgentCommand::Root {} => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
+            AgentCommand::NewSession { id } => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.session.v1");
+                hasher.update(self.root.as_str().as_bytes());
+                hasher.update(
+                    &serde_json::to_vec(&(by, id))
+                        .map_err(|_| Error::Record("session identity cannot encode"))?,
+                );
+                let mut bytes = [0; 16];
+                hasher.finalize_xof().fill(&mut bytes);
+                let identity = crate::agent::AgentId::from_bytes(bytes);
+                let path = AgentPath::root(&identity);
+                let pending = self
+                    .pending_roots
+                    .lock()
+                    .map_err(|_| Error::Record("session publication owner is poisoned"))?
+                    .remove(&path);
+                let prepared = match pending {
+                    Some(prepared) => prepared,
+                    None => {
+                        let root = self
+                            .platform
+                            .session_root(identity)
+                            .await
+                            .map_err(|error| Error::Turn(Box::new(error)))?;
+                        self.bound.prepare_root(id, root).await?
+                    }
+                };
+                let agent = match self.bound.submit_root(prepared).await? {
+                    RootSubmission::Created(agent) => agent,
+                    RootSubmission::Unknown(prepared) => {
+                        self.pending_roots
+                            .lock()
+                            .map_err(|_| Error::Record("session publication owner is poisoned"))?
+                            .insert(path, prepared);
+                        return Err(Error::Record(
+                            "session creation is uncertain; resubmit the same intent",
+                        ));
+                    }
+                };
+                Ok(AgentReply::Root { agent })
+            }
             AgentCommand::Settlement { agent } => {
                 let agent = self.within_tree(agent)?;
                 let state = agents.state(agent).await?;
@@ -730,8 +824,14 @@ where
                 let next = history_cursor(&cursor)?;
                 Ok(AgentReply::History { items, next })
             }
-            AgentCommand::Children { agent, page } => {
-                let agent = self.within_tree(agent)?;
+            AgentCommand::Children { page, .. } | AgentCommand::Sessions { page } => {
+                let parent = match command {
+                    AgentCommand::Children { agent, .. } => self.within_tree(agent)?.children()?,
+                    AgentCommand::Sessions { .. } if self.platform.sessions() => {
+                        StreamPath::new(crate::agent::AGENTS).map_err(Error::Stream)?
+                    }
+                    _ => return Err(Error::Record("this host serves one tree")),
+                };
                 let mut credit = PageCredit::new(page, |next| AgentReply::Children {
                     items: Vec::new(),
                     next,
@@ -751,7 +851,7 @@ where
                     paths: Default::default(),
                     children: Some(ChildrenPageRequest {
                         tail_stream: None,
-                        parent: Some(agent.children()?),
+                        parent: Some(parent),
                         after,
                         hierarchy_version,
                         limit: page.items(),
@@ -1231,8 +1331,11 @@ where
         &self,
         invocation: &[u8],
     ) -> Result<acyclic_stream::session::CallTarget, StreamError> {
-        self.admit(invocation)?;
-        acyclic_stream::session::CallTarget::new(self.resource.clone(), "actors/invoke")
+        let call = self.admit(invocation)?;
+        acyclic_stream::session::CallTarget::new(
+            self.command_resource(call.command()),
+            "actors/invoke",
+        )
     }
 
     fn call(
@@ -1253,7 +1356,7 @@ where
                 .map_err(|_| StreamError::InvalidArgument)?;
             let authorize = async |command: &AgentCommand| {
                 let policy = server.platform.policy(&principal, command).await?;
-                authorization.authorize(&server.resource, &[], &attributes, policy)
+                authorization.authorize(&server.command_resource(command), &[], &attributes, policy)
             };
             // Every command, a staged head included, is authorized as it
             // arrives: a head names its agent and kind, so a denied caller
@@ -1305,6 +1408,7 @@ where
             let query = match call.command() {
                 AgentCommand::Bind { .. }
                 | AgentCommand::Root {}
+                | AgentCommand::Sessions { .. }
                 | AgentCommand::Children { .. }
                 | AgentCommand::ProjectHeads { .. }
                 | AgentCommand::History { .. }
@@ -1316,7 +1420,8 @@ where
                 | AgentCommand::Events { .. }
                 | AgentCommand::ClientFiles { .. }
                 | AgentCommand::Read { .. } => true,
-                AgentCommand::Prompt { .. }
+                AgentCommand::NewSession { .. }
+                | AgentCommand::Prompt { .. }
                 | AgentCommand::Cancel { .. }
                 | AgentCommand::Compact { .. }
                 | AgentCommand::Rewind { .. }
@@ -1335,7 +1440,12 @@ where
                 // receipts retain their original commit outcome semantics.
                 let principal = authorization.principal()?;
                 let policy = server.platform.policy(&principal, call.command()).await?;
-                authorization.authorize(&server.resource, &[], &attributes, policy)?;
+                authorization.authorize(
+                    &server.command_resource(call.command()),
+                    &[],
+                    &attributes,
+                    policy,
+                )?;
             }
             call.reply(&result).map_err(|_| StreamError::LimitExceeded)
         })

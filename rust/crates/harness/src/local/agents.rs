@@ -78,6 +78,46 @@ impl LocalUser {
 }
 
 impl crate::hosting::Platform for LocalUser {
+    fn sessions(&self) -> bool {
+        true
+    }
+
+    fn session_root(
+        &self,
+        agent: crate::agent::AgentId,
+    ) -> BoxProviderFuture<'_, Result<crate::hosting::RootRequest>> {
+        Box::pin(async move {
+            use crate::conversation::{VolumeClass, VolumeOwner};
+            let local = self.harness()?;
+            let fresh = [PRIVATE_VOLUME, HOME_VOLUME]
+                .into_iter()
+                .map(|name| {
+                    Ok(VolumeBinding {
+                        name: name.to_owned(),
+                        volume: VolumeRef::new(
+                            local.project.provider().clone(),
+                            format!("{name}-{agent}"),
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
+                            &mut None,
+                        )?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let policy = local.root_policy(&agent).await?;
+            Ok(crate::hosting::RootRequest {
+                agent,
+                fresh,
+                retained: vec![VolumeBinding {
+                    name: "project".into(),
+                    volume: local.project.clone(),
+                }],
+                brief: None,
+                policy: Some(policy),
+            })
+        })
+    }
+
     fn policy<'a>(
         &'a self,
         _: &'a Principal,
