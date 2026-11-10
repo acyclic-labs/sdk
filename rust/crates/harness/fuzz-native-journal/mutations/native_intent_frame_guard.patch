@@ -1,5 +1,5 @@
 diff --git a/rust/crates/harness-core/src/agent/machine.rs b/rust/crates/harness-core/src/agent/machine.rs
-index b74c78af4b5..615288bc890 100644
+index 782c7f98013..615288bc890 100644
 --- a/rust/crates/harness-core/src/agent/machine.rs
 +++ b/rust/crates/harness-core/src/agent/machine.rs
 @@ -1141,7 +1141,7 @@ fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
@@ -38,7 +38,7 @@ index b74c78af4b5..615288bc890 100644
          || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
          || matches!(&turn.wait, Wait::User(path) if super::records::check_ui_path(path).is_err())
 -        || matches!(&turn.wait, Wait::Approval { id, binding } if super::AgentRecord::encode(&StatusRecord {
--            child_wakes: Vec::new(),
+-            child_wakes: child_wakes.clone(),
 -            phase: Phase::WaitingApproval { id: id.clone(), binding: binding.clone() },
 -            cursor: u64::MAX,
 -            conversation: u64::MAX,
