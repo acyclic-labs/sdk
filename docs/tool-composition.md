@@ -75,7 +75,11 @@ results. Ambient time and randomness are absent.
 
 Programs are ES modules with top-level `await`. The model receives the awaited
 default export, or `{ error }` for an uncaught
-exception. `Promise.all` submits independent calls in one program; bounded host
+exception. The built-in `acyclic` module provides `read`, `write`, `remove`
+and lazy directory `list` through the same granted tools. Each returned file
+retains one immutable selection; `text`, `json` and `lines` read its retained
+text. Authoring declarations live at `sys/types/index.d.ts`; their configuration
+records come from the kernel’s declaration producer. `Promise.all` submits independent calls in one program; bounded host
 credit feeds them to ordinary settlement. Each settled call publishes a
 `code.call` JSON log under the turn's existing `tools/.results/` directory before
 its promise resolves. Follow that directory to stream tool name, success/failure
@@ -96,8 +100,8 @@ ordinary verified token admission, without an additional aggregate JSON limit.
 Intermediate tool results remain inside the interpreter and ordinary journal
 artifacts; they are not added to model history.
 
-The interpreter installs no filesystem, network, environment, module loader or
-host API. Credentials and tool contexts stay in the stock dispatcher. QuickJS
+The interpreter resolves the built-in `acyclic` module. It exposes filesystem,
+network and environment access through granted tools alone. Credentials and tool contexts stay in the stock dispatcher. QuickJS
 allocations use the original native memory ledger. A 1 GiB engine memory ceiling
 and a billion interrupt checks protect against runaway scripts; neither bounds
 product counts. Cancellation follows the parent's event and interrupts executing

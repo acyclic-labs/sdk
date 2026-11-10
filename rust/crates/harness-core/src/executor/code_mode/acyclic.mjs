@@ -7,9 +7,6 @@ export class ConflictError extends Error {
         this.current = current;
     }
 }
-export class TimeoutError extends Error {
-    constructor() { super('Timeout passed'); this.name = 'TimeoutError'; }
-}
 export class DeniedError extends Error {
     constructor(reason) { super(reason); this.name = 'DeniedError'; this.reason = reason; }
 }
@@ -119,6 +116,3 @@ export function list(path, after) {
     })();
     return Object.freeze({get cursor() { return cursor; }, [Symbol.asyncIterator]() { return iterator; }});
 }
-
-export async function spawn() { throw new DeniedError('needs P2'); }
-export async function fork() { throw new DeniedError('needs P2'); }
