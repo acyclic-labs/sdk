@@ -154,11 +154,7 @@ pub(crate) fn decode_source_fact(
     Ok(value)
 }
 
-#[cfg(all(
-    any(test, feature = "local"),
-    not(target_arch = "wasm32"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn decode_source_volume(
     bytes: &[u8],
     maximum_payload_bytes: u64,
