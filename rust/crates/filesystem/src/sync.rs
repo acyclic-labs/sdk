@@ -3,6 +3,13 @@ pub(crate) use loom::sync::*;
 #[cfg(not(loom))]
 pub(crate) use std::sync::*;
 
+// Every retained native owner includes its lock storage in its admitted layout.
+// The pthread-backed standard mutex allocates separately on first acquisition.
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+pub(crate) use acyclic_native_runtime::{
+    InlineCondvar as Condvar, InlineMutex as Mutex, InlineMutexGuard as MutexGuard,
+};
+
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 pub(crate) use acyclic_native_runtime::{InlineMutex, InlineMutexGuard};
 #[cfg(loom)]
@@ -37,7 +44,9 @@ pub(crate) mod native {
 }
 
 // Type identity checks compile in ordinary builds, including --all-features.
-#[cfg(not(loom))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+const _: fn(Mutex<()>) -> acyclic_native_runtime::InlineMutex<()> = |mutex| mutex;
+#[cfg(all(not(loom), target_arch = "wasm32"))]
 const _: fn(Mutex<()>) -> std::sync::Mutex<()> = |mutex| mutex;
 #[cfg(loom)]
 const _: fn(Mutex<()>) -> loom::sync::Mutex<()> = |mutex| mutex;

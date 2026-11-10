@@ -1,6 +1,7 @@
 //! Owned custody at asynchronous boundaries, using the original ledger.
 use super::*;
-use std::sync::{Arc, Mutex};
+use crate::sync::InlineMutex as Mutex;
+use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod shared;
