@@ -12,14 +12,15 @@ export async function agentsFixture(id, reply, initialize = init) {
   const owner = new WasmAgentAuthority(authority.capability);
   const registry = new WasmAgentRegistry();
   const requests = [];
-  registry.configureModel({ provider: "browser-test", name: "scripted", revision: "1" },
+  const configure = (model, respond = reply) => registry.configureModel(model,
     async function* (bytes, dispatch, signal, files) {
       const request = JSON.parse(new TextDecoder().decode(bytes));
       const texts = files.map(file => new TextDecoder().decode(file));
       requests.push({ request, dispatch, texts });
-      yield* reply({ request, dispatch, texts, signal });
+      yield* respond({ request, dispatch, texts, signal });
       yield { kind: "completed", metadata: {} };
     }, () => null, modelCapacity, modelTokenCount, { kind: "disabled" });
+  configure({ provider: "browser-test", name: "scripted", revision: "1" });
   const options = {
     filesystem_database: `harness-agents-fs-${id}`, stream_database: `harness-agents-stream-${id}`,
     maximum_object_bytes: 1048576n, filesystem_provider: { namespace: "browser-agents", family: "filesystem", version: "2" },
@@ -37,7 +38,7 @@ export async function agentsFixture(id, reply, initialize = init) {
   failed.catch(() => {});
   const report = (actor, error) => { failures.push({ actor, error }); rejectFailure(new Error(`agent ${actor} failed: ${error}`)); };
   const closing = new WeakMap();
-  return { owner, registry, requests, failures, options,
+  return { owner, registry, requests, failures, options, configure,
     failed,
     open: () => WasmAgents.open(options, owner, registry, report),
     close: agents => {
@@ -58,7 +59,7 @@ export async function agentsFixture(id, reply, initialize = init) {
     // over the same storage whose turns run only through the guest.
     providers: kind => kind === "memory" ? WasmAgentProviders.memory(options) : WasmAgentProviders.indexedDb(options),
     guest: providers => AgentGuest.open(providers, options, owner, registry),
-    hosting: (providers, guest) => WasmAgents.openHosting(providers, options, owner, guest.manifest(),
+    hosting: (providers, guest) => WasmAgents.openHosting(providers, options, owner, registry, guest.manifest(),
       (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt), report),
     free: () => { rejectFailure(new Error("fixture owner closed")); authority.close(); registry.free(); owner.free(); authority.free(); } };
 }

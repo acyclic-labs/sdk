@@ -150,6 +150,7 @@ pub struct StockExecutors {
     tools: ToolRegistry,
     /// The model family's native declarations, decoded on the first turn.
     native: crate::tools::native::Cache,
+    models: Option<Arc<crate::model::ModelResolver>>,
     limits: Limits,
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
@@ -160,6 +161,38 @@ pub struct StockExecutors {
 }
 
 impl StockExecutors {
+    /// Binds child and resumed selections through the same protected catalog.
+    #[must_use]
+    pub fn with_models(mut self, models: Arc<crate::model::ModelResolver>) -> Self {
+        self.models = Some(models);
+        self
+    }
+
+    fn selected(&self, agent: &AgentState) -> Result<crate::model::ModelBinding> {
+        match agent
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.model.as_deref())
+        {
+            None => Ok((self.model.clone(), self.provider.clone())),
+            Some(selection)
+                if selection
+                    .strip_prefix(self.model.provider.as_str())
+                    .and_then(|suffix| suffix.strip_prefix('/'))
+                    == Some(self.model.name.as_str()) =>
+            {
+                Ok((self.model.clone(), self.provider.clone()))
+            }
+            Some(selection) => self
+                .models
+                .as_ref()
+                .ok_or_else(|| {
+                    Error::Unsupported("model selection requires a host resolver".into())
+                })?
+                .resolve(selection),
+        }
+    }
+
     /// Stock turns over `model` served by `provider`, with `tools` under
     /// `limits`, `compaction` and `context`, binding no agent tools.
     #[must_use]
@@ -173,7 +206,8 @@ impl StockExecutors {
             model,
             provider,
             tools,
-            native: crate::tools::native::Cache::default(),
+            native: Default::default(),
+            models: None,
             limits,
             compaction,
             agent_tools: Vec::new(),
@@ -224,6 +258,10 @@ impl StockExecutors {
 }
 
 impl TurnExecutors for StockExecutors {
+    fn model_selection(&self) -> Option<String> {
+        Some(format!("{}/{}", self.model.provider, self.model.name))
+    }
+
     fn settle<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -251,13 +289,11 @@ impl TurnExecutors for StockExecutors {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
         Box::pin(async move {
-            let provider = self
-                .provider
+            let (model, provider) = self.selected(agent)?;
+            let native = self.native.get(&model, || provider.native_tools(&model))?;
+            let provider = provider
                 .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
-                .unwrap_or_else(|| Arc::clone(&self.provider));
-            let native = self
-                .native
-                .get(|| self.provider.native_tools(&self.model))?;
+                .unwrap_or(provider);
             let mut tools = self.tools.clone();
             // The agent tools act for this turn: their effects commit with it.
             if let Some(effects) = &authority.effects
@@ -277,14 +313,9 @@ impl TurnExecutors for StockExecutors {
                     (&self.agent_tools, authority.templates.clone()),
                 )?;
             }
-            let executor = StockExecutor::new(
-                self.model.clone(),
-                provider,
-                ContextPipeline::default(),
-                tools,
-            )
-            .with_limits(self.limits)
-            .with_compaction_policy(self.compaction.clone());
+            let executor = StockExecutor::new(model, provider, ContextPipeline::default(), tools)
+                .with_limits(self.limits)
+                .with_compaction_policy(self.compaction.clone());
             let executor = match self.sampling {
                 Some(sampling) => Self::sample(executor, sampling)?,
                 None => executor,

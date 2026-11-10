@@ -58,6 +58,7 @@ fn holds(body: &[u8], needle: &[u8]) -> bool {
 
 /// One recorded generation request: the agent that sent it and its exact body.
 struct Sent {
+    url: String,
     agent: &'static str,
     body: Bytes,
     cached: Cached,
@@ -92,6 +93,7 @@ impl Scripted {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let agent = state.0;
         state.2.push(Sent {
+            url: request.url,
             agent,
             body: request.body,
             cached,
@@ -251,6 +253,14 @@ fn resolve(
     prompt_cache: PromptCache,
     transport: Arc<Scripted>,
 ) -> TestResult<acyclic_harness_providers::ResolvedModel> {
+    Ok(registry(adapter, prompt_cache, transport)?.resolve("recorded/model")?)
+}
+
+fn registry(
+    adapter: Adapter,
+    prompt_cache: PromptCache,
+    transport: Arc<Scripted>,
+) -> TestResult<Registry> {
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
     registry.register(
         "recorded".into(),
@@ -287,7 +297,7 @@ fn resolve(
             prompt_cache,
         },
     )?;
-    Ok(registry.resolve("recorded/model")?)
+    Ok(registry)
 }
 
 fn intent(text: &str) -> IntentId {
@@ -764,7 +774,7 @@ async fn anthropic_prefixes_extend_byte_for_byte() -> TestResult {
         "messages",
         "anthropic",
         b"\"messages\":[",
-        4521,
+        4663,
     )
     .await
 }
@@ -777,7 +787,7 @@ async fn responses_prefixes_extend_byte_for_byte() -> TestResult {
         "responses",
         "responses",
         b"\"input\":[",
-        4779,
+        4921,
     )
     .await
 }
@@ -790,7 +800,7 @@ async fn gemini_prefixes_extend_byte_for_byte() -> TestResult {
         "models/model:streamGenerateContent",
         "gemini",
         b"\"contents\":[",
-        4445,
+        4587,
     )
     .await
 }
@@ -804,7 +814,10 @@ async fn chat_prefixes_extend_byte_for_byte() -> TestResult {
         "chat/completions",
         "chat",
         b"\"messages\":[",
-        4670,
+        4812,
     )
     .await
 }
+
+#[path = "prefix_cache/role_models.rs"]
+mod role_models;
