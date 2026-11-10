@@ -105,9 +105,7 @@ pub(super) async fn connect(
         }
     };
     let generation = match &connection {
-        #[cfg(feature = "mcp-stdio")]
         Connection::Stdio(transport) => transport.tools_generation(),
-        #[cfg(feature = "mcp-http")]
         Connection::Http(transport) => transport.tools_generation(),
     };
     // Eager schema exposure deliberately materializes the catalog. The shared

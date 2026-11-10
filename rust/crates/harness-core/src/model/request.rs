@@ -171,7 +171,7 @@ impl ModelRequest {
                         io,
                     )?;
                     if notice.body.get("complete").and_then(Value::as_bool) == Some(true) {
-                        #[cfg(feature = "filesystem")]
+                        #[cfg(not(target_arch = "wasm32"))]
                         let funded = io
                             .map(|io| {
                                 io.decode(
@@ -181,7 +181,7 @@ impl ModelRequest {
                                 )
                             })
                             .transpose()?;
-                        #[cfg(not(feature = "filesystem"))]
+                        #[cfg(target_arch = "wasm32")]
                         let funded: Option<(
                             Vec<crate::tool::ToolDefinition>,
                             crate::conversation::ContentHold<'_>,
