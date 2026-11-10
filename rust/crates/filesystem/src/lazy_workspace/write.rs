@@ -64,9 +64,15 @@ impl<
         accounted!(ctx, |work, cancel| transaction
             .write(path, bytes, work, cancel))?;
         if let Some(LazyLookup::Source { node, .. }) = lookup {
-            let file_id = self.source_file_id(&node.file_identity, ctx)?;
-            accounted!(ctx, |work, cancel| transaction
-                .preserve_file_identity(path, file_id, work, cancel))?;
+            let namespace = self.namespace_path(path, ctx)?;
+            let preserve = self.source.overlay(namespace.value.components())
+                == crate::demand::SourceOverlay::CopyOnWrite;
+            namespace.retire(ctx)?;
+            if preserve {
+                let file_id = self.source_file_id(&node.file_identity, ctx)?;
+                accounted!(ctx, |work, cancel| transaction
+                    .preserve_file_identity(path, file_id, work, cancel))?;
+            }
         }
         Ok(())
     }
