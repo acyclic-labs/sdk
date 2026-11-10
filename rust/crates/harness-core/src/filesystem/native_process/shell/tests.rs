@@ -152,6 +152,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
                 command,
                 cwd,
                 timeout_ms: None,
+                background: false,
                 target: None,
             },
             &mounts,
