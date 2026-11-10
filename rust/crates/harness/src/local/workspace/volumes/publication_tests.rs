@@ -420,9 +420,8 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     Ok(())
 }
 
-// Disconnect retirement attempts every volume. A volume a cancelled worker still
-// owns reports its conflict, but cannot strand a later volume's projection
-// until the harness drops and abandons it unpublished.
+// Disconnect retirement starts every volume. A worker's retained claim keeps
+// its own projection alive, without stranding a later volume's projection.
 #[tokio::test]
 async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
@@ -457,16 +456,24 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         .await?;
     let root_path = projection_root(&scratch.destination, HOME_PATH)?;
     drop(scratch.enter(root_path, HOME_PATH, false).await?);
-    assert!(matches!(
-        retire(&table).await,
-        Err(Error::Conflict(message)) if message.contains("native workers")
-    ));
-    assert!(
-        scratch.native().await.is_none(),
-        "a conflict stranded a later projection"
-    );
+    // Hold the original slot while retirement registers its lock waiter.
+    // Tokio's FIFO lock hands our successor the slot after that retirement,
+    // without a readiness probe or a timer.
+    let slot = scratch.native().await;
+    let retiring = retire(&table);
+    tokio::pin!(retiring);
+    assert!(futures::poll!(&mut retiring).is_pending());
+    drop(slot);
+    tokio::select! {
+        result = &mut retiring => panic!("retirement released a live worker claim: {result:?}"),
+        slot = scratch.native() => assert!(
+            slot.is_none(),
+            "a retained worker stranded a later projection"
+        ),
+    }
     assert!(!scratch.destination.exists());
     busy.abandon(busy_claim).await?;
+    retiring.await?;
     assert!(busy.native().await.is_none());
     assert!(!busy.destination.exists());
     Ok(())
