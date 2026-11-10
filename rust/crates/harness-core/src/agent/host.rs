@@ -521,14 +521,25 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         self.deliver(to, send(to, from, record)?).await
     }
 
-    /// Close `target` and, through its cascade, its open descendants.
-    pub async fn archive(
-        &self,
-        target: &AgentPath,
-        by: &Sender,
-        id: &IntentId,
-    ) -> Result<Delivered, Error> {
-        self.deliver(target, archive(target, by, id)?).await
+    /// Close `target` and its open descendants. Closing admission precedes
+    /// resuming each actor through its original runtime control owner: a
+    /// paused actor must still execute its ordinary closing/cleanup step.
+    /// Only currently open children are visited, never retained history.
+    pub fn archive<'a>(
+        &'a self,
+        target: &'a AgentPath,
+        by: &'a Sender,
+        id: &'a IntentId,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Delivered, Error>> {
+        Box::pin(async move {
+            let delivered = self.deliver(target, archive(target, by, id)?).await?;
+            self.pause(target, false).await?;
+            let state = self.state(target).await?;
+            for child in state.open_children {
+                self.archive(&child, by, id).await?;
+            }
+            Ok(delivered)
+        })
     }
 
     /// Durably pause or resume one agent. A paused agent consumes nothing:
