@@ -11,7 +11,7 @@ async fn metadata_edit_after_a_boundary_through_a_handle_opened_before_it_is_cap
     let source = windows_checkout_source().await?;
     let (_root, destination, mut session) = mount_source(&source)?;
     let file = destination.join("late.txt");
-    client::run("late", &file, || {
+    run_client("late", &file, || {
         session.flush_callbacks(&work)?;
         Ok(())
     })?;
@@ -36,7 +36,7 @@ async fn a_time_set_through_a_writable_handle_stays() -> Result<(), Box<dyn std:
     let source = windows_checkout_source_with_files(FILES).await?;
     let (_root, destination, mut session) = mount_source(&source)?;
     eprintln!("stress mounted {:?}", started.elapsed());
-    client::run("stress", &destination, || Ok(()))?;
+    run_client("stress", &destination, || Ok(()))?;
     eprintln!("stress client complete {:?}", started.elapsed());
     session.flush_callbacks(&work)?;
     session.revalidate(&work)?;
@@ -88,7 +88,7 @@ async fn external_metadata_only_change_survives_remount() -> Result<(), Box<dyn 
         for _ in 0..3 {
             assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
         }
-        client::run("readonly", &projected, || Ok(()))?;
+        run_client("readonly", &projected, || Ok(()))?;
     }
     mount.sync().await?;
     mount.unmount().await?;
@@ -110,5 +110,28 @@ async fn external_metadata_only_change_survives_remount() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[path = "metadata_client.rs"]
-pub(super) mod client;
+fn run_client(
+    mode: &str,
+    path: &std::path::Path,
+    before_action: impl FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write as _;
+    client::run_with_release(
+        concat!(
+            module_path!(),
+            "::external_metadata_only_change_survives_remount"
+        )
+        .split_once("::")
+        .expect("metadata belongs to a test crate")
+        .1,
+        mode,
+        path,
+        |mut release| {
+            before_action()?;
+            release.write_all(b"g")?;
+            Ok(())
+        },
+    )
+}
+
+mod client;

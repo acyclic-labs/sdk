@@ -101,6 +101,175 @@ async fn check_replay_payload_cost(native: bool) -> Result<()> {
 }
 
 #[tokio::test]
+async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
+    // Exercise the durable codecs as well as their retained in-memory history;
+    // all live allocations must remain on their original ledger.
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let stream =
+        acyclic_stream::LocalStream::open(directory.path().join("journal"), Default::default())
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+    let filesystem = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await?;
+    let (journal, _issuer) =
+        crate::filesystem::execution_journal::test_support::journal_with_backends(
+            Arc::new(stream),
+            filesystem,
+        )
+        .await?;
+    let operation = OperationId::new();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work.invocation_window()?)?;
+    journal
+        .append(
+            operation,
+            "started",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            Some(&io),
+        )?
+        .await?;
+    for step in 0..1_000 {
+        // Each append has its own work window while cache allocations stay
+        // on the original ledger across the complete history.
+        let io = PreparationIo::from_native_work(&work.invocation_window()?)?;
+        let event = ExecutionEvent::ToolFailed {
+            step,
+            call_id: "call".into(),
+            reason: ToolFailureKind::Unavailable,
+            cause: ToolFailureCause {
+                class: ToolErrorClass::Invalid,
+                message: "unavailable".into(),
+            },
+        };
+        let before = io.receipt();
+        assert_eq!(
+            io.remaining()?.bytes_encoded,
+            budget.bytes_encoded,
+            "append inherited prior invocation work at step {step}"
+        );
+        assert!(
+            journal
+                .append_if_tail(
+                    operation,
+                    u64::from(step) + 1,
+                    &format!("failed:{step}"),
+                    &event,
+                    Some(&io)
+                )?
+                .await?
+        );
+        let after = io.receipt();
+        // A bounded cache may read cold index pages, never a journal
+        // prefix. Retry and tool-state preloads plus their two updates
+        // each traverse at most 256 branches, a leaf and an external value.
+        // Acknowledged appends are not reads: publication need not read
+        // its own records back. Bound all actual reads, including replay.
+        let historical = after.authority_records_read - before.authority_records_read;
+        assert!(
+            historical <= 4 * 258,
+            "append exceeded fixed-width index work at step {step}"
+        );
+        {
+            let cache = journal.verified.lock().await;
+            let summary = cache.summary();
+            let entries = summary.retries.len()
+                + summary.contexts.len()
+                + summary.models.len()
+                + summary.tools.len();
+            assert!(
+                entries
+                    <= crate::filesystem::execution_journal::summary_cache::HOT_SUMMARY_ENTRIES + 3,
+                "hot summary grew with history: step={step}, entries={entries}"
+            );
+        }
+        // Two 256-bit index paths each contain at most 256 branches and two
+        // leaf/value records. A branch is at most 86 bytes; count both node
+        // encoding and the local durable copy, with 64 bytes of record framing.
+        // The fixed event, checkpoint and commit envelope fit in another 4 KiB.
+        let encoding_bound = 2 * 258 * (2 * 86 + 64) + 4_096;
+        let encoded = after.bytes_encoded - before.bytes_encoded;
+        assert!(
+            encoded <= encoding_bound,
+            "append encoding exceeded the fixed per-append bound at step {step}: encoded={encoded}"
+        );
+        // Local storage also encodes its own durable records. Its exact work
+        // belongs to this invocation, independently of earlier appends.
+        assert_eq!(
+            io.remaining()?.bytes_encoded,
+            budget.bytes_encoded - encoded,
+            "append charged work outside its invocation at step {step}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn full_fold_negative_control_is_detected_by_the_flat_append_read_bound() -> Result<()> {
+    let (journal, _issuer) = journal().await?;
+    let operation = OperationId::new();
+    let io = PreparationIo::from_budget(
+        acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024),
+        &acyclic_fs::CancellationToken::new(),
+    )?;
+    journal
+        .append(
+            operation,
+            "started",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            Some(&io),
+        )?
+        .await?;
+    for step in 0..10 {
+        // Explicitly exercise the old measured full-fold path. A cold cache
+        // alone now has a durable checkpoint and must not replay this prefix.
+        let before = io.receipt();
+        let owned = io.owned_bytes()?;
+        let mut summary = ExecutionSummary {
+            operation: Some(operation),
+            ..Default::default()
+        };
+        journal
+            .refresh_summary(operation, &mut summary, Some(&io))
+            .await?;
+        let hold = io.guard_owned(io.owned_since(owned)?)?;
+        let replayed = io.receipt().authority_records_read - before.authority_records_read;
+        assert_eq!(replayed, u64::from(step) + 1);
+        assert!(
+            replayed > 0,
+            "flat read oracle failed to detect prefix replay"
+        );
+        drop(summary);
+        drop(hold);
+        journal
+            .append(
+                operation,
+                &format!("failed:{step}"),
+                &ExecutionEvent::ToolFailed {
+                    step,
+                    call_id: "call".into(),
+                    reason: ToolFailureKind::Unavailable,
+                    cause: ToolFailureCause {
+                        class: ToolErrorClass::Invalid,
+                        message: "unavailable".into(),
+                    },
+                },
+                Some(&io),
+            )?
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_second_writer_refreshes_the_authenticated_cut_and_preserves_retry_and_compare_semantics()
 -> Result<()> {
     let (first, _issuer) = journal().await?;

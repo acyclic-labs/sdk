@@ -1,0 +1,31 @@
+diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/harness-core/src/executor/model_usage.rs
+index f642e308656..310193519be 100644
+--- a/rust/crates/harness-core/src/executor/model_usage.rs
++++ b/rust/crates/harness-core/src/executor/model_usage.rs
+@@ -44,26 +44,22 @@ impl ModelTokenUsage {
+             ]),
+             cached: counter(&[
+                 &usage["cache_read_input_tokens"],
+-                &usage["cached_input_tokens"],
+                 &usage["input_tokens_details"]["cached_tokens"],
+                 &usage["prompt_tokens_details"]["cached_tokens"],
+                 &usage["cachedContentTokenCount"],
+             ]),
+             cache_write: counter(&[
+                 &usage["cache_creation_input_tokens"],
+                 &usage["input_tokens_details"]["cache_write_tokens"],
+                 &usage["prompt_tokens_details"]["cache_write_tokens"],
+-                &usage["cache_write_input_tokens"],
+             ]),
+             output: counter(&[
+                 &usage["output_tokens"],
+                 &usage["completion_tokens"],
+                 &usage["candidatesTokenCount"],
+             ]),
+             reasoning: counter(&[
+-                &usage["reasoning_output_tokens"],
+                 &usage["output_tokens_details"]["reasoning_tokens"],
+-                &usage["output_tokens_details"]["thinking_tokens"],
+                 &usage["completion_tokens_details"]["reasoning_tokens"],
+                 &usage["thoughtsTokenCount"],
+             ]),

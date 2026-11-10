@@ -17,10 +17,8 @@ pub mod launch;
 fn event_log(claim: OperationId) -> PathBuf {
     PathBuf::from(format!("events-{claim}.jsonl"))
 }
-/// Bound of one turn's native event log, its omission marker included.
-pub const EVENT_LOG_BYTES: u64 = 4 * 1024 * 1024;
-/// The line ending a log whose later events exceeded its bound.
-const EVENTS_OMITTED: &[u8] = b"{\"type\":\"acyclic.events_omitted\"}\n";
+/// The native pipe's protective bound for one JSON event, shared by recovery.
+pub(crate) const EVENT_LINE_BYTES: usize = 65_536;
 
 /// Runs the interactive native root with its inherited console and process
 /// group. Native hosts retain terminal/job control; managed children use the
@@ -367,7 +365,7 @@ impl HostProcessLease {
 impl QuiescentHostProcess {
     /// The native event log the process of turn `claim` recorded; `None`
     /// when that turn's process never started.
-    pub(crate) fn events(&self, claim: OperationId) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn events(&self, claim: OperationId) -> Result<Option<std::fs::File>> {
         let file = match self.0.root.open_file(&event_log(claim), false) {
             Ok(file) => file,
             Err(acyclic_fs::demand::DemandError::Absent) => return Ok(None),
@@ -378,16 +376,7 @@ impl QuiescentHostProcess {
             }
             Err(error) => return Err(storage(error)),
         };
-        let mut bytes = Vec::new();
-        std::io::Read::read_to_end(
-            &mut std::io::Read::take(file, EVENT_LOG_BYTES + 1),
-            &mut bytes,
-        )
-        .map_err(storage)?;
-        if bytes.len() as u64 > EVENT_LOG_BYTES {
-            return Err(Error::Invalid("native event log exceeds its bound".into()));
-        }
-        Ok(Some(bytes))
+        Ok(Some(file))
     }
 
     /// Removes the log of turn `claim` once its conversation entry holds it.
@@ -454,20 +443,11 @@ fn attribute_model<'a>(line: &'a [u8], model: Option<&str>) -> Result<std::borro
 
 impl EventLog {
     fn record(&mut self, line: &[u8]) -> Result<()> {
-        if self.omitted {
-            return Ok(());
-        }
         let line = attribute_model(line, self.model.as_deref())?;
         let mut bytes = Vec::with_capacity(line.len() + 1);
-        if self.written + line.len() as u64 + 1 + EVENTS_OMITTED.len() as u64 <= EVENT_LOG_BYTES {
-            bytes.extend_from_slice(&line);
-            bytes.push(b'\n');
-        } else {
-            self.omitted = true;
-            bytes.extend_from_slice(EVENTS_OMITTED);
-        }
+        bytes.extend_from_slice(&line);
+        bytes.push(b'\n');
         std::io::Write::write_all(&mut self.file, &bytes).map_err(storage)?;
-        self.written += bytes.len() as u64;
         Ok(())
     }
 }
@@ -529,9 +509,6 @@ impl HostSessionProcess {
             model: model.map(str::to_owned),
         };
         events.record(&context)?;
-        if events.omitted {
-            return Err(Error::Invalid("step=record native context: metadata exceeds the native event frame bound; recovery: shorten the selected task path before launching the native host".into()));
-        }
         self.events = Some(events);
         self.tree
             .spawn(command, Some(&lease.custody))
@@ -539,8 +516,8 @@ impl HostSessionProcess {
     }
 
     /// Appends one native event line to the turn's log, which its settlement
-    /// appends to the conversation. Events past the bound are omitted, once
-    /// marked.
+    /// publishes to the conversation. Storage failures refuse the turn rather
+    /// than silently discarding later accounting or resume events.
     pub fn record_event(&mut self, line: &[u8]) -> Result<()> {
         let log = self
             .events
