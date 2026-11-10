@@ -411,8 +411,6 @@ pub struct HostSessionProcess {
 /// The running turn's native event log and the bytes it holds.
 struct EventLog {
     file: std::fs::File,
-    written: u64,
-    omitted: bool,
     model: Option<String>,
 }
 
@@ -504,8 +502,6 @@ impl HostSessionProcess {
         let file = lease.root.open_file(&log, true).map_err(storage)?;
         let mut events = EventLog {
             file,
-            written: 0,
-            omitted: false,
             model: model.map(str::to_owned),
         };
         events.record(&context)?;
@@ -738,8 +734,6 @@ mod tests {
         let model = launch::selected_model("agy", &arguments).map(str::to_owned);
         let mut log = EventLog {
             file: std::fs::File::create(&path).map_err(storage)?,
-            written: 0,
-            omitted: false,
             model,
         };
         for event in [
