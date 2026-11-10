@@ -20,10 +20,14 @@ pub enum HostAction {
         /// Agent authorizing the query.
         task: AgentPath,
     },
-    /// The parent's open spawned children, by parent-local name.
+    /// One page of the parent's open spawned children, by parent-local name.
     Sessions {
         /// Owning parent agent.
         parent: AgentPath,
+        /// Exclusive identity seek within the current committed membership cut.
+        after: Option<crate::agent::AgentId>,
+        /// Page size; splits work without limiting total children. Must be positive.
+        limit: u32,
     },
     /// Native session lifecycle as the child agent's inbox records.
     Session {
