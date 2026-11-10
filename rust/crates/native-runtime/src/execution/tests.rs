@@ -64,7 +64,9 @@ fn sandbox_denies_outside_write() {
             .stdin(Stdio::null())
             .stdout(inherited.try_clone().unwrap())
             .stderr(Stdio::null());
-        let refusal = ProcessTree::spawn_granted(bypass, &grant, None).unwrap_err();
+        let refusal = ProcessTree::spawn_granted(bypass, &grant, None)
+            .err()
+            .expect("file-backed standard streams must refuse");
         assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
         let mut command = Command::new("/bin/sh");
         command
