@@ -66,7 +66,7 @@ At the original containment base, main already had the shared constructor used b
 
 ## R25 render-work qualification
 
-Source `3357174beef3bc29c3283b0618fd6e0035682d59` adds the design's
+Source `704da84775e9865e1912d9f49ccb7cf9ff98b760` supplies the design's
 `tui-render-work` acceptance case. It drives an ordinary editor key and a
 streamed transcript replacement through the shared `PromptInput`,
 `TranscriptRows` and `Screen` paint path. The terminal buffer must contain the
@@ -76,9 +76,12 @@ and wrapped source-byte count exactly equal. Paint visits must also fit within
 the viewport's height.
 
 The same oracle runs against two negative controls: rewrapping historical
-blocks before painting, and scanning retained rows before painting. Both must
-be rejected. The Linux run passed all three controls in 0.35 s; the source also
-passed Linux and Windows GNU all-targets compilation with the `tui` feature.
+blocks before painting, and scanning retained rows before painting. Each
+viewport must independently reject each mutation with the expected work
+failure; an unrelated panic fails the control. The Linux run passed all three
+controls in 0.58 s, and the native Windows acceptance case passed all three in
+1.06 s. The source also passed Linux and Windows GNU all-targets compilation
+with the `tui` feature, plus Windows MSVC test-executable compilation.
 These counters establish the tested history-independent render work. They do
 not establish a wall-clock p99 or certify the design's 16.6 ms frame and 2 ms
 render targets on another machine.
@@ -111,3 +114,24 @@ Startup measurements use GraphCoder's shipping `dist` profile. The ordinary
 does not turn a failed case into a pass. The runner records the elapsed time
 without asserting a shared-host latency ceiling. The design's warm first-paint
 target is 50 ms; an individual launch observation is not a warm-start p50.
+
+| Platform | Product source | Profile | First paint ms | Case result |
+| --- | --- | --- | ---: | --- |
+| Linux x86_64 | `3357174beef3bc29c3283b0618fd6e0035682d59` | `dist` | 343.29 | `pty-markdown` passed |
+| Windows x86_64 | `3357174beef3bc29c3283b0618fd6e0035682d59` | `dist` | unavailable | Startup refused current-user DPAPI before paint |
+| macOS aarch64 | pending native execution | pending | unavailable | Host SSH authentication pending |
+
+The Linux observation used a fresh isolated settings directory on a shared
+host, including the launch and emulator costs described above. It does not
+establish the warm 50 ms target. The same run passed the initial
+`tui-render-work` acceptance case; the subsequent viewport-control correction
+changes test code only.
+
+Windows' SSH key logon refused current-user DPAPI with access denied (OS error
+5). A separate public-payload DPAPI round trip also failed under both the
+normal and isolated profiles. Owner records require this protection before
+publication. No plaintext or machine-wide protection fallback was used.
+Windows product timing therefore needs a credentialed user logon; native
+render controls do not need that store and passed separately. Product startup
+qualification remains incomplete until Windows and macOS have successful
+observations.
