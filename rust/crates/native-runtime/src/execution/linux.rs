@@ -357,7 +357,7 @@ impl Prepared {
             Some(policy) => {
                 // Retention saves compilation, never the original path fences.
                 // A replaced read root refuses before any child can launch.
-                for root in grant.write.entries().chain(grant.read.entries()) {
+                for root in grant.write.entries().iter().chain(grant.read.entries()) {
                     drop(root.bind_controlled(meter)?);
                 }
                 PolicyOwner::Shared(Arc::clone(policy))
