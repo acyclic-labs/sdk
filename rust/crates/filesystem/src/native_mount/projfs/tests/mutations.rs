@@ -224,6 +224,21 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
     std::fs::create_dir_all(source_root.join("pkg").join("sub"))?;
     std::fs::write(source_root.join("pkg").join("shared.rs"), b"shared")?;
     std::fs::write(source_root.join("pkg").join("sub").join("deep.rs"), b"deep")?;
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_HIDDEN, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
+        FILE_WRITE_ATTRIBUTES,
+    };
+    let source_directory = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES.0 | FILE_WRITE_ATTRIBUTES.0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+        .open(source_root.join("pkg/sub"))?;
+    let mut information = super::super::placeholders::basic_information(&source_directory, None)?;
+    information.FileAttributes |= FILE_ATTRIBUTE_HIDDEN.0;
+    information.CreationTime = 132_000_000_000_000_000;
+    super::super::placeholders::basic_information(&source_directory, Some(&information))?;
+    drop(source_directory);
+    let expected_creation = std::fs::metadata(source_root.join("pkg/sub"))?.creation_time();
     let demand = windows_demand_source(&source_root, work.cancellation()).await?;
     let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
     let (lazy, _) = crate::LazyWorkspace::attach(
@@ -248,6 +263,12 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
         sorted_names(&destination.join("pkg"))?,
         ["shared.rs", "sub"]
     );
+    let metadata = std::fs::metadata(destination.join("pkg/sub"))?;
+    assert_eq!(
+        metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN.0,
+        FILE_ATTRIBUTE_HIDDEN.0
+    );
+    assert_eq!(metadata.creation_time(), expected_creation);
     let moved = acyclic_native_runtime::process_output(
         acyclic_native_runtime::ProcessCommand::new("cmd.exe")
             .args(["/D", "/C", "move pkg lib"])
@@ -265,6 +286,12 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
         std::fs::read(&destination.join("lib").join("sub").join("deep.rs"))?,
         b"deep"
     );
+    let metadata = std::fs::metadata(destination.join("lib/sub"))?;
+    assert_eq!(
+        metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN.0,
+        FILE_ATTRIBUTE_HIDDEN.0
+    );
+    assert_eq!(metadata.creation_time(), expected_creation);
     mount.sync().await?;
     assert!(
         lazy.lookup(

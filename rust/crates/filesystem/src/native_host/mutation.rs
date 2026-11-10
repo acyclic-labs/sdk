@@ -39,9 +39,19 @@ impl HostRoot {
         path: &NativePath,
         work: &mut W,
     ) -> Result<(), DemandError> {
+        #[cfg(windows)]
+        return self.create_dir_handle(path, work).map(drop);
+        #[cfg(unix)]
+        with_parent_leaf(&self.directory(), path, work, create_unix_directory_leaf)
+    }
+    #[cfg(all(windows, any(test, feature = "native-mount")))]
+    pub(crate) fn create_dir_handle<W: SourceDemandReadWork>(
+        &self,
+        path: &NativePath,
+        work: &mut W,
+    ) -> Result<File, DemandError> {
         with_parent_leaf(&self.directory(), path, work, |parent, leaf, work| {
-            #[cfg(windows)]
-            return open_windows_at(
+            open_windows_at(
                 parent,
                 leaf,
                 fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE,
@@ -49,9 +59,6 @@ impl HostRoot {
                 nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
                 work,
             )
-            .map(drop);
-            #[cfg(unix)]
-            create_unix_directory_leaf(parent, leaf, work)
         })
     }
     pub(crate) fn create_dir_all_held<W: SourceDemandReadWork>(
