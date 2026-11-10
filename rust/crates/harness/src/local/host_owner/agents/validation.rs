@@ -16,9 +16,9 @@ pub fn check_native_session_storage(bytes: &[u8]) {
                 Session::decode(&serde_json::to_vec(&value).unwrap()).unwrap(),
                 session
             );
-            value["version"] = json!("2");
+            value["version"] = json!("3");
             assert!(Session::decode(&serde_json::to_vec(&value).unwrap()).is_err());
-            value["version"] = json!("1");
+            value["version"] = json!("2");
             value["unknown"] = Value::Null;
             assert!(Session::decode(&serde_json::to_vec(&value).unwrap()).is_err());
         }

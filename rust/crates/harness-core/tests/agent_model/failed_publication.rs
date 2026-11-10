@@ -130,7 +130,6 @@ impl TurnDriver for Parent {
                 )
             };
             Ok(TurnStep {
-                reserved_children: 0,
                 checkpoint: Some(if agent.turn.is_none() {
                     Vec::new()
                 } else {
@@ -290,7 +289,6 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
         let host = AgentHost::new(
             provider.clone(),
             script(vec![TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: spawns,
                 wait: Wait::Input,

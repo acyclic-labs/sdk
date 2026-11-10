@@ -181,6 +181,8 @@ pub(super) fn check(bytes: &[u8]) {
         let mut actions = vec![
             HostAction::Sessions {
                 parent: task.clone(),
+                after: None,
+                limit: 256,
             },
             HostAction::Hook {
                 host: "caller".into(),

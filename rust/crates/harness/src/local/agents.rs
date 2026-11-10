@@ -7,7 +7,7 @@ use super::{LocalHarness, LocalStream, storage};
 use crate::{
     Error, OperationId, Result,
     agent::{AgentHost, AgentPath, AgentState, IntentId, VolumeBinding},
-    conversation::{ContentAccess, ContentPublisher, VolumeRef},
+    conversation::{ContentAccess, ContentPublisher},
     executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemTurnHost, HOME_VOLUME, PRIVATE_VOLUME, Tasks, TurnAuthority, TurnContext,
@@ -26,12 +26,7 @@ use std::sync::{Arc, Weak};
 pub type LocalTurns = FilesystemTurnHost<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 /// Every agent of one local harness.
 pub type LocalAgents = AgentHost<LocalStream>;
-
-/// Settled turns of history in each agent turn's model context.
 const HISTORY_TURNS: u32 = 64;
-/// Backstop on one agent delivery, which awaits a whole turn. A turn is
-/// bounded by its model steps and each model and tool call's own deadline;
-/// this only reclaims a delivery whose provider never answers.
 const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 
 /// The served agent tree: the same [`crate::hosting::Server`] a remote host
@@ -219,6 +214,20 @@ struct TurnBindings<'a> {
 }
 
 impl LocalHarness {
+    /// Retained session volumes are the same for model and native-host roots;
+    /// each root binds its own private journal separately.
+    pub(super) fn session_bindings(&self) -> [VolumeBinding; 3] {
+        [
+            ("project", &self.project),
+            (HOME_VOLUME, &self.scratch),
+            (super::SHARED_VOLUME, &self.shared),
+        ]
+        .map(|(name, volume)| VolumeBinding {
+            name: name.to_owned(),
+            volume: volume.clone(),
+        })
+    }
+
     /// An agent's default files and commands select the same project. The
     /// root reuses its admitted binding; a child opens its retained fork.
     // Keep turn preparation independent of the child workspace's future layout.
@@ -439,12 +448,28 @@ impl LocalHarness {
     /// starts the runtime; it stops when this harness drops. Controls are
     /// [`AgentHost`] commits; observation is the agents' status and
     /// conversation streams.
+    /// A retained root must already bind this session's shared volume. A
+    /// session created without that admission is refused before hosting;
+    /// start a new session rather than changing its saved authority.
     pub async fn agents(self: &Arc<Self>) -> Result<(&Arc<LocalAgents>, &AgentPath)> {
         let hosted = self
             .agents
             .get_or_try_init(|| async { self.host_agents().await })
             .await?;
         Ok((hosted.agents(), hosted.root()))
+    }
+
+    pub(super) fn require_shared_binding(&self, state: &AgentState) -> Result<()> {
+        if state
+            .volumes
+            .iter()
+            .any(|binding| binding.name == super::SHARED_VOLUME && binding.volume == self.shared)
+        {
+            return Ok(());
+        }
+        Err(Error::Unsupported(
+            "session has no admitted shared volume; start a new session to use this harness".into(),
+        ))
     }
 
     /// The configured approval policy, staged once on the root's private
@@ -556,6 +581,7 @@ impl LocalHarness {
         let configured = self.root_policy(&id).await?;
         let server = match bound.agents().state(&existing).await {
             Ok(state) => {
+                self.require_shared_binding(&state)?;
                 if state.policy.as_ref() != Some(&configured) {
                     tracing::warn!(
                         "the configured approval policy differs from the one this workspace's \
@@ -570,18 +596,15 @@ impl LocalHarness {
                     .map_err(storage)?
             }
             Err(crate::agent::Error::NoSuchAgent) => {
-                let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
-                    name: name.to_owned(),
-                    volume: volume.clone(),
-                };
                 let request = RootRequest {
                     agent: id,
                     fresh: Vec::new(),
-                    retained: vec![
-                        bind(PRIVATE_VOLUME, &self.journal),
-                        bind("project", &self.project),
-                        bind(HOME_VOLUME, &self.scratch),
-                    ],
+                    retained: std::iter::once(VolumeBinding {
+                        name: PRIVATE_VOLUME.to_owned(),
+                        volume: self.journal.clone(),
+                    })
+                    .chain(self.session_bindings())
+                    .collect(),
                     brief: None,
                     policy: Some(configured),
                 };

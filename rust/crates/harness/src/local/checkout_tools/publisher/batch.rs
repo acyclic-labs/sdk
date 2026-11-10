@@ -56,10 +56,10 @@ impl CheckoutPublisher {
                         .await?;
                 }
                 let native = match &mount.view.source {
-                    Some(source) => Some(source.native().await),
+                    Some(source) => Some(source.publication().await?),
                     None => None,
                 };
-                let native = native.as_ref().and_then(|guard| guard.as_ref());
+                let native = native.as_ref().and_then(|(guard, _)| guard.as_ref());
                 let workspace = mount
                     .view
                     .source

@@ -157,10 +157,14 @@ impl HostWorkspaceOwner {
                 };
                 self.release_idle([task], resources).await
             }
-            HostAction::Sessions { parent } => {
+            HostAction::Sessions {
+                parent,
+                after,
+                limit,
+            } => {
                 let sessions = {
                     let _view = self.attach(&parent).await?;
-                    self.sessions(&parent).await
+                    self.sessions(&parent, after.as_ref(), limit).await
                 };
                 self.release_idle([parent], sessions).await
             }

@@ -23,7 +23,10 @@ use acyclic_actors::{
 };
 use acyclic_stream::{CommitEffect, ReadRequest, StreamProvider};
 use futures::TryStreamExt;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 /// The agent's one subscription: its inbox.
 pub const INBOX: &str = "inbox";
@@ -210,7 +213,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             .filter(|subscription| subscription.path == inbox)
             .ok_or(Error::Record("agent inbox subscription differs"))?
             .cursor;
-        let observed = if let Some(checkpoint) = state.checkpoint() {
+        let mut observed = if let Some(checkpoint) = state.checkpoint() {
             checkpoint_state(checkpoint)?
         } else {
             // A new child's inherited inbox starts with its ancestors' records.
@@ -223,15 +226,22 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             if *sequence != from
                 || adopted.forked_at != from
                 || adopted.agent != agent.id()
-                || adopted.parent != agent.parent()
+                || !agent.parent_is(adopted.parent.as_ref())
             {
                 return Err(Error::Record("agent adoption cursor differs"));
             }
             AgentState::adopted(agent.clone(), adopted)?
         };
-        if &observed.path != agent || observed.parent != agent.parent() {
+        if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
             return Err(Error::Record("agent state binding differs"));
         }
+        observed
+            .open_children
+            .bind(Arc::clone(self.store.provider()));
+        observed
+            .archive_pending
+            .bind(Arc::clone(self.store.provider()));
+        observed.awaiting.bind(Arc::clone(self.store.provider()));
         Ok((observed, cursor))
     }
 
@@ -344,8 +354,19 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 state.refill(records, end);
             }
         }
+        if let Some(state) = state.as_mut() {
+            state
+                .open_children
+                .bind(Arc::clone(self.agents.store.provider()));
+            state
+                .archive_pending
+                .bind(Arc::clone(self.agents.store.provider()));
+            state
+                .awaiting
+                .bind(Arc::clone(self.agents.store.provider()));
+        }
         let mut prepared = if let Some(failure) = failure {
-            super::machine::failed_step(&path, state, wake, cursor, failure)?
+            super::machine::failed_step(&path, state, wake, cursor, failure).await?
         } else {
             super::machine::prepare_step(
                 &self.driver,
@@ -357,6 +378,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             )
             .await?
         };
+        prepared
+            .persist_children(Arc::clone(self.agents.store.provider()))
+            .await?;
         let participant = match &self.volumes {
             Some(volumes) => {
                 let (state, outs) = prepared.state_and_outs();
