@@ -165,6 +165,18 @@ async function execute(test, prepared) {
         await pty(processes, binary, inputFixture, input, capture => captures.push(capture));
         continue;
       }
+      if (input.mode === "pty-group") {
+        const { pty } = await import("./pty.mjs");
+        const seen = new Set(), listeners = new Set();
+        const signal = name => { seen.add(name); for (const listener of listeners) listener(); };
+        const shared = { ...inputFixture, signal, signalled: name => seen.has(name),
+          onSignal: listener => { listeners.add(listener); return () => listeners.delete(listener); } };
+        const results = await Promise.allSettled(input.terminals.map(terminal =>
+          pty(processes, binary, shared, terminal, capture => captures.push(capture))
+            .finally(() => signal(`${terminal.name}:closed`))));
+        for (const result of results) if (result.status === "rejected") throw result.reason;
+        continue;
+      }
       const op = input.operation ?? operation;
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
       await withFileSource(processes, fixture, input.file_source, async (path, closed) => {
