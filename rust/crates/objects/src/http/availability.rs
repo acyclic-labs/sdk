@@ -66,10 +66,16 @@ impl HttpObjects {
             }
             let source = Source {
                 response,
-                decoder: FrameDecoder::with_decoder(self.maximum, |bytes| {
-                    wire::AvailabilityCursor::decode(bytes)
-                        .map_err(|_| acyclic_stream::StreamError::InvalidResponse)
-                }),
+                decoder: FrameDecoder::with_decoder(
+                    self.maximum
+                        .map_or(acyclic_stream::MAX_COMMAND_BYTES, |maximum| {
+                            maximum.min(acyclic_stream::MAX_COMMAND_BYTES)
+                        }),
+                    |bytes| {
+                        wire::AvailabilityCursor::decode(bytes)
+                            .map_err(|_| acyclic_stream::StreamError::InvalidResponse)
+                    },
+                ),
                 chunk: bytes::Bytes::new(),
                 consumed: 0,
             };
