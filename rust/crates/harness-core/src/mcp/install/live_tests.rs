@@ -279,6 +279,24 @@ async fn live_mcp_case(compose: bool) -> Result<()> {
     old_next.compose_tools = false;
     assert_ne!(prefix(&old_first), prefix(&old_next));
     assert_eq!(executor.execute(input.clone(), &journal).await?, output);
+    let mut detached = tools.clone();
+    detached.retain_sources(|_| false);
+    let detached = StockExecutor::new(
+        Model::new("test".into(), "model".into(), "1".into())?,
+        model.clone(),
+        ContextPipeline::default(),
+        detached,
+    )
+    .with_compaction_policy(CompactionPolicy::Disabled)
+    .with_tool_authority(
+        RuntimeScope::new(grants.clone(), crate::conversation::Limits::default())?,
+        Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
+    )?;
+    assert_eq!(
+        detached.execute(input.clone(), &journal).await?,
+        output,
+        "uninstalling a source cannot invalidate its committed results"
+    );
     assert_eq!(
         remote.calls.load(Ordering::SeqCst),
         1,
