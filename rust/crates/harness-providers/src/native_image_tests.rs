@@ -32,7 +32,7 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 1024,
+            maximum_bytes: Some(1024),
         };
         let image = file(bytes, "image/png")?;
         let request = with_parts(
@@ -123,7 +123,7 @@ async fn image_digest_type_and_size_mismatches_cannot_reach_projection() -> Resu
         });
         provider.files = crate::files::Files {
             reader: Some(reader),
-            maximum_bytes: maximum,
+            maximum_bytes: Some(maximum),
         };
         let request = with_parts(
             &provider,

@@ -59,7 +59,7 @@ proptest! {
                 compose_tools: false,
                 model: provider.model().clone(), messages, tools, sampling: Default::default(), max_output_tokens: Some(64),
             }, Limits::default(), None).unwrap();
-            let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, u64::MAX).unwrap();
+            let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, None).unwrap();
             let mut resolved = crate::files::FileText(vec![text.clone().into()].into_iter());
             let after = crate::projection::body_with_files(&provider, request.request(), &mut resolved).unwrap();
             prop_assert_eq!(extra, text.len() * 6);
@@ -293,7 +293,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 4096,
+            maximum_bytes: Some(4096),
         };
         let mut files = crate::files::resolve(&provider.files, prepared.request(), None).await?;
         let actual = projection::body_with_files(&provider, prepared.request(), &mut files)?;
@@ -408,6 +408,7 @@ proptest! {
     fn fix_live_composition_reader_resolves_exact_file_bytes(chars in prop::collection::vec(any::<char>(), 0..64)) {
         futures::executor::block_on(async {
             let text: String = chars.into_iter().collect();
+            for maximum in [None, Some(4096)] {
             let (provider, script) = provider(Adapter::Responses, 200);
             let request = with_parts(&provider, vec![ModelContentPart::File {
                 file: file(text.as_bytes(), "text/plain").unwrap(),
@@ -419,7 +420,7 @@ proptest! {
             assert!(error.to_string().contains("model file byte resolution is unavailable"));
             assert!(script.sent.lock().unwrap().is_empty());
             let reader = Arc::new(Reader { data: text.as_bytes().to_vec(), reads: AtomicUsize::new(0) });
-            let bound = provider.bind_content(reader.clone(), 4096).unwrap();
+            let bound = provider.bind_content(reader.clone(), maximum).unwrap();
             bound.generate(&request, dispatch).try_collect::<Vec<_>>().await.unwrap();
             assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
             let sent = script.sent.lock().unwrap();
@@ -428,6 +429,7 @@ proptest! {
                 {"type":"message","role":"user","content":[{"type":"input_text","text":text}]}
             ]) };
             assert_eq!(body["input"], expected);
+            }
         });
     }
 }
@@ -441,7 +443,7 @@ proptest! {
             for (adapter, _) in fixtures() {
                 let (mut provider, _) = provider(adapter, 200);
                 let reader = Arc::new(Reader {data:data.as_bytes().to_vec(), reads:AtomicUsize::new(0)});
-                provider.files = crate::files::Files {reader:Some(reader.clone()),maximum_bytes:4096};
+                provider.files = crate::files::Files {reader:Some(reader.clone()),maximum_bytes: Some(4096)};
                 let request = with_parts(&provider, vec![ModelContentPart::File {
                     file: file(data.as_bytes(), "text/plain").unwrap(), policy: FileProjectionPolicy::BoundedFull,
                 }]).unwrap();
@@ -521,7 +523,7 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 64,
+            maximum_bytes: Some(64),
         };
         let prepared = with_parts(
             &provider,
@@ -597,7 +599,7 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
     });
     provider.files = crate::files::Files {
         reader: Some(reader.clone()),
-        maximum_bytes: 4,
+        maximum_bytes: Some(4),
     };
     for bad in [
         (
@@ -658,7 +660,7 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 64,
+            maximum_bytes: Some(64),
         };
         let prepared = with_parts(
             &provider,
@@ -695,7 +697,7 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
     });
     provider.files = crate::files::Files {
         reader: Some(reader.clone()),
-        maximum_bytes: 64,
+        maximum_bytes: Some(64),
     };
     let content = ToolResultContent::Parts {
         parts: vec![
@@ -810,7 +812,7 @@ async fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<St
     let mut resolved = crate::files::resolve(
         &crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 4096,
+            maximum_bytes: Some(4096),
         },
         request.request(),
         None,

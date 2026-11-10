@@ -235,16 +235,21 @@ impl ModelProvider for ResolvedModel {
     fn bind_content(
         &self,
         reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Option<Arc<dyn ModelProvider>> {
-        Some(Arc::new(self.derived(
-            self.model.clone(),
-            self.profile,
-            crate::files::Files {
-                reader: Some(reader),
-                maximum_bytes: maximum_bytes.min(self.files.maximum_bytes),
-            },
-        )))
+        Some(Arc::new(
+            self.derived(
+                self.model.clone(),
+                self.profile,
+                crate::files::Files {
+                    reader: Some(reader),
+                    maximum_bytes: maximum_bytes
+                        .into_iter()
+                        .chain(self.files.maximum_bytes)
+                        .min(),
+                },
+            ),
+        ))
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_model(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {

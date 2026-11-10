@@ -17,3 +17,7 @@ linker = "scripts/mold-linker.sh"
 [target.'cfg(all())']
 # Replay must also seed Tokio's selection order in downstream futures.
 rustflags = ["--cfg", "tokio_unstable"]
+
+# Cargo must distinguish workspace inputs when checkouts share one target.
+[env]
+ACYCLIC_BUILD_SOURCE_ROOT = { value = ".", relative = true, force = true }
