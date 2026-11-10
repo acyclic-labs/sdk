@@ -268,7 +268,7 @@ impl Drop for SharedFuseInstance {
 impl SharedFuseView {
     #[cfg(test)]
     pub(super) fn exit_action_id(&self) -> Option<u32> {
-        self._instance.exit_action_id
+        self.instance.exit_action_id
     }
 
     /// Lists a view named after `destination`'s last component in the shared
