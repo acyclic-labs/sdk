@@ -1,9 +1,9 @@
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{EncodeWorkStep, Encoder};
-const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v2\0";
+const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v3\0";
 #[cfg(not(target_arch = "wasm32"))]
-const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v2\0";
+const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v3\0";
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn publication_evidence(

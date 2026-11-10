@@ -3,7 +3,7 @@ use crate::kernel::{
     CanonicalDecodeError, CanonicalInvariant, Decoder, EncodeAllocationStep, EncodeWorkStep,
     Encoder, ReadAllocationStep,
 };
-const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v2\0";
+const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v3\0";
 #[cfg(feature = "test-support")]
 #[path = "directory_cursor_fuzz.rs"]
 /// On-demand checks of the funded directory continuation codec.

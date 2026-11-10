@@ -1,9 +1,9 @@
 use super::*;
 
-pub(crate) const LAZY_STATE_SCHEMA: u32 = 11;
+pub(crate) const LAZY_STATE_SCHEMA: u32 = 12;
 
 /// Hash domain for an immutable lazy cut.
-pub const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v2\0";
+pub const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v3\0";
 
 /// Stable logical identity of one constant-size lazy tree snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -18,7 +18,7 @@ impl LazySnapshotId {
     }
 }
 
-/// Constant-size reference to an authored generation plus unresolved source state.
+/// Complete reference to an authored generation plus unresolved source state.
 ///
 /// This is a logical identity, not a retention lease or read capability. Its
 /// digest does not prove that the source epoch, indexed objects or authored

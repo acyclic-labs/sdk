@@ -6,7 +6,7 @@ use super::*;
 pub struct SourceReference {
     /// Provider-scoped opaque identity; no local path is encoded here.
     pub identity: [u8; 16],
-    /// Incremented when source knowledge is invalidated.
+    /// Provider leaf frontier; pairs retain the separate child frontiers.
     pub epoch: u64,
     /// Empty for a scalar cut; otherwise a tagged opaque payload (0) or pair
     /// (1). Pair children have a 32-byte header followed by their tagged body.
