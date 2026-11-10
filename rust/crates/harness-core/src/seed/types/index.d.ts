@@ -30,11 +30,13 @@ export interface Listing<T> extends AsyncIterable<T> {
 }
 /** The original conditional publication failed; current is diagnostic only. */
 export class ConflictError extends Error {
+  constructor(path: Path, current: File | null);
   readonly name: 'ConflictError';
   readonly path: Path;
   readonly current: File | null;
 }
 export class DeniedError extends Error {
+  constructor(reason: string);
   readonly name: 'DeniedError';
   readonly reason: string;
 }
