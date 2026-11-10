@@ -10,6 +10,22 @@ pub(crate) trait SourceDemandReadWork:
         &mut self,
         operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
     ) -> T;
+    /// Runs one metered native operation and returns the typed cause its meter
+    /// recorded (a refused budget stays `DemandError::Work`), never the bare
+    /// relay `io::Error` the meter trait must return.
+    #[cfg(windows)]
+    fn native_metered<T>(
+        &mut self,
+        operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> Result<T, DemandError>,
+    ) -> Result<T, DemandError> {
+        self.with_native_read_meter(operation)
+            .map_err(|error| match error {
+                DemandError::Io(io) => self
+                    .with_original_leaf(DemandWork::take_native_io_failure)
+                    .unwrap_or(DemandError::Io(io)),
+                error => error,
+            })
+    }
     fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         self.with_demand_work(operation)
     }
