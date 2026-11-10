@@ -7,6 +7,9 @@ pub use project::{Affected, Children, Cut, Node, Page, View};
 /// Projection or untrusted document failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The caller's output writer refused a projection.
+    #[error(transparent)]
+    Output(#[from] std::io::Error),
     /// An untrusted document exceeded a protective bound.
     #[error("UI document exceeds protective size bound")]
     Capacity,

@@ -1,7 +1,7 @@
 use super::{Error, Result, UiPath};
 use crate::agent::{AgentPath, Phase, StatusRecord};
 use acyclic_stream::{StreamPath, demand::Want};
-use std::ops::Range;
+use std::{borrow::Cow, io::Write, ops::Range};
 
 /// The borrowed page data needed by the projection, independent of cache ownership.
 #[derive(Clone, Copy)]
@@ -16,11 +16,11 @@ pub struct Children<'a> {
 /// no IO; `Computed` can supply a server cut without changing the view.
 pub trait Cut {
     /// Latest status at this cut.
-    fn status(&self) -> Result<StatusRecord>;
+    fn status(&self) -> Result<Cow<'_, StatusRecord>>;
     /// Exclusive conversation tail, or unavailable until demanded.
     fn tail(&self) -> Option<u64>;
     /// One conversation entry's rendered text, from pinned file bytes.
-    fn turn(&self, sequence: u64) -> Result<String>;
+    fn turn(&self, sequence: u64) -> Result<Cow<'_, str>>;
     /// Exactly one cached `children_page`, never a flattened subtree.
     fn children(&self, page: u32) -> Option<Children<'_>>;
 }
@@ -207,75 +207,115 @@ impl View {
     /// Generate only the selected page and return the requested byte range.
     /// Range offsets are bytes (UTF-8 boundaries need not align).
     pub fn bytes(&self, cut: &impl Cut, path: &UiPath, range: Range<usize>) -> Result<Vec<u8>> {
-        let body = self.project(cut, path)?;
-        let from = range.start.min(body.len());
-        let to = range.end.min(body.len()).max(from);
-        Ok(body
-            .as_bytes()
-            .get(from..to)
-            .ok_or(Error::Invalid("byte range"))?
-            .to_vec())
+        let mut bytes = Vec::new();
+        self.write_range(cut, path, range, &mut bytes)?;
+        Ok(bytes)
     }
     /// Pure markdown generation; authored-over-default resolution wraps this.
     pub fn project(&self, cut: &impl Cut, path: &UiPath) -> Result<String> {
+        let mut bytes = Vec::new();
+        self.write(cut, path, &mut bytes)?;
+        String::from_utf8(bytes).map_err(|_| Error::Invalid("non-UTF-8 projection"))
+    }
+    /// Emit directly into the caller's writer. Native callers can admit each
+    /// output growth on their original ledger without an intermediate String.
+    pub fn write(&self, cut: &impl Cut, path: &UiPath, sink: &mut impl Write) -> Result<()> {
         match path.as_str() {
-            "status.md" => status(cut),
+            "status.md" => status(cut, sink),
             "index.md" => {
                 let tail = cut.tail().ok_or(Error::Pending)?;
                 let page = tail.saturating_sub(1) / u64::from(self.page_size);
-                self.turns(cut, page, tail, true)
+                self.turns(cut, page, tail, true, sink)
             }
             path if path.starts_with("turns/") => self.turns(
                 cut,
                 page_number(path, "turns/")?,
                 cut.tail().ok_or(Error::Pending)?,
                 false,
+                sink,
             ),
-            "children" => self.child_links(cut, 0, true),
+            "children" => self.child_links(cut, 0, true, sink),
             path if path.starts_with("children/pages/") => {
-                self.child_links(cut, page_number(path, "children/pages/")?, false)
+                self.child_links(cut, page_number(path, "children/pages/")?, false, sink)
             }
             _ => Err(Error::Invalid("unknown default file")),
         }
     }
-    fn turns(&self, cut: &impl Cut, page: u64, tail: u64, index: bool) -> Result<String> {
+    /// Emit only the selected bytes, including ranges inside a UTF-8 scalar.
+    /// Discarded prefixes and suffixes never allocate output backing.
+    pub fn write_range(
+        &self,
+        cut: &impl Cut,
+        path: &UiPath,
+        range: Range<usize>,
+        sink: &mut impl Write,
+    ) -> Result<()> {
+        self.write(
+            cut,
+            path,
+            &mut ByteRange {
+                sink,
+                range,
+                position: 0,
+            },
+        )
+    }
+    fn turns(
+        &self,
+        cut: &impl Cut,
+        page: u64,
+        tail: u64,
+        index: bool,
+        sink: &mut impl Write,
+    ) -> Result<()> {
         let start = page
             .checked_mul(u64::from(self.page_size))
             .ok_or(Error::Invalid("page overflow"))?;
         let end = start.saturating_add(u64::from(self.page_size)).min(tail);
-        let mut text = format!("# Conversation\n\n{}\n", status(cut)?);
+        sink.write_all(b"# Conversation\n\n")?;
+        status(cut, sink)?;
+        sink.write_all(b"\n")?;
         for n in start..end {
-            text.push_str(&format!("## Turn {}\n\n{}\n\n", n + 1, cut.turn(n)?));
+            writeln!(sink, "## Turn {}\n\n{}\n", n + 1, cut.turn(n)?)?;
         }
         if page > 0 {
-            text.push_str(&format!(
-                "[Earlier turns]({}{}.md)\n",
+            writeln!(
+                sink,
+                "[Earlier turns]({}{}.md)",
                 if index { "turns/" } else { "" },
                 page - 1
-            ));
+            )?;
         }
-        Ok(text)
+        Ok(())
     }
-    fn child_links(&self, cut: &impl Cut, page: u32, index: bool) -> Result<String> {
+    fn child_links(
+        &self,
+        cut: &impl Cut,
+        page: u32,
+        index: bool,
+        sink: &mut impl Write,
+    ) -> Result<()> {
         let listing = cut.children(page).ok_or(Error::Pending)?;
-        let mut text = "# Children\n\n".to_owned();
+        sink.write_all(b"# Children\n\n")?;
         for path in listing.children {
-            let child = AgentPath::try_from(path.as_str().to_owned())?;
-            text.push_str(&format!(
-                "- [{}]({}{}/)\n",
-                child.id(),
+            let id = AgentPath::parse_id(path.as_str())?;
+            writeln!(
+                sink,
+                "- [{}]({}{}/)",
+                id,
                 if index { "children/" } else { "../" },
-                child.id()
-            ));
+                id
+            )?;
         }
         if listing.more {
-            text.push_str(&format!(
-                "\n[More children]({}{}.md)\n",
+            writeln!(
+                sink,
+                "\n[More children]({}{}.md)",
                 if index { "children/pages/" } else { "" },
                 u64::from(page) + 1
-            ));
+            )?;
         }
-        Ok(text)
+        Ok(())
     }
     /// Paths invalidated by one followed record, with no filesystem walk.
     pub fn affected(&self, event: Affected) -> &'static [&'static str] {
@@ -293,19 +333,52 @@ fn page_number<T: std::str::FromStr>(path: &str, prefix: &str) -> Result<T> {
         .and_then(|s| s.parse().ok())
         .ok_or(Error::Invalid("page path"))
 }
-fn status(cut: &impl Cut) -> Result<String> {
+fn status(cut: &impl Cut, sink: &mut impl Write) -> Result<()> {
     let status = cut.status()?;
-    Ok(match status.phase {
-        Phase::WaitingApproval { id, .. } => format!(
+    match &status.phase {
+        Phase::WaitingApproval { id, .. } => write!(
+            sink,
             "Waiting for approval\n\n```input choose id=approval approval={}\n- allow once\n- allow rule\n- deny\n```\n",
             id.as_str()
         ),
-        Phase::WaitingUser { path } => format!("Waiting for your reply: [{path}]({path})\n"),
-        Phase::Idle => "Idle\n".into(),
-        Phase::Running => "Running\n".into(),
-        Phase::WaitingHost { .. } => "Waiting for host\n".into(),
-        Phase::Waiting { input: true, .. } => "Waiting for input or alarm\n".into(),
-        Phase::Waiting { .. } => "Waiting\n".into(),
-        Phase::Done { .. } => "Done\n".into(),
-    })
+        Phase::WaitingUser { path } => writeln!(sink, "Waiting for your reply: [{path}]({path})"),
+        Phase::Idle => sink.write_all(b"Idle\n"),
+        Phase::Running => sink.write_all(b"Running\n"),
+        Phase::WaitingHost { .. } => sink.write_all(b"Waiting for host\n"),
+        Phase::Waiting { input: true, .. } => sink.write_all(b"Waiting for input or alarm\n"),
+        Phase::Waiting { .. } => sink.write_all(b"Waiting\n"),
+        Phase::Done { .. } => sink.write_all(b"Done\n"),
+    }?;
+    Ok(())
+}
+
+struct ByteRange<'a, W> {
+    sink: &'a mut W,
+    range: Range<usize>,
+    position: usize,
+}
+impl<W: Write> Write for ByteRange<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let end = self
+            .position
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other("projection length overflow"))?;
+        let from = self
+            .range
+            .start
+            .saturating_sub(self.position)
+            .min(bytes.len());
+        let to = self
+            .range
+            .end
+            .saturating_sub(self.position)
+            .min(bytes.len())
+            .max(from);
+        self.sink.write_all(&bytes[from..to])?;
+        self.position = end;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.sink.flush()
+    }
 }

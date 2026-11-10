@@ -1,6 +1,7 @@
 use super::{Children, Cut, Error, Result};
 use crate::{AgentPath, AgentRecord, ConversationEntry, Reader, StatusRecord};
 use acyclic_harness_core::{conversation::FileRef, executor::TurnOutput};
+use std::borrow::Cow;
 
 /// Reader-backed cut plus a lookup of immutable conversation file bytes. The
 /// lookup must use the full FileRef, including its generation, and never IO.
@@ -13,14 +14,14 @@ pub struct ReaderCut<'a> {
     pub file: &'a dyn Fn(&FileRef) -> Option<String>,
 }
 impl Cut for ReaderCut<'_> {
-    fn status(&self) -> Result<StatusRecord> {
+    fn status(&self) -> Result<Cow<'_, StatusRecord>> {
         let stream = self.agent.status()?;
         let tail = self.reader.cache().tail(&stream).ok_or(Error::Pending)?;
         let bytes = tail
             .checked_sub(1)
             .and_then(|n| self.reader.cache().record(&stream, n))
             .ok_or(Error::Pending)?;
-        Ok(StatusRecord::decode(bytes)?)
+        Ok(Cow::Owned(StatusRecord::decode(bytes)?))
     }
     fn tail(&self) -> Option<u64> {
         self.agent
@@ -28,7 +29,7 @@ impl Cut for ReaderCut<'_> {
             .ok()
             .and_then(|p| self.reader.cache().tail(&p))
     }
-    fn turn(&self, sequence: u64) -> Result<String> {
+    fn turn(&self, sequence: u64) -> Result<Cow<'_, str>> {
         let stream = self.agent.conversation()?;
         let bytes = self
             .reader
@@ -38,7 +39,7 @@ impl Cut for ReaderCut<'_> {
         let entry = ConversationEntry::decode(bytes)?;
         let output = (self.file)(&entry.output).ok_or(Error::Pending)?;
         let output: TurnOutput = serde_json::from_str(&output)?;
-        Ok(output.text)
+        Ok(Cow::Owned(output.text))
     }
     fn children(&self, page: u32) -> Option<Children<'_>> {
         self.agent

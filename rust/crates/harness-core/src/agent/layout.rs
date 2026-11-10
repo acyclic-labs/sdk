@@ -231,6 +231,13 @@ impl AgentPath {
         AgentId(self.id_text().to_owned())
     }
 
+    /// Validate a canonical agent path and borrow its final identity without
+    /// allocating a path or id. Uses the same parser as owned construction.
+    pub fn parse_id(path: &str) -> Result<&str, Error> {
+        Self::parse_depth(path)?;
+        Ok(&path[path.len() - ID_HEX..])
+    }
+
     /// This agent's original identity bytes, without allocation or ancestry
     /// traversal. The canonical path was validated when it was constructed.
     #[must_use]
@@ -333,10 +340,8 @@ impl AgentPath {
     }
 }
 
-impl TryFrom<String> for AgentPath {
-    type Error = Error;
-
-    fn try_from(text: String) -> Result<Self, Error> {
+impl AgentPath {
+    fn parse_depth(text: &str) -> Result<usize, Error> {
         let rest = text
             .strip_prefix(AGENTS)
             .and_then(|rest| rest.strip_prefix('/'))
@@ -354,6 +359,15 @@ impl TryFrom<String> for AgentPath {
                 return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
             }
         }
+        Ok(depth)
+    }
+}
+
+impl TryFrom<String> for AgentPath {
+    type Error = Error;
+
+    fn try_from(text: String) -> Result<Self, Error> {
+        let depth = Self::parse_depth(&text)?;
         Ok(Self { text, depth })
     }
 }
