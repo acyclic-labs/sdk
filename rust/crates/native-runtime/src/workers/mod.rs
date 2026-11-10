@@ -116,6 +116,8 @@ pub(crate) fn start_workers(
     name: &str,
     worker_count: impl FnOnce(usize) -> usize,
 ) -> io::Result<NativeWorkers> {
+    // Every process that does native I/O, product or test, starts here.
+    crate::raise_descriptor_limit();
     let worker_count =
         worker_count(std::thread::available_parallelism().map_or(1, std::num::NonZero::get));
     let (sender, receiver) = mpsc::sync_channel::<NativeJob>(worker_count * 4);

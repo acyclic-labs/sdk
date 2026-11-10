@@ -116,7 +116,7 @@ mod descriptor;
 pub use descriptor::{
     ADMITTED_DESCRIPTORS_VARIABLE, CACHED_DESCRIPTORS_VARIABLE, CachedFile, DescriptorAdmission,
     DescriptorCost, FileFlush, FileLease, WriteAt, admit_descriptors, admitted_descriptor_capacity,
-    cached_descriptor_capacity, cached_descriptors,
+    cached_descriptor_capacity, cached_descriptors, raise_descriptor_limit,
 };
 mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
@@ -170,9 +170,17 @@ pub(crate) use blocking::{
 };
 pub use task::{
     AbortHandle, OwnedTask, PersistenceKey, TaskCompletion, TaskHandle, TaskSpawner,
-    coordination_runtime, persistence_syscall, spawn, spawn_blocking, spawn_eager, spawn_owned,
-    spawn_persistence, try_spawn,
+    persistence_syscall, spawn, spawn_blocking, spawn_eager, spawn_owned, spawn_persistence,
+    try_spawn,
 };
+
+/// Creates the coordination executor after admitting the process's descriptor allowance.
+/// Native worker startup uses the same process-wide allowance initialization.
+pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    raise_descriptor_limit();
+    task::coordination_runtime()
+}
+
 mod completion;
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) use completion::submit_file_io;
