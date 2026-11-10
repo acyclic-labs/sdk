@@ -32,14 +32,12 @@ function checkedFrames(screen, observe) {
   const frames = new TerminalFrames(screen, () => {
     try { observe(); } catch (error) { failure ??= error; }
   });
-  return {
-    ready: () => frames.ready(),
-    dispose: () => frames.dispose(),
-    async write(bytes) {
-      await frames.write(bytes);
-      if (failure) throw failure;
-    },
+  const write = frames.write.bind(frames);
+  frames.write = async bytes => {
+    await write(bytes);
+    if (failure) throw failure;
   };
+  return frames;
 }
 
 function admission(visible, text, kind, reason, schedule, assertion) {
