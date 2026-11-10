@@ -623,6 +623,15 @@ impl Conversation {
         Ok(self.settlement().await?.0)
     }
 
+    /// Opens the current event window and returns the phase from its original
+    /// settlement. Reconnecting input can admit approval answers before events.
+    ///
+    /// # Errors
+    /// Session or host failures, or refused follows.
+    pub async fn observe_current(&self) -> Result<(super::Observer, Phase)> {
+        self.observe_from(None).await
+    }
+
     /// Every settled turn from conversation sequence `from`, or from the current
     /// settled tail when `None`, together with the agent's latest phase and its
     /// newest tool call's output. The default turn cursor and status cursor come
@@ -632,12 +641,17 @@ impl Conversation {
     /// # Errors
     /// Session or host failures, or refused follows.
     pub async fn observe(&self, from: Option<u64>) -> Result<super::Observer> {
-        let (settled, statuses, _) = self.settlement().await?;
-        super::Observer::open(
+        self.observe_from(from).await.map(|(observer, _)| observer)
+    }
+
+    async fn observe_from(&self, from: Option<u64>) -> Result<(super::Observer, Phase)> {
+        let (settled, statuses, phase) = self.settlement().await?;
+        let observer = super::Observer::open(
             &self.connection,
             from.unwrap_or(settled),
             statuses.saturating_sub(1),
-        )
+        )?;
+        Ok((observer, phase))
     }
 
     /// The settled entries at conversation sequences `from..to`, every one

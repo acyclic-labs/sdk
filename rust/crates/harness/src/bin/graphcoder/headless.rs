@@ -593,6 +593,19 @@ async fn prompt_approval(
     Ok((id, binding))
 }
 
+async fn announce_approval(
+    output: &mut EventOutput<'_>,
+    operation: Option<&str>,
+    id: &IntentId,
+    binding: Option<&ApprovalBinding>,
+) -> std::io::Result<()> {
+    let line = match (operation, binding) {
+        (None, Some(binding)) => json!({"approval": id.as_str(), "binding": binding}),
+        _ => json!({"approval": id.as_str()}),
+    };
+    emit(output, &line, operation).await
+}
+
 /// Prints the prompt's settled text and returns its committed outcome.
 async fn print(
     conversation: &Conversation,
@@ -928,9 +941,19 @@ pub(super) async fn jsonl(
         task: conversation.task(),
     };
     let output = &mut framed;
-    let mut events = match &projection {
-        Some(projection) => conversation.replay(&projection.state)?,
-        None => conversation.observe(None).await?,
+    let (mut events, opening_phase) = match &projection {
+        Some(projection) => (
+            conversation.replay(&projection.state)?,
+            if input_format == super::args::InputFormat::Text {
+                Some(conversation.phase().await?)
+            } else {
+                None
+            },
+        ),
+        None => {
+            let (events, phase) = conversation.observe_current().await?;
+            (events, Some(phase))
+        }
     };
     // The original bounded query admits the saved position before any prompt
     // is dispatched. Retain its page for export rather than validating twice.
@@ -968,10 +991,12 @@ pub(super) async fn jsonl(
     // A saved cursor may already be past the status that announced the
     // pending approval. Text input answers it from the current phase, read
     // once at reconnect; replay of that same status does not prompt twice.
-    if projection.is_some()
-        && input_format == super::args::InputFormat::Text
-        && let Phase::WaitingApproval { id, binding } = conversation.phase().await?
+    if input_format == super::args::InputFormat::Text
+        && let Some(Phase::WaitingApproval { id, binding }) = opening_phase
     {
+        if event_operation.is_none() {
+            announce_approval(output, event_operation, &id, binding.as_ref()).await?;
+        }
         announced = Some(id.clone());
         approval = Some(prompt_approval(conversation, &mut diagnostics, id, binding).await?);
     }
@@ -1234,13 +1259,7 @@ pub(super) async fn jsonl(
                 if let Phase::WaitingApproval { id, binding } = &status.phase
                     && announced.as_ref() != Some(id)
                 {
-                    let line = match (event_operation, binding) {
-                        (None, Some(binding)) => {
-                            json!({"approval": id.as_str(), "binding": binding})
-                        }
-                        _ => json!({"approval": id.as_str()}),
-                    };
-                    emit(output, &line, event_operation).await?;
+                    announce_approval(output, event_operation, id, binding.as_ref()).await?;
                     // Replay exports historical statuses too. Only the agent's
                     // current pending request admits a text answer; a live
                     // observer starts at the latest status, so it is current.
