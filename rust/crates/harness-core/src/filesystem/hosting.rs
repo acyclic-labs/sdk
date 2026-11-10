@@ -763,7 +763,7 @@ where
         id: &IntentId,
         binding: &ApprovalBinding,
         principal: &str,
-        approved: bool,
+        verdict: crate::interaction::ApprovalVerdict,
         reason: Option<String>,
     ) -> Result<Delivered, Error> {
         let binds = |shown: Option<Interaction>| {
@@ -800,7 +800,7 @@ where
                 agent,
                 id,
                 ApprovalResponder::Human(principal),
-                approved,
+                verdict,
                 reason,
             )
             .await

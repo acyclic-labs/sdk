@@ -334,7 +334,7 @@ fn status(cut: &impl Cut) -> Result<String> {
     let status = cut.status()?;
     Ok(match status.phase {
         Phase::WaitingApproval { id, .. } => format!(
-            "Waiting for approval\n\n```input choose id=approval approval={}\n- allow\n- deny\n```\n",
+            "Waiting for approval\n\n```input choose id=approval approval={}\n- allow once\n- allow rule\n- deny\n```\n",
             id.as_str()
         ),
         Phase::WaitingUser { path } => format!("Waiting for your reply: [{path}]({path})\n"),

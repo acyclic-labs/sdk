@@ -27,6 +27,7 @@ pub(super) async fn visit_agent(
                 input,
                 after,
                 wait: false,
+                observed_children: Some(0),
             })
             .await?
         else {

@@ -1,7 +1,76 @@
 //! A price-selected estimate over the original committed usage, never an invoice.
 use super::{ModelTokenUsage, ModelUsageRecord};
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeMap};
+
+/// An explicitly selected JSONL price file, indexed by exact admitted names.
+/// One file selects one currency and one revision per provider/model. Neither
+/// incoming usage nor a clock can change that selection.
+#[derive(Default)]
+pub struct ModelPrices {
+    currency: Option<String>,
+    records: BTreeMap<String, BTreeMap<String, ModelPriceRecord>>,
+}
+
+impl ModelPrices {
+    /// Decode the existing version-one price-record JSONL format. Empty files
+    /// select no prices. Invalid or ambiguous records refuse the whole file.
+    pub fn from_jsonl(bytes: &[u8]) -> crate::Result<Self> {
+        let records = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
+            .map(crate::contract::json_from_slice::<ModelPriceRecord>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| crate::Error::Invalid(format!("price file: {error}")))?;
+        Self::new(records).map_err(|error| crate::Error::Invalid(format!("price file: {error}")))
+    }
+
+    /// Admit caller-selected records without aliases or implicit revision order.
+    pub fn new(
+        records: impl IntoIterator<Item = ModelPriceRecord>,
+    ) -> Result<Self, ModelPriceError> {
+        let mut selected = Self::default();
+        for record in records {
+            record.validate()?;
+            match &selected.currency {
+                Some(currency) if currency != &record.currency => {
+                    return Err(ModelPriceError::CurrencyMismatch);
+                }
+                None => selected.currency = Some(record.currency.clone()),
+                _ => {}
+            }
+            if selected
+                .records
+                .entry(record.provider.clone())
+                .or_default()
+                .insert(record.model.clone(), record)
+                .is_some()
+            {
+                return Err(ModelPriceError::InvalidRecord);
+            }
+        }
+        Ok(selected)
+    }
+
+    /// The currency explicitly selected by this file, absent for an empty file.
+    pub fn currency(&self) -> Option<&str> {
+        self.currency.as_deref()
+    }
+
+    /// Start an empty aggregate in this admitted file's explicitly selected
+    /// currency. An empty price file keeps monetary observations unknown.
+    pub fn totals(&self) -> ModelUsageTotals {
+        ModelUsageTotals {
+            currency: self.currency.clone(),
+            ..ModelUsageTotals::unpriced()
+        }
+    }
+
+    /// Select only an exact provider/model binding, without allocating.
+    pub fn price(&self, usage: &ModelUsageRecord) -> Option<&ModelPriceRecord> {
+        self.records.get(&usage.provider)?.get(&usage.model)
+    }
+}
 
 /// How a provider reports a separately priced token counter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,10 +263,20 @@ fn family(
 }
 
 impl ModelPriceRecord {
-    fn validate_for(&self, usage: &ModelUsageRecord) -> Result<(), ModelPriceError> {
-        if self.version != 1 || self.revision.is_empty() || !currency_valid(&self.currency) {
+    fn validate(&self) -> Result<(), ModelPriceError> {
+        if self.version != 1
+            || self.revision.is_empty()
+            || self.provider.is_empty()
+            || self.model.is_empty()
+            || !currency_valid(&self.currency)
+        {
             return Err(ModelPriceError::InvalidRecord);
         }
+        Ok(())
+    }
+
+    fn validate_for(&self, usage: &ModelUsageRecord) -> Result<(), ModelPriceError> {
+        self.validate()?;
         if self.provider != usage.provider || self.model != usage.model {
             return Err(ModelPriceError::BindingMismatch);
         }
@@ -704,6 +783,48 @@ mod tests {
             },
             reasoning: TokenPrice::Included,
         }
+    }
+
+    #[test]
+    fn selected_price_files_refuse_ambiguity_and_preserve_unknown_calls() {
+        let rate = price();
+        let text = serde_json::to_vec(&rate).unwrap();
+        let selected = ModelPrices::from_jsonl(&text).unwrap();
+        let mut usage = record(ModelTokenUsage {
+            input: Some(1_000_000),
+            output: Some(2_000_000),
+            cached: Some(0),
+            cache_write: Some(0),
+            reasoning: Some(0),
+        });
+        let mut total = selected.totals();
+        total
+            .push(&usage.estimate(selected.price(&usage)).unwrap())
+            .unwrap();
+        assert_eq!(total.token_nano_units.value(), Some(57));
+        // A different admitted binding never receives this model's price.
+        usage.model.push_str("-other");
+        usage.dispatch.step += 1;
+        total
+            .push(&usage.estimate(selected.price(&usage)).unwrap())
+            .unwrap();
+        assert_eq!(total.token_nano_units.known, 57);
+        assert_eq!(total.token_nano_units.unknown, 1);
+        assert_eq!(total.token_nano_units.value(), None);
+        let mut duplicate = text.clone();
+        duplicate.push(b'\n');
+        duplicate.extend(&text);
+        assert!(ModelPrices::from_jsonl(&duplicate).is_err());
+        let mut foreign = rate.clone();
+        foreign.model.push_str("-other");
+        foreign.currency = "EUR".into();
+        assert!(matches!(
+            ModelPrices::new([rate.clone(), foreign]),
+            Err(ModelPriceError::CurrencyMismatch)
+        ));
+        let mut unsupported = rate;
+        unsupported.version = 2;
+        assert!(ModelPrices::from_jsonl(&serde_json::to_vec(&unsupported).unwrap()).is_err());
     }
 
     #[test]

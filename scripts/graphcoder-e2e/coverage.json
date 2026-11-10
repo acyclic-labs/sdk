@@ -6,6 +6,10 @@
       "target": "Local composition and thin CLI",
       "owner": "e2e-gate",
       "cases": [
+        "pty-status-line",
+        "pty-status-priced",
+        "session-cost-rollup",
+        "usage-durable-on-provider-error",
         "cli-help",
         "cli-invalid-option",
         "doctor-all-missing",
@@ -133,6 +137,7 @@
       "target": "Human allow/deny and durable approvals",
       "owner": "approvals (#1421)",
       "cases": [
+        "pty-approval-rule",
         "pty-approval-policy",
         "pty-approval-deny",
         "pty-approval-form-approve",

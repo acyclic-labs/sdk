@@ -45,7 +45,8 @@
         {
           "when": {
             "contains": [
-              "E2E approval policy"
+              "E2E approval policy",
+              "approved.txt"
             ]
           },
           "prompt": "/feedback "
@@ -61,7 +62,8 @@
         {
           "when": {
             "contains": [
-              "E2E approval policy"
+              "E2E approval policy",
+              "approved.txt"
             ],
             "absent": [
               "Enter saves locally"
