@@ -14,7 +14,7 @@ pub(crate) fn source_file_id(
     namespace: &[u8; 16],
     identity: &[u8; 32],
     accounting: &mut crate::kernel::KernelAccounting<'_>,
-) -> Result<crate::FileId, crate::WorkError> {
+) -> Result<crate::FileId, crate::FsError> {
     let domain = b"acyclic-fs-lazy-source-file-id-v1\0";
     accounting.charge(WorkCounters {
         bytes_hashed: domain.len() as u64 + 48,
