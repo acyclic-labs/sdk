@@ -268,6 +268,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         delivery: Delivery,
         checkpoint: Option<&Checkpoint>,
         cancellation: acyclic_actors::guest::CancellationToken,
+        failure: Option<&str>,
     ) -> Result<Transition, Error> {
         let saved = checkpoint.map(checkpoint_state).transpose()?;
         let cut = delivery
@@ -327,7 +328,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         }
         let was_open = saved.as_ref().is_none_or(|state| !state.closed);
         let mut state = saved;
-        if let Some(state) = state.as_mut() {
+        if let Some(state) = state.as_mut().filter(|_| failure.is_none()) {
             // Overflowed input precedes this delivery; read it back first.
             let end = match &wake {
                 Wake::Inbox { sequence, .. } => *sequence,
@@ -338,15 +339,19 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 state.refill(records, end);
             }
         }
-        let mut prepared = super::machine::prepare_step(
-            &self.driver,
-            &path,
-            state,
-            (cursor, delivery.now_unix_ms, settled_at_micros),
-            wake,
-            cancellation,
-        )
-        .await?;
+        let mut prepared = if let Some(failure) = failure {
+            super::machine::failed_step(&path, state, wake, cursor, failure)?
+        } else {
+            super::machine::prepare_step(
+                &self.driver,
+                &path,
+                state,
+                (cursor, delivery.now_unix_ms, settled_at_micros),
+                wake,
+                cancellation,
+            )
+            .await?
+        };
         let participant = match &self.volumes {
             Some(volumes) => {
                 let (state, outs) = prepared.state_and_outs();
@@ -430,12 +435,31 @@ where
         cancellation: acyclic_actors::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         Box::pin(async move {
-            self.transition(delivery, checkpoint, cancellation)
+            self.transition(delivery, checkpoint, cancellation, None)
                 .await
                 .map_err(|error| match error {
                     Error::IncompatibleCheckpointCodec => GuestError::IncompatibleCodec,
                     error => guest(error),
                 })
+        })
+    }
+
+    fn on_failure<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        failure: String,
+    ) -> GuestFuture<'a, Option<Transition>> {
+        Box::pin(async move {
+            self.transition(
+                delivery,
+                checkpoint,
+                acyclic_actors::guest::CancellationToken::new(),
+                Some(&failure),
+            )
+            .await
+            .map(Some)
+            .map_err(guest)
         })
     }
 }

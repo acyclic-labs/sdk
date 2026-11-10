@@ -46,6 +46,7 @@ fn released_generation_is_terminal_and_has_no_committed_turn() {
     let before = Control {
         mode: Mode::Done,
         closed: kani::any(),
+        archive_refused: kani::any(),
         reported: kani::any(),
         turn: false,
     };

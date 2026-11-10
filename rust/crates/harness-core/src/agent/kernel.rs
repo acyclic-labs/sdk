@@ -36,6 +36,8 @@ pub struct Control {
     pub mode: Mode,
     /// Archived.
     pub closed: bool,
+    /// A terminal archive refusal retains pending children without retrying.
+    pub archive_refused: bool,
     /// `ChildDone` has been sent.
     pub reported: bool,
     /// A turn is in progress (its driver checkpoint is retained).
@@ -47,6 +49,7 @@ impl Control {
     pub const ADOPTED: Self = Self {
         mode: Mode::Idle,
         closed: false,
+        archive_refused: false,
         reported: false,
         turn: false,
     };
@@ -258,6 +261,13 @@ pub struct Cascade {
 /// Archives at most [`MAX_FANOUT`] children; reports once none remain.
 #[must_use]
 pub const fn cascade(control: Control, pending: usize) -> Cascade {
+    if control.archive_refused {
+        return Cascade {
+            control,
+            archive: 0,
+            report: false,
+        };
+    }
     let archive = if pending < MAX_FANOUT {
         pending
     } else {
@@ -293,7 +303,7 @@ pub const fn alarm(
     pending: usize,
 ) -> Option<u64> {
     if control.closed {
-        return if pending > 0 {
+        return if pending > 0 && !control.archive_refused {
             Some(CONTINUE_NOW)
         } else {
             None

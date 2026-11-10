@@ -265,4 +265,18 @@ pub trait Handler: acyclic_stream::ProviderPlatform {
         checkpoint: Option<&'a Checkpoint>,
         cancellation: super::CancellationToken,
     ) -> GuestFuture<'a, Transition>;
+
+    /// Settle a definitively refused publication from its original delivery and
+    /// checkpoint. The runtime publishes this transition once under a distinct
+    /// retry identity, with the same admission fences. Unknown outcomes and
+    /// backpressure never enter this hook. The original manifest deadline and
+    /// interruption fence apply. None or an error leaves the input unconsumed.
+    fn on_failure<'a>(
+        &'a self,
+        _delivery: Delivery,
+        _checkpoint: Option<&'a Checkpoint>,
+        _failure: String,
+    ) -> GuestFuture<'a, Option<Transition>> {
+        Box::pin(async { Ok(None) })
+    }
 }

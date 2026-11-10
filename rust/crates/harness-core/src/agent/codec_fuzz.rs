@@ -122,9 +122,15 @@ fn envelope(value: &acyclic_actors::guest::Checkpoint) {
             checkpoint::checkpoint_state(&encoded).expect("checkpoint identity admits"),
             state
         );
-        // Exercise refusal with both decodable and malformed payloads. A
-        // payload error cannot stand in for refusing the selected identity.
-        for version in (0..super::records::RECORD_VERSION)
+        // Checkpoint and record versions evolve independently. Exercise this
+        // codec's foreign versions with both decodable and malformed payloads.
+        let current = checkpoint::codec()
+            .version
+            .parse::<u32>()
+            .expect("numeric checkpoint codec version");
+        for version in (0..=current + 1)
+            .chain(std::iter::once(u32::MAX))
+            .filter(|version| *version != current)
             .map(|version| version.to_string())
             .chain(std::iter::once("unknown".to_owned()))
         {

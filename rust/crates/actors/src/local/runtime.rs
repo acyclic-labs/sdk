@@ -16,7 +16,7 @@ mod interrupt;
 mod limits;
 mod pause;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
-use crate::guest::{Delivery, Handler, Trigger};
+use crate::guest::{Delivery, Handler, Transition, Trigger};
 #[cfg(test)]
 use acyclic_stream::AppendRequest;
 use acyclic_stream::query_sync::SyncMutex;
@@ -116,6 +116,16 @@ impl Inner {
         }
         self.refused = Some(conflicts);
         Ok(())
+    }
+}
+
+/// Only a decided refusal can be replaced with a failure transition. Capacity
+/// is backpressure; an unknown acknowledgement retains its original publication.
+fn terminal(error: &Error) -> bool {
+    match error {
+        Error::Stream(error) => !error.uncertain() && !matches!(error, StreamError::Capacity),
+        Error::PreconditionUnchanged => true,
+        _ => false,
     }
 }
 
@@ -845,7 +855,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Err(Error::Conflict);
             }
             let epoch = inner.epoch;
-            let limits = &self.handler.manifest().limits;
             let cancellation = crate::guest::CancellationToken::new();
             self.interrupt_follows(&mut inner, state, &trigger).await?;
             {
@@ -878,27 +887,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 state.checkpoint(),
                 cancellation.clone(),
             );
-            let result = {
-                let interrupted = self.interrupt(&mut inner, cancellation.clone());
-                let interrupted = core::pin::pin!(interrupted);
-                match futures::future::select(
-                    handled,
-                    futures::future::select(sleep(limits.handler_timeout_millis()), interrupted),
-                )
-                .await
-                {
-                    futures::future::Either::Left((transition, _)) => {
-                        transition.map_err(Error::from)
-                    }
-                    futures::future::Either::Right((futures::future::Either::Left(_), _)) => {
-                        Err(Error::Invalid("handler exceeded its manifest timeout"))
-                    }
-                    futures::future::Either::Right((
-                        futures::future::Either::Right((error, _)),
-                        _,
-                    )) => Err(error),
-                }
-            };
+            let result = self
+                .handled(&mut inner, cancellation.clone(), handled)
+                .await;
             // Release any pending provider I/O before checkpoint publication.
             inner.follows.clear();
             // Preparation failures and submission failures finish the same attempt.
@@ -906,21 +897,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // or an uncertain publication retains its original input.
             let publication = (|| -> Result<PreparedPublish, Error> {
                 let mut publication = match result {
-                    Ok(transition) => {
-                        if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
-                            > limits.checkpoint_bytes()
-                        {
-                            return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
-                        }
-                        self.store.prepare_publish(
-                            &snapshot,
-                            epoch,
-                            &trigger,
-                            record.as_ref(),
-                            transition,
-                            key(&snapshot, "publish")?,
-                        )?
-                    }
+                    Ok(transition) => self.prepare_transition(
+                        &snapshot,
+                        epoch,
+                        &trigger,
+                        record.as_ref(),
+                        transition,
+                        key(&snapshot, "publish")?,
+                    )?,
                     Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
                         let Some(input) = record.as_ref() else {
                             return Err(Error::Handler(failure));
@@ -943,24 +927,129 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 publication.require(self.handler.publication_conditions())?;
                 Ok(publication)
             })();
-            let subscription = match trigger {
-                Trigger::Record { subscription, .. } => Some(subscription),
+            let subscription = match &trigger {
+                Trigger::Record { subscription, .. } => Some(subscription.clone()),
                 Trigger::Alarm { .. } => None,
             };
-            match publication {
+            let mut result = match publication {
                 Ok(publication) => {
-                    inner.pending = Some((snapshot, publication, subscription));
-                    settle_pending(&self.store, &mut inner).await?;
+                    inner.pending =
+                        Some((Arc::clone(&snapshot), publication, subscription.clone()));
+                    settle_pending(&self.store, &mut inner).await
                 }
-                Err(Error::PreconditionChanged(conflicts)) => inner.refused(conflicts)?,
-                Err(error) => {
+                Err(Error::PreconditionChanged(conflicts)) => {
+                    inner.refused(conflicts).map(|()| true)
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = &result {
+                if inner.pending.is_none() && terminal(error) && !cancellation.is_cancelled() {
+                    let delivery = Delivery {
+                        actor: actor.clone(),
+                        epoch,
+                        trigger: trigger.clone(),
+                        now_unix_ms: now,
+                        record: record.clone(),
+                        subscriptions: crate::guest::SubscriptionCuts::new(
+                            snapshot.path.clone(),
+                            snapshot
+                                .anchor
+                                .ok_or(Error::Invalid("actor state has no committed anchor"))?,
+                            state.subscriptions().clone(),
+                        ),
+                    };
+                    self.interrupt_follows(&mut inner, state, &trigger).await?;
+                    let handled =
+                        self.handler
+                            .on_failure(delivery, state.checkpoint(), error.to_string());
+                    let failure = self
+                        .handled(&mut inner, cancellation.clone(), handled)
+                        .await;
+                    inner.follows.clear();
+                    let publication = failure.and_then(|transition| {
+                        transition
+                            .map(|transition| {
+                                let mut publication = self.prepare_transition(
+                                    &snapshot,
+                                    epoch,
+                                    &trigger,
+                                    record.as_ref(),
+                                    transition,
+                                    key(&snapshot, "failure")?,
+                                )?;
+                                publication.require(self.handler.publication_conditions())?;
+                                Ok(publication)
+                            })
+                            .transpose()
+                    });
+                    match publication {
+                        Ok(Some(publication)) => {
+                            inner.pending =
+                                Some((Arc::clone(&snapshot), publication, subscription.clone()));
+                            result = settle_pending(&self.store, &mut inner).await;
+                        }
+                        Ok(None) => {}
+                        Err(error) => result = Err(error),
+                    }
+                }
+            }
+            if let Err(error) = result {
+                if inner.pending.is_none() {
                     if subscription.is_some() {
                         inner.last_input = subscription;
                     }
-                    return Err(error);
+                    inner.observed = None;
                 }
+                return Err(error);
             }
         }
+    }
+
+    /// Every handler entry uses the same manifest deadline and control fence,
+    /// including recovery from a definitive publication refusal.
+    async fn handled<T>(
+        &self,
+        inner: &mut Inner,
+        cancellation: crate::guest::CancellationToken,
+        handled: crate::guest::GuestFuture<'_, T>,
+    ) -> Result<T, Error> {
+        let interrupted = self.interrupt(inner, cancellation);
+        let interrupted = core::pin::pin!(interrupted);
+        match futures::future::select(
+            handled,
+            futures::future::select(
+                sleep(self.handler.manifest().limits.handler_timeout_millis()),
+                interrupted,
+            ),
+        )
+        .await
+        {
+            futures::future::Either::Left((transition, _)) => transition.map_err(Error::from),
+            futures::future::Either::Right((futures::future::Either::Left(_), _)) => {
+                Err(Error::Invalid("handler exceeded its manifest timeout"))
+            }
+            futures::future::Either::Right((futures::future::Either::Right((error, _)), _)) => {
+                Err(error)
+            }
+        }
+    }
+
+    fn prepare_transition(
+        &self,
+        snapshot: &Snapshot,
+        epoch: u64,
+        trigger: &Trigger,
+        record: Option<&Record>,
+        transition: Transition,
+        identity: IdempotencyKey,
+    ) -> Result<PreparedPublish, Error> {
+        if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
+            > self.handler.manifest().limits.checkpoint_bytes()
+        {
+            return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
+        }
+        self.store
+            .prepare_publish(snapshot, epoch, trigger, record, transition, identity)
     }
 
     /// Open the follow for one subscription. A stream that does not exist yet

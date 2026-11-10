@@ -66,13 +66,14 @@ fn any_wake() -> Option<Admit> {
 /// `wake == None` is the actor alarm.
 fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: usize) {
     if let Some(kind) = wake {
+        let closed = model.control.closed;
         let admitted = (kernel.admit)(model.control, kind);
         model.control = admitted.control;
         if admitted.clear_queue {
             model.queued = 0;
             model.approval_queued = false;
         }
-        if kind == Admit::Archive {
+        if kind == Admit::Archive && !closed {
             model.pending = open_children;
         }
         if admitted.enqueue && model.queued < 3 {
@@ -181,13 +182,14 @@ fn exactly_once_and_never_loses_a_wake(kernel: Kernel) {
         let closed_before = model.control.closed;
         step(kernel, &mut model, any_wake(), open_children);
         // The shipping checkpoint boundary drops growing input and the turn
-        // before reporting an oversized state. Already closed/done states keep
-        // their original terminal owner.
+        // before reporting an oversized state. Pending archive work is retained
+        // as a terminal refusal; it must not trigger another write or alarm.
         if kani::any::<bool>() {
             model.queued = 0;
             model.approval_queued = false;
             model.control.turn = false;
-            if !model.control.closed && !matches!(model.control.mode, Mode::Done) {
+            if !matches!(model.control.mode, Mode::Done) || model.pending > 0 {
+                model.control.archive_refused |= model.pending > 0;
                 let (next, send) = (kernel.report)(model.control);
                 assert!(
                     matches!(next.mode, Mode::Done),
@@ -196,6 +198,11 @@ fn exactly_once_and_never_loses_a_wake(kernel: Kernel) {
                 model.control = next;
                 model.reports += u8::from(send);
             }
+        }
+        if model.control.archive_refused {
+            let stopped = (kernel.cascade)(model.control, model.pending);
+            assert_eq!(stopped.archive, 0, "a refused cascade retried");
+            assert!(!stopped.report, "a refused cascade reported twice");
         }
         assert!(model.reports <= 1, "ChildDone sent twice");
         assert!(

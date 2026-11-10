@@ -3,7 +3,7 @@ use super::production::{Control, Mode};
 
 pub fn runnable(control: Control, queued: bool, approval_queued: bool, pending: usize) -> bool {
     if control.closed {
-        pending > 0
+        pending > 0 && !control.archive_refused
     } else {
         match control.mode {
             Mode::Done => false,

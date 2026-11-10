@@ -31,8 +31,8 @@ pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
 #[cfg(test)]
 pub(crate) const TAIL_SLACK: usize = 2 * 20;
 
-/// The checkpoint codec every agent actor commits with. Its state embeds the
-/// same durable record shapes, so both boundaries admit the same version.
+/// The checkpoint codec every agent actor commits with. Checkpoint state and
+/// inbox records carry independent format versions.
 pub(crate) fn codec() -> CodecIdentity {
     identity().clone()
 }
@@ -41,7 +41,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            version: super::records::RECORD_VERSION.to_string(),
+            // V2 retains terminal archive refusals and their pending children.
+            version: "2".into(),
         });
     &IDENTITY
 }
@@ -721,6 +722,7 @@ mod tests {
                     status_tail: u64::MAX,
                     phase: Phase::Done { outcome },
                     archive_pending: open_children.clone(),
+                    archive_refused: true,
                     awaiting: open_children.clone(),
                     need: u32::MAX,
                     awaited: true,

@@ -10,11 +10,14 @@
 //! - every handler run is justified by an unsettled event (no self re-arm);
 //! - at quiescence, every unsettled event with work behind it was delivered
 //!   or settled as a named failure (no lost wake-up);
+//! - a terminal publication refusal consumes its trigger through the handler's
+//!   failure transition; backpressure and unknown outcomes retain it;
 //! - the host reaches quiescence (no delivery loop).
 //!
 //! Negative controls: reinstalling the delivered alarm as a due wake (the
 //! pre-fix arming) violates the first property; the runtime tests in
-//! `retry.rs` are the end-to-end controls for both delivery loops.
+//! `retry.rs` are the end-to-end controls for both delivery loops. Disabling the
+//! terminal failure transition is found stranding a decided delivery.
 use super::super::Inner;
 use super::*;
 use crate::local::Alarm;
@@ -85,17 +88,26 @@ enum Outcome {
     RefuseSame,
     /// A composed-guard refusal evidencing an external append.
     RefuseChanged,
+    /// The provider definitively denies the publication.
+    Denied,
+    /// A publication's outcome is not known and cannot be replaced.
+    Unknown,
+    /// Capacity is backpressure rather than a decided step failure.
+    Capacity,
     /// A new input commits while this handler runs.
     InputDuring,
 }
 
 impl Outcome {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 9] = [
         Self::Fail,
         Self::Consume,
         Self::ConsumeAndArm,
         Self::RefuseSame,
         Self::RefuseChanged,
+        Self::Denied,
+        Self::Unknown,
+        Self::Capacity,
         Self::InputDuring,
     ];
 }
@@ -117,10 +129,11 @@ struct World {
     evidence: u64,
     guard: StreamPath,
     arm: Arm,
+    settle_failure: bool,
 }
 
 impl World {
-    fn new(arm: Arm) -> Result<Self, String> {
+    fn new(arm: Arm, settle_failure: bool) -> Result<Self, String> {
         let ready = ReadySet::default();
         let mut actors = Vec::new();
         for id in 0..ACTORS {
@@ -151,6 +164,7 @@ impl World {
             evidence: 0,
             guard: StreamPath::new("guard").map_err(|error| error.to_string())?,
             arm,
+            settle_failure,
         })
     }
 
@@ -207,7 +221,15 @@ impl World {
                         actor.settled = start;
                         return Ok(());
                     }
-                    outcome @ (Outcome::Consume | Outcome::ConsumeAndArm) => {
+                    outcome @ (Outcome::Consume | Outcome::ConsumeAndArm | Outcome::Denied) => {
+                        if matches!(outcome, Outcome::Denied) {
+                            if !self.settles(&Error::Stream(StreamError::AccessDenied)) {
+                                return Err(
+                                    "terminal refusal stranded its original delivery".into()
+                                );
+                            }
+                        }
+                        let actor = &mut self.actors[id];
                         actor.inner.refused = None;
                         if due {
                             actor.alarm.delivered_generation = Some(actor.alarm.generation);
@@ -236,16 +258,41 @@ impl World {
                         match actor.inner.refused(vec![conflict]) {
                             Ok(()) => break,
                             Err(Error::PreconditionUnchanged) => {
-                                actor.settled = start;
-                                return Ok(());
+                                if !self.settles(&Error::PreconditionUnchanged) {
+                                    return Err(
+                                        "terminal refusal stranded its original delivery".into()
+                                    );
+                                }
+                                let actor = &mut self.actors[id];
+                                if due {
+                                    actor.alarm.delivered_generation = Some(actor.alarm.generation);
+                                } else {
+                                    actor.inputs -= 1;
+                                }
+                                break;
                             }
                             Err(error) => return Err(error.to_string()),
                         }
+                    }
+                    outcome @ (Outcome::Unknown | Outcome::Capacity) => {
+                        let error = match outcome {
+                            Outcome::Capacity => StreamError::Capacity,
+                            _ => StreamError::Unavailable,
+                        };
+                        if self.settles(&Error::Stream(error)) {
+                            return Err("replaced an uncertain or backpressured publication".into());
+                        }
+                        self.actors[id].settled = start;
+                        return Ok(());
                     }
                     Outcome::InputDuring => self.input(id),
                 }
             }
         }
+    }
+
+    fn settles(&self, error: &Error) -> bool {
+        super::super::terminal(error) && self.settle_failure
     }
 
     fn run(&mut self, choices: &mut Choices) -> Result<(), String> {
@@ -279,10 +326,10 @@ impl World {
     }
 }
 
-fn explore(arm: Arm) -> Result<(), String> {
+fn explore(arm: Arm, settle_failure: bool) -> Result<(), String> {
     let mut choices = Choices::default();
     loop {
-        World::new(arm)?
+        World::new(arm, settle_failure)?
             .run(&mut choices)
             .map_err(|violation| format!("{violation}; choices {:?}", choices.trace))?;
         if !choices.next() {
@@ -303,17 +350,28 @@ fn reinstalled(registration: &Registration<usize>, alarm: &Alarm, now: u64) -> R
 
 #[test]
 fn every_event_is_delivered_or_settled_and_no_attempt_rearms_itself() -> TestResult {
-    explore(production)?;
+    explore(production, true)?;
     Ok(())
 }
 
 #[test]
 fn a_delivered_alarm_left_due_is_found_redelivering_itself() {
-    let violation = explore(reinstalled).err();
+    let violation = explore(reinstalled, true).err();
     assert!(
         violation
             .as_deref()
             .is_some_and(|violation| violation.contains("without an unsettled event")),
+        "{violation:?}"
+    );
+}
+
+#[test]
+fn an_unsettled_terminal_refusal_is_found_stranding_its_delivery() {
+    let violation = explore(production, false).err();
+    assert!(
+        violation
+            .as_deref()
+            .is_some_and(|violation| violation.contains("terminal refusal stranded")),
         "{violation:?}"
     );
 }

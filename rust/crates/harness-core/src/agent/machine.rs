@@ -140,6 +140,9 @@ pub struct AgentState {
     pub awaited: bool,
     /// Open children that still have to receive `Archive`.
     pub archive_pending: BTreeSet<AgentPath>,
+    /// A terminal publication refusal stopped the cascade. Pending children
+    /// remain durable, but neither arrivals nor alarms retry their writes.
+    pub archive_refused: bool,
     /// Inputs waiting for the turn, in inbox order.
     pub queued: VecDeque<Queued>,
     /// Inbox sequence of the first input not held in `queued`. It and every
@@ -261,6 +264,7 @@ impl AgentState {
             need: 0,
             awaited: false,
             archive_pending: BTreeSet::new(),
+            archive_refused: false,
             queued: VecDeque::new(),
             overflow: None,
             taken: BTreeSet::new(),
@@ -794,6 +798,44 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     })
 }
 
+/// A refused publication discards its speculative effects and settles from the
+/// original checkpoint. The normal shedding path reports the child exactly once.
+pub(super) fn failed_step(
+    path: &AgentPath,
+    state: Option<AgentState>,
+    wake: Wake,
+    cursor: u64,
+    failure: &str,
+) -> Result<PreparedStep, Error> {
+    let mut state = match (state, wake) {
+        // The archive input closes this agent even when its first cascade
+        // publication was refused. Retain that control decision, not any of
+        // the refused publication's speculative child writes.
+        (
+            Some(state),
+            Wake::Inbox {
+                sequence,
+                record: record @ InboxRecord::Archive(_),
+            },
+        ) => admit(state, sequence, record, None)?,
+        (Some(state), _) => state,
+        (
+            None,
+            Wake::Inbox {
+                record: InboxRecord::ForkAdopted(adopted),
+                ..
+            },
+        ) => AgentState::adopted(path.clone(), &adopted)?,
+        _ => return Err(Error::Record("first agent input is not ForkAdopted")),
+    };
+    let previous = published(&state);
+    let mut outs = Vec::new();
+    shed(&mut state, &mut outs, failure);
+    let step = finalize_step(state, outs, &previous, cursor, Vec::new())?;
+    let checkpoint = checkpoint::from_encoded(checkpoint::encode(&step.state)?)?;
+    Ok(PreparedStep { step, checkpoint })
+}
+
 fn finalize_step(
     mut state: AgentState,
     mut outs: Vec<Out>,
@@ -929,6 +971,7 @@ fn control(state: &AgentState) -> Control {
             Phase::Done { .. } => Mode::Done,
         },
         closed: state.closed,
+        archive_refused: state.archive_refused,
         reported: state.reported,
         turn: state.turn.is_some(),
     }
@@ -970,7 +1013,7 @@ fn admit(
     if admitted.control.mode == Mode::Idle {
         state.phase = Phase::Idle;
     }
-    if kind == Admit::Archive {
+    if kind == Admit::Archive && !state.closed {
         state.archive_pending.clone_from(&state.open_children);
     }
     state.closed = admitted.control.closed;
@@ -1268,17 +1311,20 @@ fn bounded(outcome: AgentOutcome) -> AgentOutcome {
 /// checkpoint: drops the input
 /// window and the turn, the only parts a step grows without bound, and
 /// settles `Done` as a failure, reported once. What remains is bounded by
-/// construction (see [`checkpoint`]). An archived agent settles by its
-/// cascade, and a settled one keeps its bounded outcome.
+/// construction (see [`checkpoint`]). A refused archive cascade settles as
+/// a visible failure, retaining its pending children with a terminal refusal
+/// so it cannot rearm itself or lose the unfinished archive request.
+/// A settled agent with no pending archive work keeps its bounded outcome.
 fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
     state.drop_queue();
     state.turn = None;
-    if state.closed || matches!(state.phase, Phase::Done { .. }) {
+    if matches!(state.phase, Phase::Done { .. }) && state.archive_pending.is_empty() {
         return;
     }
-    let outcome = AgentOutcome::Failed {
+    state.archive_refused |= !state.archive_pending.is_empty();
+    let outcome = bounded(AgentOutcome::Failed {
         message: failure.into(),
-    };
+    });
     let before = control(state);
     let (next, send) = kernel::report(before);
     #[cfg(feature = "test-support")]
