@@ -196,3 +196,83 @@ pub async fn picker(
         return Ok((selected, Some(terminal)));
     }
 }
+
+/// Select one visible coupled cut. The source stays available when the new
+/// paused root becomes current; paging never reads hidden history.
+pub async fn history_picker(
+    connection: Connection,
+    terminal: Option<Tty>,
+) -> Result<(Connection, Option<Tty>), Failure> {
+    let mut terminal = match terminal {
+        Some(terminal) => terminal,
+        None => Tty::open()?,
+    };
+    let conversation =
+        acyclic_harness::local::agent_conversation::Conversation::open(connection.clone());
+    let mut cursor = None;
+    let mut previous = Vec::new();
+    loop {
+        let rows = u32::from(terminal.size_reader()()?.height.saturating_sub(8).max(1)).min(128);
+        let page = conversation
+            .history_page(AgentPageRequest::new(rows, 64 * 1024, cursor.clone())?)
+            .await?;
+        let mut choices: Vec<_> = page
+            .items
+            .iter()
+            .map(|cut| {
+                format!(
+                    "Turn {} · {} project volumes · context through {}",
+                    cut.conversation, cut.volume_count, cut.context_tail,
+                )
+            })
+            .collect();
+        let older = page.next.as_ref().map(|_| {
+            let index = choices.len();
+            choices.push("Older turns".into());
+            index
+        });
+        let newer = (!previous.is_empty()).then(|| {
+            let index = choices.len();
+            choices.push("Newer turns".into());
+            index
+        });
+        let cancel = choices.len();
+        choices.push("Keep current session".into());
+        let (owned, chosen) = tokio::task::spawn_blocking(move || {
+            let chosen = Input::new(&mut terminal).and_then(|mut input| {
+                input.choose(
+                    "Fork / rewind to turn (new session starts paused)",
+                    &choices,
+                )
+            });
+            (terminal, chosen)
+        })
+        .await?;
+        terminal = owned;
+        let chosen = chosen?;
+        if Some(chosen) == older {
+            previous.push(cursor);
+            cursor = page.next;
+            continue;
+        }
+        if Some(chosen) == newer {
+            cursor = previous.pop().ok_or("missing newer history page")?;
+            continue;
+        }
+        if chosen == cancel {
+            return Ok((connection, Some(terminal)));
+        }
+        let cut = page
+            .items
+            .get(chosen)
+            .ok_or("missing selected history cut")?;
+        let selected = sessions::fork(
+            &connection,
+            connection.root().clone(),
+            cut.conversation.checked_sub(1).ok_or("empty history cut")?,
+            &OperationId::new().to_string(),
+        )
+        .await?;
+        return Ok((selected, Some(terminal)));
+    }
+}
