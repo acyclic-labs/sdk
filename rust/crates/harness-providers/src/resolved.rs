@@ -125,6 +125,7 @@ impl ResolvedModel {
         if current.codex_login.is_some() {
             current.config = Arc::new(ProviderSpec {
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
+                allow_http_host: None,
                 token_counter: None,
                 ..config.as_ref().clone()
             });

@@ -104,7 +104,9 @@ proptest! {
     #[test]
     fn count_paths_never_forward_credentials_to_another_origin(path in ".{0,96}") {
         let mut policy = spec(Adapter::Responses); policy.path = path;
-        if let Ok(resolved) = endpoint("https://provider.test/v1", "gpt-6-luna", &policy) {
+        let mut config = crate::catalog::default_catalog()["openai"].clone();
+        config.base_url = "https://provider.test/v1".into();
+        if let Ok(resolved) = endpoint(&config, "gpt-6-luna", &policy) {
             prop_assert_eq!(url::Url::parse(&resolved).unwrap().origin(), url::Url::parse("https://provider.test").unwrap().origin());
         }
     }

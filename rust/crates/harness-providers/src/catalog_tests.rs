@@ -2,6 +2,95 @@ use super::*;
 use proptest::prelude::*;
 
 #[tokio::test]
+async fn captured_container_catalog_keeps_exact_host_grants_on_every_route() -> Result<()> {
+    let captured = include_bytes!("../fuzz/corpus/catalog/benchmark-http-host.json");
+    let document = crate::catalog_document::parse(captured)?;
+    let spec = &document.providers["benchmark"];
+    assert_eq!(
+        spec.allow_http_host.as_deref(),
+        Some("172.17.0.1"),
+        "catalog HTTP host grant changed at decode"
+    );
+    let (_, transport) = provider(Adapter::Responses, 200);
+    let mut registry =
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport.clone());
+    let file = tempfile::NamedTempFile::new().map_err(|cause| invalid(cause.to_string()))?;
+    std::fs::write(file.path(), captured).map_err(|cause| invalid(cause.to_string()))?;
+    registry.load_catalog(file.path())?;
+    let selected = registry.resolve("benchmark/fixture")?;
+    let (request, _) = request(&selected)?;
+    let mut request = request.request().clone();
+    request.max_output_tokens = Some(10);
+    let request = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+    let dispatch = ModelDispatch {
+        operation_id: acyclic_harness_core::OperationId::new(),
+        step: 0,
+        request_digest: request.request_digest(),
+    };
+    assert_eq!(
+        crate::projection::endpoint(&selected)?,
+        "http://172.17.0.1:9/t/trial/openai/v1/responses"
+    );
+    assert_eq!(
+        crate::counting::wire::endpoint(
+            &selected.config,
+            "fixture",
+            selected.config.token_counter.as_ref().unwrap(),
+        )?,
+        "http://172.17.0.1:9/t/trial/openai/v1/responses/input_tokens"
+    );
+    let prepared = crate::prepared::PreparedInput::new(&selected, request.clone()).await?;
+    assert!(prepared.count(&selected).await?.input_tokens > 0);
+    assert!(transport.counted.lock().unwrap().is_some());
+    selected
+        .generate(&request, dispatch)
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(
+        transport.sent.lock().unwrap()[0].url,
+        "http://172.17.0.1:9/t/trial/openai/v1/responses"
+    );
+    let sent = transport.sent.lock().unwrap().len();
+    for (host, base, count_path) in [
+        (None, "http://172.17.0.1:9/v1", "responses/input_tokens"),
+        (
+            Some("172.17.0.2"),
+            "http://172.17.0.1:9/v1",
+            "responses/input_tokens",
+        ),
+        (
+            Some("*.example.test"),
+            "http://one.example.test/v1",
+            "responses/input_tokens",
+        ),
+        (
+            Some("one.example.test"),
+            "http://two.example.test/v1",
+            "responses/input_tokens",
+        ),
+        (
+            Some("172.17.0.1"),
+            "http://user@172.17.0.1:9/v1",
+            "responses/input_tokens",
+        ),
+        (
+            Some("172.17.0.1"),
+            "http://172.17.0.1:9/v1",
+            "http://172.17.0.2:9/count",
+        ),
+        (Some("172.17.0.1"), "http://172.17.0.1:9/v1", "responses"),
+    ] {
+        let mut refused = spec.clone();
+        refused.allow_http_host = host.map(str::to_owned);
+        refused.base_url = base.into();
+        refused.token_counter.as_mut().unwrap().path = count_path.into();
+        assert!(registry.register("refused".into(), refused).is_err());
+    }
+    assert_eq!(transport.sent.lock().unwrap().len(), sent);
+    Ok(())
+}
+
+#[tokio::test]
 async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> Result<()> {
     let (_, script) = provider(Adapter::Chat, 200);
     let mut registry =
@@ -10,6 +99,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "http://127.0.0.1:1234/v1".into(),
+        allow_http_host: None,
         headers: BTreeMap::new(),
         token_counter: Some(crate::TokenCounterSpec {
             path: "count_tokens".into(),
