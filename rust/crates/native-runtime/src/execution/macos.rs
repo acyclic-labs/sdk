@@ -1,9 +1,9 @@
 //! Seatbelt translates the shared grant; the process-tree owner still owns
-//! custody, streams and retirement. Apple's launcher applies the profile before
-//! exec, avoiding sandbox compiler allocation in a multithreaded fork child.
+//! custody, streams and retirement. Compile before fork and apply the resulting
+//! native policy with the MAC syscall before the original sealed exec.
 #![allow(
     unsafe_code,
-    reason = "rooted openat and fchdir in the native Seatbelt adapter"
+    reason = "native Seatbelt compilation, rooted openat and sealed exec"
 )]
 use super::{ExecutionAccess, ExecutionNetwork, Grant, refused};
 use std::{fs::File, io, os::fd::AsRawFd, path::Path};
@@ -15,6 +15,109 @@ unsafe extern "C" {
         actions: *mut libc::posix_spawn_file_actions_t,
         descriptor: libc::c_int,
     ) -> libc::c_int;
+    fn __sandbox_ms(
+        policy: *const libc::c_char,
+        operation: libc::c_int,
+        arguments: *const libc::c_void,
+    ) -> libc::c_int;
+}
+
+#[repr(C)]
+struct NativeProfile {
+    builtin: *mut libc::c_char,
+    data: *const u8,
+    size: usize,
+}
+
+#[link(name = "sandbox")]
+unsafe extern "C" {
+    fn sandbox_compile_string(
+        source: *const libc::c_char,
+        parameters: *const libc::c_void,
+        error: *mut *mut libc::c_char,
+    ) -> *mut NativeProfile;
+    fn sandbox_free_profile(profile: *mut NativeProfile);
+    fn sandbox_free_error(error: *mut libc::c_char);
+}
+
+struct CompiledProfile {
+    profile: std::ptr::NonNull<NativeProfile>,
+    apply:
+        unsafe extern "C" fn(*const libc::c_char, libc::c_int, *const libc::c_void) -> libc::c_int,
+}
+
+// SAFETY: the compiled native buffer is immutable and exclusively owned. Only
+// the fork child's MAC syscall borrows it; destruction belongs to the parent.
+unsafe impl Send for CompiledProfile {}
+unsafe impl Sync for CompiledProfile {}
+
+impl CompiledProfile {
+    fn new(source: &str) -> io::Result<Self> {
+        let source = std::ffi::CString::new(source).map_err(refused)?;
+        let mut error = std::ptr::null_mut();
+        // SAFETY: terminated source and writable error storage. Compilation,
+        // including all library allocation, finishes in the trusted parent.
+        let profile =
+            unsafe { sandbox_compile_string(source.as_ptr(), std::ptr::null(), &raw mut error) };
+        let Some(profile) = std::ptr::NonNull::new(profile) else {
+            let reason = if error.is_null() {
+                "Seatbelt compilation refused".into()
+            } else {
+                // SAFETY: the compiler owns a terminated diagnostic on failure.
+                unsafe { std::ffi::CStr::from_ptr(error) }
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            // SAFETY: the system API also accepts a null diagnostic.
+            unsafe { sandbox_free_error(error) };
+            return Err(refused(reason));
+        };
+        let result = Self {
+            profile,
+            // Resolve the native entry before fork, without a child-side
+            // lazy linker or the allocator-using libxpc notification.
+            apply: __sandbox_ms,
+        };
+        // SAFETY: the successful compilation owns this complete native object.
+        let profile = unsafe { result.profile.as_ref() };
+        if !profile.builtin.is_null() || profile.data.is_null() || profile.size == 0 {
+            return Err(refused("Seatbelt compiler returned no bytecode"));
+        }
+        Ok(result)
+    }
+
+    fn apply(&self) -> io::Result<()> {
+        #[repr(C)]
+        struct Apply {
+            data: *const u8,
+            size: usize,
+            container: *const libc::c_char,
+            container_size: usize,
+        }
+        // SAFETY: this owner's native bytecode remains live through exec.
+        let profile = unsafe { self.profile.as_ref() };
+        let arguments = Apply {
+            data: profile.data,
+            size: profile.size,
+            container: std::ptr::null(),
+            container_size: 0,
+        };
+        // The native sandbox_apply bytecode path uses this MAC call. Its later
+        // libxpc notification uses dlsym, so it must not run in a fork child;
+        // this image immediately execs and never uses libxpc after confinement.
+        // SAFETY: native bytecode and the complete synchronous argument block.
+        if unsafe { (self.apply)(c"Sandbox".as_ptr(), 0, (&raw const arguments).cast()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CompiledProfile {
+    fn drop(&mut self) {
+        // SAFETY: the original compiler allocation is destroyed exactly once.
+        unsafe { sandbox_free_profile(self.profile.as_ptr()) };
+    }
 }
 
 pub(super) fn validate_stdio(descriptors: [Option<std::os::fd::RawFd>; 3]) -> io::Result<()> {
@@ -41,7 +144,7 @@ pub(super) fn validate_stdio(descriptors: [Option<std::os::fd::RawFd>; 3]) -> io
 }
 
 pub(super) struct Prepared {
-    pub(super) profile: String,
+    profile: CompiledProfile,
     cwd: File,
 }
 
@@ -96,22 +199,26 @@ impl Prepared {
             open_beneath(root, relative, true, meter)?
         };
         Ok(Self {
-            profile,
+            profile: CompiledProfile::new(&profile)?,
             cwd: crate::file::outside_standard_streams(cwd.into(), meter)?.into(),
         })
     }
 
-    pub(super) fn install(self, command: &mut std::process::Command) -> io::Result<()> {
+    pub(super) fn install(
+        self,
+        command: &mut std::process::Command,
+        arg0: Option<&std::ffi::OsStr>,
+    ) -> io::Result<()> {
         use std::os::unix::process::CommandExt;
-        let exec = SealedExec::new(command)?;
-        // SAFETY: the child only calls fchdir on a retained descriptor. The
-        // profile is applied by sandbox-exec after its own exec, before guest
-        // code. No allocator or sandbox compiler runs after our fork.
+        let exec = SealedExec::new(command, arg0)?;
+        // SAFETY: the child uses only native calls and parent-owned buffers;
+        // neither the allocator nor sandbox compiler runs after our fork.
         unsafe {
             command.pre_exec(move || {
                 if libc::fchdir(self.cwd.as_raw_fd()) == -1 {
                     return Err(io::Error::last_os_error());
                 }
+                self.profile.apply()?;
                 exec.enter()
             });
         }
@@ -131,19 +238,28 @@ struct SealedExec {
     _environment: Vec<std::ffi::CString>,
     argv: Vec<*mut libc::c_char>,
     envp: Vec<*mut libc::c_char>,
+    environ: *mut *mut *mut libc::c_char,
+    spawn: unsafe extern "C" fn(
+        *mut libc::pid_t,
+        *const libc::c_char,
+        *const libc::posix_spawn_file_actions_t,
+        *const libc::posix_spawnattr_t,
+        *const *mut libc::c_char,
+        *const *mut libc::c_char,
+    ) -> libc::c_int,
 }
 
-// SAFETY: all native objects and pointer targets are exclusively owned,
-// immutable after preparation, and borrowed only by the fork child's exec.
+// SAFETY: owned buffers and native objects stay immutable in the parent. Only
+// the fork child's exec borrows them and changes its private environ pointer.
 unsafe impl Send for SealedExec {}
 unsafe impl Sync for SealedExec {}
 
 impl SealedExec {
-    fn new(command: &std::process::Command) -> io::Result<Self> {
+    fn new(command: &std::process::Command, arg0: Option<&std::ffi::OsStr>) -> io::Result<Self> {
         use std::{ffi::CString, os::unix::ffi::OsStrExt};
         let cstring = |text: &std::ffi::OsStr| CString::new(text.as_bytes()).map_err(refused);
         let program = cstring(command.get_program())?;
-        let arguments = std::iter::once(command.get_program())
+        let arguments = std::iter::once(arg0.unwrap_or_else(|| command.get_program()))
             .chain(command.get_args())
             .map(cstring)
             .collect::<io::Result<Vec<_>>>()?;
@@ -157,7 +273,7 @@ impl SealedExec {
                 CString::new(bytes).map_err(refused)
             })
             .collect::<io::Result<Vec<_>>>()?;
-        let pointers = |values: &[CString]| {
+        let pointers = |values: &[CString]| -> Vec<*mut libc::c_char> {
             values
                 .iter()
                 .map(|value| value.as_ptr().cast_mut())
@@ -174,6 +290,10 @@ impl SealedExec {
             program,
             argv: pointers(&arguments),
             envp: pointers(&environment),
+            // SAFETY: capture the native environment pointer's address, not
+            // its contents. Only the fork child's private copy is changed.
+            environ: unsafe { libc::_NSGetEnviron() },
+            spawn: libc::posix_spawnp,
             _arguments: arguments,
             _environment: environment,
         };
@@ -198,17 +318,24 @@ impl SealedExec {
     }
 
     fn enter(&self) -> io::Result<()> {
-        // SAFETY: immutable prebuilt spawn objects, strings and null-terminated
-        // pointer vectors remain live. SETEXEC never returns on success.
+        // Native posix_spawnp reads PATH from environ, not envp. Match std's
+        // child-only environment handoff; restore it on every failed exec.
+        // Apple implements lookup and script fallback without a heap allocator.
+        // SAFETY: only this fork child's private environ is changed. All native
+        // objects and strings stay live, and SETEXEC never returns on success.
         let code = unsafe {
-            libc::posix_spawn(
+            let original = *self.environ;
+            *self.environ = self.envp.as_ptr().cast_mut();
+            let code = (self.spawn)(
                 std::ptr::null_mut(),
                 self.program.as_ptr(),
                 self.actions.as_ref().unwrap(),
                 &raw const self.attributes,
                 self.argv.as_ptr(),
                 self.envp.as_ptr(),
-            )
+            );
+            *self.environ = original;
+            code
         };
         Err(io::Error::from_raw_os_error(code))
     }

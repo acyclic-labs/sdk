@@ -148,6 +148,91 @@ fn sandbox_denies_outside_write() {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn confined_commands_preserve_custom_arg0_and_original_arguments() {
+    use std::{io::Read, os::unix::ffi::OsStrExt};
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    let grant = ExecutionGrant::new(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [PathBuf::from("/")],
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    let arg0 = std::ffi::OsStr::from_bytes(b"custom \xff ' $(never)");
+    let command = |program, renamed| {
+        let mut command = Command::new(program);
+        command
+            .args(["-c", "printf '%s|' \"$0\" \"$@\" \"$VISIBLE\""])
+            .env_clear()
+            .env("PATH", "/bin:/usr/bin")
+            .env("VISIBLE", "literal ' $(never)")
+            .current_dir(&workspace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if renamed {
+            command.arg0(arg0);
+        }
+        command
+    };
+    let output = |mut command: Command, retained, confined| {
+        let mut tree = if confined {
+            ProcessTree::spawn_granted(command, &grant, retained).unwrap()
+        } else if let Some(custody) = retained {
+            ProcessTree::spawn_in_custody(&mut command, custody).unwrap()
+        } else {
+            ProcessTree::spawn(&mut command).unwrap()
+        };
+        let mut output = Vec::new();
+        tree.take_stdout()
+            .unwrap()
+            .read_to_end(&mut output)
+            .unwrap();
+        assert!(
+            tree.wait(crate::CaptureSchedule::Unbounded)
+                .unwrap()
+                .success()
+        );
+        output
+    };
+    let mut expected = arg0.as_bytes().to_vec();
+    expected.extend_from_slice(b"|literal ' $(never)|");
+    for program in ["/bin/sh", "sh"] {
+        for retained in [None, Some(&custody)] {
+            // Both original native owners preserve the requested argv[0].
+            assert_eq!(output(command(program, true), retained, false), expected);
+            // Negative control: removing the override changes observable argv[0].
+            assert_ne!(output(command(program, false), retained, true), expected);
+            assert_eq!(output(command(program, true), retained, true), expected);
+            // Positional arguments after -c replace the shell's $0, so test
+            // their exact bytes independently from the invocation name.
+            let mut arguments = command(program, true);
+            arguments.args(["positional-zero", "a b", "", "$(never)"]);
+            assert_eq!(
+                output(arguments, retained, true),
+                b"positional-zero|a b||$(never)|literal ' $(never)|",
+            );
+        }
+    }
+    // Removing the wrapper must also retain execvp's headerless-script path.
+    let script = workspace.join("plain");
+    std::fs::write(&script, b"printf '%s|' \"$0\" \"$@\" \"$VISIBLE\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let original = output(command(script.to_str().unwrap(), true), None, false);
+    assert!(original.ends_with(b"literal ' $(never)|"));
+    assert_eq!(
+        output(command(script.to_str().unwrap(), true), None, true),
+        original
+    );
+}
+
 #[cfg(target_os = "linux")]
 mod ipc;
 

@@ -332,7 +332,12 @@ the linear per-syscall comparison chain without an additional runtime table,
 allocation, syscall, descriptor, barrier or round trip.
 
 macOS translates the same composed grant into a deny-by-default Seatbelt
-profile, applied by Apple's `/usr/bin/sandbox-exec` before guest execution.
+profile. The parent compiles it with the installed native compiler, and the
+fork child applies that bytecode through the native MAC syscall before sealed
+exec. The original executable, custom `argv[0]`, arguments and explicit
+environment reach the guest without a command-line wrapper. Policy compilation
+and heap allocation finish before fork; the child uses native calls and the
+system's executable lookup and script fallback.
 Preparation verifies every bound root and resolves cwd component-by-component
 with rooted `openat`, refusing symlinks. Paths are quoted as Scheme strings;
 control characters and non-UTF-8 paths refuse before launch. Seatbelt enforces

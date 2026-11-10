@@ -388,7 +388,7 @@ impl ProcessTree {
                 let boundary = command.boundary.take();
                 #[cfg(target_os = "macos")]
                 if let Some(boundary) = &boundary {
-                    boundary.wrap_command(command)?;
+                    boundary.validate_command(command)?;
                 }
                 if boundary.is_some() {
                     // The boundary installs its held directory in the child.
@@ -397,7 +397,7 @@ impl ProcessTree {
                 }
                 let mut native = command.to_std()?;
                 if let Some(boundary) = boundary {
-                    boundary.install(&mut native)?;
+                    boundary.install(&mut native, command.unix.arg0.as_deref())?;
                 }
                 platform::spawn_controlled(&mut native, meter, slot)
             }
