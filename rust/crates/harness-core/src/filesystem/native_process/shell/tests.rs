@@ -118,13 +118,14 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
     for (cwd, command) in [
         (
             None,
-            crate::tools::ShellCommand::Source(format!(
-                "printf inside > inside; printf volume > .volumes/data/written; \
-             (printf escaped > escape) 2>/dev/null && exit 10; \
-             /bin/sh -c 'printf escaped > \"$1\"' sh '{}' 2>/dev/null && exit 11; \
-             printf confined",
-                outside.display()
-            )),
+            crate::tools::ShellCommand::Source(
+                r#"printf inside > inside; printf volume > .volumes/data/written;
+             printf temp > "$TMPDIR/tempfile";
+             (printf escaped > escape) 2>/dev/null && exit 10;
+             /bin/sh -c 'printf escaped > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11;
+             printf confined"#
+                    .into(),
+            ),
         ),
         (
             Some(".volumes/data".into()),
@@ -135,6 +136,11 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
             ]),
         ),
     ] {
+        let mut native = invocation(&mounts.root);
+        native.environment.insert(
+            "OUTSIDE".into(),
+            outside.to_str().expect("fixture path").into(),
+        );
         let output = run(
             ShellInput {
                 command,
@@ -143,7 +149,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
                 target: None,
             },
             &mounts,
-            invocation(&mounts.root),
+            native,
             1,
             None,
             || Ok(()),
@@ -160,6 +166,10 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
     assert_eq!(
         std::fs::read(root.join("inside")).map_err(Error::process_io)?,
         b"inside"
+    );
+    assert_eq!(
+        std::fs::read(root.join("tempfile")).map_err(Error::process_io)?,
+        b"temp"
     );
     assert_eq!(
         std::fs::read(volume.join("written")).map_err(Error::process_io)?,
