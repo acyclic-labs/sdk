@@ -171,8 +171,13 @@ pub(crate) fn take_standard_output() -> io::Result<File> {
     Ok(File::from(taken))
 }
 
-/// Starts the current executable's `__service` mode without inheriting host standard-I/O handles, and returns the channel on which the service signals that it answers requests.
-pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> {
+/// Starts a detached service with the supplied arguments and
+/// [`SERVICE_READY_ARGUMENT`], without inheriting host standard-I/O handles.
+/// The returned pipe waits for the service's original readiness outcome.
+pub fn spawn_service_process(
+    executable: &Path,
+    arguments: &[std::ffi::OsString],
+) -> io::Result<ServiceReadiness> {
     let operation = obs::span!(
         INFO,
         "acyclic.runtime.spawn_service",
@@ -183,7 +188,7 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
         let spawn = || {
             #[cfg(windows)]
             {
-                windows::spawn_service_process(executable).map(ServiceReadiness)
+                windows::spawn_service_process(executable, arguments).map(ServiceReadiness)
             }
             #[cfg(unix)]
             {
@@ -191,7 +196,8 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
 
                 let mut command = std::process::Command::new(executable);
                 command
-                    .args(["__service", SERVICE_READY_ARGUMENT])
+                    .args(arguments)
+                    .arg(SERVICE_READY_ARGUMENT)
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null());
