@@ -107,6 +107,24 @@ impl ToolRegistry {
         }
         Ok(false)
     }
+    /// Fixed, granted declarations are pinned by the executor configuration.
+    /// Source overlap is rejected when preparing their original model request.
+    pub(crate) fn fixed_for_grants(
+        &self,
+        name: &str,
+        grants: &crate::Capabilities,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<Arc<Tool>>> {
+        Ok(self
+            .get_shared(name, None, io)?
+            .filter(|tool| {
+                let capability = tool.executor.capability().unwrap_or(tool);
+                grants.iter().any(|grant| {
+                    grant.strip_prefix("tool:call:") == Some(capability.definition.name.as_str())
+                })
+            })
+            .cloned())
+    }
     pub(crate) fn recover(
         &self,
         definition: &ToolDefinition,

@@ -118,7 +118,18 @@ impl<'io> StockExecution<'io> {
                 return self.push_tool_result(&invocation, content, None, prior_messages);
             }
         }
-        let selected = if !matches!(recorded, RecordedCall::Unstarted) {
+        let fixed = if matches!(recorded, RecordedCall::Unstarted) {
+            None
+        } else {
+            self.stock.tools.fixed_for_grants(
+                &invocation.name,
+                self.stock.tool_scope.grants(),
+                self.io,
+            )?
+        };
+        let selected = if let Some(tool) = fixed {
+            Some(tool)
+        } else if !matches!(recorded, RecordedCall::Unstarted) {
             let retained = self
                 .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
                 .await?;
