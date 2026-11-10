@@ -156,7 +156,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
         ),
     );
     let reads = Arc::new(Reads {
-        files: storage.approval_files.clone(),
+        files: storage.internal_files.clone(),
         requests: AtomicUsize::new(0),
         release: Mutex::new(None),
     });
@@ -211,7 +211,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
     }
     // Reopen the same real volume through a second owner, as after a restart.
     let reopened = agent_approvals(
-        &storage.approval_files,
+        storage.internal_files.clone(),
         crate::preset::Preset::graphcoder().approval_policy,
         65_536,
     )?;

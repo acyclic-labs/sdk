@@ -1231,10 +1231,7 @@ impl ToolContext {
                 file,
                 self.effective_scope(),
                 self.effective_scope().grants(),
-                Some(acyclic_fs::ByteRange {
-                    offset: 0,
-                    length: 0,
-                }),
+                super::content_read::ReadExtent::Metadata,
                 io,
             )
             .map(|_| ())

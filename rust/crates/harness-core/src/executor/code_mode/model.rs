@@ -723,7 +723,9 @@ async fn repeated_console_logs_release_temporary_decode_credit() {
         assert!(logs.lines.iter().all(|line| line == "a\nb"));
     };
     let (result, ()) = futures::join!(run, dispatch);
-    assert_eq!(result.unwrap().unwrap(), serde_json::json!(42));
+    let result = result.unwrap().unwrap();
+    assert_eq!(result.value, serde_json::json!(42));
+    drop(result);
     assert_eq!(work.live_allocation_bytes(), baseline);
     assert_eq!(engine_work.live_allocation_bytes(), engine_baseline);
 }
