@@ -91,7 +91,6 @@ pub(crate) fn render_lines(lines: &[acyclic_markdown::Line], theme: &ThemeStyles
             shown.push('\n');
         }
         let line_start = shown.len();
-        let mut band = false;
         for span in &line.spans {
             let start = shown.len();
             shown.push_str(&span.text);
@@ -102,13 +101,15 @@ pub(crate) fn render_lines(lines: &[acyclic_markdown::Line], theme: &ThemeStyles
             if let Some(link) = &span.link {
                 links.push((start..shown.len(), Arc::clone(link)));
             }
-            band |= span.code;
-            if let Some(source) = &span.syntax {
-                code.push((start..shown.len(), source.clone()));
-            }
         }
-        if band {
+        if line.code {
             bands.push(line_start..shown.len());
+        }
+        if let Some(source) = &line.syntax {
+            code.push((
+                shown.len().saturating_sub(source.text().len())..shown.len(),
+                source.clone(),
+            ));
         }
     }
     Rendered {
