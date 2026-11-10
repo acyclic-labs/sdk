@@ -102,8 +102,8 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
         acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
         acyclic_fs::EmbeddedCapabilities::MEMORY,
     );
-    let make_bound = |executors| {
-        Bound::local_root(
+    let make_bound = |executors| -> TestResult<_> {
+        Ok(Bound::local_root(
             acyclic_harness::core::AuthorityRoot::new(
                 "agents",
                 [7; 32],
@@ -129,7 +129,7 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
                 clock: Arc::new(acyclic_actors::local::SystemClock),
                 approval_policy: ApprovalPolicy::accept_all("roles"),
             },
-        )
+        )?)
     };
     let bound = make_bound(make_executors(root_model.clone())?)?;
     let id = AgentId::from_bytes([1; 16]);
