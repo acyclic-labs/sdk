@@ -204,7 +204,7 @@ fn relative_file_permissions_preserve_native_policy_in_each_view() -> Result {
                     Err(Error::Invalid(_))
                 ));
                 assert!(matches!(
-                    run_root_session(&root, "agy", OsStr::new("agy"), &flags, false),
+                    run_root_session(&root, "agy", OsStr::new("agy"), &flags),
                     Err(Error::Invalid(_))
                 ));
                 assert!(matches!(
