@@ -351,8 +351,13 @@ impl LocalHarness {
         } else {
             ""
         };
+        let sandbox = if cfg!(any(target_os = "linux", target_os = "macos")) {
+            "Shell commands and lifecycle hooks run in a workspace-write OS sandbox."
+        } else {
+            "Shell commands retain the host boundary; native OS confinement is not yet available."
+        };
         manifest.conventions.push(format!(
-            "Approval mode: {mode}. Shell commands have no OS sandbox. A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home}"
+            "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home}"
         ));
         #[cfg(any(test, feature = "native-execution"))]
         if let Some(workspace) = &binding.workspace {
@@ -407,9 +412,7 @@ impl LocalHarness {
                     use acyclic_fs::facade::FsWork as _;
                     let cancellation = acyclic_fs::CancellationToken::new();
                     let snapshot = view
-                        .snapshot(
-                            &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
-                        )
+                        .snapshot(&mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation))
                         .await?;
                     facts.git_status = Some(environment::sdk_status(
                         &compatibility,
