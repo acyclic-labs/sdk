@@ -33,6 +33,17 @@ provider from an operation ID or reconstruct a terminal result.
 Native `WaitReport` remains the live-wait projection on this registry, preserving
 its own producer, retirement and diagnostic request/acknowledgement guarantees.
 
+Harness child waits export `StatusRecord.child_wakes` through the existing status
+stream and SessionFrame projection read by GraphCoder and benchmark captures.
+Each sample identifies a direct child relative to the status owner and retains
+`settled_at_micros` from the original `ChildSettled` or `ChildDone` inbox commit,
+and `woke_at_micros` from the parent delivery clock where the wait resumes, before
+the driver runs. Samples accumulate with the waiting checkpoint and publish once
+with the returning step's ordinary commit; partial completions emit none. Both
+timestamps are Unix microseconds (the delivery clock has millisecond resolution).
+Clock skew remains visible in the raw pair; an absent sample is unknown. These
+are wait-return measurements, not provider-call or tool-result-publication times.
+
 Terminal samples preserve their original registry ID and immediate parent ID.
 The parent is captured at creation and follows the record across worker handoff
 and credited output without retaining either span. Native durability attempt

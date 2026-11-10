@@ -57,6 +57,7 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
             "invalid wait published unchecked effects"
         );
         StatusRecord {
+            child_wakes: Vec::new(),
             phase: result.state.phase,
             cursor: u64::MAX,
             conversation: u64::MAX,

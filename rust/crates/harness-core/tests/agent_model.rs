@@ -234,6 +234,7 @@ async fn seeded() -> Result<Seeded> {
                 path: status,
                 records: vec![
                     StatusRecord {
+                        child_wakes: Vec::new(),
                         phase: Phase::Running,
                         cursor: 1,
                         conversation: 2,
@@ -297,6 +298,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
             },
         ],
         status: Some(StatusRecord {
+            child_wakes: Vec::new(),
             phase: Phase::Idle,
             cursor: 1,
             conversation: 3,
@@ -340,6 +342,7 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
     assert_eq!(values(&provider, parent.conversation()?).await?.len(), 3);
     // The child's first status rides with its membership: Idle at its ForkAdopted.
     let first = StatusRecord {
+        child_wakes: Vec::new(),
         phase: Phase::Idle,
         cursor: 1,
         conversation: 2,

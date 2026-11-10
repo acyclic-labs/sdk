@@ -44,7 +44,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 16 retains committed agent actions and compact wait selections.
 /// Version 17 records forced continuation provenance in the creation profile.
 /// Version 18 settles a definitive turn failure as a failed conversation entry.
-pub const RECORD_VERSION: u32 = 18;
+/// Version 19 (retired) scoped status addresses by complete ancestry.
+/// Version 20 carries child settlement-to-wake measurements in status records.
+pub const RECORD_VERSION: u32 = 20;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -610,12 +612,33 @@ impl Phase {
     }
 }
 
+/// One child's original settlement commit and the return of its parent's wait.
+/// Both timestamps use Unix microseconds. Clock skew remains visible rather
+/// than being clamped into a fabricated zero-duration measurement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(deny_unknown_fields)]
+pub struct ChildWake {
+    /// Direct child id, relative to the owner of this status stream.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub child: AgentId,
+    /// Commit timestamp of the ChildSettled or ChildDone inbox record.
+    pub settled_at_micros: u64,
+    /// Parent delivery clock when the waiting turn actually resumes.
+    pub woke_at_micros: u64,
+}
+
 /// One status stream record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct StatusRecord {
+    /// One measurement per observed child, published only when its wait returns.
+    /// Travels through the existing status/SessionFrame telemetry projection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub child_wakes: Vec<ChildWake>,
     /// Phase after the transition that wrote it.
     pub phase: Phase,
     /// Inbox cursor consumed by that transition.

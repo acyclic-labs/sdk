@@ -5,7 +5,7 @@
 //! control holds the parent's delivery while it waits, as a blocking `wait`
 //! would, and deadlocks the same schedule.
 
-use super::{Result, adopted, id, intent, user};
+use super::{Result, adopted, id, intent, user, values};
 use acyclic_actors::{
     addressing::ActorReference,
     domain::ActorLimits,
@@ -301,7 +301,16 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
         }
     }
 
-    let provider = Arc::new(MemoryStream::default());
+    struct CommitClock;
+    impl acyclic_stream::UnixMillisClock for CommitClock {
+        fn now_unix_millis(&self) -> u64 {
+            NOW
+        }
+    }
+    let provider = Arc::new(MemoryStream::new_with_clock(
+        Default::default(),
+        Arc::new(CommitClock),
+    ));
     let resumed = Arc::new(Mutex::new(Vec::new()));
     let (clock, _time) = ControlledClock::new(NOW);
     let host = AgentHost::new(
@@ -349,6 +358,12 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     assert_eq!(host.drain_event(&root).await?, Some(NOW + TIMEOUT));
     assert!(resumed.lock().map_err(|_| "resumes")?.is_empty());
     assert_eq!(host.state(&root).await?.need, 1);
+    for bytes in values(&*provider, root.status()?).await? {
+        assert!(
+            StatusRecord::decode(&bytes)?.child_wakes.is_empty(),
+            "a partial completion burst must not report a returned wait"
+        );
+    }
     // The final child finishes at the very same timestamp. Its one delivery
     // must wake the root; no alarm or additional input may be necessary.
     host.send(last, &user(), &approval("finish")).await?;
@@ -358,6 +373,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
             .next()
             .await
             .ok_or("completion follow ended")??;
+        assert_eq!(record.committed_at_micros, NOW * 1_000);
         assert_eq!(
             InboxRecord::decode(&record.value)?,
             InboxRecord::ChildSettled(ChildSettled {
@@ -376,5 +392,41 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
         "root must resume in the delivery consuming the last completion, before its alarm"
     );
     assert_eq!(host.state(&root).await?.phase, Phase::Idle);
+    assert!(host.state(&root).await?.child_settlements.is_empty());
+    let statuses = values(&*provider, root.status()?)
+        .await?
+        .iter()
+        .map(|bytes| StatusRecord::decode(bytes))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let measured: Vec<_> = statuses
+        .iter()
+        .filter(|status| !status.child_wakes.is_empty())
+        .collect();
+    assert_eq!(measured.len(), 1, "one telemetry record per returned wait");
+    let wake = measured[0];
+    assert_eq!(wake.cursor, before + CHILDREN as u64);
+    assert_eq!(
+        wake.child_wakes.len(),
+        CHILDREN,
+        "every child must have a wake measurement"
+    );
+    assert_eq!(
+        wake.child_wakes
+            .iter()
+            .map(|sample| sample.child.clone())
+            .collect::<BTreeSet<_>>(),
+        children.iter().map(AgentPath::id).collect()
+    );
+    for sample in &wake.child_wakes {
+        assert_eq!(sample.settled_at_micros, NOW * 1_000);
+        assert_eq!(sample.woke_at_micros, NOW * 1_000);
+        assert!(
+            sample
+                .woke_at_micros
+                .checked_sub(sample.settled_at_micros)
+                .is_some(),
+            "settlement-to-wake latency must be non-negative"
+        );
+    }
     Ok(())
 }
