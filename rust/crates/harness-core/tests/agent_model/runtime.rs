@@ -516,6 +516,11 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
         let actor_state = snapshot.state().expect("committed child actor").clone();
         assert!(actor_state.alarm().pending().is_none());
         assert_eq!(actor_state.cursor(INBOX), Some(inbox + 1));
+        let committed = serde_json::to_value(committed)?;
+        let parent_committed = serde_json::to_value(parent_committed)?;
+        drop(expected_children);
+        drop(before);
+        drop(snapshot);
         drop(host);
         drop(provider);
         let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
@@ -526,8 +531,12 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             Arc::new(SystemClock),
         )?;
-        assert_eq!(host.state(&child).await?, committed);
-        assert_eq!(host.state(&root).await?, parent_committed);
+        let child_state = host.state(&child).await?;
+        assert_eq!(serde_json::to_value(&child_state)?, committed);
+        assert_eq!(
+            serde_json::to_value(host.state(&root).await?)?,
+            parent_committed
+        );
         let reopened = host.runtime().store().load(&host.actor(&child)?).await?;
         assert_eq!(
             reopened.state(),
@@ -549,7 +558,7 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
                 parent_records,
                 "archive reported a completed child again"
             );
-            let mut expected = committed;
+            let mut expected = child_state;
             expected.closed = true;
             expected.dropped_before = expected.dropped_before.max(inbox);
             assert_eq!(host.state(&child).await?, expected);
@@ -619,6 +628,8 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         }
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
         let first_actor = snapshot.state().ok_or("missing waiting actor")?.clone();
+        let first = serde_json::to_value(first)?;
+        drop(snapshot);
         drop(host);
         drop(provider);
 
@@ -631,9 +642,14 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
             clock.clone(),
         )?;
         assert_eq!(host.drain_event(&root).await?, Some(10));
-        assert_eq!(host.state(&root).await?, first, "deadline fired early");
+        assert_eq!(
+            serde_json::to_value(host.state(&root).await?)?,
+            first,
+            "deadline fired early"
+        );
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
         assert_eq!(snapshot.state(), Some(&first_actor));
+        drop(snapshot);
         time.advance_to(10)?;
         assert_eq!(
             host.drain_event(&root).await?,
@@ -649,6 +665,8 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         let second_actor = snapshot.state().ok_or("missing resumed actor")?.clone();
         assert!(second_actor.alarm().generation() > first_actor.alarm().generation());
         assert_eq!(second_actor.alarm().pending(), Some(30));
+        drop(second);
+        drop(snapshot);
         drop(host);
         drop(provider);
 
@@ -748,6 +766,7 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
         paused.turn.as_ref().map(|turn| turn.checkpoint.as_slice()),
         Some([7; 8].as_slice())
     );
+    let paused = serde_json::to_value(paused)?;
     // Neither the runtime nor the native provider survives the reopen.
     drop(host);
     drop(provider);
@@ -777,7 +796,7 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
     )?;
-    assert_eq!(host.state(&root).await?, paused);
+    assert_eq!(serde_json::to_value(host.state(&root).await?)?, paused);
     for decision in ["unrelated", "decision"] {
         host.send(
             &root,
@@ -790,9 +809,10 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
         host.drain(&root).await?;
         let state = host.state(&root).await?;
         if decision == "unrelated" {
-            assert_eq!(state.turn, paused.turn);
-            assert_eq!(state.phase, paused.phase);
-            assert_eq!(state.open_children, paused.open_children);
+            let actual = serde_json::to_value(state)?;
+            for field in ["turn", "phase", "open_children"] {
+                assert_eq!(actual[field], paused[field], "{field}");
+            }
         } else {
             assert_eq!(state.phase, Phase::Idle);
             assert_eq!(state.turn, None);
