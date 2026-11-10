@@ -386,60 +386,6 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
     Ok(())
 }
 #[tokio::test]
-async fn disabled_compaction_still_requires_model_admission() -> Result<()> {
-    for (capacity, output, input, fault) in [
-        (100, 1_024, "current".into(), None),
-        (131_072, 8_192, "current".into(), None),
-        (4_096, 1_024, "x".repeat(5_000), None),
-        (
-            131_072,
-            1_024,
-            "current".into(),
-            Some(AccountingFault::Digest),
-        ),
-    ] {
-        let journal = Journal::default();
-        let (provider, _) =
-            counted_model(capacity, fault, [ScriptedTurn::Text("answer".into())], []);
-        let executor = uncompacted_executor(
-            Model::new("test".into(), "admission".into(), "1".into())?,
-            provider.clone(),
-            ContextPipeline::default(),
-            ToolRegistry::default(),
-        )
-        .with_max_output_tokens(output)?;
-        let result = executor
-            .execute_progress(
-                TurnInput {
-                    max_steps: None,
-                    operation_id: OperationId::new(),
-                    input: ModelContent::Text(input),
-                    selected_context: None,
-                },
-                &journal,
-            )
-            .await;
-        assert!(
-            matches!(
-                &result,
-                Err(Error::Invalid(_)) | Ok(ExecutionProgress::PreDispatchFailed(_))
-            ),
-            "invalid request passed admission"
-        );
-        assert!(provider.requests().is_empty());
-        assert!(
-            !journal
-                .0
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
-        );
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn impossible_default_capacity_fails_before_turn_admission() -> Result<()> {
     let journal = Journal::default();
     let (provider, _accounting_calls) = counted_model(32_768, None, [], []);

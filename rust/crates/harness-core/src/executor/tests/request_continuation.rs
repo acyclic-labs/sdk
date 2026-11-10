@@ -6,7 +6,6 @@ use super::*;
 struct ContinuingModel {
     turns: u32,
     seen: AtomicUsize,
-    accounting: ScriptedModelProvider,
 }
 
 impl ContinuingModel {
@@ -57,18 +56,6 @@ impl ContinuingModel {
 }
 
 impl ModelProvider for ContinuingModel {
-    fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
-        self.accounting.context_capacity(model)
-    }
-
-    fn count_tokens<'a>(
-        &'a self,
-        request: &'a crate::model::PreparedModelRequest,
-        ceiling: u64,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::context::ModelTokenCount>> {
-        self.accounting.count_tokens(request, ceiling)
-    }
-
     fn generate<'a>(
         &'a self,
         request: &'a crate::model::PreparedModelRequest,
@@ -113,7 +100,6 @@ fn one_stock_turn_preserves_admitted_continuations_across_step_limits() -> Resul
             let provider = Arc::new(ContinuingModel {
                 turns,
                 seen: AtomicUsize::new(0),
-                accounting: ScriptedModelProvider::new([]),
             });
             let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
             let executor = uncompacted_executor(
