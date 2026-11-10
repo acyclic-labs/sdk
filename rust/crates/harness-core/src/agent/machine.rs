@@ -626,7 +626,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
     driver: &T,
     path: &AgentPath,
     state: Option<AgentState>,
-    (cursor, now_unix_ms, returning_completion): (u64, u64, bool),
+    (cursor, now_unix_ms): (u64, u64),
     wake: Wake,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<Step, Error> {
@@ -1128,7 +1128,7 @@ fn approval_position(state: &AgentState) -> Option<usize> {
 async fn run<T: TurnDriver + ?Sized>(
     driver: &T,
     state: &mut AgentState,
-    (cursor, now_unix_ms): (u64, u64),
+    (cursor, now_unix_ms, returning_completion): (u64, u64, bool),
     alarm_wake: bool,
     outs: &mut Vec<Out>,
     child_wakes: &mut Option<ChildWakes>,
