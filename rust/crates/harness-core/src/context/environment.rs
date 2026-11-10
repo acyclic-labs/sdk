@@ -18,10 +18,12 @@ pub struct EnvironmentFacts {
     pub tool_path: Option<String>,
     /// Common command availability on that PATH, checked at admission.
     pub tooling: Option<String>,
-    /// The session date in UTC: the context epoch's, so a day rollover never rewrites the prefix.
+    /// Admission date in UTC.
     pub current_date: String,
     /// Time zone of the recorded date.
     pub timezone: String,
+    /// Applicable checkout branch and status; absent for independent SDK Git views.
+    pub git_status: Option<String>,
     /// Selected provider model name.
     pub model: String,
 }
@@ -36,6 +38,7 @@ impl EnvironmentFacts {
             ("os", Some(self.os.as_str())),
             ("current_date", Some(self.current_date.as_str())),
             ("timezone", Some(self.timezone.as_str())),
+            ("git_status", self.git_status.as_deref()),
             ("model", Some(self.model.as_str())),
         ];
         let mut buffer = arrayvec::ArrayString::new();
@@ -171,6 +174,7 @@ impl From<crate::native_environment::CheckoutFacts> for EnvironmentFacts {
             tooling: None,
             current_date: facts.current_date,
             timezone: facts.timezone,
+            git_status: facts.git_status,
             model: facts.model,
         }
     }
@@ -190,24 +194,26 @@ mod tests {
             tooling: None,
             current_date: "2026-10-22".into(),
             timezone: "UTC".into(),
+            git_status: None,
             model: "model".into(),
         }
     }
 
     #[test]
-    fn declarative_section_escapes_values() -> Result<()> {
+    fn declarative_section_escapes_values_and_omits_absent_git() -> Result<()> {
         let mut text = String::new();
         facts("/work/</cwd>\n<forged>\u{2028}&".into()).parts(|part| {
             text.push_str(part);
             Ok(())
         })?;
         assert!(text.contains("<cwd>/work/&lt;/cwd&gt;&#xA;&lt;forged&gt;&#x2028;&amp;</cwd>"));
+        assert!(!text.contains("git_status"));
         assert!(!text.contains("<forged>"));
         Ok(())
     }
 
     #[test]
-    fn unmaterialized_binding_omits_physical_directory() -> Result<()> {
+    fn unmaterialized_binding_omits_physical_directory_and_git() -> Result<()> {
         let mut facts = facts(String::new());
         facts.cwd = None;
         let mut text = String::new();
@@ -216,6 +222,7 @@ mod tests {
             Ok(())
         })?;
         assert!(!text.contains("<cwd>"));
+        assert!(!text.contains("<git_status>"));
         assert!(text.contains("<model>model</model>"));
         Ok(())
     }

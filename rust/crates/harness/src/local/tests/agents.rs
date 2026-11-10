@@ -2071,7 +2071,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     assert!(context.contains("final message is your report"));
     assert!(context.contains(&format!("Use send with agent {root}")));
     assert!(checked.load(std::sync::atomic::Ordering::SeqCst));
-    assert!(context.contains("<environment_context>"));
+    assert!(context.contains("git_status"));
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Brief { brief: file } = entry.input else {
         return Err(Error::Invalid(
@@ -2900,46 +2900,5 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
             "fork must retain the selected files while its parent keeps later edits"
         );
     }
-    Ok(())
-}
-
-/// Editing AGENTS.md between turns keeps the cached span (system block and
-/// tools) of the first request byte-identical in the second, and appends the
-/// edit as a notice the second request carries. Negative control: rendering
-/// the live manifest per request (origin/main) changes the second request's
-/// system block, failing the prefix assertion.
-#[tokio::test]
-async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> Result<()> {
-    use crate::test_support::ScriptedTurn;
-    let provider = super::scripted(["one", "two"].map(|text| ScriptedTurn::Text(text.into())));
-    let (_directory, harness, provider) =
-        checkout_scripted(&[("AGENTS.md".into(), b"RULE_ONE\n".to_vec())], provider).await?;
-    let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
-    let mut client = ObservedConversation::open(&harness).await?;
-    client.send("one", "FIRST_PROMPT").await?;
-    std::fs::write(checkout.join("AGENTS.md"), b"RULE_TWO\n").map_err(agent)?;
-    client.send("two", "SECOND_PROMPT").await?;
-    let request = |index| {
-        provider
-            .request(index)
-            .ok_or_else(|| Error::NotFound(format!("model request {index}")))
-    };
-    let (first, second) = (request(0)?, request(1)?);
-    let prefix = |request: &crate::model::ModelRequest| {
-        let system = request
-            .messages
-            .iter()
-            .take_while(|message| matches!(message.role, crate::model::ModelRole::System))
-            .collect::<Vec<_>>();
-        serde_json::to_value((system, &request.tools)).map_err(agent)
-    };
-    assert!(
-        super::request_text(&harness, &first)
-            .await?
-            .contains("RULE_ONE")
-    );
-    assert_eq!(prefix(&second)?, prefix(&first)?);
-    let appended = super::request_text(&harness, &second).await?;
-    assert!(appended.contains("RULE_TWO"), "{appended}");
     Ok(())
 }

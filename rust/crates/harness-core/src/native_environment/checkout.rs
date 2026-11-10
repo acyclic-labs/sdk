@@ -14,6 +14,8 @@ pub struct CheckoutFacts {
     pub current_date: String,
     /// Zone of the recorded date.
     pub timezone: String,
+    /// Optional status supplied only for an applicable Git view.
+    pub git_status: Option<String>,
     /// Selected model name.
     pub model: String,
 }
@@ -24,6 +26,7 @@ pub fn checkout(
     now_unix_millis: u64,
     model: &str,
     platform: &super::PlatformPolicy,
+    git_status: Option<String>,
 ) -> CheckoutFacts {
     let (os, shell) = platform.facts();
     CheckoutFacts {
@@ -32,6 +35,7 @@ pub fn checkout(
         shell: shell.into(),
         current_date: date(now_unix_millis),
         timezone: "UTC".into(),
+        git_status,
         model: model.into(),
     }
 }

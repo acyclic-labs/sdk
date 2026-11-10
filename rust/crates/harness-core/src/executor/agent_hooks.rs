@@ -9,38 +9,38 @@ use crate::{
 };
 
 impl StockExecutor {
-    /// Binds the turn's pinned hook configuration `source`, then runs its
+    /// Binds the hooks this turn's context manifest configures, then runs its
     /// prompt events: `SessionStart` once per agent `session` and
     /// `UserPromptSubmit` on every turn. `SessionStart` is keyed by the
     /// session, not the turn, so it runs on the agent's first turn (a forked
     /// child's included) and every later turn reads back its recorded
     /// outcome, keeping its context. Their context precedes the turn; a block
-    /// fails the turn when it runs, before any model request. Hooks bind per
-    /// turn, outside the frozen context epoch: they are behaviour, not prefix.
+    /// fails the turn when it runs, before any model request.
     pub async fn with_agent_hooks(
         self,
         context: &TaskContext,
         turn: OperationId,
         prompt: &ModelContent,
         session: OperationId,
-        source: Option<&FileRef>,
     ) -> Result<Self> {
-        let Some(source) = source else {
+        let mut hooks = None::<Hooks>;
+        let mut digest = blake3::Hasher::new_derive_key("acyclic.agent.hooks/v1");
+        for source in self.context.configuration_sources() {
+            if source.descriptor().media_type() != Hooks::MEDIA_TYPE {
+                continue;
+            }
+            let bytes = context.read_file(source, None).await?;
+            digest.update(blake3::hash(&bytes).as_bytes());
+            let next: Hooks = serde_json::from_slice(&bytes)
+                .map_err(|error| Error::Invalid(format!("hook configuration: {error}")))?;
+            match &mut hooks {
+                Some(hooks) => hooks.append(next),
+                None => hooks = Some(next),
+            }
+        }
+        let Some(rules) = hooks else {
             return Ok(self);
         };
-        if source.descriptor().media_type() != Hooks::MEDIA_TYPE {
-            return Err(Error::Invalid(
-                "hook configuration has the wrong media type".into(),
-            ));
-        }
-        let bytes = context.read_file(source, None).await?;
-        let mut digest = blake3::Hasher::new_derive_key("acyclic.agent.hooks/v1");
-        digest.update(blake3::hash(&bytes).as_bytes());
-        let rules: Hooks = serde_json::from_slice(&bytes)
-            .map_err(|error| Error::Invalid(format!("hook configuration: {error}")))?;
-        if rules.is_empty() {
-            return Ok(self);
-        }
         let bound = Arc::new(BoundHooks {
             rules,
             manifest: *digest.finalize().as_bytes(),

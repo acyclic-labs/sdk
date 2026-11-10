@@ -62,67 +62,7 @@ fn decode_materialized(bytes: &[u8]) -> Result<crate::resources::GenerationRef> 
     serde_json::from_slice(bytes).map_err(storage)
 }
 
-/// A user catalog and the watch generation it was scanned at.
-type UserCatalog = Option<(u64, SkillCatalog)>;
-
-/// Change notifications over the configured user skill roots and each skill
-/// directory in them, shared by every owner bound to those roots. A catalog
-/// is reused only at the generation it was scanned at; a root that could
-/// not be watched (absent, or no native notification) is rescanned on each
-/// use, never served stale.
-#[derive(Default)]
-struct UserWatch {
-    generation: Arc<std::sync::atomic::AtomicU64>,
-    watches: std::sync::Mutex<Vec<acyclic_fs::HeldRootWatch>>,
-}
-
-impl UserWatch {
-    /// Registers the roots and their skill directories again, returning the
-    /// generation a scan begun after this call observes, or `None` when one
-    /// could not be watched. The generation is read before registering, so
-    /// a change racing the scan always invalidates its catalog.
-    fn arm(&self, roots: &[PathBuf]) -> Option<u64> {
-        use std::sync::atomic::Ordering;
-        let generation = self.generation.load(Ordering::Acquire);
-        let mut watches = Vec::new();
-        for root in roots {
-            let directories: Vec<PathBuf> = match std::fs::read_dir(root) {
-                Ok(entries) => std::iter::once(root.clone())
-                    .chain(
-                        entries
-                            .filter_map(std::result::Result::ok)
-                            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                            .map(|entry| entry.path()),
-                    )
-                    .collect(),
-                // An absent root's creation is a change in its parent.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    vec![root.parent()?.to_path_buf()]
-                }
-                Err(_) => return None,
-            };
-            for directory in directories {
-                let changed = Arc::clone(&self.generation);
-                let watch = acyclic_fs::hold_root(&directory)
-                    .ok()?
-                    .watch_changes(move |event| {
-                        // Reading a skill is no change to it.
-                        if !event.is_ok_and(|event| event.kind.is_access()) {
-                            changed.fetch_add(1, Ordering::AcqRel);
-                        }
-                    })
-                    .ok()?;
-                watches.push(watch);
-            }
-        }
-        *self.watches.lock().ok()? = watches;
-        Some(generation)
-    }
-
-    fn current(&self) -> u64 {
-        self.generation.load(std::sync::atomic::Ordering::Acquire)
-    }
-}
+type UserCatalog = Option<SkillCatalog>;
 
 type Catalog = Option<(acyclic_fs::LazySnapshotId, SkillCatalog)>;
 
@@ -143,7 +83,6 @@ pub struct NativeSkills {
     cache: crate::sync::owned::Arc<crate::sync::owned::Mutex<Catalog>>,
     users: crate::sync::owned::Arc<crate::sync::owned::Mutex<UserCatalog>>,
     user_sources: crate::sync::owned::Arc<crate::sync::owned::Mutex<UserCatalog>>,
-    user_watch: Arc<UserWatch>,
     #[cfg(test)]
     user_pages: Arc<std::sync::atomic::AtomicUsize>,
     records: retained::RecordCache,
@@ -167,7 +106,6 @@ impl NativeSkills {
             cache: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             users: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             user_sources: self.user_sources.clone(),
-            user_watch: Arc::clone(&self.user_watch),
             #[cfg(test)]
             user_pages: Arc::clone(&self.user_pages),
             records: self.records.clone(),
@@ -265,7 +203,6 @@ impl NativeSkills {
             cache: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             users: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             user_sources: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
-            user_watch: Arc::default(),
             #[cfg(test)]
             user_pages: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             records: retained::RecordCache::default(),
@@ -529,13 +466,12 @@ impl NativeSkills {
             bounds.limits.validate()?;
             let before = *bounds;
             let mut cached = crate::sync::owned::lock_owned(self.users.clone()).await;
-            if let Some((generation, catalog)) = &*cached
-                && *generation == self.user_watch.current()
+            if let Some(catalog) = &*cached
                 && let Some(skills) = catalog.reuse(bounds)?
             {
                 return Ok(skills);
             }
-            let (generation, mut skills) = self.source_user_catalog(bounds)?.await?;
+            let mut skills = self.source_user_catalog(bounds)?.await?;
             let mut records = RetainedBatch::default();
             for skill in &mut skills {
                 if skill.source.root.volume == self.journal {
@@ -566,32 +502,27 @@ impl NativeSkills {
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
             records.publish(self.directory.clone()).await?;
-            *cached = generation.map(|generation| (generation, catalog));
+            *cached = Some(catalog);
             Ok(skills)
         })
     }
 
     // This cache belongs to the configured source set, not an executing owner.
     // Its pins remain internal: user_catalog re-owns them before returning.
-    // Also returns the watch generation the catalog holds at, `None` when it
-    // must not be reused.
     #[inline(never)]
     fn source_user_catalog<'a>(
         &'a self,
         bounds: &'a mut DiscoveryWork,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, (Option<u64>, Vec<SkillMetadata>)>>
-    {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             bounds.limits.validate()?;
             let before = *bounds;
             let mut cached = crate::sync::owned::lock_owned(self.user_sources.clone()).await;
-            if let Some((generation, catalog)) = &*cached
-                && *generation == self.user_watch.current()
+            if let Some(catalog) = &*cached
                 && let Some(skills) = catalog.reuse(bounds)?
             {
-                return Ok((Some(*generation), skills));
+                return Ok(skills);
             }
-            let generation = self.user_watch.arm(&self.user_roots);
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = native_work(&cancellation)?;
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
@@ -634,8 +565,8 @@ impl NativeSkills {
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
             records.publish(self.directory.clone()).await?;
-            *cached = generation.map(|generation| (generation, catalog));
-            Ok((generation, skills))
+            *cached = Some(catalog);
+            Ok(skills)
         })
     }
 }
@@ -875,90 +806,6 @@ mod binding_tests {
         filesystem::{FilesystemHost, PreparationIo},
         resources::ProviderRef,
     };
-
-    /// A user skill added after the catalog was cached is listed once its
-    /// root's watch reports the change. The watch event is delivered by hand,
-    /// so the test waits on nothing; without the generation check the cached
-    /// catalog is served forever and the new skill never appears.
-    #[tokio::test]
-    async fn watched_user_skill_change_refreshes_cached_catalog() -> Result<()> {
-        acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
-        acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-        let home = tempfile::tempdir().map_err(storage)?;
-        let write = |name: &str| -> Result<()> {
-            let skill = home.path().join("skills").join(name);
-            std::fs::create_dir_all(&skill).map_err(storage)?;
-            std::fs::write(
-                skill.join("SKILL.md"),
-                format!("---\nname: {name}\ndescription: {name} skill\n---\nbody"),
-            )
-            .map_err(storage)
-        };
-        write("first")?;
-        let provider =
-            ProviderRef::new("fresh".into(), "filesystem".into(), "1".into(), &mut None)?;
-        let volume = VolumeRef::new(
-            provider,
-            "private".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
-            &mut None,
-        )?;
-        let sources = NativeSkills::new(
-            home.path().join("retained"),
-            volume,
-            None,
-            vec![home.path().join("skills")],
-        )?;
-        let names = |skills: Vec<SkillMetadata>| {
-            skills
-                .into_iter()
-                .map(|skill| skill.name)
-                .collect::<Vec<_>>()
-        };
-        let listed = names(sources.user_catalog(&mut DiscoveryWork::default())?.await?);
-        assert_eq!(listed, ["first"]);
-        // Scale: every agent bound to these roots shares the one watch set
-        // and the one scan; binding more agents adds neither.
-        let watches = || {
-            sources
-                .user_watch
-                .watches
-                .lock()
-                .map(|watches| watches.len())
-        };
-        let held = watches().map_err(|_| Error::Conflict("watch lock poisoned".into()))?;
-        let pages = sources.user_pages.load(std::sync::atomic::Ordering::SeqCst);
-        for id in 2..=255 {
-            let child = VolumeRef::new(
-                ProviderRef::new("fresh".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private".into(),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(crate::AgentId::from_bytes([id; 16])),
-                &mut None,
-            )?;
-            let bound = sources.for_volume(child);
-            assert_eq!(
-                names(bound.user_catalog(&mut DiscoveryWork::default())?.await?),
-                ["first"]
-            );
-        }
-        assert_eq!(watches().ok(), Some(held));
-        assert_eq!(held, 2, "the root and its one skill directory");
-        assert_eq!(
-            sources.user_pages.load(std::sync::atomic::Ordering::SeqCst),
-            pages
-        );
-        write("second")?;
-        sources
-            .user_watch
-            .generation
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        let mut listed = names(sources.user_catalog(&mut DiscoveryWork::default())?.await?);
-        listed.sort();
-        assert_eq!(listed, ["first", "second"]);
-        Ok(())
-    }
 
     #[tokio::test]
     async fn child_skill_binding_reads_own_sources_and_rejects_parent_private_sources() -> Result<()>

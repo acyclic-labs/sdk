@@ -155,25 +155,12 @@ impl TurnContext for LocalContext {
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("agent turn has no private writer".into()))?;
             let bindings = local.turn_bindings(agent, authority).await?;
-            let epoch = local
-                .context_epoch(agent, &bindings.context, &**writer)?
+            let manifest = local
+                .stage_context_manifest_with(turn, &bindings.context, &**writer)?
                 .await?;
             let executor = executor
-                .with_context_epoch(&epoch, authority.content.reader.clone())
+                .with_context_manifest(manifest, authority.content.reader.clone())
                 .await?;
-            // Before the turn's first request: the step-0 boundary appends
-            // what changed since the epoch froze.
-            local
-                .announce_changes(
-                    agent,
-                    &epoch,
-                    &bindings.context,
-                    &**writer,
-                    authority.content.reader.as_ref(),
-                )
-                .await?;
-            #[cfg(any(test, feature = "hooks"))]
-            let hooks = local.turn_hooks(turn, &**writer).await?;
             let (executor, context) =
                 Tasks::bind(&bindings.harness, executor, agent, turn, authority)?;
             let executor = executor.with_live_reply(crate::executor::LiveReply::new(
@@ -184,13 +171,7 @@ impl TurnContext for LocalContext {
             // a forked child (which inherits its parent's tail) runs its own.
             #[cfg(any(test, feature = "hooks"))]
             let executor = executor
-                .with_agent_hooks(
-                    &context,
-                    turn,
-                    input,
-                    session_operation(&agent.path),
-                    hooks.as_ref(),
-                )
+                .with_agent_hooks(&context, turn, input, session_operation(&agent.path))
                 .await?;
             #[cfg(not(any(test, feature = "hooks")))]
             let _ = (context, input);

@@ -6,5 +6,6 @@
   <os>{os}</os>
   <current_date>{current_date}</current_date>
   <timezone>{timezone}</timezone>
+  <git_status>{git_status}</git_status>
   <model>{model}</model>
 </environment_context>
