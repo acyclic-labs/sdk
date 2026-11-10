@@ -45,6 +45,23 @@ pub(super) struct Told {
     epoch: FileRef,
     file: Option<FileRef>,
     state: ToldState,
+    /// Exclusive inbox cursor after the last committed notice. Every turn
+    /// preparation fences its first request with it, so a retried
+    /// preparation still admits a notice an earlier attempt sent; a reload
+    /// recovers it by resending the retained outbox entry.
+    through: Option<u64>,
+}
+
+impl Told {
+    fn delivered(&mut self, delivery: crate::agent::Delivered) -> Result<()> {
+        if let crate::agent::Delivered::Committed { inbox } = delivery {
+            let cursor = inbox
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("context delivery cursor overflow".into()))?;
+            self.through = Some(self.through.map_or(cursor, |previous| previous.max(cursor)));
+        }
+        Ok(())
+    }
 }
 
 /// The durable delivery frontier, including the outbox entry that must be
@@ -120,16 +137,6 @@ impl LocalHarness {
         let Some(hosted) = self.agents.get() else {
             return Ok(None);
         };
-        let mut through = None;
-        let mut delivered = |delivery| -> Result<()> {
-            if let crate::agent::Delivered::Committed { inbox } = delivery {
-                let cursor = inbox
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Invalid("context delivery cursor overflow".into()))?;
-                through = Some(through.map_or(cursor, |previous: u64| previous.max(cursor)));
-            }
-            Ok(())
-        };
         let live = self.live_manifest(binding, publisher, Vec::new()).await?;
         let cached = self
             .told
@@ -175,6 +182,7 @@ impl LocalHarness {
                     epoch: epoch.manifest().clone(),
                     file,
                     state,
+                    through: None,
                 }
             }
         };
@@ -182,7 +190,7 @@ impl LocalHarness {
             path: agent.path.clone(),
         };
         if let Some(pending) = told.state.pending.take() {
-            delivered(
+            told.delivered(
                 hosted
                     .agents()
                     .send(&agent.path, &by, &pending)
@@ -238,7 +246,7 @@ impl LocalHarness {
                 }
             };
             told.file = Some(file);
-            delivered(
+            told.delivered(
                 hosted
                     .agents()
                     .send(&agent.path, &by, &record)
@@ -247,6 +255,7 @@ impl LocalHarness {
             )?;
             told.state.pending = None;
         }
+        let through = told.through;
         self.told
             .lock()
             .map_err(|_| Error::Storage("context change lock poisoned".into()))?

@@ -29,6 +29,18 @@ pub struct BoundaryCut {
     pub through: u64,
 }
 
+/// Where one boundary's inbox window ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundaryEnd {
+    /// One live window: up to [`super::MAX_QUEUED`] records or the first barrier.
+    Open,
+    /// A live window that also stops at this exclusive cursor. Records behind
+    /// it, behind a barrier or past one window stay for a later boundary.
+    Fence(u64),
+    /// Replay of a frozen selection: exactly this exclusive cursor, or an error.
+    Exact(u64),
+}
+
 /// Read one window at an actual model boundary. A later arrival belongs to a
 /// later boundary. Cancel/archive are barriers and remain explicit interrupts.
 /// `agent` and `cursor` are the original actor delivery's admitted state and
@@ -39,18 +51,22 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
     cursor: u64,
     from: u64,
     initial: u64,
-    until: Option<u64>,
+    end: BoundaryEnd,
 ) -> Result<BoundarySelection, Error> {
-    let limit = match until {
-        Some(until) => u32::try_from(
+    let window = super::MAX_QUEUED as u32;
+    let limit = match end {
+        BoundaryEnd::Open => window,
+        BoundaryEnd::Fence(fence) => {
+            u32::try_from(fence.saturating_sub(from)).map_or(window, |count| count.min(window))
+        }
+        BoundaryEnd::Exact(until) => u32::try_from(
             until
                 .checked_sub(from)
                 .ok_or(Error::Record("steering cursor precedes its source range"))?,
         )
         .ok()
-        .filter(|count| *count <= super::MAX_QUEUED as u32)
+        .filter(|count| *count <= window)
         .ok_or(Error::Record("steering range exceeds one inbox window"))?,
-        None => super::MAX_QUEUED as u32,
     };
     let mut selection = BoundarySelection {
         from,
@@ -71,7 +87,9 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
         .await;
     let mut records = match records {
         Ok(records) => records,
-        Err(acyclic_stream::StreamError::NotFound) if until.is_none() => return Ok(selection),
+        Err(acyclic_stream::StreamError::NotFound) if !matches!(end, BoundaryEnd::Exact(_)) => {
+            return Ok(selection);
+        }
         Err(error) => return Err(Error::Stream(error)),
     };
     while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
@@ -103,7 +121,7 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
             selection.inputs.push((record.sequence, input));
         }
     }
-    if until.is_some_and(|until| until != selection.through) {
+    if matches!(end, BoundaryEnd::Exact(until) if until != selection.through) {
         return Err(Error::Record("frozen steering range is unavailable"));
     }
     Ok(selection)

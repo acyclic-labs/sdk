@@ -115,21 +115,21 @@ where
                 .through
                 .unwrap_or_else(|| self.inbox.saturating_add(1).max(self.agent.steered_through))
         };
-        // Preparation may publish source deltas behind other arrivals. Include
-        // their ordered prefix, but do not replace the turn's original frozen
-        // notice frontier with unrelated arrivals before the first dispatch.
-        // Replay always uses ContextPrepared's exact original cut.
-        let until = match frozen {
-            Some(cut) => Some(cut.through),
-            None if step == 0 => Some(
+        // Preparation may publish source deltas behind other arrivals. The
+        // first request includes their ordered prefix up to that fence, one
+        // window at most and never past a turn barrier; the rest wait for a
+        // later boundary. Unrelated later arrivals never join it. Replay uses
+        // ContextPrepared's exact original cut.
+        let end = match frozen {
+            Some(cut) => crate::agent::BoundaryEnd::Exact(cut.through),
+            None if step == 0 => crate::agent::BoundaryEnd::Fence(
                 self.admitted
                     .lock()
                     .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?
                     .prepared_sources
-                    .unwrap_or(from)
-                    .max(from),
+                    .unwrap_or(from),
             ),
-            None => None,
+            None => crate::agent::BoundaryEnd::Open,
         };
         let selection = crate::agent::select_boundary(
             &*self.stream,
@@ -137,7 +137,7 @@ where
             self.cursor,
             from,
             self.inbox,
-            until,
+            end,
         )
         .await
         .map_err(agent_error)?;

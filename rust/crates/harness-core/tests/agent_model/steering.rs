@@ -109,24 +109,58 @@ async fn steering_keeps_followups_and_interrupts_behind_their_source_barriers() 
     ] {
         submit(&stream, send(&path, &user(), &record)?).await?;
     }
-    let first = select_boundary(&stream, &state, 0, 1, 0, None).await?;
+    let first = select_boundary(&stream, &state, 0, 1, 0, BoundaryEnd::Open).await?;
     assert_eq!((first.from, first.through, first.inputs.len()), (1, 3, 2));
     // An explicitly started follow-up can admit steering that arrived after it.
-    let next = select_boundary(&stream, &state, 0, 4, 3, None).await?;
+    let next = select_boundary(&stream, &state, 0, 4, 3, BoundaryEnd::Open).await?;
     assert_eq!((next.through, next.inputs.len()), (5, 1));
     assert_eq!(
-        select_boundary(&stream, &state, 0, 5, 3, None)
+        select_boundary(&stream, &state, 0, 5, 3, BoundaryEnd::Open)
             .await?
             .through,
         5
     );
     // The frozen range cannot absorb records that arrived after preparation.
     assert_eq!(
-        select_boundary(&stream, &state, 0, 1, 0, Some(first.through)).await?,
+        select_boundary(&stream, &state, 0, 1, 0, BoundaryEnd::Exact(first.through)).await?,
         first
     );
     assert!(
-        select_boundary(&stream, &state, 0, 1, 0, Some(4))
+        select_boundary(&stream, &state, 0, 1, 0, BoundaryEnd::Exact(4))
+            .await
+            .is_err()
+    );
+    // A preparation fence past a follow-up stops at that barrier: the notice
+    // behind it waits for a later boundary instead of failing this request.
+    assert_eq!(
+        select_boundary(&stream, &state, 0, 1, 0, BoundaryEnd::Fence(7)).await?,
+        first
+    );
+    let fenced = select_boundary(&stream, &state, 0, 1, 0, BoundaryEnd::Fence(2)).await?;
+    assert_eq!((fenced.through, fenced.inputs.len()), (2, 1));
+    // More prepared notices than one window select one window; the rest stay
+    // queued for the next boundary.
+    let many = create(&stream, id(5)).await?;
+    let many_state = AgentState::adopted(many.clone(), &adopted(many.id())).expect("adopts");
+    let total = MAX_QUEUED + 1;
+    for index in 0..total {
+        submit(&stream, send(&many, &user(), &notice(index, false))?).await?;
+    }
+    let fence = u64::try_from(total)? + 1;
+    let window = select_boundary(&stream, &many_state, 0, 1, 0, BoundaryEnd::Fence(fence)).await?;
+    assert_eq!(window.inputs.len(), MAX_QUEUED);
+    let rest = select_boundary(
+        &stream,
+        &many_state,
+        0,
+        window.through,
+        0,
+        BoundaryEnd::Open,
+    )
+    .await?;
+    assert_eq!((rest.through, rest.inputs.len()), (fence, 1));
+    assert!(
+        select_boundary(&stream, &many_state, 0, 1, 0, BoundaryEnd::Exact(fence))
             .await
             .is_err()
     );
@@ -141,10 +175,10 @@ async fn steering_keeps_followups_and_interrupts_behind_their_source_barriers() 
     for record in [notice(5, false), approval, notice(6, true)] {
         submit(&stream, send(&other, &user(), &record)?).await?;
     }
-    let selected = select_boundary(&stream, &other_state, 0, 1, 0, None).await?;
+    let selected = select_boundary(&stream, &other_state, 0, 1, 0, BoundaryEnd::Open).await?;
     assert_eq!((selected.through, selected.inputs.len()), (2, 1));
     assert!(
-        select_boundary(&stream, &other_state, 0, 1, 0, Some(4))
+        select_boundary(&stream, &other_state, 0, 1, 0, BoundaryEnd::Exact(4))
             .await
             .is_err()
     );
@@ -189,27 +223,35 @@ async fn consumed_approval_and_hook_responses_do_not_block_later_steering() -> R
             },
         },
     ]);
-    let before = select_boundary(&stream, &state, 6, 1, 0, None).await?;
+    let before = select_boundary(&stream, &state, 6, 1, 0, BoundaryEnd::Open).await?;
     assert_eq!(before.through, 2, "a queued response retains its own turn");
     state.queued.pop_front();
-    let resumed = select_boundary(&stream, &state, 6, 1, 0, None).await?;
+    let resumed = select_boundary(&stream, &state, 6, 1, 0, BoundaryEnd::Open).await?;
     assert_eq!((resumed.through, resumed.inputs.len()), (4, 2));
     state.queued.clear();
     // The existing overflow exceptions distinguish an out-of-order response
     // already taken from one still unread behind the retained window.
     state.overflow = Some(2);
     state.taken.extend([2, 4]);
-    let selected = select_boundary(&stream, &state, 6, 1, 0, None).await?;
+    let selected = select_boundary(&stream, &state, 6, 1, 0, BoundaryEnd::Open).await?;
     assert_eq!((selected.through, selected.inputs.len()), (6, 3));
     submit(&stream, send(&state.path, &user(), &notice(4, true))?).await?;
     assert_eq!(
-        select_boundary(&stream, &state, 6, 1, 0, Some(selected.through)).await?,
+        select_boundary(
+            &stream,
+            &state,
+            6,
+            1,
+            0,
+            BoundaryEnd::Exact(selected.through)
+        )
+        .await?,
         selected,
         "replay cannot absorb a later source suffix"
     );
     state.taken.remove(&2);
     assert_eq!(
-        select_boundary(&stream, &state, 6, 1, 0, None)
+        select_boundary(&stream, &state, 6, 1, 0, BoundaryEnd::Open)
             .await?
             .through,
         2
