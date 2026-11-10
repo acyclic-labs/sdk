@@ -126,6 +126,15 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
         let cuts = cuts?;
         let writes = driver.schedule.durable_writes();
         let window = |from: usize, to: usize| flushes(&writes[cuts[from]..cuts[to]]);
+        if window(0, 1) != (7, 12) {
+            eprintln!(
+                "fresh open original calls: {:#?}",
+                &writes[cuts[0]..cuts[1]]
+            );
+            let sources: std::collections::BTreeSet<_> =
+                driver.boundaries.iter().map(|(_, detail)| detail).collect();
+            eprintln!("original operation owners: {sources:#?}");
+        }
         Ok(Windows {
             open: window(0, 1),
             first: window(1, 2),
