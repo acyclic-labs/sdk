@@ -468,6 +468,8 @@ pub(super) fn load_all_contexts(
 #[cfg(not(target_arch = "wasm32"))]
 impl LocalCoreStateStore {
     /// Loads a context on the original native ledger.
+    /// Cancellation withdraws the reply; an accepted producer retains its input
+    /// until physical completion. A cancelled update may already be durable.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn load_context(
         &self,
@@ -488,7 +490,7 @@ impl LocalCoreStateStore {
             )
         })?;
         let cancellation = cancellation.clone();
-        native_records::transaction!(self, original.clone(), |root, log, work| {
+        native_records::transaction!(self, original.clone(), cancellation, |root, log, work| {
             native_records::load::<WorkspaceContext>(&root, log, context_id, work, &cancellation)
         })
         .await
@@ -501,6 +503,8 @@ impl LocalCoreStateStore {
     }
 
     /// Compares and updates a context on the original native ledger.
+    /// Cancellation withdraws the reply; an accepted producer retains its input
+    /// until physical completion. A cancelled update may already be durable.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn compare_context(
         &self,
@@ -532,7 +536,7 @@ impl LocalCoreStateStore {
             )
         })?;
         let cancellation = cancellation.clone();
-        native_records::transaction!(self, original.clone(), |root, log, work| {
+        native_records::transaction!(self, original.clone(), cancellation, |root, log, work| {
             native_records::compare_native_context(
                 &root,
                 log,
@@ -556,6 +560,8 @@ impl LocalCoreStateStore {
 #[cfg(not(target_arch = "wasm32"))]
 impl LocalCoreStateStore {
     /// Loads lineage on the original native ledger.
+    /// Cancellation withdraws the reply; an accepted producer retains its input
+    /// until physical completion. A cancelled update may already be durable.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn load_lineage(
         &self,
@@ -572,7 +578,7 @@ impl LocalCoreStateStore {
         native_records::check(original, cancellation)
             .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
         let cancellation = cancellation.clone();
-        native_records::transaction!(self, original.clone(), |root, log, work| {
+        native_records::transaction!(self, original.clone(), cancellation, |root, log, work| {
             native_records::load::<WorkspaceLineageRecord>(
                 &root,
                 log,
@@ -586,6 +592,8 @@ impl LocalCoreStateStore {
     }
 
     /// Compares and updates lineage on the original native ledger.
+    /// Cancellation withdraws the reply; an accepted producer retains its input
+    /// until physical completion. A cancelled update may already be durable.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn compare_lineage(
         &self,
@@ -608,7 +616,7 @@ impl LocalCoreStateStore {
         })
         .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
         let cancellation = cancellation.clone();
-        native_records::transaction!(self, original.clone(), |root, log, work| {
+        native_records::transaction!(self, original.clone(), cancellation, |root, log, work| {
             native_records::compare_native_lineage(
                 &root,
                 log,

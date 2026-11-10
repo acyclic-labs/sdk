@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/core_state/native_records/mod.rs
++++ b/rust/crates/filesystem/src/core_state/native_records/mod.rs
+@@ -54,7 +54,7 @@
+     let request = cancellation
+         .prepare_cancelled_with_native_work(&work)
+         .map_err(crate::cancellation::CancellationWaitError::into_native)?;
+-    let original = if cancellation.same_state(work.cancellation()) {
++    let original = if false && cancellation.same_state(work.cancellation()) {
+         None
+     } else {
+         Some(work.cancellation_wait()?)

@@ -6,12 +6,13 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         id: WorkspaceId,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<Option<LazyWorkspaceState>, crate::LazyWorkspaceError> {
-        let work = core_lazy_work(accounting)?;
+        let owner = crate::kernel::allocation::retained::NativeAccounting::take(accounting)
+            .map_err(lazy_accounting_error)?;
         let state = finish_core_lazy(
-            self.materialization(work.clone())
+            self.materialization(owner.work.clone())
                 .load_logged::<LazyWorkspaceState>(id)
                 .await,
-            &work,
+            owner,
             accounting,
         )?;
         if state.as_ref().is_some_and(|state| {
@@ -30,16 +31,18 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         state: LazyWorkspaceState,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<bool, crate::LazyWorkspaceError> {
-        let work = core_lazy_work(accounting)?;
+        accounting.check().map_err(lazy_accounting_error)?;
         if state.schema_version != crate::lazy_workspace::LAZY_STATE_SCHEMA
             || state.workspace_id != id
         {
             return Err(crate::LazyWorkspaceError::NativeRecordIntegrity);
         }
+        let owner = crate::kernel::allocation::retained::NativeAccounting::take(accounting)
+            .map_err(lazy_accounting_error)?;
         finish_core_lazy(
-            self.swap_lazy_logged(id, revision, state, work.clone())
+            self.swap_lazy_logged(id, revision, state, owner.work.clone())
                 .await,
-            &work,
+            owner,
             accounting,
         )
     }
@@ -55,10 +58,11 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         )>,
         crate::LazyWorkspaceError,
     > {
-        let work = core_lazy_work(accounting)?;
+        let owner = crate::kernel::allocation::retained::NativeAccounting::take(accounting)
+            .map_err(lazy_accounting_error)?;
         core_lazy_node(
-            self.load_node::<LazyOverlay>(id, work.clone()).await,
-            &work,
+            self.load_node::<LazyOverlay>(id, owner.work.clone()).await,
+            owner,
             accounting,
         )
     }
@@ -86,10 +90,12 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         )>,
         crate::LazyWorkspaceError,
     > {
-        let work = core_lazy_work(accounting)?;
+        let owner = crate::kernel::allocation::retained::NativeAccounting::take(accounting)
+            .map_err(lazy_accounting_error)?;
         core_lazy_node(
-            self.load_node::<crate::LazyShadow>(id, work.clone()).await,
-            &work,
+            self.load_node::<crate::LazyShadow>(id, owner.work.clone())
+                .await,
+            owner,
             accounting,
         )
     }

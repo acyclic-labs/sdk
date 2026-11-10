@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/kernel/allocation/retained/native.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/retained/native.rs
+@@ -39,7 +39,7 @@
+         let super::super::LedgerState::Suspended(_, observer) = &mut allocations.state else {
+             unreachable!("the original branch was suspended by handoff")
+         };
+-        *observer = Some(Arc::clone(&meter));
++        *observer = None;
+         Ok(Self {
+             work: crate::NativeMaterializationWork::from_meter(meter),
+             baseline: Some(baseline),

@@ -107,7 +107,6 @@ impl DemandWork {
         let shell = Self::new(WorkBudget::default(), &self.cancellation);
         std::mem::replace(self, shell)
     }
-    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn allocation_parts(
         &mut self,
     ) -> (

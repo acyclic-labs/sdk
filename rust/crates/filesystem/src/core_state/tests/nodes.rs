@@ -92,6 +92,65 @@ async fn content_addressed_nodes_share_one_family_lock() {
     // One file per record and the family's one lock: no lock file per record
     // or per lookup, which would double a store's files.
     assert_eq!(names, expected);
+
+    // Withdraw a real publication while its original native producer is held.
+    // The caller cannot reuse admission or retire the producer's input credit.
+    let mut caller =
+        crate::kernel::KernelAccounting::standalone(native::finite_budget(), &cancellation);
+    let anchor =
+        crate::kernel::allocation::retained::RetainedAllocation::claim(0, 0, &mut caller).unwrap();
+    let (id, value) = linked_overlay("/withdrawn", empty, empty);
+    let bytes = value.owned_bytes();
+    let allocation = caller.claim_owned(bytes, 1).unwrap();
+    let funded = anchor.standalone_live_bytes().unwrap();
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+    let mut publish =
+        Box::pin(schedule.scope(store.put_lazy_overlay(id, (value, allocation), &mut caller)));
+    assert!(futures::poll!(publish.as_mut()).is_pending());
+    let boundary = boundaries
+        .recv()
+        .await
+        .expect("accepted publication has a producer");
+    drop(publish);
+    assert!(
+        matches!(
+            caller.remaining(),
+            Err(crate::FsError::AccountingHandoffActive)
+        ),
+        "withdrawn publication reactivated its original caller"
+    );
+    assert!(
+        anchor.standalone_live_bytes().unwrap() >= funded,
+        "withdrawn publication retired its producer's input"
+    );
+    let driver = tokio::spawn(async move {
+        while let Some(boundary) = boundaries.recv().await {
+            boundary.release();
+        }
+    });
+    boundary.release();
+    schedule.drained().await;
+    assert!(
+        caller.spent().object_bytes_written > 0,
+        "withdrawn publication lost its completed original work"
+    );
+    let live = accounting.standalone_parts().unwrap().0.live_bytes();
+    let (loaded, mut allocation) = store
+        .load_lazy_overlay(id, &mut accounting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.owned_bytes(), bytes);
+    assert_eq!(
+        accounting.standalone_parts().unwrap().0.live_bytes(),
+        live + bytes,
+        "loaded node must transfer its existing original backing"
+    );
+    drop(loaded);
+    accounting.release_owned(&mut allocation, bytes).unwrap();
+    assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), live);
+    driver.abort();
+    let _ = driver.await;
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 use super::*;
 
-struct CancellationNotification<F> {
+pub(super) struct CancellationNotification<F> {
     notify: F,
     _allocation: Option<crate::NativeAllocation>,
 }

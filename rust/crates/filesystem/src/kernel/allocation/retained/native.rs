@@ -10,6 +10,24 @@ pub(crate) struct NativeAccounting {
 }
 
 impl NativeAccounting {
+    /// Returns a completed output to the same caller without another admission.
+    /// Ordinary callers resume ownership of the already charged scratch; native
+    /// callers keep the same original allocation guard.
+    pub(crate) fn return_allocation(
+        &self,
+        mut allocation: crate::NativeAllocation,
+        bytes: u64,
+    ) -> Result<KernelOwnedAllocation, crate::FsError> {
+        if self.baseline.is_some() {
+            allocation.transfer_original_bytes(&self.work.state, bytes)?;
+            return Ok(KernelOwnedAllocation::Standalone);
+        }
+        if allocation.bytes() != bytes || !allocation.work().shares_allocation_context(&self.work) {
+            return Err(crate::FsError::AccountingHandoffActive);
+        }
+        Ok(KernelOwnedAllocation::NativeOriginal(allocation))
+    }
+
     pub(crate) fn take(accounting: &mut KernelAccounting<'_>) -> Result<Self, crate::FsError> {
         accounting.check()?;
         if let Some(work) = accounting.native_work() {
@@ -35,8 +53,13 @@ impl NativeAccounting {
         *owned_counters = *counters;
         let baseline = *counters;
         let meter = crate::demand::NativeDemandReadMeter::with_backing(state, backing);
+        let meter = Arc::new(meter);
+        let super::super::LedgerState::Suspended(_, observer) = &mut allocations.state else {
+            unreachable!("the original branch was suspended by handoff")
+        };
+        *observer = Some(Arc::clone(&meter));
         Ok(Self {
-            work: crate::NativeMaterializationWork::from_meter(Arc::new(meter)),
+            work: crate::NativeMaterializationWork::from_meter(meter),
             baseline: Some(baseline),
         })
     }
