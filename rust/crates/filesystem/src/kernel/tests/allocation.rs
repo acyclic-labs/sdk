@@ -263,7 +263,8 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
             values.retire(&mut accounting)?;
         } else {
             let owned = super::super::persistent_point::Owned::<Vec<u64>>::allocate(
-                initial_capacity, &mut accounting,
+                initial_capacity,
+                &mut accounting,
             )?;
             let mut values = owned.value;
             let mut allocation = owned.allocation;
@@ -272,7 +273,8 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dy
                 elements: old_capacity,
                 logical_bytes: owned.bytes,
             };
-            values.resize(old_capacity, 7);            let old_pointer = values.as_ptr();
+            values.resize(old_capacity, 7);
+            let old_pointer = values.as_ptr();
             let before = original.receipt();
             let result = capacity.ensure_for_push_with_accounting(
                 &mut values,

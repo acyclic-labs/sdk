@@ -206,15 +206,15 @@ impl LocalWorkspace {
             native.then(|| (crate::filesystem::HOME_VOLUME.into(), scratch, None)),
         )?;
         if native {
-        volumes::attach(
-            &self.filesystem,
-            &self.store,
-            &root,
-            &mut mounts,
-            authority,
-            &self.task_view_admission,
-        )
-        .await?;
+            volumes::attach(
+                &self.filesystem,
+                &self.store,
+                &root,
+                &mut mounts,
+                authority,
+                &self.task_view_admission,
+            )
+            .await?;
         }
         Ok(Arc::new(mounts))
     }

@@ -689,7 +689,6 @@ mod prepared_leaf_tests {
         let after = preparation.receipt();
         assert_eq!(after.bytes_encoded, before.bytes_encoded);
         assert_eq!(after.allocation_operations, before.allocation_operations);
-    assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
         assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
         assert_eq!(preparation.live_allocation_bytes(), live);
         drop(file);
