@@ -163,7 +163,10 @@ impl DemandSource for CountingSource {
     fn identity(&self) -> [u8; 16] {
         [7; 16]
     }
-    fn reference(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceReference, DemandError> {
+    async fn reference(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
         ctx.check()?;
         Ok(SourceReference {
             components: acyclic_stream::OwnedBytes::new(),

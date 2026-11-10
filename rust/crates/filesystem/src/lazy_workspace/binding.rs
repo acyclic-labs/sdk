@@ -1,13 +1,13 @@
 use super::*;
 
-pub(super) fn selected_source_reference<D: DemandSource>(
+pub(super) async fn selected_source_reference<D: DemandSource>(
     source: &D,
     retained: Option<&SourceReference>,
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<SourceReference, LazyWorkspaceError> {
     match retained {
         Some(source) => Ok(source.clone()),
-        None => source.reference(ctx).map_err(Into::into),
+        None => source.reference(ctx).await.map_err(Into::into),
     }
 }
 
@@ -28,7 +28,7 @@ impl<
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, crate::Generation<A, O>), LazyWorkspaceError> {
-        let original = source.reference(ctx)?;
+        let original = source.reference(ctx).await?;
         let generation = accounted!(ctx, |work, cancel| fs
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 name,
@@ -42,7 +42,7 @@ impl<
         lazy.state(ctx)
             .await?
             .validate_root_binding(lazy.workspace.id(), original.clone())?;
-        if lazy.source.reference(ctx)? != original {
+        if lazy.source.reference(ctx).await? != original {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok((lazy, generation))
@@ -55,7 +55,7 @@ impl<
         store: S,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Self, LazyWorkspaceError> {
-        let reference = source.reference(ctx)?;
+        let reference = source.reference(ctx).await?;
         if store
             .load_lazy_workspace(workspace.id(), ctx)
             .await?
@@ -177,11 +177,11 @@ impl<
         accept_receipt(result, ctx)
     }
 
-    pub(crate) fn source_reference(
+    pub(crate) async fn source_reference(
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SourceReference, LazyWorkspaceError> {
-        selected_source_reference(self.source.as_ref(), self.retained_source.as_ref(), ctx)
+        selected_source_reference(self.source.as_ref(), self.retained_source.as_ref(), ctx).await
     }
 
     /// Captures an ordinary complete cut without enumeration.
@@ -259,7 +259,7 @@ impl<
         state: &LazyWorkspaceState,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SourceReference, LazyWorkspaceError> {
-        let source = self.source_reference(ctx)?;
+        let source = self.source_reference(ctx).await?;
         if state.schema_version != LAZY_STATE_SCHEMA
             || state.workspace_id != self.workspace.id()
             || state.source.identity != source.identity

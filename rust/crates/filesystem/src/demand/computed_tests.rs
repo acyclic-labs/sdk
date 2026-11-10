@@ -54,7 +54,10 @@ impl ViewProvider for Provider {
     fn identity(&self) -> [u8; 16] {
         [7; 16]
     }
-    fn reference(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceReference, DemandError> {
+    async fn reference(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
         let epoch = self.epoch.load(Ordering::SeqCst);
         SourceReference::opaque(self.identity(), epoch, &epoch.to_le_bytes(), ctx)
     }
@@ -76,7 +79,9 @@ impl ViewProvider for Provider {
             .ok_or(DemandError::StaleSource)?;
         Ok((
             ViewCut {
-                sequence: source.epoch,
+                // The primary stream stays fixed while another captured input
+                // advances. Versions must retain the whole source cut.
+                sequence: 0,
                 generation: [0; 32],
             },
             bytes,
@@ -347,7 +352,7 @@ async fn computed_lazy_overlay_and_fork_use_one_demand_path() {
 async fn computed_exact_versions_ranges_and_routed_root_pages() {
     let provider = Provider::new();
     let view = computed(&provider);
-    let source = reference(&view);
+    let source = reference(&view).await;
     let cancel = CancellationToken::new();
     let node = view
         .lookup(
@@ -388,7 +393,7 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
     assert_eq!(file.read_range(1, 2, ctx!()).unwrap().bytes.as_ref(), b"bc");
     assert!(matches!(
         view.read_range(
-            reference(&view),
+            reference(&view).await,
             &path("/index.md"),
             node.version,
             0,
@@ -409,7 +414,7 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
     );
     let first = routed
         .list_page(
-            reference(&routed),
+            reference(&routed).await,
             &path("/"),
             None,
             1,
@@ -423,7 +428,7 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
     assert_eq!(first.entries[0].name.as_bytes(), b"ui");
     let last = routed
         .list_page(
-            reference(&routed),
+            reference(&routed).await,
             &path("/"),
             first.next,
             1,
@@ -586,7 +591,7 @@ async fn computed_mounted_override_removal_preserves_the_original_data_decision(
 async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
     let provider = Provider::new();
     let view = computed(&provider);
-    let source = reference(&view);
+    let source = reference(&view).await;
     let cancel = CancellationToken::new();
     let direct_file = view
         .lookup(
@@ -618,7 +623,7 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
         view,
         crate::VolumeLimits::default(),
     );
-    let source = reference(&routed);
+    let source = reference(&routed).await;
     let file = routed
         .lookup(
             source.clone(),
@@ -706,12 +711,13 @@ async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
     }
 }
 
-fn reference<D: DemandSource>(source: &D) -> SourceReference {
+async fn reference<D: DemandSource>(source: &D) -> SourceReference {
     let cancel = CancellationToken::new();
     source
         .reference(&mut KernelAccounting::standalone(
             WorkBudget::UNBOUNDED,
             &cancel,
         ))
+        .await
         .unwrap()
 }

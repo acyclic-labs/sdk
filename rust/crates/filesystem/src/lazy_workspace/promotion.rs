@@ -227,7 +227,7 @@ impl<
                         let text = Owned::new(text, allocation, bytes);
                         let result =
                             async {
-                                let source = self.source_reference(ctx)?;
+                                let source = self.source_reference(ctx).await?;
                                 match self.source_lookup(&source, &text.value, ctx).await? {
                                     Some(node) if node.kind == SourceNodeKind::Directory => {
                                         self.populate_source_node(

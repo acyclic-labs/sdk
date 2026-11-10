@@ -4,6 +4,8 @@ use crate::facade::FsWork;
 use crate::kernel::{KernelAccounting, KernelOwnedAllocation, OwnedSourceChunk};
 use std::sync::Arc;
 
+const VERSION_DOMAIN: &[u8] = b"acyclic:computed:node:v2";
+
 /// Immutable inputs to a view. The generation is a volume content address;
 /// the sequence is a committed stream cut, never a wall-clock timestamp.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,7 +29,7 @@ pub trait ViewProvider: Send + Sync {
     fn reference(
         &self,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<SourceReference, DemandError>;
+    ) -> impl Future<Output = Result<SourceReference, DemandError>> + Send;
     /// Resolves the requested cut without enumerating unrelated records.
     fn snapshot(
         &self,
@@ -123,23 +125,27 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
 
     fn version(
         &self,
+        source: &SourceReference,
         cut: ViewCut,
         path: &NamespacePath,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SourceVersion, DemandError> {
-        self.version_names(cut, path.components().iter(), ctx)
+        self.version_names(source, cut, path.components().iter(), ctx)
     }
 
     fn version_names<'a>(
         &self,
+        source: &SourceReference,
         cut: ViewCut,
         names: impl Iterator<Item = &'a crate::kernel::LogicalName> + Clone,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SourceVersion, DemandError> {
         let mut hash = blake3::Hasher::new();
-        let bytes = 48
+        let bytes = VERSION_DOMAIN.len() as u64
+            + 48
             + 8
             + 32
+            + source.encoded_len() as u64
             + names
                 .clone()
                 .map(|name| 9 + name.as_bytes().len() as u64)
@@ -148,10 +154,14 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
             bytes_hashed: bytes,
             ..WorkCounters::UNCHARGED
         })?;
+        hash.update(VERSION_DOMAIN);
         hash.update(&self.view.identity());
         hash.update(&self.provider.identity());
         hash.update(&cut.sequence.to_le_bytes());
         hash.update(&cut.generation);
+        source.encode(|part| {
+            hash.update(part);
+        });
         for name in names {
             hash.update(&[name.encoding().tag()]);
             hash.update(&(name.as_bytes().len() as u64).to_le_bytes());
@@ -162,15 +172,13 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
 
     fn selected(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         path: &NamespacePath,
         expected: SourceVersion,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(ViewCut, P::Snapshot), DemandError> {
-        let selected = self
-            .provider
-            .snapshot(self.provider_source(&source)?, ctx)?;
-        if self.version(selected.0, path, ctx)? != expected {
+        let selected = self.provider.snapshot(self.provider_source(source)?, ctx)?;
+        if self.version(source, selected.0, path, ctx)? != expected {
             return Err(DemandError::StaleVersion);
         }
         Ok(selected)
@@ -191,11 +199,14 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
         identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
         identity
     }
-    fn reference(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceReference, DemandError> {
+    async fn reference(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
         ctx.check()?;
         Ok(SourceReference {
             identity: self.identity(),
-            ..self.provider.reference(ctx)?
+            ..self.provider.reference(ctx).await?
         })
     }
 
@@ -214,7 +225,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
                 .snapshot(self.provider_source(&source)?, &mut ctx)?;
             let mut node = self.view.lookup(cut, &snapshot, path, &mut ctx)?;
             if let Some(node) = &mut node {
-                node.version = self.version(cut, path, &mut ctx)?;
+                node.version = self.version(&source, cut, path, &mut ctx)?;
             }
             Ok(node)
         })();
@@ -239,7 +250,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
             let (cut, snapshot) = self
                 .provider
                 .snapshot(self.provider_source(&source)?, &mut ctx)?;
-            let version = self.version(cut, directory, &mut ctx)?;
+            let version = self.version(&source, cut, directory, &mut ctx)?;
             ctx.charge(WorkCounters {
                 bytes_hashed: 48,
                 ..WorkCounters::UNCHARGED
@@ -270,6 +281,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
                 Arc::get_mut(&mut page.entries.backing).ok_or(DemandError::InvalidRequest)?;
             for entry in &mut entries.value {
                 entry.node.version = self.version_names(
+                    &source,
                     cut,
                     directory
                         .components()
@@ -300,7 +312,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
         let mut ctx = work.accounting(cancellation);
         let result = (|| {
             ctx.check()?;
-            let (cut, snapshot) = self.selected(source, path, expected, &mut ctx)?;
+            let (cut, snapshot) = self.selected(&source, path, expected, &mut ctx)?;
             self.view
                 .bytes(cut, &snapshot, path, offset, length, &mut ctx)
         })();
@@ -318,7 +330,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
         let mut ctx = work.accounting(cancellation);
         let result = (|| {
             ctx.check()?;
-            let (cut, snapshot) = self.selected(source, path, expected, &mut ctx)?;
+            let (cut, snapshot) = self.selected(&source, path, expected, &mut ctx)?;
             let node = self
                 .view
                 .lookup(cut, &snapshot, path, &mut ctx)?

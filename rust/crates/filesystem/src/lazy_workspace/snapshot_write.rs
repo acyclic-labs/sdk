@@ -168,7 +168,9 @@ impl<
                             source.as_ref(),
                             retained_source.as_ref(),
                             &mut ctx,
-                        )? != expected_source
+                        )
+                        .await?
+                            != expected_source
                         {
                             return Err(E::from(LazyWorkspaceError::StaleSource));
                         }
@@ -205,7 +207,9 @@ impl<
                                     source.as_ref(),
                                     retained_source.as_ref(),
                                     &mut ctx,
-                                )? != expected_source
+                                )
+                                .await?
+                                    != expected_source
                                 {
                                     return Err(E::from(LazyWorkspaceError::StaleSource));
                                 }

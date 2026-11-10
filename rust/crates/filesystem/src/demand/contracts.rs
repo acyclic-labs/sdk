@@ -255,11 +255,12 @@ pub trait DemandSource: Send + Sync {
     }
     /// Stable namespace identity. This performs no IO and captures no cut.
     fn identity(&self) -> [u8; 16];
-    /// Current opaque source reference.
+    /// Captures the current complete cut. Native sources complete immediately;
+    /// remote sources wait on their provider's observation, on this same ledger.
     fn reference(
         &self,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<SourceReference, DemandError>;
+    ) -> impl Future<Output = Result<SourceReference, DemandError>> + Send;
 
     /// Resolve only the requested path. `None` is known absence.
     fn lookup<W: crate::facade::FsWork + Send>(

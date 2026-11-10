@@ -120,9 +120,12 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
     fn identity(&self) -> [u8; 16] {
         self.identity
     }
-    fn reference(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceReference, DemandError> {
-        let base = self.base.reference(ctx)?;
-        let view = self.view.reference(ctx)?;
+    async fn reference(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
+        let base = self.base.reference(ctx).await?;
+        let view = self.view.reference(ctx).await?;
         SourceReference::pair(self.identity, &base, &view, ctx)
     }
 

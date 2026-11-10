@@ -19,11 +19,11 @@ impl<D: DemandSource> DemandSource for Arc<D> {
     fn identity(&self) -> [u8; 16] {
         self.as_ref().identity()
     }
-    fn reference(
+    async fn reference(
         &self,
         ctx: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<SourceReference, DemandError> {
-        self.as_ref().reference(ctx)
+        self.as_ref().reference(ctx).await
     }
     forward!(lookup(source: SourceReference, path: &NamespacePath) -> Option<SourceNode>);
     forward!(list_page(source: SourceReference, path: &NamespacePath, cursor: Option<SourceCursor>, maximum: u32) -> SourceDirectoryPage);

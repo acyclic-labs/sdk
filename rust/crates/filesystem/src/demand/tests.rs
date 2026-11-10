@@ -4,14 +4,14 @@ use crate::model::{FilesystemProfile, VolumeLimits};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-fn source_reference<D: DemandSource>(source: &D) -> Result<SourceReference, Box<dyn Error>> {
+async fn source_reference<D: DemandSource>(source: &D) -> Result<SourceReference, Box<dyn Error>> {
     let cancellation = CancellationToken::new();
-    Ok(
-        source.reference(&mut crate::kernel::KernelAccounting::standalone(
+    Ok(source
+        .reference(&mut crate::kernel::KernelAccounting::standalone(
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))?,
-    )
+        ))
+        .await?)
 }
 async fn lookup_node<D: DemandSource>(
     source: &D,
@@ -162,7 +162,7 @@ async fn assert_source_changes<D: DemandSource>(
     let cancellation = CancellationToken::new();
     let node = lookup_node(
         source,
-        source_reference(source)?,
+        source_reference(source).await?,
         &path(&format!("{prefix}/f"))?,
         &cancellation,
     )
@@ -171,7 +171,7 @@ async fn assert_source_changes<D: DemandSource>(
     assert!(
         source
             .lookup(
-                source_reference(source)?,
+                source_reference(source).await?,
                 &path(&format!("{prefix}/d/x"))?,
                 WorkBudget::UNBOUNDED,
                 &cancellation
@@ -284,7 +284,7 @@ async fn native_source_reports_symbolic_link_target_bytes() -> Result<(), Box<dy
     .await
     .map(|receipt| receipt.value)
     .map_err(|failure| failure.error)?;
-    let reference = source_reference(&source)?;
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
     let node = lookup_node(&source, reference.clone(), &path("/link")?, &cancellation).await?;
 
@@ -327,7 +327,7 @@ async fn native_source_observes_only_the_demanded_directory_before_reading()
     )
     .await?
     .value;
-    let reference = source_reference(&source)?;
+    let reference = source_reference(&source).await?;
     source
         .lookup(
             reference.clone(),
@@ -361,7 +361,7 @@ async fn native_provider_reads_do_not_visit_unrelated_content() -> Result<(), Bo
 
     let source = native_source(root.path()).await?;
     let provider = &source;
-    let reference = source_reference(provider)?;
+    let reference = source_reference(provider).await?;
     let cancellation = CancellationToken::new();
     let node = provider
         .lookup(
@@ -467,7 +467,7 @@ async fn native_device_metadata_preserves_the_host_number() -> Result<(), Box<dy
 
     let source = native_source("/dev").await?;
     let cancellation = CancellationToken::new();
-    let reference = source_reference(&source)?;
+    let reference = source_reference(&source).await?;
     let node = lookup_node(&source, reference.clone(), &path("/null")?, &cancellation).await?;
     assert_eq!(node.kind, SourceNodeKind::CharacterDevice);
     let (major, minor) = node.device.ok_or("device number absent")?;
@@ -492,7 +492,7 @@ async fn held_file(
     std::fs::create_dir(&root)?;
     std::fs::write(root.join("file"), contents)?;
     let source = native_source(&root).await?;
-    let reference = source_reference(&source)?;
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
     let node = lookup_node(&source, reference.clone(), &path("/file")?, &cancellation).await?;
     let file = source
@@ -603,7 +603,7 @@ async fn held_files_under_remote_roots_read_off_the_callback_thread() -> Result<
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("file"), b"remote")?;
     let source = native_source(temporary.path()).await?.remote();
-    let reference = source_reference(&source)?;
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
     let node = lookup_node(&source, reference.clone(), &path("/file")?, &cancellation).await?;
     let file = source
@@ -688,7 +688,7 @@ async fn reads_never_reopen_the_root() -> Result<(), Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt as _;
     let (temporary, source, file) = held_file(b"before").await?;
     let root = temporary.path().join("source");
-    let reference = source_reference(&source)?;
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
     let version = lookup_node(&source, reference.clone(), &path("/file")?, &cancellation)
         .await?
@@ -718,7 +718,7 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     std::fs::create_dir(root.path().join("directory"))?;
     std::fs::write(root.path().join("file"), b"old")?;
     let source = native_source(root.path()).await?;
-    let reference = source_reference(&source)?;
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
     let node = lookup_node(&source, reference.clone(), &path("/file")?, &cancellation).await?;
     std::fs::write(root.path().join("file"), b"newer contents")?;
@@ -953,7 +953,7 @@ async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
     assert!(
         source
             .lookup(
-                source_reference(&source)?,
+                source_reference(&source).await?,
                 &exact,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new()
@@ -987,14 +987,14 @@ async fn assert_lossless_name(
     let exact = NamespacePath::new(vec![name], VolumeLimits::default())?;
     let node = lookup_node(
         &source,
-        source_reference(&source)?,
+        source_reference(&source).await?,
         &exact,
         &CancellationToken::new(),
     )
     .await?;
     let answer = source
         .read_range(
-            source_reference(&source)?,
+            source_reference(&source).await?,
             &exact,
             node.version,
             0,
@@ -1073,7 +1073,7 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
             std::fs::write(temporary.path().join("file"), b"remote")?;
             let source = native_source(temporary.path()).await?.remote();
             let stop = CancellationToken::new();
-            let reference = source_reference(&source)?;
+            let reference = source_reference(&source).await?;
             let name = path("/file")?;
             let node = lookup_node(&source, reference.clone(), &name, &stop).await?;
             let file = source
@@ -1261,7 +1261,7 @@ async fn assert_listing<D: DemandSource>(
     directory: &str,
     expected: usize,
 ) -> Result<(), Box<dyn Error>> {
-    let reference = source_reference(provider)?;
+    let reference = source_reference(provider).await?;
     let cancellation = CancellationToken::new();
     let page = provider
         .list_page(
@@ -1346,7 +1346,7 @@ async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Resul
         view_source.clone(),
         VolumeLimits::default(),
     );
-    let reference = source_reference(&source)?;
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
     let root = path("/")?;
     let mut cursor = None;
@@ -1460,7 +1460,7 @@ async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Resul
     ));
     let root_before = lookup_node(&source, reference.clone(), &root, &cancellation).await?;
     view_source.invalidate();
-    let refreshed = source_reference(&source)?;
+    let refreshed = source_reference(&source).await?;
     assert_eq!(refreshed.identity, reference.identity);
     assert!(refreshed.follows(&reference));
     assert_ne!(refreshed, reference);
@@ -1481,7 +1481,7 @@ async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Resul
         DemandError::StaleSource
     ));
     base_source.invalidate();
-    let both_refreshed = source_reference(&source)?;
+    let both_refreshed = source_reference(&source).await?;
     assert_eq!(both_refreshed.identity, refreshed.identity);
     assert!(both_refreshed.follows(&refreshed));
     assert_ne!(both_refreshed, refreshed);

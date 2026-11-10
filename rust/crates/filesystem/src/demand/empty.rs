@@ -29,7 +29,10 @@ impl DemandSource for Empty {
             .map(|()| Some(Box::new(EmptyWatch) as Box<dyn SourceWatch>));
         work.finish(result, &ctx)
     }
-    fn reference(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceReference, DemandError> {
+    async fn reference(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
         ctx.check()?;
         Ok(self.reference())
     }

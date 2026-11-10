@@ -2,7 +2,7 @@ impl DemandSource for NativeDemandSource {
     fn identity(&self) -> [u8; 16] {
         self.inner.identity
     }
-    fn reference(
+    async fn reference(
         &self,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<SourceReference, DemandError> {

@@ -209,6 +209,7 @@ where
                 let source = self
                     .lazy
                     .source_reference(&mut accounting)
+                    .await
                     .map_err(lazy_error)?;
                 let node = match self
                     .lazy
