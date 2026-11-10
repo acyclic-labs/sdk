@@ -939,6 +939,7 @@ pub(super) fn settlement_frame(input: super::TurnInput) -> crate::Result<super::
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
     }
     Ok(super::ConversationEntry {
+        observed_through: u64::MAX,
         inbox: u64::MAX,
         input,
         output: file.clone(),
