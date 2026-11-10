@@ -10,6 +10,7 @@ impl ToolRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
         self.get(name, None, io)
+            .map(|tool| tool.map(|tool| tool.executor.capability().unwrap_or(tool)))
     }
 
     pub(crate) fn pin_model_definitions(
