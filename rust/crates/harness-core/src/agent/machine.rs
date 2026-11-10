@@ -173,6 +173,17 @@ fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
 }
 
 impl AgentState {
+    /// Reattach every immutable child index to the original provider after decode.
+    pub(super) fn bind_children<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        provider: std::sync::Arc<P>,
+    ) {
+        self.open_children.bind(provider.clone());
+        self.archive_pending.bind(provider.clone());
+        self.awaiting.bind(provider.clone());
+        self.child_settlements.bind(provider);
+    }
+
     /// A terminal setup failure frees its name only before any reply or action
     /// committed. Model failure after a tool action must retain the identity.
     /// The brief is queued at adoption, not appended to the conversation: the
@@ -637,10 +648,7 @@ impl PreparedStep {
         &mut self,
         provider: std::sync::Arc<P>,
     ) -> Result<(), Error> {
-        self.step.state.open_children.bind(provider.clone());
-        self.step.state.archive_pending.bind(provider.clone());
-        self.step.state.awaiting.bind(provider.clone());
-        self.step.state.child_settlements.bind(provider);
+        self.step.state.bind_children(provider);
         self.step.state.open_children.persist().await?;
         self.step.state.archive_pending.persist().await?;
         self.step.state.awaiting.persist().await?;
