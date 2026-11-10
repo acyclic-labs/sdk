@@ -306,6 +306,7 @@ async fn run_inner(
         && args.output_format == OutputFormat::Text
         && !acyclic_harness::tui::term::Environment::capture().is_dumb();
     let session_client = interactive
+        || args.agent.is_some()
         || args.new_session
         || args.continue_session
         || args.resume.is_some()

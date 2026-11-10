@@ -200,6 +200,34 @@ struct VolumeRequest {
     history: bool,
 }
 
+/// One binding plan for both independent roots and nested children. The
+/// destination's path never changes the filesystem fork mechanism.
+pub(super) fn fork_bindings(
+    child: &AgentPath,
+    source: &[VolumeBinding],
+    history: Option<&crate::agent::HistorySelection>,
+) -> Result<Vec<VolumeBinding>, Error> {
+    Ok(planned_bindings(child, source, history)?.0)
+}
+
+fn planned_bindings(
+    child: &AgentPath,
+    source: &[VolumeBinding],
+    history: Option<&crate::agent::HistorySelection>,
+) -> Result<(Vec<VolumeBinding>, Vec<Planned>), Error> {
+    let mut bindings = Vec::with_capacity(source.len());
+    let mut planned = Vec::new();
+    for binding in source {
+        let (bound, mut created) = plan(child, binding)?;
+        if let Some(created) = &mut created {
+            created.history = history.cloned();
+        }
+        bindings.push(bound);
+        planned.extend(created);
+    }
+    Ok((bindings, planned))
+}
+
 /// The one planning function: each requested child's bindings and the volumes
 /// its spawn creates, derived only from `parent`'s own bindings.
 fn children(
@@ -216,16 +244,9 @@ fn children(
             &parent.path.id(),
             intent.as_str(),
         ))?;
-        let mut volumes = Vec::with_capacity(parent.volumes.len());
-        for binding in &parent.volumes {
-            let (bound, mut created) = plan(&child, binding)?;
-            if let Some(created) = &mut created {
-                created.history.clone_from(history);
-            }
-            volumes.push(bound);
-            planned.extend(created);
-        }
+        let (volumes, created) = planned_bindings(&child, &parent.volumes, history.as_ref())?;
         bindings.push(volumes);
+        planned.extend(created);
     }
     Ok((bindings, planned))
 }
@@ -341,6 +362,34 @@ where
             parent: parent_path,
             commit: None,
         }))
+    }
+}
+
+impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
+    FilesystemSpawnVolumes<P, O>
+{
+    /// An independent root composes the same fresh private volume, retained
+    /// generation forks, lazy cuts and head fences as every child spawn.
+    pub(super) fn root_volumes<'a>(
+        &'a self,
+        source: &'a AgentState,
+        child: &'a AgentPath,
+        history: Option<&'a crate::agent::HistorySelection>,
+        request: CommitRequest,
+    ) -> BoxProviderFuture<'a, Result<FilesystemCommit, GuestError>> {
+        Box::pin(async move {
+            let (_, planned) = planned_bindings(child, &source.volumes, history).map_err(guest)?;
+            SpawnFork {
+                host: Arc::clone(&self.host),
+                cuts: self.cuts.clone(),
+                planned,
+                parent: source.path.clone(),
+                history: None,
+                commit: None,
+            }
+            .compose(request)
+            .await
+        })
     }
 }
 

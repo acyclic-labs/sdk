@@ -65,6 +65,12 @@ pub trait Platform: ProviderPlatform + 'static {
         false
     }
 
+    /// Optional source of the new session's independent volume forks. The
+    /// host chooses this checkout binding; a client cannot supply volume grants.
+    fn session_source(&self) -> Option<AgentPath> {
+        None
+    }
+
     /// Bind a new session to platform-owned resources. Requests cannot supply
     /// volume grants, signing custody or an actor placement.
     fn session_root(
@@ -560,7 +566,14 @@ where
                             .session_root(identity)
                             .await
                             .map_err(|error| Error::Turn(Box::new(error)))?;
-                        self.bound.prepare_session_root(id, root).await?
+                        match self.platform.session_source() {
+                            Some(source) => {
+                                self.bound
+                                    .prepare_isolated_session(id, root, &source)
+                                    .await?
+                            }
+                            None => self.bound.prepare_session_root(id, root).await?,
+                        }
                     }
                 };
                 let agent = match self.bound.submit_root(prepared).await? {
