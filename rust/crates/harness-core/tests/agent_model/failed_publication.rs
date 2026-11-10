@@ -305,7 +305,10 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
         let open = host.state(&root).await?;
         assert!(!open.closed);
         assert!(open.archive_pending.is_empty());
-        assert_eq!(open.open_children, children);
+        assert_eq!(
+            open.open_children.page(None, children.len()).await?,
+            children.iter().map(AgentPath::id).collect::<Vec<_>>()
+        );
         assert!(matches!(
             host.archive(&root, &user(), &intent("archive")).await?,
             Delivered::Committed { .. }
@@ -328,7 +331,10 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
             .skip(refused_index)
             .cloned()
             .collect::<BTreeSet<_>>();
-        assert_eq!(state.archive_pending, pending);
+        assert_eq!(
+            state.archive_pending.page(None, pending.len()).await?,
+            pending.iter().map(AgentPath::id).collect::<Vec<_>>()
+        );
         assert!(matches!(&state.phase,
             Phase::Done { outcome: AgentOutcome::Failed { message } }
                 if message.contains("access denied")));
@@ -339,7 +345,8 @@ async fn a_refused_archive_keeps_unfinished_children_without_rearming_its_alarm(
         );
         // The whole refused commit is atomic: retain every unfinished child,
         // including children whose writes shared the refused child's batch.
-        for child in &state.archive_pending {
+        for id in state.archive_pending.page(None, pending.len()).await? {
+            let child = root.child(&id)?;
             assert!(values(provider.as_ref(), child.closed()?).await?.is_empty());
         }
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
