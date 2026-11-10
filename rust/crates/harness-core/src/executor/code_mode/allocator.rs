@@ -401,9 +401,8 @@ mod tests {
                     r#"JSON.stringify({text:'β\\n'.repeat(64), values:Array.from({length:4}, (_, i) => ({i}))})"#
                 ).unwrap();
                 let json = json.to_cstring().unwrap();
-                // Fund the source read in every case so the negative control
-                // reaches the allocation boundary rather than another budget.
-                assert!((json.len() as u64) < baseline + bytes);
+                // The engine owns the source encoding. The original result
+                // ledger must admit its preparation and decoded storage.
                 let result = allocator.decode_result(json.as_str().as_bytes());
                 if cancelled {
                     assert!(result.is_err());
@@ -419,14 +418,13 @@ mod tests {
                     let failure = allocator.failure();
                     let failure = failure.lock().unwrap();
                     assert!(matches!(failure.as_ref(),
-                        Some(crate::Error::NativeFilesystem { source, .. })
-                        if matches!(source.as_ref(), acyclic_fs::FsError::NativeKernel(
-                            acyclic_fs::NativeTreeMaterializationError::Work(
+                        Some(crate::Error::NativeWork {
+                            cause: acyclic_fs::NativeTreeMaterializationError::Work(
                                 acyclic_fs::WorkError::BudgetExceeded {
-                                    counter: "peak_allocation_bytes", maximum, ..
+                                    counter: "peak_allocation_bytes", observed, maximum,
                                 }
-                            )
-                        ) if *maximum == baseline + bytes)
+                            ), ..
+                        }) if *maximum == baseline + bytes && *observed > *maximum
                     ), "{failure:?}");
                 } else {
                     let result = result.unwrap();
