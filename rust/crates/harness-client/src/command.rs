@@ -172,6 +172,38 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
         changes: Vec<acyclic_harness_core::client_files::ClientFileChange>,
     },
+    /// Snapshot exactly the requested files in the agent's private volume.
+    AgentFiles {
+        /// Selected agent; no request supplies a volume grant.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Explicit paths, such as ui/title.
+        paths: Vec<String>,
+        /// Wait on the original filesystem producer after this generation.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        after: Option<acyclic_harness_core::resources::GenerationRef>,
+    },
+    /// Conditionally publish authored files in the agent's private volume.
+    PublishAgentFiles {
+        /// Selected agent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Caller-owned publication identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        operation: acyclic_harness_core::OperationId,
+        /// Exact source preconditions and replacement contents.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
+        changes: Vec<acyclic_harness_core::client_files::ClientFileChange>,
+    },
+    /// Freeze an agent through its ordinary closing input and resource release.
+    Archive {
+        /// Exact recipient.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable archive identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+    },
     /// Stage canonical user input and send one message with caller-owned intent.
     Prompt {
         /// Exact recipient; selection changes cannot retarget a prepared command.
@@ -464,7 +496,7 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
-            Self::ClientFiles { paths, .. } => {
+            Self::ClientFiles { paths, .. } | Self::AgentFiles { paths, .. } => {
                 if paths.is_empty() {
                     return Err(CommandError::Invalid);
                 }
@@ -478,7 +510,7 @@ impl AgentCommand {
                 }
                 Ok(())
             }
-            Self::PublishClientFiles { changes, .. } => {
+            Self::PublishClientFiles { changes, .. } | Self::PublishAgentFiles { changes, .. } => {
                 if changes.is_empty() {
                     return Err(CommandError::Invalid);
                 }
@@ -569,6 +601,9 @@ impl AgentCommand {
             | Self::Settlement { agent }
             | Self::Usage { agent, .. }
             | Self::Events { agent, .. }
+            | Self::AgentFiles { agent, .. }
+            | Self::PublishAgentFiles { agent, .. }
+            | Self::Archive { agent, .. }
             | Self::ClientFiles { agent, .. }
             | Self::PublishClientFiles { agent, .. }
             | Self::Read { agent, .. }
@@ -585,6 +620,9 @@ impl AgentCommand {
             Self::Root {} => "root",
             Self::Sessions { .. } => "sessions",
             Self::NewSession { .. } => "new_session",
+            Self::AgentFiles { .. } => "agent_files",
+            Self::PublishAgentFiles { .. } => "publish_agent_files",
+            Self::Archive { .. } => "archive",
             Self::ClientFiles { .. } => "client_files",
             Self::PublishClientFiles { .. } => "publish_client_files",
             Self::Prompt { .. } => "prompt",

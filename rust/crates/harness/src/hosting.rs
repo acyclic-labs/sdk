@@ -468,6 +468,32 @@ where
             AgentCommand::Root {} => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
+            AgentCommand::AgentFiles {
+                agent,
+                paths,
+                after,
+            } => {
+                let snapshot = self
+                    .bound
+                    .agent_files(self.within_tree(agent)?, paths, after.as_ref())
+                    .await?;
+                Ok(AgentReply::ClientFiles { snapshot })
+            }
+            AgentCommand::PublishAgentFiles {
+                agent,
+                operation,
+                changes,
+            } => {
+                let generation = self
+                    .bound
+                    .publish_agent_files(self.within_tree(agent)?, *operation, changes)
+                    .await?;
+                Ok(AgentReply::ClientFilesPublished { generation })
+            }
+            AgentCommand::Archive { agent, id } => {
+                let delivery = agents.archive(self.within_tree(agent)?, by, id).await?;
+                Ok(AgentReply::Delivered { delivery })
+            }
             AgentCommand::NewSession { id } => {
                 if !self.platform.sessions() {
                     return Err(Error::Record("this host serves one tree"));
@@ -1418,6 +1444,7 @@ where
                 | AgentCommand::Diff { .. }
                 | AgentCommand::Usage { .. }
                 | AgentCommand::Events { .. }
+                | AgentCommand::AgentFiles { .. }
                 | AgentCommand::ClientFiles { .. }
                 | AgentCommand::Read { .. } => true,
                 AgentCommand::NewSession { .. }
@@ -1430,6 +1457,8 @@ where
                 | AgentCommand::Spawn { .. }
                 | AgentCommand::Fork { .. }
                 | AgentCommand::Decide { .. }
+                | AgentCommand::PublishAgentFiles { .. }
+                | AgentCommand::Archive { .. }
                 | AgentCommand::PublishClientFiles { .. }
                 | AgentCommand::Stage { .. }
                 | AgentCommand::Staged { .. } => false,
