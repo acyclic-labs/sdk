@@ -1482,9 +1482,15 @@ async fn attention_alarm_default_resumes_on_input_or_original_deadline() -> Resu
         };
         let driver = script(vec![parked(), done()]);
         let stop = acyclic_actors::guest::CancellationToken::new;
+        let body = driver::file("reply.txt")?;
         let record = |sequence, id| Wake::Inbox {
             sequence,
-            record: InboxRecord::Approval(Approval { id: intent(id) }),
+            record: InboxRecord::Message(Message {
+                from: user(),
+                id: intent(id),
+                body: Box::new(body.clone()),
+                attachments: None,
+            }),
         };
         let waiting = step(
             &driver,
