@@ -61,31 +61,43 @@ impl ViewProvider for Provider {
         let epoch = self.epoch.load(Ordering::SeqCst);
         SourceReference::opaque(self.identity(), epoch, &epoch.to_le_bytes(), ctx)
     }
-    fn snapshot(
+    fn cut(
         &self,
-        source: SourceReference,
-        _: &mut KernelAccounting<'_>,
-    ) -> Result<(ViewCut, Bytes), DemandError> {
-        self.counts.snapshots.fetch_add(1, Ordering::SeqCst);
+        source: &SourceReference,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<ViewCut, DemandError> {
+        ctx.check()?;
         if source.identity != self.identity() || source.payload()? != source.epoch.to_le_bytes() {
             return Err(DemandError::StaleSource);
         }
-        let bytes = self
-            .data
+        Ok(ViewCut {
+            // The primary stream stays fixed while another captured input
+            // advances. Versions must retain the whole source cut.
+            sequence: 0,
+            generation: [0; 32],
+        })
+    }
+    async fn snapshot(
+        &self,
+        source: SourceReference,
+        query: ViewQuery<'_>,
+        _: &mut KernelAccounting<'_>,
+    ) -> Result<Bytes, DemandError> {
+        self.counts.snapshots.fetch_add(1, Ordering::SeqCst);
+        if let ViewQuery::Directory {
+            cursor: Some(cursor),
+            ..
+        } = query
+        {
+            assert_eq!(cursor.reference().payload()?, b"provider continuation");
+            assert_eq!(cursor.offset(), 1);
+        }
+        self.data
             .lock()
             .unwrap()
             .get(&source.epoch)
             .cloned()
-            .ok_or(DemandError::StaleSource)?;
-        Ok((
-            ViewCut {
-                // The primary stream stays fixed while another captured input
-                // advances. Versions must retain the whole source cut.
-                sequence: 0,
-                generation: [0; 32],
-            },
-            bytes,
-        ))
+            .ok_or(DemandError::StaleSource)
     }
     fn watch(
         &self,
@@ -169,12 +181,24 @@ impl View for Projection {
         if !directory.is_root() {
             return Err(DemandError::NotDirectory);
         }
-        if cursor.is_some() {
-            return Err(DemandError::StaleCursor);
+        if let Some(cursor) = cursor {
+            if cursor.source.payload()? != b"provider continuation" || cursor.offset() != 1 {
+                return Err(DemandError::StaleCursor);
+            }
+            return SourceDirectoryPage::copied(
+                std::iter::empty(),
+                None,
+                SourceVersion([0; 32]),
+                ctx,
+            );
         }
+        let next = SourceCursor::detached(
+            SourceReference::opaque([0xb7; 16], 1, b"provider continuation", ctx)?,
+            1,
+        );
         SourceDirectoryPage::copied(
             std::iter::once((&name(), metadata(Some(bytes.len() as u64)))),
-            None,
+            Some(next),
             SourceVersion([0; 32]),
             ctx,
         )
@@ -378,6 +402,33 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
         .unwrap()
         .value;
     assert_eq!(page.entries[0].node, node);
+    let before = provider.counts.snapshots.load(Ordering::SeqCst);
+    let wrong_directory = view
+        .list_page(
+            source.clone(),
+            &path("/other"),
+            page.next.clone(),
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(wrong_directory.error, DemandError::StaleCursor));
+    assert_eq!(provider.counts.snapshots.load(Ordering::SeqCst), before);
+    let end = view
+        .list_page(
+            source.clone(),
+            &path("/"),
+            page.next,
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .unwrap()
+        .value;
+    assert!(end.entries.is_empty() && end.next.is_none());
     let file = view
         .open_file(
             source.clone(),
@@ -391,6 +442,7 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
         .value;
     provider.append(Bytes::from_static(b"changed"), ctx!());
     assert_eq!(file.read_range(1, 2, ctx!()).unwrap().bytes.as_ref(), b"bc");
+    let before = provider.counts.snapshots.load(Ordering::SeqCst);
     assert!(matches!(
         view.read_range(
             reference(&view).await,
@@ -406,6 +458,7 @@ async fn computed_exact_versions_ranges_and_routed_root_pages() {
         .error,
         DemandError::StaleVersion
     ));
+    assert_eq!(provider.counts.snapshots.load(Ordering::SeqCst), before);
     let routed = Routed::new(
         Empty,
         LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255).unwrap(),

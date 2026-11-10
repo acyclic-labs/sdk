@@ -29,7 +29,9 @@ impl SourceCursor {
         self.source = child;
         Ok(self)
     }
-    pub(crate) fn detached(source: SourceReference, token: u64) -> Self {
+    /// A provider continuation with its complete immutable paging metadata.
+    /// Compositions bind it to their query without replacing this reference.
+    pub fn detached(source: SourceReference, token: u64) -> Self {
         Self {
             source,
             token,
@@ -54,6 +56,11 @@ impl SourceCursor {
     /// Position from a continuation already checked by `Computed`.
     pub fn offset(&self) -> u64 {
         self.token
+    }
+
+    /// Provider metadata from a continuation already checked by its composition.
+    pub fn reference(&self) -> &SourceReference {
+        &self.source
     }
 }
 
