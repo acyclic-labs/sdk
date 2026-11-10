@@ -1,6 +1,6 @@
 {
   "id": "hook-failure-refuses",
-  "adapter": "messages",
+  "adapter": "anthropic",
   "workspace": {
     "kind": "plain",
     "files": {}

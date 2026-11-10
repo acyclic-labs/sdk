@@ -1,6 +1,6 @@
 {
   "id": "pty-approval-rule",
-  "adapter": "messages",
+  "adapter": "anthropic",
   "workspace": {"kind": "plain", "files": {
     "approval-policy.json": "{\"approvers\":[{\"kind\":\"human\",\"principal\":\"human\"}]}"
   }},

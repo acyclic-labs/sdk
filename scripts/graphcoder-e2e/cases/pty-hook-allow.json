@@ -1,6 +1,6 @@
 {
   "id": "pty-hook-allow",
-  "adapter": "messages",
+  "adapter": "anthropic",
   "workspace": {
     "kind": "plain",
     "files": {}

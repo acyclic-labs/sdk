@@ -1,6 +1,6 @@
 {
   "id": "pty-approval-form-approve",
-  "adapter": "messages",
+  "adapter": "anthropic",
   "workspace": {
     "kind": "plain",
     "files": {}
