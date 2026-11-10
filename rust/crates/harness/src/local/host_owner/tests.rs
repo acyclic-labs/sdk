@@ -252,7 +252,7 @@ async fn native_event_log_keeps_late_usage_and_resume_after_recovery() -> Result
             .stdin(ProcessStdio::null())
             .stdout(ProcessStdio::null())
             .stderr(ProcessStdio::null());
-        process.spawn(&mut command, claim.operation)?;
+        process.spawn(&mut command, claim.operation, None)?;
 
         // Replay unchanged installed-host captures, with the only resume identity
         // after the old whole-log cutoff. Repetition is a derived load schedule,
