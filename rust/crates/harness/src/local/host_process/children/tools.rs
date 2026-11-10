@@ -271,7 +271,7 @@ mod tests {
                 let (mut children, _) = children(host, cwd, if unavailable { "eof-retirement-refusal" } else { "eof-retirement" })?;
                 let (mut running, view) = claim(&mut children, cwd, if unavailable { "refused" } else { "held" }, SessionAction::Spawn { prompt: "wait for parent".into() })?;
                 let mut command = native_fixture(&view, "", "0");
-                running.process.spawn(&mut command, running.claim.operation)?;
+                running.process.spawn(&mut command, running.claim.operation, None)?;
                 let pid = shell_pid(&mut running)?;
                 let mut process = std::fs::File::open(format!("/proc/{pid}/stat"))?;
                 let mut original = String::new();
