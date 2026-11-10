@@ -16,6 +16,7 @@ pub(super) struct Driver {
     pub schedule: Schedule,
     events: mpsc::UnboundedReceiver<Boundary>,
     pub boundaries: Vec<(String, String)>,
+    pub trace_durable_positions: bool,
 }
 
 const UNSIMULATED_PROCESS: &str = "unsimulated process reached a seeded replay";
@@ -40,6 +41,7 @@ impl Driver {
             schedule,
             events,
             boundaries: Vec::new(),
+            trace_durable_positions: false,
         }
     }
 
@@ -58,6 +60,15 @@ impl Driver {
         self
     }
 
+    fn retain_boundary(&mut self, event: &Boundary) {
+        let name = if self.trace_durable_positions {
+            format!("{}:{}", self.schedule.durable_write_count(), event.name)
+        } else {
+            event.name.into()
+        };
+        self.boundaries.push((name, event.detail.to_string()));
+    }
+
     pub fn run<'a, T: 'a>(&'a mut self, future: EntryFuture<'a, T>) -> EntryFuture<'a, Outcome<T>> {
         entry(async move {
             let schedule = self.schedule.clone();
@@ -71,7 +82,7 @@ impl Driver {
                     biased;
                     event = self.events.recv() => {
                         let event = event.expect("lost boundary driver");
-                        self.boundaries.push((event.name.into(), event.detail.to_string()));
+                        self.retain_boundary(&event);
                         if let Some(cause) = schedule.storage_fault() {
                             schedule.cancel();
                             // Drop all caller state before any accepted completion
@@ -109,7 +120,7 @@ impl Driver {
                     biased;
                     event = self.events.recv() => {
                         let event = event.expect("lost drain driver");
-                        self.boundaries.push((event.name.into(), event.detail.to_string()));
+                        self.retain_boundary(&event);
                         event.release();
                     },
                     () = schedule.drained() => break,

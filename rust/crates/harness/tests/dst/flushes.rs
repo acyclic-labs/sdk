@@ -131,6 +131,7 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
         tokio::time::pause();
         let directory = tempfile::tempdir().map_err(storage)?;
         let mut driver = driver::Driver::new(71, None);
+        driver.trace_durable_positions = true;
         let driver::Outcome::Completed(cuts) = driver
             .run(turns(driver.schedule.clone(), directory.path(), replies))
             .await
@@ -140,6 +141,22 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
         let cuts = cuts?;
         let writes = driver.schedule.durable_writes();
         let window = |from: usize, to: usize| flushes(&writes[cuts[from]..cuts[to]]);
+        if window(8, 9) != (9, 12) {
+            eprintln!("reopened-first original cut: {}..{}", cuts[8], cuts[9]);
+            for call in &writes[cuts[8]..cuts[9]] {
+                if call.operation.contains("sync") {
+                    eprintln!("reopened-first original flush: {call:?}");
+                }
+            }
+            for (position, detail) in &driver.boundaries {
+                let count = position
+                    .split_once(':')
+                    .and_then(|(count, _)| count.parse::<usize>().ok());
+                if count.is_some_and(|count| cuts[8] <= count && count <= cuts[9]) {
+                    eprintln!("reopened-first original owner {position}: {detail}");
+                }
+            }
+        }
         if window(0, 1) != (7, 12) {
             eprintln!(
                 "fresh open directory: {:?}; cuts: {cuts:?}",
