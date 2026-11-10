@@ -67,6 +67,14 @@ impl Running {
         Ok(())
     }
 
+    /// Physical EOF and a quiescent exit drain finish through one admission path.
+    fn finish_events(&mut self) -> Result<()> {
+        if let Some(line) = self.events.finish() {
+            self.record_event(line)?;
+        }
+        Ok(())
+    }
+
     /// Consumes the same armed result before attempting another child pass.
     fn poll_readiness(&mut self) -> Poll<()> {
         let Some(wait) = self.armed.as_mut() else {
@@ -517,7 +525,11 @@ impl NativeChildren {
                 // original progress edge. Exit cannot truncate a reply still
                 // behind already captured bytes, nor wait for inherited EOF.
                 Ok(true) => return Ok(None),
-                Ok(false) => {}
+                Ok(false) => {
+                    if let Err(error) = running.finish_events() {
+                        exited = Err(error.to_string());
+                    }
+                }
                 Err(error) => exited = Err(error.to_string()),
             }
         }
@@ -679,10 +691,7 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
             return Ok(stderr.read_bytes > 0);
         };
         if count == 0 {
-            // Physical EOF and the sealed exit boundary share this final frame.
-            if let Some(line) = running.events.finish() {
-                running.record_event(line)?;
-            }
+            running.finish_events()?;
             return Ok(stderr.read_bytes > 0);
         }
         let bytes = buffer

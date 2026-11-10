@@ -1,13 +1,13 @@
 diff --git a/rust/crates/harness/src/local/host_process/children.rs b/rust/crates/harness/src/local/host_process/children.rs
 --- a/rust/crates/harness/src/local/host_process/children.rs
 +++ b/rust/crates/harness/src/local/host_process/children.rs
-@@ -707,9 +707,6 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
-         };
-         if count == 0 {
-             // Physical EOF and the sealed exit boundary share this final frame.
--            if let Some(line) = running.events.finish() {
--                running.record_event(line)?;
--            }
-             return Ok(stderr.read_bytes > 0);
-         }
-         let bytes = buffer
+@@ -69,9 +69,6 @@ impl Running {
+ 
+     /// Physical EOF and a quiescent exit drain finish through one admission path.
+     fn finish_events(&mut self) -> Result<()> {
+-        if let Some(line) = self.events.finish() {
+-            self.record_event(line)?;
+-        }
+         Ok(())
+     }
+ 
