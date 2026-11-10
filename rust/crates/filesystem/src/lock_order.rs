@@ -6,7 +6,7 @@
 // ancestor resource -> descendant resource (materializer/allowance.rs).
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) const OPERATION: u16 = 10;
-#[cfg(any(test, all(feature = "native-mount", not(target_arch = "wasm32"))))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) const VIEW: u16 = 20;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
 pub(crate) const FILE: u16 = 30;

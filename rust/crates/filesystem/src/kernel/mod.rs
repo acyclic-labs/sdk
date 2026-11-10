@@ -39,14 +39,14 @@ mod generation_mutation;
 mod historical_evidence;
 mod list;
 mod live;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod mark;
 mod merge;
 mod metadata;
 pub(crate) use metadata::read_file_metadata_with_accounting;
 mod references;
 pub(crate) use references::visit_object_references;
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use references::visit_record_references;
 mod mutation;
 mod namespace_path;
@@ -203,9 +203,9 @@ pub use historical_evidence::{
 };
 pub use list::{DirectoryPage, DirectoryReadError, DirectoryReadFailure, list_tree_entries};
 pub use live::{LiveMutationOutcome, LivePublicationObservation};
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use mark::MarkError;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use mark::Marker;
 pub use merge::{
     MergeConflict, MergeConflictResolution, MergeConflictSide, MergeGenerationError,
@@ -273,7 +273,7 @@ pub use retention::{
     RetentionCreated, RetentionCreatedError, RetentionKind, decode_retention_created,
     decode_workspace_deleted, encode_workspace_deleted, retention_authority_id,
 };
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use source_state::decode_source_volume;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use source_state::source_authority_id;

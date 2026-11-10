@@ -2,7 +2,7 @@
 #![allow(unsafe_code, reason = "isolates native filesystem calls")]
 use crate::NativeRootIdentity;
 #[cfg(any(test, not(target_arch = "wasm32")))]
-use acyclic_fs::NativeWorkReservation;
+use crate::NativeWorkReservation;
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork};
 use crate::materializer::{
     NativeAllocation, NativeCleanupWrite, NativeMaterializationWork, NativeTreeMaterializationError,
