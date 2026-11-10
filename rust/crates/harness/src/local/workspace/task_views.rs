@@ -35,6 +35,7 @@ impl LocalWorkspace {
         let scratch_key = bindings::volume_key(&scratch)?;
         let (selection, producer) =
             bindings::Bindings::select(&self.bindings, key, scratch_key, &work, &cancellation)?;
+        let binding_owner = selection.binding.clone();
         let mounts = if let Some(producer) = producer {
             let mounts = self
                 .bound_mounts(project, scratch, authority, &selection.binding)
@@ -60,7 +61,7 @@ impl LocalWorkspace {
             }
             mounts
         };
-        self.mount_task_view(view, owner, Some((mounts, selection.binding)), authority)
+        self.mount_task_view(view, owner, Some((mounts, binding_owner)), authority)
             .await
     }
 
