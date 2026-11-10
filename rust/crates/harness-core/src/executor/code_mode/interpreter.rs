@@ -49,16 +49,7 @@ pub(super) async fn run(
     allocator: super::allocator::EngineAllocator,
     interrupt_budget: u64,
 ) -> Result<super::allocator::EngineResult, String> {
-    let compiled = crate::config::compile_module("code.ts", code.as_bytes())?;
-    if let Some(import) = compiled
-        .imports
-        .iter()
-        .find(|name| name.as_str() != "acyclic")
-    {
-        return Err(format!(
-            "code.ts imports {import}: effective file imports are not bound"
-        ));
-    }
+    // Parse JavaScript inside the same original-caller-funded engine as execution.
     let bridge = allocator.clone();
     let result_allocator = allocator.clone();
     let runtime = AsyncRuntime::new_with_alloc(allocator).map_err(|error| error.to_string())?;
@@ -148,7 +139,7 @@ pub(super) async fn run(
             let drain: Function = bridge.get("drain")?;
             let protect: Function = bridge.get("protect")?;
             Module::declare(ctx.clone(), "acyclic", include_str!("acyclic.mjs"))?;
-            let module = Module::declare(ctx.clone(), "code.ts", compiled.script)?;
+            let module = Module::declare(ctx.clone(), "code.js", code)?;
             let (module, evaluated) = module.eval()?;
             let evaluated: Promise = protect.call((evaluated,))?;
             let result = async {

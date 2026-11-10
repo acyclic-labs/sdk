@@ -1001,6 +1001,10 @@ impl ToolContext {
         crate::conversation::PrivateDirectoryPage,
         Option<crate::conversation::ContentHold<'io>>,
     )> {
+        let request = crate::conversation::DirectoryRead {
+            generation: self.layer_generation(request.volume, request.generation)?,
+            ..request
+        };
         self.task()
             .list_bound_directory(request, self.effective_scope(), io)
             .await
