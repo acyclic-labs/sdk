@@ -331,12 +331,15 @@
               "Discarded ·"
             ]
           },
-          "send": "\u0004"
+          "send": "\u0004\u0004"
         }
       ]
     }
   ],
   "assert": {
-    "requests": 7
+    "requests": 7,
+    "files": {
+      "tree.txt": "TREE_PROJECT_EDIT\n"
+    }
   }
 }
