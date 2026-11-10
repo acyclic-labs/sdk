@@ -805,6 +805,11 @@ where
                             .read_file(agent, file, *offset, MAX_READ_BYTES)
                             .await?
                     }
+                    ReadTarget::Conversation { sequence, file } => {
+                        self.bound
+                            .read_conversation_file(agent, file, *sequence, *offset, MAX_READ_BYTES)
+                            .await?
+                    }
                     ReadTarget::ToolOutput { path, at } => {
                         self.bound
                             .read_tool_output(agent, path, at.as_ref(), *offset, MAX_READ_BYTES)

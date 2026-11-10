@@ -315,7 +315,13 @@ impl View {
                     .map(|at| self.pending.remove(at).1);
                 // A turn's text is its committed entry's, a cancelled one's
                 // too, whichever of it and its status arrived first.
-                let turn = conversation.turn(&entry).await?;
+                let turn = conversation
+                    .turn_at(
+                        seen.checked_sub(1)
+                            .ok_or("turn has no committed sequence")?,
+                        &entry,
+                    )
+                    .await?;
                 if let Some(text) = sent.or(turn.prompt) {
                     self.transcript.push(BlockKind::Prompt, &text);
                 }

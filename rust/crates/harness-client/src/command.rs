@@ -512,6 +512,15 @@ pub enum ReadTarget {
         #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
         file: FileRef,
     },
+    /// An exact file named by one committed conversation record. Its original
+    /// sequence proves inherited-file access without granting a source volume.
+    Conversation {
+        /// Zero-based sequence in the selected agent's conversation prefix.
+        sequence: u64,
+        /// Exact original reference; another file or version is refused.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
+        file: FileRef,
+    },
     /// One chunk of the agent's tool output, as its change records name it.
     ToolOutput {
         /// Path below the agent's tool-output directory.

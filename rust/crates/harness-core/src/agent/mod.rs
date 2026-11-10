@@ -45,6 +45,7 @@ pub use notices::NoticeSelection;
 pub(crate) mod records;
 mod release;
 mod reply;
+pub(crate) use reply::entry as conversation_entry;
 mod settled;
 #[cfg(test)]
 mod ui_tests;

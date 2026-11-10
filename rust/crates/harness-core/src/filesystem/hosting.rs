@@ -607,7 +607,33 @@ where
         offset: u64,
         maximum: u64,
     ) -> Result<(Vec<u8>, u64), Error> {
-        let reader = self.reader(agent, Some(file)).await?;
+        self.read_file_selected(agent, file, None, offset, maximum)
+            .await
+    }
+
+    /// Read an exact file attested by the selected committed conversation
+    /// record, including inherited turns. No source-volume grant is issued.
+    pub async fn read_conversation_file(
+        &self,
+        agent: &AgentPath,
+        file: &FileRef,
+        sequence: u64,
+        offset: u64,
+        maximum: u64,
+    ) -> Result<(Vec<u8>, u64), Error> {
+        self.read_file_selected(agent, file, Some(sequence), offset, maximum)
+            .await
+    }
+
+    async fn read_file_selected(
+        &self,
+        agent: &AgentPath,
+        file: &FileRef,
+        sequence: Option<u64>,
+        offset: u64,
+        maximum: u64,
+    ) -> Result<(Vec<u8>, u64), Error> {
+        let reader = self.reader(agent, Some(file), sequence).await?;
         let length = file.descriptor().byte_length();
         let remaining = length
             .checked_sub(offset)
@@ -632,22 +658,45 @@ where
         &self,
         agent: &AgentPath,
     ) -> Result<Arc<super::FilesystemContentVerifier<StreamAuthorityStore<P>, O>>, Error> {
-        self.reader(agent, None).await
+        self.reader(agent, None, None).await
     }
 
     async fn reader(
         &self,
         agent: &AgentPath,
         file: Option<&FileRef>,
+        sequence: Option<u64>,
     ) -> Result<Arc<super::FilesystemContentVerifier<StreamAuthorityStore<P>, O>>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
+        let external = match (sequence, file) {
+            (Some(sequence), Some(file)) if sequence < state.conversation_tail => {
+                let entry = crate::agent::conversation_entry(
+                    self.agents.provider().as_ref(),
+                    &agent.conversation()?,
+                    sequence,
+                )
+                .await?;
+                if !entry.references_file(file) {
+                    return Err(Error::Record(
+                        "conversation record does not name the requested file",
+                    ));
+                }
+                std::slice::from_ref(file)
+            }
+            (Some(_), _) => {
+                return Err(Error::Record(
+                    "conversation file proof is outside the committed prefix",
+                ));
+            }
+            (None, file) => file.map_or(&[][..], |file| state.adoption_grant(file)),
+        };
         let authority = agent_authority(
             &self.issuer,
             &self.admission,
             &state.path,
             &state.volumes,
-            file.map_or(&[][..], |file| state.adoption_grant(file)),
+            external,
         )
         .await
         .map_err(turn)?;
