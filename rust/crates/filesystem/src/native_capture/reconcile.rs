@@ -456,7 +456,7 @@ impl CaptureBatch<'_> {
         let ranges = staged.ranges;
         let ranges_bytes =
             ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-        let unchanged = if let (Some(record), true) = existing
+        let unchanged = if let (Some(record), true, _) = existing
             && record.link_count == 1
             && let crate::kernel::FilePayload::InlineRegular(data) = record.payload
         {
