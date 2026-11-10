@@ -3166,8 +3166,9 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     use crate::filesystem::{WorkspaceMutation, workspace_ref};
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
-    let provider =
-        super::scripted(["at cut", "later"].map(|text| super::ScriptedTurn::Text(text.into())));
+    let provider = super::scripted(
+        ["at cut", "later", "branch answer"].map(|text| super::ScriptedTurn::Text(text.into())),
+    );
     let harness = Arc::new(
         LocalHarness::open(
             volume_config(directory.path(), project.clone(), provider.clone())?
@@ -3305,6 +3306,17 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         provider.requests().len(),
         2,
         "creating a branch must never dispatch the model"
+    );
+    let selected = connection.select(repeated.clone()).await?;
+    let mut observed = ObservedConversation::observe(Conversation::open(selected), Some(1)).await?;
+    crate::local::sessions::pause_subtree(&connection, repeated.clone(), false).await?;
+    observed
+        .send("branch-input", "continue the selected decision")
+        .await?;
+    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(
+        records(&**agents.provider(), root.conversation().map_err(agent)?).await?,
+        source
     );
     Ok(())
 }

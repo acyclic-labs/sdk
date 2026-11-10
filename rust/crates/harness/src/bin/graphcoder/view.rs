@@ -382,6 +382,32 @@ impl View {
         request: CommandRequest,
     ) -> Result<(), Failure> {
         let id = acyclic_harness::OperationId::new().to_string();
+        if let CommandRequest::Pause { scope } | CommandRequest::Resume { scope } = &request {
+            let paused = matches!(request, CommandRequest::Pause { .. });
+            match scope {
+                acyclic_harness::client::commands::CommandTaskScope::Subtree => {
+                    acyclic_harness::local::sessions::pause_subtree(
+                        conversation.connection(),
+                        conversation.connection().root().clone(),
+                        paused,
+                    )
+                    .await?;
+                }
+                acyclic_harness::client::commands::CommandTaskScope::All => {
+                    acyclic_harness::local::sessions::pause_all(conversation.connection(), paused)
+                        .await?;
+                }
+            }
+            self.notice = Some(
+                if paused {
+                    "Session paused"
+                } else {
+                    "Session resumed"
+                }
+                .into(),
+            );
+            return Ok(());
+        }
         let inbox = match &request {
             CommandRequest::Compact { instructions } => {
                 let instructions = instructions.trim();

@@ -533,6 +533,10 @@ where
                 let delivery = agents.archive(self.within_tree(agent)?, by, id).await?;
                 Ok(AgentReply::Delivered { delivery })
             }
+            AgentCommand::Pause { agent, paused } => {
+                agents.pause(self.within_tree(agent)?, *paused).await?;
+                Ok(AgentReply::Paused { paused: *paused })
+            }
             AgentCommand::LatestSession {} => {
                 if !self.platform.sessions() {
                     return Err(Error::Record("this host serves one tree"));
@@ -1611,6 +1615,7 @@ where
                 | AgentCommand::Read { .. } => true,
                 AgentCommand::NewSession { .. }
                 | AgentCommand::ForkSession { .. }
+                | AgentCommand::Pause { .. }
                 | AgentCommand::Prompt { .. }
                 | AgentCommand::Cancel { .. }
                 | AgentCommand::Compact { .. }

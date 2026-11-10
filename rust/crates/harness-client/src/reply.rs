@@ -75,6 +75,11 @@ pub enum AgentReply {
         #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
         agent: Option<AgentPath>,
     },
+    /// The actor runtime committed the requested paused state.
+    Paused {
+        /// True for pause, false for resume.
+        paused: bool,
+    },
     /// Requested session files at one committed generation.
     ClientFiles {
         /// Exactly the requested paths at the selected committed generation.
@@ -483,6 +488,18 @@ fn validate_reply(
         }
         (AgentReply::LatestSession { agent }, AgentCommand::LatestSession {}) => {
             return if agent.as_ref().is_none_or(|agent| agent.parent().is_none()) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Paused { paused },
+            AgentCommand::Pause {
+                paused: requested, ..
+            },
+        ) => {
+            return if paused == requested {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
