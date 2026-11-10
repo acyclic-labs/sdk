@@ -24,8 +24,7 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 pub(crate) mod answer;
-use super::EVENT_LINE_BYTES as EVENT_LIMIT;
-use answer::NativeAnswer;
+use answer::{EVENT_LIMIT, NativeAnswer};
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod readiness_validation;
@@ -73,30 +72,6 @@ impl Running {
             })),
             armed: None,
         }
-    }
-
-    /// Live frames and the final captured frame share one admission path.
-    fn record_event(&mut self, line: std::io::Result<String>) -> Result<()> {
-        let Some((line, event)) = answer::decode(line) else {
-            // A dropped answer replaces an earlier preview, preserving
-            // terminal refusals. Keep draining through the same framer
-            // and owner; later complete answers remain usable.
-            self.answer.omit();
-            // The saved log marks where the event was dropped.
-            return self.process.record_event(EVENT_OMITTED);
-        };
-        // The whole event stream joins the conversation at settlement.
-        self.process.record_event(line.as_bytes())?;
-        self.answer.record(&event);
-        Ok(())
-    }
-
-    /// Physical EOF and a quiescent exit drain finish through one admission path.
-    fn finish_events(&mut self) -> Result<()> {
-        if let Some(line) = self.events.finish() {
-            self.record_event(line)?;
-        }
-        Ok(())
     }
 
     /// Consumes the same armed result before attempting another child pass.
@@ -530,11 +505,7 @@ impl NativeChildren {
                 // original progress edge. Exit cannot truncate a reply still
                 // behind already captured bytes, nor wait for inherited EOF.
                 Ok(true) => return Ok(None),
-                Ok(false) => {
-                    if let Err(error) = running.finish_events() {
-                        exited = Err(error.to_string());
-                    }
-                }
+                Ok(false) => {}
                 Err(error) => exited = Err(error.to_string()),
             }
         }
@@ -696,14 +667,24 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
             return Ok(stderr.read_bytes > 0);
         };
         if count == 0 {
-            running.finish_events()?;
             return Ok(stderr.read_bytes > 0);
         }
         let bytes = buffer
             .get(..count)
             .ok_or_else(|| invalid("native output count invalid"))?;
         for line in running.events.push(bytes) {
-            running.record_event(line)?;
+            let Some((line, event)) = answer::decode(line) else {
+                // A dropped answer replaces an earlier preview, preserving
+                // terminal refusals. Keep draining through the same framer
+                // and owner; later complete answers remain usable.
+                running.answer.omit();
+                // The saved log marks where the event was dropped.
+                running.process.record_event(EVENT_OMITTED)?;
+                continue;
+            };
+            // The whole event stream joins the conversation at settlement.
+            running.process.record_event(line.as_bytes())?;
+            running.answer.record(&event);
         }
     }
     Ok(true)

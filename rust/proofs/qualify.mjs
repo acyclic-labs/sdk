@@ -252,44 +252,6 @@ const claims = {
     "tests::accounting_matches_complete_allocation_lifetimes",
     "first allocation event differs from physical trace", [],
   ],
-  "native-line-eof": [
-    "rust/crates/native-runtime/src/lines.rs", "acyclic-native-runtime",
-    "lines::tests::incremental_eof_matches_async_lines_at_every_split",
-    "incremental EOF lost the original final frame", ["--features", "test-support"],
-    { additionalTests: ["lines::tests::oversize_and_invalid_frames_cannot_hide_the_next_complete_line"],
-      additionalDiagnostics: ["EOF discarded the recovered final frame"] },
-  ],
-  "terminal-drain-stop": [
-    "rust/crates/harness-tui/tests/terminal_frames.rs", "acyclic-harness-tui",
-    "terminal_drain_cancellation_does_not_require_slave_closure",
-    "a retained PTY slave must not keep a cancelled drainer waiting", ["--features", "tui"],
-    { target: ["--test", "terminal_frames"] },
-  ],
-  "native-usage-counters": [
-    "rust/crates/harness-core/src/executor/model_usage.rs", "acyclic-harness-core",
-    "executor::model_usage::tests::usage_dialects_preserve_units_absence_and_malformed_controls",
-    "Test failed:", ["--features", "filesystem-local,native-execution,test-support"],
-  ],
-  "native-event-cut": [
-    "rust/crates/harness/src/local/host_process/children.rs", "acyclic-harness",
-    "local::host_process::children::tests::an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof",
-    "exited native terminal without LF was discarded", nativeHarness,
-  ],
-  "native-event-retention": [
-    "rust/crates/harness/src/local/host_process.rs", "acyclic-harness",
-    "local::host_owner::tests::native_event_log_keeps_late_usage_and_resume_after_recovery",
-    "native event publication lost records after the old cutoff", nativeHarness,
-  ],
-  "capture-marker-retirement": [
-    "rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs", "acyclic-harness-core",
-    "filesystem::native_process::capture::tests::interactive_completion_retains_input_producer_and_cleanup",
-    "retired capture retained its unused marker producer", ["--features", "filesystem-local,native-execution,test-support"],
-  ],
-  "append-invocation": [
-    "rust/crates/harness-core/src/filesystem/execution_journal/summary/turn_cost.rs", "acyclic-harness-core",
-    "filesystem::execution_journal::summary::tests::turn_cost::append_work_is_bounded_per_invocation_across_history",
-    "append inherited prior invocation work", ["--features", "filesystem-local,native-execution,test-support"],
-  ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "graphcoder",
     "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
@@ -1711,7 +1673,6 @@ if (claim === "--help" && extra.length === 0) {
 } else {
   const [source, crate, test, diagnostic, features, options = {}] = claims[claim];
   const environment = { ...process.env, ...options.env };
-  const tests = [test, ...(options.additionalTests ?? [])];
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
   const patch = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
@@ -1733,8 +1694,8 @@ if (claim === "--help" && extra.length === 0) {
   const command = instrumented
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", "corpus/stream_persistence/projection-v1-append", "--", "-runs=1000", "-seed=1697"]
     : options.command ?? (options.fuzz ? fuzzCommand(1) : options.nextest
-    ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", tests.map(name => `test(=${name})`).join(" | "), ...options.nextest]
-    : ["test", "--locked", "-p", crate, ...features, ...target, "--", "--exact", "--nocapture", ...tests]);
+    ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
+    : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"]);
   const positive = instrumented
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", fileURLToPath(new URL("target/projection-fuzz/corpus", new URL("../../", import.meta.url))), "corpus/stream_persistence", "--", "-runs=1000", "-seed=1697"]
     : options.positiveCommand ?? (options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
@@ -1800,10 +1761,8 @@ if (claim === "--help" && extra.length === 0) {
       phases.push(phase);
       console.log(JSON.stringify(phase));
       require(readFileSync(oraclePath).equals(expectedOracle));
-      const count = label === "restored" ? options.positiveCount ?? options.positive?.length ?? tests.length : tests.length;
       const started = options.invoked ?? (invocation[0] === "cargo" && invocation[1] === "nextest"
-        ? `Starting ${count} ${count === 1 ? "test" : "tests"} across 1 binary`
-        : `running ${count} ${count === 1 ? "test" : "tests"}`);
+        ? "Starting 1 test across 1 binary" : "running 1 test");
       require(result.output.includes(started));
     }
     return result;
@@ -1843,13 +1802,12 @@ if (claim === "--help" && extra.length === 0) {
         }
         step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
         const mutated = check(mutation.label, mutation.command ?? command, mutation.source ?? source);
-        const diagnostics = [mutation.diagnostic, ...(mutation.additionalDiagnostics ?? options.additionalDiagnostics ?? [])];
         require(instrumented
           ? mutated.status !== 0 && !mutated.signal && mutated.output.includes("assertion failed: acyclic_stream::codec_fuzz::check(bytes)") && mutated.output.includes("ERROR: libFuzzer:")
-          : options.fuzz ? mutated.status !== 0 && !mutated.signal && diagnostics.every(message => mutated.output.includes(message)) && mutated.output.includes("ERROR: libFuzzer:")
-          : mutated.status === (options.negativeExit ?? (options.nextest ? 100 : 101)) && !mutated.signal && diagnostics.every(message => mutated.output.includes(message))
+          : options.fuzz ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic) && mutated.output.includes("ERROR: libFuzzer:")
+          : mutated.status === (options.negativeExit ?? (options.nextest ? 100 : 101)) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
             && (options.started === undefined || mutated.output.includes(options.started))
-            && (options.nextest || mutated.output.includes(options.failed === true ? mutation.diagnostic : options.failed ?? `0 passed; ${tests.length} failed`)));
+            && (options.nextest || mutated.output.includes(options.failed === true ? mutation.diagnostic : options.failed ?? "0 passed; 1 failed")));
       } finally {
         writeFileSync(mutatedPath, original);
       }
@@ -1859,7 +1817,7 @@ if (claim === "--help" && extra.length === 0) {
     step = "restored original oracle completes";
     const restored = check("restored", positive);
     const completed = options.completed ?? (options.fuzz ? ["DONE", `${options.fuzz.runs} runs`, "cov:"] : [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
-      : options.nextest ? `${tests.length} test${tests.length === 1 ? "" : "s"} run: ${tests.length} passed` : `${tests.length} passed; 0 failed`]);
+      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"]);
     require(restored.status === 0 && !restored.signal && (instrumented
       ? ["DONE", "1000 runs", "cov:"].every(marker => restored.output.includes(marker))
       : completed.every(marker => restored.output.includes(marker))));

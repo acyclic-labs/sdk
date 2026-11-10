@@ -3,8 +3,7 @@ use crate::Outcome;
 use acyclic_native_runtime::lines::LineBuffer;
 use serde_json::Value;
 
-use super::{ANSWER_LIMIT, NativeAnswer};
-use crate::local::host_process::EVENT_LINE_BYTES;
+use super::{ANSWER_LIMIT, EVENT_LIMIT, NativeAnswer};
 
 fn copy(answer: &NativeAnswer) -> NativeAnswer {
     NativeAnswer {
@@ -52,7 +51,7 @@ pub fn check(bytes: &[u8]) -> usize {
 }
 
 fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
-    let mut frames = LineBuffer::new(EVENT_LINE_BYTES);
+    let mut frames = LineBuffer::new(EVENT_LIMIT);
     let mut current = NativeAnswer::default();
     let mut accepted = 0;
     for line in bytes

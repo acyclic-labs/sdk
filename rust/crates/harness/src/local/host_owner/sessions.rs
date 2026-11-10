@@ -306,7 +306,7 @@ impl HostWorkspaceOwner {
             .local
             .workspace_path()
             .ok_or_else(|| Error::Invalid("native completion has no workspace".into()))?;
-        let mut quiescence =
+        let quiescence =
             super::super::host_process::HostProcessLease::acquire(workspace, child, view.path())?
                 .quiescent();
         quiescence.verify(child, view.path())?;
@@ -318,13 +318,8 @@ impl HostWorkspaceOwner {
                 // settled conversation entry carries it, and the resume id
                 // it last named is the session's.
                 let events = match quiescence.events(claim.operation)? {
-                    Some(file) => {
-                        let (events, native_id, custody) = self
-                            .native
-                            .stage_events(child, claim.operation, file, quiescence)
-                            .await?;
-                        quiescence = custody;
-                        if let Some(id) = native_id
+                    Some(bytes) => {
+                        if let Some(id) = logged_session_id(&bytes)
                             && session
                                 .native
                                 .as_ref()
@@ -342,7 +337,11 @@ impl HostWorkspaceOwner {
                                 )
                                 .await?;
                         }
-                        Some(events)
+                        Some(
+                            self.native
+                                .stage_events(child, claim.operation, &bytes)
+                                .await?,
+                        )
                     }
                     None => None,
                 };

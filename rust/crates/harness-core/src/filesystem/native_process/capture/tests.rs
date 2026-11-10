@@ -148,7 +148,7 @@ fn interactive_completion_retains_input_producer_and_cleanup()
             let (input, pending) = mpsc::sync_channel(1);
             let wake = ProcessWake::new()?;
             let (ready, readiness) = oneshot::channel();
-            let (received, mut receipt) = oneshot::channel();
+            let (received, receipt) = oneshot::channel();
             let (retired, retirement) = oneshot::channel();
             let invocation = Invocation {
                 executable: std::env::current_exe()?,
@@ -207,7 +207,7 @@ fn interactive_completion_retains_input_producer_and_cleanup()
                     complete: false,
                 })?;
                 wake.notify()?;
-                (&mut receipt).await?;
+                receipt.await?;
                 input.send(ProcessInput {
                     bytes: Vec::new(),
                     complete: true,
@@ -218,11 +218,6 @@ fn interactive_completion_retains_input_producer_and_cleanup()
             assert!(retirement.await?);
             let result = result?.ok_or_else(|| Error::Storage("capture lost completion".into()))?;
             if mode == "producer-lost" {
-                assert_eq!(
-                    receipt.try_recv(),
-                    Err(oneshot::error::TryRecvError::Closed),
-                    "retired capture retained its unused marker producer"
-                );
                 let stop = result.stop.expect("producer loss must be a typed failure");
                 assert_eq!(stop.kind, NativeProcessStopKind::CaptureFailed);
                 assert!(

@@ -376,28 +376,28 @@ impl HostDriver {
         &self,
         agent: &AgentState,
         claim: OperationId,
-        file: std::fs::File,
-    ) -> Result<(FileRef, Option<String>)> {
+        bytes: &[u8],
+    ) -> Result<FileRef> {
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.native-host.events.v1");
         hasher.update(&claim.into_bytes());
         let mut operation = [0; 16];
         hasher.finalize_xof().fill(&mut operation);
         let operation = OperationId::from_bytes(operation);
-        let mut source = super::native_events::NativeEvents::new(file)?;
-        let content = self.content(agent, source.maximum_bytes(), &[]).await?;
-        let staged = content
+        let content = self
+            .content(agent, crate::local::host_process::EVENT_LOG_BYTES, &[])
+            .await?;
+        Ok(content
             .writer
-            .stage_stream_once(
+            .stage_once(
                 operation,
                 &format!("native/{claim}.events.jsonl"),
-                &mut source,
+                bytes,
                 "application/x-ndjson",
                 "native",
                 ContentAccess::default(),
             )?
             .await?
-            .0;
-        Ok((staged, source.session()))
+            .0)
     }
 
     /// The session after the agent's last step: its open turn's checkpoint,
@@ -674,24 +674,10 @@ impl NativeAgents {
         &self,
         agent: &AgentPath,
         claim: OperationId,
-        file: std::fs::File,
-        custody: super::super::host_process::QuiescentHostProcess,
-    ) -> Result<(
-        FileRef,
-        Option<String>,
-        super::super::host_process::QuiescentHostProcess,
-    )> {
+        bytes: &[u8],
+    ) -> Result<FileRef> {
         let state = self.state(agent).await?;
-        let driver = Arc::clone(&self.driver);
-        // Polling this publication can read the regular file synchronously.
-        // The shared worker yields at each await; it retains the physical
-        // fence through an in-flight poll even when its caller is dropped.
-        acyclic_native_runtime::blocking_future(async move {
-            let (events, session) = driver.stage_events(&state, claim, file).await?;
-            Ok((events, session, custody))
-        })
-        .await
-        .map_err(storage)?
+        self.driver.stage_events(&state, claim, bytes).await
     }
 
     /// The brief of `parent`'s child session `reference`; see

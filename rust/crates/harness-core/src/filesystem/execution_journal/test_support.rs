@@ -8,32 +8,13 @@ pub(in crate::filesystem::execution_journal) async fn journal() -> Result<(
     >,
     crate::core::AuthorityRoot,
 )> {
-    journal_with_backends(
-        Arc::new(acyclic_stream::MemoryStream::default()),
-        acyclic_fs::Fs::memory(),
-    )
-    .await
-}
-
-pub(in crate::filesystem::execution_journal) async fn journal_with_backends<P, A, O>(
-    stream: Arc<P>,
-    filesystem: acyclic_fs::Fs<A, O>,
-) -> Result<(
-    FilesystemExecutionJournal<P, A, O>,
-    crate::core::AuthorityRoot,
-)>
-where
-    P: crate::store::JournalProvider + ?Sized,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
     let provider = crate::resources::ProviderRef::new(
         "append-cost".into(),
         "filesystem".into(),
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
     let agent = crate::AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
         provider,
@@ -61,7 +42,7 @@ where
         &mut None,
     )?;
     let journal = FilesystemExecutionJournal::new(
-        stream,
+        Arc::new(acyclic_stream::MemoryStream::default()),
         host,
         crate::filesystem::FilesystemJournalBinding {
             volume: &volume,
