@@ -421,9 +421,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 idempotency_key.as_str()
             };
-            let receipt_path =
-                content_receipt_path_io(receipt_identity, internal_class.is_some(), false, io)?;
-            let metadata_path = content_metadata_path_io(provisional.path(), true, io)?;
+            let receipt_path = content_receipt_path_io(
+                volume,
+                receipt_identity,
+                internal_class.is_some(),
+                false,
+                io,
+            )?;
+            let metadata_path = content_metadata_path_io(volume, provisional.path(), true, io)?;
             let receipt_bytes = match io {
                 Some(io) => io.encode(
                     &(&provisional, expected_generation),
@@ -448,8 +453,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let original_receipt =
                     read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
                 let original_receipt = if internal_class.is_some() {
-                    recover_internal_upload_receipt(&prior, receipt_identity, original_receipt, io)
-                        .await?
+                    recover_internal_upload_receipt(
+                        &prior,
+                        volume,
+                        receipt_identity,
+                        original_receipt,
+                        io,
+                    )
+                    .await?
                 } else {
                     original_receipt
                 };
@@ -515,7 +526,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
             };
             mutations.push(WorkspaceMutation::CreateDirectory {
-                path: stock_string_copy("/.system/harness-file-metadata", io)?,
+                path: stock_string_copy(
+                    metadata_path
+                        .rsplit_once('/')
+                        .ok_or_else(|| {
+                            stock_boundary(
+                                io,
+                                crate::wire::ErrorCode::Invalid,
+                                "metadata parent is absent",
+                            )
+                        })?
+                        .0,
+                    io,
+                )?,
             });
             if internal_class.is_none() {
                 mutations.push(WorkspaceMutation::CreateDirectory {

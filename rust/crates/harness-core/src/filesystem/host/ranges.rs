@@ -44,11 +44,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         range: acyclic_fs::ByteRange,
         io: &PreparationIo,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        let metadata_path = content_metadata_path_io(reference.path(), true, Some(io))?;
-        const MAXIMUM_METADATA: u64 = 6
-            * (crate::conversation::MAX_PATH_BYTES as u64
-                + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-                + 1024);
+        let metadata_path =
+            content_metadata_path_io(reference.volume(), reference.path(), true, Some(io))?;
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
         })?;
@@ -56,57 +53,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             read_generation_if_present(selected, &metadata_path, MAXIMUM_METADATA, io).await?;
         let original = if let Some(metadata) = metadata {
             let (staged, _staged_hold) = decode_content_metadata(&metadata, io)?;
-            if staged.volume() != reference.volume()
-                || staged.path() != reference.path()
-                || staged.descriptor() != reference.descriptor()
-                || staged.display_name() != reference.display_name()
-            {
+            if staged.volume() != reference.volume() || staged.path() != reference.path() {
                 return Err(stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Conflict,
                     "range metadata differs from the requested file",
                 ));
             }
-            let mut key = [0; 16];
-            hex::decode_to_slice(staged.version(), &mut key).map_err(|_| {
-                stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Storage,
-                    "range metadata has no publication operation",
-                )
-            })?;
-            io.charge(WorkCounters {
-                items_examined: staged.version().len() as u64,
-                ..Default::default()
-            })?;
-            let original = io
-                .sdk(
-                    opened
-                        .operation_generation(FilesystemKey::from_bytes(key), io, io.cancellation())
-                        .await,
-                )?
-                .ok_or_else(|| {
-                    stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Conflict,
-                        "range publication is absent",
-                    )
-                })?;
-            // The operation fixes the original atomic payload + descriptor publication.
-            // Comparing the protected index rejects a stale or substituted descriptor;
-            // comparing immutable payloads rejects writes that bypassed that index.
-            if selected.id() != original.id() {
-                let original_metadata =
-                    read_generation(&original, &metadata_path, MAXIMUM_METADATA, Some(io)).await?;
-                if original_metadata.as_ref() != metadata.as_ref() {
+            let original =
+                matching_publication(opened, selected, &staged, &metadata_path, &metadata, io)
+                    .await?;
+            if let Some(original) = original {
+                if staged.descriptor() != reference.descriptor()
+                    || staged.display_name() != reference.display_name()
+                {
                     return Err(stock_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Conflict,
-                        "range index differs from its publication",
+                        "range metadata differs from the requested file",
                     ));
                 }
+                original
+            } else {
+                unindexed::authenticate(selected, reference, &path, io).await?;
+                selected.clone()
             }
-            original
         } else {
             unindexed::authenticate(selected, reference, &path, io).await?;
             selected.clone()
@@ -122,6 +93,72 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         Ok(chunk.bytes)
     }
+}
+
+const MAXIMUM_METADATA: u64 = 6
+    * (crate::conversation::MAX_PATH_BYTES as u64
+        + 32 * crate::conversation::MAX_LABEL_BYTES as u64
+        + 1024);
+
+// Resolve the original operation before trusting an index inherited by a join.
+// Both path resolution and explicit ranges use this same canonical-record check.
+pub(super) async fn matching_publication<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    opened: &Workspace<A, O>,
+    selected: &acyclic_fs::Generation<A, O>,
+    staged: &FileRef,
+    metadata_path: &str,
+    metadata: &[u8],
+    io: &PreparationIo,
+) -> Result<Option<acyclic_fs::Generation<A, O>>> {
+    let mut key = [0; 16];
+    hex::decode_to_slice(staged.version(), &mut key).map_err(|_| {
+        stock_boundary(
+            Some(io),
+            crate::wire::ErrorCode::Storage,
+            "range metadata has no publication operation",
+        )
+    })?;
+    io.charge(WorkCounters {
+        items_examined: staged.version().len() as u64,
+        ..Default::default()
+    })?;
+    let original = io
+        .sdk(
+            opened
+                .operation_generation(FilesystemKey::from_bytes(key), io, io.cancellation())
+                .await,
+        )?
+        .ok_or_else(|| {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Conflict,
+                "range publication is absent",
+            )
+        })?;
+    if selected.id() != original.id() {
+        let original_metadata =
+            read_generation(&original, metadata_path, MAXIMUM_METADATA, Some(io)).await?;
+        if original_metadata.as_ref() != metadata {
+            return Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Conflict,
+                "range index differs from its publication",
+            ));
+        }
+        let path = crate::executor::preparation_format(
+            format_args!("/{}", staged.path()),
+            &mut Some(&mut io.history_io()),
+        )?;
+        let _path_hold = io.guard_owned(path.capacity() as u64)?;
+        if !io.sdk(
+            selected
+                .matches_file_payload(&original, &path, io, io.cancellation())
+                .await,
+        )? {
+            return Ok(None);
+        }
+    }
+    Ok(Some(original))
 }
 
 use crate::executor::stock_boundary;

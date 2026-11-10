@@ -73,14 +73,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             key.as_str()
         };
-        let receipt_path =
-            content_receipt_path_io(receipt_identity, internal_class.is_some(), true, Some(io))?;
+        let receipt_path = content_receipt_path_io(
+            volume,
+            receipt_identity,
+            internal_class.is_some(),
+            true,
+            Some(io),
+        )?;
         let hold = io.guard_owned(receipt_path.capacity() as u64)?;
         let receipt_path = (receipt_path, hold);
         let receipt =
             read_generation(&original, &receipt_path.0, UPLOAD_RECORD_BYTES, Some(io)).await?;
         let receipt = if internal_class.is_some() {
-            recover_internal_upload_receipt(&original, receipt_identity, receipt, Some(io)).await?
+            recover_internal_upload_receipt(&original, volume, receipt_identity, receipt, Some(io))
+                .await?
         } else {
             receipt
         };
@@ -255,6 +261,7 @@ pub(in crate::filesystem) async fn recover_internal_upload_receipt<
     O: AsyncObjectStore,
 >(
     original: &acyclic_fs::Generation<A, O>,
+    volume: &VolumeRef,
     identity: &str,
     receipt: acyclic_stream::OwnedBytes,
     io: Option<&PreparationIo>,
@@ -263,7 +270,7 @@ pub(in crate::filesystem) async fn recover_internal_upload_receipt<
         return Ok(receipt);
     }
     drop(receipt);
-    let path = content_receipt_path_io(identity, false, true, io)?;
+    let path = content_receipt_path_io(volume, identity, false, true, io)?;
     let _hold = io
         .map(|io| io.guard_owned(path.capacity() as u64))
         .transpose()?;
@@ -304,7 +311,8 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             "original upload receipt is not canonical",
         ));
     }
-    let metadata_path = content_metadata_path_io(recorded.0.path(), true, Some(io))?;
+    let metadata_path =
+        content_metadata_path_io(recorded.0.volume(), recorded.0.path(), true, Some(io))?;
     let hold = io.guard_owned(metadata_path.capacity() as u64)?;
     let metadata_path = (metadata_path, hold);
     let metadata =

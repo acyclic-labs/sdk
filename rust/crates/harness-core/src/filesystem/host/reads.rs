@@ -8,6 +8,8 @@ pub(crate) mod media_type;
     not(loom)
 ))]
 mod skills_tests;
+#[cfg(all(test, not(loom)))]
+mod tests;
 
 #[cfg(all(
     feature = "filesystem-local",
@@ -142,7 +144,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace = self.open(&workspace_ref, Some(io)).await?;
         let generation = io.sdk(workspace.head(io, io.cancellation()).await)?;
-        let (file, reservation) = read_content_metadata(&generation, path, io)
+        let (file, reservation) = read_content_metadata(&generation, volume, path, io)
             .await?
             .ok_or_else(|| io.invalid("internal publication is absent"))?;
         if file.volume() != volume || file.path() != path {
@@ -386,7 +388,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let selected = if let Some(bytes) = bytes {
             let bytes_hold = io.guard_bytes(&bytes)?;
             let bytes = (bytes, bytes_hold);
-            let staged = read_content_metadata(&generation, path, io).await?;
+            let staged = read_content_metadata(&generation, volume, path, io).await?;
             let publication = staged
                 .as_ref()
                 .map(|file| file_publication(&file.0, Some(io)))
@@ -394,19 +396,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let reference =
                 selected_reference(volume, path, generation.id(), &bytes.0, staged, io)?;
             grant.require_file_read(&reference.0, Some(io))?;
-            if publication.is_some() {
-                Self::read_selected_range(
-                    &generation.workspace(),
-                    &generation,
-                    &reference.0,
-                    acyclic_fs::ByteRange {
-                        offset: 0,
-                        length: 0,
-                    },
-                    io,
-                )
-                .await?;
-            }
             Some((reference, bytes, publication))
         } else {
             None
@@ -883,10 +872,11 @@ fn pin_reference<'a>(
 
 async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>,
+    volume: &VolumeRef,
     path: &str,
     io: &'a PreparationIo,
 ) -> Result<Option<(FileRef, DecodeReservation<'a>)>> {
-    let metadata_path = content_metadata_path_io(path, true, Some(io))?;
+    let metadata_path = content_metadata_path_io(volume, path, true, Some(io))?;
     let metadata_path_hold = io.guard_owned(metadata_path.capacity() as u64)?;
     let metadata_path = (metadata_path, metadata_path_hold);
     let metadata = read_generation_if_present(
@@ -902,7 +892,31 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Some(metadata) => {
             let metadata_hold = io.guard_bytes(&metadata)?;
             let metadata = (metadata, metadata_hold);
-            Some(decode_content_metadata(&metadata.0, io)?)
+            let staged = decode_content_metadata(&metadata.0, io)?;
+            if staged.0.volume() != volume || staged.0.path() != path {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Storage,
+                    "private file metadata does not match the file",
+                ));
+            }
+            let original = super::ranges::matching_publication(
+                &generation.workspace(),
+                generation,
+                &staged.0,
+                &metadata_path.0,
+                &metadata.0,
+                io,
+            )
+            .await?;
+            // A join can replace the payload while retaining the destination's
+            // index. Only an authenticated original publication may be treated
+            // as stale; malformed or substituted records still fail above.
+            if original.is_some() {
+                Some(staged)
+            } else {
+                None
+            }
         }
         None => None,
     };

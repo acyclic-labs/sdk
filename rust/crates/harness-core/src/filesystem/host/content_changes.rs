@@ -75,7 +75,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             else {
                 return Ok(None);
             };
-            let path = content_receipt_path_io(key.as_str(), false, true, Some(io))?;
+            let path = content_receipt_path_io(volume, key.as_str(), false, true, Some(io))?;
             let bytes =
                 read_generation(&generation, &path, maximum_receipt_bytes, Some(io)).await?;
             let receipt: ChangeReceipt = io.decode_json(&bytes)?;
@@ -257,7 +257,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             // Versioned as a fresh public contract; the key uses the original
             // workspace operation index and the receipt commits with all files.
             let receipt = io.encode(&(1_u8, &records), io.remaining()?.bytes_encoded, true)?;
-            let receipt_path = content_receipt_path_io(key.as_str(), false, true, Some(io))?;
+            let receipt_path =
+                content_receipt_path_io(volume, key.as_str(), false, true, Some(io))?;
             let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
             let root = self.open(&reference, Some(io)).await?;
             let binding = self
@@ -341,7 +342,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 format_args!("/{}", source.path()),
                                 &mut Some(&mut io.history_io()),
                             )?;
-                            let metadata = content_metadata_path_io(source.path(), true, Some(io))?;
+                            let metadata =
+                                content_metadata_path_io(volume, source.path(), true, Some(io))?;
                             self.require_unchanged_content(
                                 &opened,
                                 &source_generation,
@@ -447,7 +449,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             io.sdk(transaction.remove(&absolute, io, io.cancellation()).await)?;
                         }
                     }
-                    let metadata_path = content_metadata_path_io(change.path(), true, Some(io))?;
+                    let metadata_path =
+                        content_metadata_path_io(volume, change.path(), true, Some(io))?;
                     if let Some(file) = &record.file {
                         let bytes = io.encode(
                             &(file, Option::<&GenerationRef>::None),
@@ -457,7 +460,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         io.sdk(
                             transaction
                                 .create_dir_all(
-                                    "/.system/harness-file-metadata",
+                                    metadata_path
+                                        .rsplit_once('/')
+                                        .ok_or_else(|| io.invalid("metadata parent is absent"))?
+                                        .0,
                                     io,
                                     io.cancellation(),
                                 )

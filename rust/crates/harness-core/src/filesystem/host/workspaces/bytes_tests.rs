@@ -183,7 +183,7 @@ fn publication_boundaries_retain_only_owned_polling_handles() {
             Host::stage_unmeasured(
                 transaction,
                 &[],
-                false,
+                None,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 cancellation,
             )
