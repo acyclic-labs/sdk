@@ -215,8 +215,8 @@ test("observed producer frame asserts captured content with one screen projectio
           requested() { return requested; },
           onRequest(callback) { request = callback; return () => { request = undefined; }; },
         }, { actions: [
-          { when: { query_failure: "storage failure: diff command:" }, send: "redraw\n" },
-          { after_request: "redraw", when: { query_failure: "storage failure: diff command:" } },
+          { when: { contains: ["storage failure: diff command:"] }, send: "redraw\n" },
+          { after_request: "redraw", when: { contains: ["storage failure: diff command:"] } },
         ] }, result => { capture = result; });
         if (redraw) assert.equal((await running).code, 0);
         else await assert.rejects(running, /PTY completed 1\/2 actions/);
