@@ -75,10 +75,11 @@ impl ToolExecutor for RemoteTool {
         let _ = work;
         let scope = scope.or_else(|| context.map(|context| context.task().scope()));
         if !scope.is_some_and(|scope| {
-            scope
-                .grants()
-                .iter()
-                .any(|grant| grant.strip_prefix("mcp:call:") == Some(self.server.as_str()))
+            scope.grants().contains("mcp:configured")
+                || scope
+                    .grants()
+                    .iter()
+                    .any(|grant| grant.strip_prefix("mcp:call:") == Some(self.server.as_str()))
         }) {
             return Err(Error::Unauthorized("MCP server capability absent".into()));
         }

@@ -320,15 +320,7 @@ impl StockExecution<'_> {
         parts: bool,
         text: &str,
     ) -> Result<Vec<ModelMessage>> {
-        let mut notices = crate::context::Context::default();
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let tools = self.request_tools()?;
-            if self.code_composition(&tools)? {
-                self.code_tools_notice(&mut notices, &tools)?;
-            }
-        }
-        let mut settled = notices.messages;
+        let mut settled = Vec::new();
         for message in retired_steering {
             stock_vec_push(&mut settled, message, self.io)?;
         }

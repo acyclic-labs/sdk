@@ -50,6 +50,8 @@ pub mod distributed;
 mod effects;
 pub mod executor;
 pub mod experiments;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod input_watch;
 #[cfg(feature = "metrics-export")]
 pub use executor::metrics;
 pub mod extension;

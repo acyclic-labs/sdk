@@ -45,6 +45,21 @@ impl From<rmcp::model::Tool> for McpToolDefinition {
 
 /// Pinned transport for admitted operations and optional task authority.
 pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
+    /// Monotone source revision advanced by notifications/tools/list_changed.
+    fn tools_generation(&self) -> u64 {
+        0
+    }
+    /// Discover one page after a source event.
+    fn list<'a>(
+        &'a self,
+        _cursor: Option<String>,
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::ListToolsResult>> {
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "MCP catalog discovery is unavailable".into(),
+            ))
+        })
+    }
     /// Installed callback policy.
     fn callback_policy(&self) -> Option<&super::callbacks::McpCallbackPolicy> {
         None

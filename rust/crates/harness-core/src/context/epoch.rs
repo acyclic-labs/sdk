@@ -8,7 +8,7 @@
 //! source is an appended delta, never a rewrite of the prefix.
 
 use super::*;
-use crate::{Error, OperationId, conversation::ContentAccess, tool::ToolDefinition};
+use crate::{Error, OperationId, conversation::ContentAccess};
 
 /// One agent's frozen context: the immutable manifest every request of the
 /// epoch renders as its prefix. Request assembly takes this, never a live
@@ -21,21 +21,14 @@ pub struct ContextEpoch {
 
 impl ContextEpoch {
     /// The staged identity of `agent`'s epoch that begins at its context
-    /// `checkpoint` (`None`: session start) over the `tools` it declares. A
-    /// different tool set (a new build or tool configuration across a restart)
-    /// starts a new epoch, because a frozen tool array must bind to the
-    /// executors it names.
-    pub fn operation(
-        agent: &str,
-        checkpoint: Option<u64>,
-        tools: &[ToolDefinition],
-    ) -> Result<OperationId> {
+    /// `checkpoint` (`None`: session start). Live tool edits append notices;
+    /// only a different checkpoint starts a new prefix.
+    pub fn operation(agent: &str, checkpoint: Option<u64>) -> Result<OperationId> {
         let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.context-epoch.v1");
         hash.update(&(agent.len() as u64).to_le_bytes());
         hash.update(agent.as_bytes());
         hash.update(&[u8::from(checkpoint.is_some())]);
         hash.update(&checkpoint.unwrap_or(0).to_le_bytes());
-        hash.update(&crate::contract::canonical_json_bytes(&tools)?);
         let mut bytes = [0; 16];
         bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
         Ok(OperationId::from_bytes(bytes))
