@@ -35,6 +35,12 @@ Root model selection lives in the shared `agent.ts` settings or the host's
 explicit binding. A child role can choose another provider and model in its
 home volume's `templates/worker/AGENT.md`:
 
+Before the first local run, hosts may create `.volumes/home` as a real directory
+and write `agent.ts` and role files there. The harness admits that directory into
+the home volume before reading settings. No initialization command or flag is
+needed. Its original source is retained in the excluded SDK namespace; reopening
+uses the persisted volume, so later home edits are never overwritten by the seed.
+
 ```yaml
 ---
 version: 1

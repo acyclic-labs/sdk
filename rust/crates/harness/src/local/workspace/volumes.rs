@@ -8,6 +8,8 @@ pub(in crate::local) const HOME_PATH: &str = ".volumes/home";
 pub(in crate::local) const INCARNATION_PATH: &str = ".volumes/.incarnation";
 
 mod exclude;
+mod seed;
+pub(super) use seed::adopt_home;
 pub(super) mod parents;
 #[cfg(test)]
 #[cfg(all(any(test, feature = "native-execution"), not(loom)))]
