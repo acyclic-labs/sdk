@@ -216,6 +216,19 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
         after: Option<acyclic_harness_core::resources::GenerationRef>,
     },
+    /// Read bounded text prefixes at one live agent-file snapshot.
+    AgentFilePreviews {
+        /// Selected agent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Explicit relative paths.
+        paths: Vec<String>,
+        /// Next live query waits after this cut.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        after: Option<acyclic_harness_core::resources::GenerationRef>,
+        /// Per-path display credit; aggregate bytes fit one read chunk.
+        bytes: u64,
+    },
     /// Conditionally publish authored files in the agent's private volume.
     PublishAgentFiles {
         /// Selected agent.
@@ -565,7 +578,17 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
-            Self::ClientFiles { paths, .. } | Self::AgentFiles { paths, .. } => {
+            Self::ClientFiles { paths, .. }
+            | Self::AgentFiles { paths, .. }
+            | Self::AgentFilePreviews { paths, .. } => {
+                if let Self::AgentFilePreviews { bytes, .. } = self
+                    && (*bytes == 0
+                        || bytes
+                            .checked_mul(paths.len() as u64)
+                            .is_none_or(|total| total > MAX_READ_BYTES))
+                {
+                    return Err(CommandError::Invalid);
+                }
                 if paths.is_empty() {
                     return Err(CommandError::Invalid);
                 }
@@ -711,6 +734,7 @@ impl AgentCommand {
             | Self::Settlement { agent }
             | Self::Usage { agent, .. }
             | Self::Events { agent, .. }
+            | Self::AgentFilePreviews { agent, .. }
             | Self::AgentFiles { agent, .. }
             | Self::PublishAgentFiles { agent, .. }
             | Self::Archive { agent, .. }
@@ -734,6 +758,7 @@ impl AgentCommand {
             Self::ForkSession { .. } => "fork_session",
             Self::Pause { .. } => "pause",
             Self::MergeSession { .. } => "merge_session",
+            Self::AgentFilePreviews { .. } => "agent_file_previews",
             Self::AgentFiles { .. } => "agent_files",
             Self::PublishAgentFiles { .. } => "publish_agent_files",
             Self::Archive { .. } => "archive",

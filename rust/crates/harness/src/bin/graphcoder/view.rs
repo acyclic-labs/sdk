@@ -744,7 +744,11 @@ async fn run_current(
     terminal: Option<Tty>,
 ) -> Result<Next, Failure> {
     let title = conversation
-        .agent_files(vec!["ui/title".into()], None)
+        .agent_file_previews(
+            vec!["ui/title".into()],
+            None,
+            acyclic_harness::client::MAX_READ_BYTES,
+        )
         .await?;
     let mut title_future = std::pin::pin!(session::follow_title(
         Arc::clone(&conversation),

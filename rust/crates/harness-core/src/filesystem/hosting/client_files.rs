@@ -98,9 +98,57 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         paths: &[String],
         after: Option<&GenerationRef>,
     ) -> Result<ClientFiles, Error> {
-        let (volume, scope, verifier) = self.client_volume(agent, session).await?;
+        let (volume, scope, verifier, generation) =
+            self.file_selection(agent, session, after).await?;
         let grant = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "", &mut None)
             .map_err(turn)?;
+        let mut files = BTreeMap::new();
+        let access = ContentAccess {
+            ceiling: Some(scope.capabilities()),
+            io: None,
+        };
+        for path in paths {
+            let file = match self
+                .volumes
+                .read_private_path(
+                    &volume,
+                    &grant,
+                    path,
+                    Some(&generation),
+                    self.maximum_bytes,
+                    access,
+                )
+                .await
+            {
+                Ok((file, bytes)) => Some(ClientFile {
+                    file,
+                    text: std::str::from_utf8(&bytes)
+                        .map_err(|_| Error::Record("client file is not UTF-8"))?
+                        .to_owned(),
+                }),
+                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
+                Err(error) => return Err(turn(error)),
+            };
+            files.insert(path.clone(), file);
+        }
+        Ok(ClientFiles { generation, files })
+    }
+
+    async fn file_selection(
+        &self,
+        agent: &AgentPath,
+        session: Option<OperationId>,
+        after: Option<&GenerationRef>,
+    ) -> Result<
+        (
+            VolumeRef,
+            Scope,
+            crate::core::AuthorityVerifier,
+            GenerationRef,
+        ),
+        Error,
+    > {
+        let (volume, scope, verifier) = self.client_volume(agent, session).await?;
         let reference =
             super::super::bounded_io::content_workspace(&self.volumes.provider, &volume, None)
                 .map_err(turn)?;
@@ -169,39 +217,49 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                 .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))?;
             selected = self.volumes.resolve(&reference, None).await.map_err(turn)?;
         }
-        let mut files = BTreeMap::new();
+        Ok((volume, scope, verifier, selected.generation))
+    }
+
+    /// Read only the caller's display credit, at the same live snapshot used
+    /// by complete file queries. A split final UTF-8 scalar is omitted.
+    pub async fn agent_file_previews(
+        &self,
+        agent: &AgentPath,
+        paths: &[String],
+        after: Option<&GenerationRef>,
+        bytes: u64,
+    ) -> Result<crate::client_files::FilePreviews, Error> {
+        let (volume, scope, verifier, generation) = self.file_selection(agent, None, after).await?;
+        let grant = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "", &mut None)
+            .map_err(turn)?;
         let access = ContentAccess {
             ceiling: Some(scope.capabilities()),
             io: None,
         };
+        let mut files = BTreeMap::new();
         for path in paths {
-            let file = match self
+            let text = match self
                 .volumes
-                .read_private_path(
-                    &volume,
-                    &grant,
-                    path,
-                    Some(&selected.generation),
-                    self.maximum_bytes,
-                    access,
-                )
+                .read_private_prefix(&volume, &grant, path, &generation, bytes, access)
                 .await
             {
-                Ok((file, bytes)) => Some(ClientFile {
-                    file,
-                    text: std::str::from_utf8(&bytes)
-                        .map_err(|_| Error::Record("client file is not UTF-8"))?
-                        .to_owned(),
-                }),
+                Ok(data) => {
+                    let prefix = match std::str::from_utf8(&data) {
+                        Ok(text) => text,
+                        Err(error) if error.error_len().is_none() => {
+                            std::str::from_utf8(&data[..error.valid_up_to()])
+                                .map_err(|_| Error::Record("file preview is not UTF-8"))?
+                        }
+                        Err(_) => return Err(Error::Record("file preview is not UTF-8")),
+                    };
+                    Some(prefix.to_owned())
+                }
                 Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
                 Err(error) => return Err(turn(error)),
             };
-            files.insert(path.clone(), file);
+            files.insert(path.clone(), text);
         }
-        Ok(ClientFiles {
-            generation: selected.generation,
-            files,
-        })
+        Ok(crate::client_files::FilePreviews { generation, files })
     }
 
     /// Publishes one atomic conditional batch. Stable operation identity and

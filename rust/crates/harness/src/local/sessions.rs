@@ -97,11 +97,12 @@ pub async fn page(connection: &Connection, page: AgentPageRequest) -> Result<Pag
         return Err(unexpected());
     };
     let items = futures::future::try_join_all(items.into_iter().map(|item| async move {
-        let AgentReply::ClientFiles { snapshot } = connection
-            .execute(&AgentCommand::AgentFiles {
+        let AgentReply::FilePreviews { snapshot } = connection
+            .execute(&AgentCommand::AgentFilePreviews {
                 agent: item.agent.clone(),
                 paths: vec!["ui/title".into()],
                 after: None,
+                bytes: crate::client::MAX_READ_BYTES,
             })
             .await?
         else {
@@ -111,7 +112,7 @@ pub async fn page(connection: &Connection, page: AgentPageRequest) -> Result<Pag
             .files
             .get("ui/title")
             .and_then(Option::as_ref)
-            .map(|file| file.text.clone());
+            .cloned();
         if title.is_none()
             && item
                 .status

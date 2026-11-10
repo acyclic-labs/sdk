@@ -523,6 +523,18 @@ where
             AgentCommand::Root {} => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
+            AgentCommand::AgentFilePreviews {
+                agent,
+                paths,
+                after,
+                bytes,
+            } => {
+                let snapshot = self
+                    .bound
+                    .agent_file_previews(self.within_tree(agent)?, paths, after.as_ref(), *bytes)
+                    .await?;
+                Ok(AgentReply::FilePreviews { snapshot })
+            }
             AgentCommand::AgentFiles {
                 agent,
                 paths,
@@ -1651,6 +1663,7 @@ where
                 | AgentCommand::Diff { .. }
                 | AgentCommand::Usage { .. }
                 | AgentCommand::Events { .. }
+                | AgentCommand::AgentFilePreviews { .. }
                 | AgentCommand::AgentFiles { .. }
                 | AgentCommand::ClientFiles { .. }
                 | AgentCommand::Read { .. } => true,

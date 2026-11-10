@@ -528,10 +528,11 @@ mod tests {
                 snapshot.files["ui/title"].as_ref().unwrap().text,
                 "Independent session"
             );
-            let waiting = AgentCommand::AgentFiles {
+            let waiting = AgentCommand::AgentFilePreviews {
                 agent: agent.clone(),
                 paths: vec!["ui/title".into()],
                 after: Some(snapshot.generation),
+                bytes: 18,
             };
             let rename = AgentCommand::PublishAgentFiles {
                 agent: agent.clone(),
@@ -541,18 +542,18 @@ mod tests {
                     expected: snapshot.files["ui/title"]
                         .as_ref()
                         .map(|file| file.file.clone()),
-                    text: "Renamed session".into(),
+                    text: format!("Renamed session 🌳{}", "long title ".repeat(8192)),
                 }],
             };
             let (changed, renamed) =
                 futures::join!(selected.execute(&waiting), connection.execute(&rename));
             renamed?;
-            let AgentReply::ClientFiles { snapshot } = changed? else {
+            let AgentReply::FilePreviews { snapshot } = changed? else {
                 return Err(Error::Invalid("missing rename event".into()));
             };
             assert_eq!(
-                snapshot.files["ui/title"].as_ref().unwrap().text,
-                "Renamed session"
+                snapshot.files["ui/title"].as_ref().unwrap(),
+                "Renamed session "
             );
             let stale = AgentCommand::PublishAgentFiles {
                 agent: agent.clone(),
