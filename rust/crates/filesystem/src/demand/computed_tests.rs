@@ -475,3 +475,195 @@ fn computed_idle_cost_is_independent_of_agent_count() {
         assert_eq!(provider.counts.snapshots.load(Ordering::SeqCst), 0);
     }
 }
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn computed_mounted_override_removal_preserves_the_original_data_decision() {
+    for committed in [false, true] {
+        let provider = Provider::new();
+        let source = Arc::new(Routed::new(
+            Empty,
+            LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255).unwrap(),
+            computed(&provider),
+            crate::VolumeLimits::default(),
+        ));
+        let fs = Fs::memory();
+        let (root, _) = LazyWorkspace::attach(
+            &fs,
+            "mounted-computed",
+            source,
+            MemoryLazyWorkspaceStore::default(),
+            crate::VolumeInitialization {
+                config: VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                access_policy: None,
+            },
+            crate::OperationId::new(),
+            ctx!(),
+        )
+        .await
+        .unwrap();
+        root.write(
+            "/ui/index.md",
+            acyclic_stream::OwnedBytes::from_static(b"authored"),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            ctx!(),
+        )
+        .await
+        .unwrap();
+        let key = IdempotencyKey::new();
+        root.prepare_mount_removals(&["/ui/index.md".to_owned()], &[], &[], key, ctx!())
+            .await
+            .unwrap();
+        if committed {
+            let cancel = CancellationToken::new();
+            let mut transaction = root
+                .workspace()
+                .begin_transaction(key, WorkBudget::UNBOUNDED, &cancel)
+                .await
+                .unwrap()
+                .value;
+            transaction
+                .remove("/ui/index.md", WorkBudget::UNBOUNDED, &cancel)
+                .await
+                .unwrap();
+            let outcome = transaction
+                .commit(
+                    None,
+                    PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &cancel,
+                    &mut |_| async {
+                        Ok::<_, crate::WorkspaceError>(crate::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        })
+                    },
+                )
+                .await
+                .unwrap()
+                .value;
+            assert!(matches!(
+                outcome,
+                crate::TransactionCommit::Committed(_)
+                    | crate::TransactionCommit::AlreadyCommitted(_)
+            ));
+        }
+        assert_eq!(root.finish_mount_removals(ctx!()).await.unwrap(), committed);
+        let bytes = root.read("/ui/index.md", 64, ctx!()).await.unwrap().bytes;
+        assert_eq!(
+            bytes.as_ref(),
+            if committed {
+                b"abcdef".as_slice()
+            } else {
+                b"authored".as_slice()
+            }
+        );
+        if committed {
+            // Removing a projected default itself still records its deletion.
+            root.remove("/ui/index.md", None, ctx!()).await.unwrap();
+            assert!(root.read("/ui/index.md", 64, ctx!()).await.is_err());
+        }
+    }
+}
+
+#[tokio::test]
+async fn computed_routed_hash_work_is_admitted_before_lookup_and_paging() {
+    let provider = Provider::new();
+    let view = computed(&provider);
+    let source = view.reference();
+    let cancel = CancellationToken::new();
+    let direct_file = view
+        .lookup(source, &path("/index.md"), WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .unwrap();
+    let direct_root = view
+        .lookup(source, &path("/"), WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .unwrap();
+    let direct_page = view
+        .list_page(source, &path("/"), None, 1, WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .unwrap();
+    let routed = Routed::new(
+        Empty,
+        LogicalName::new(NameEncoding::Utf8, b"ui".to_vec(), 255).unwrap(),
+        view,
+        crate::VolumeLimits::default(),
+    );
+    let source = routed.reference();
+    let file = routed
+        .lookup(
+            source,
+            &path("/ui/index.md"),
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    // Every scoped identity hashes its 16-byte source and 32-byte identity once.
+    assert_eq!(file.work.bytes_hashed, direct_file.work.bytes_hashed + 48);
+    let page = routed
+        .list_page(
+            source,
+            &path("/ui"),
+            None,
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        page.work.bytes_hashed,
+        direct_page.work.bytes_hashed + 48 * page.value.entries.len() as u64
+    );
+    let root = routed
+        .lookup(source, &path("/"), WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .unwrap();
+    let root_page = routed
+        .list_page(source, &path("/"), None, 1, WorkBudget::UNBOUNDED, &cancel)
+        .await
+        .unwrap();
+    let root_hash = (b"acyclic:routed:directory:v1".len() + 32 + 32 + b"ui".len()) as u64;
+    assert_eq!(
+        root.work.bytes_hashed,
+        direct_root.work.bytes_hashed + 48 + root_hash
+    );
+    assert_eq!(
+        root_page.work.bytes_hashed,
+        direct_root.work.bytes_hashed + 48 + root_hash
+    );
+    for lookup in [true, false] {
+        let limit = if lookup {
+            file.work.bytes_hashed
+        } else {
+            page.work.bytes_hashed
+        } - 1;
+        let budget = WorkBudget {
+            bytes_hashed: limit,
+            ..WorkBudget::UNBOUNDED
+        };
+        let error = if lookup {
+            routed
+                .lookup(source, &path("/ui/index.md"), budget, &cancel)
+                .await
+                .unwrap_err()
+                .error
+        } else {
+            routed
+                .list_page(source, &path("/ui"), None, 1, budget, &cancel)
+                .await
+                .unwrap_err()
+                .error
+        };
+        assert!(matches!(
+            error,
+            DemandError::Work(crate::WorkError::BudgetExceeded {
+                counter: "bytes_hashed",
+                ..
+            })
+        ));
+    }
+}

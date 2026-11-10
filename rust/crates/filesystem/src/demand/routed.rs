@@ -72,13 +72,25 @@ impl<B: DemandSource, V: DemandSource> Routed<B, V> {
         path.components().first() == Some(&self.prefix)
     }
 
-    fn root_version(&self, base: SourceVersion, view: SourceVersion) -> SourceVersion {
+    fn root_version(
+        &self,
+        base: SourceVersion,
+        view: SourceVersion,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceVersion, DemandError> {
+        ctx.charge(WorkCounters {
+            bytes_hashed: (b"acyclic:routed:directory:v1".len()
+                + base.0.len()
+                + view.0.len()
+                + self.prefix.as_bytes().len()) as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic:routed:directory:v1");
         hash.update(&base.0);
         hash.update(&view.0);
         hash.update(self.prefix.as_bytes());
-        SourceVersion(*hash.finalize().as_bytes())
+        Ok(SourceVersion(*hash.finalize().as_bytes()))
     }
 }
 
@@ -125,12 +137,15 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                 let bytes = relative.logical_owned_bytes();
                 drop(relative);
                 crate::kernel::retire_allocation(allocation, bytes, &mut ctx)?;
-                return result.map(|node| node.map(|node| scoped_node(view.identity, node)));
+                return result?
+                    .map(|node| scoped_node(view.identity, node, &mut ctx))
+                    .transpose();
             }
             let mut node = delegate!(&mut ctx, cancel, |work| self
                 .base
                 .lookup(base, path, work, cancel))?
-            .map(|node| scoped_node(base.identity, node));
+            .map(|node| scoped_node(base.identity, node, &mut ctx))
+            .transpose()?;
             if path.is_root() {
                 let view_node = delegate!(&mut ctx, cancel, |work| self
                     .view
@@ -142,7 +157,7 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                 {
                     return Err(DemandError::NotDirectory);
                 }
-                root.version = self.root_version(root.version, view_node.version);
+                root.version = self.root_version(root.version, view_node.version, &mut ctx)?;
             }
             Ok(node)
         }
@@ -215,9 +230,12 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                     .lookup(base, directory, work, cancel))?
                 .ok_or(DemandError::SourceUnavailable)?;
                 return SourceDirectoryPage::copied(
-                    std::iter::once((&self.prefix, scoped_node(view.identity, prefix_node))),
+                    std::iter::once((
+                        &self.prefix,
+                        scoped_node(view.identity, prefix_node, &mut ctx)?,
+                    )),
                     Some(SourceCursor::detached(source, 0)),
-                    self.root_version(base_node.version, prefix_node.version),
+                    self.root_version(base_node.version, prefix_node.version, &mut ctx)?,
                     &mut ctx,
                 );
             }
@@ -233,13 +251,25 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                 .entries
                 .iter()
                 .filter(|entry| entry.name != self.prefix)
-                .map(|entry| (&entry.name, scoped_node(base.identity, entry.node)));
-            let prefix = first.then_some((&self.prefix, scoped_node(view.identity, prefix_node)));
-            let mut output = SourceDirectoryPage::copied(
+                .map(|entry| (&entry.name, entry.node));
+            let prefix = first.then_some((&self.prefix, prefix_node));
+            let version = self.root_version(page.version, prefix_node.version, &mut ctx)?;
+            let mut output = SourceDirectoryPage::copied_with(
                 prefix.into_iter().chain(entries),
                 page.next.take(),
-                self.root_version(page.version, prefix_node.version),
+                version,
                 &mut ctx,
+                |name, node, ctx| {
+                    scoped_node(
+                        if name == &self.prefix {
+                            view.identity
+                        } else {
+                            base.identity
+                        },
+                        node,
+                        ctx,
+                    )
+                },
             )?;
             output.publication = page.publication.take();
             Ok(output)
@@ -352,12 +382,20 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
     }
 }
 
-fn scoped_node(source: [u8; 16], mut node: SourceNode) -> SourceNode {
+fn scoped_node(
+    source: [u8; 16],
+    mut node: SourceNode,
+    ctx: &mut KernelAccounting<'_>,
+) -> Result<SourceNode, DemandError> {
+    ctx.charge(WorkCounters {
+        bytes_hashed: (source.len() + node.file_identity.len()) as u64,
+        ..WorkCounters::UNCHARGED
+    })?;
     let mut hash = blake3::Hasher::new();
     hash.update(&source);
     hash.update(&node.file_identity);
     node.file_identity = *hash.finalize().as_bytes();
-    node
+    Ok(node)
 }
 
 fn scope_page(
@@ -365,13 +403,12 @@ fn scope_page(
     source: [u8; 16],
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<SourceDirectoryPage, DemandError> {
-    let mut output = SourceDirectoryPage::copied(
-        page.entries
-            .iter()
-            .map(|entry| (&entry.name, scoped_node(source, entry.node))),
+    let mut output = SourceDirectoryPage::copied_with(
+        page.entries.iter().map(|entry| (&entry.name, entry.node)),
         page.next.take(),
         page.version,
         ctx,
+        |_, node, ctx| scoped_node(source, node, ctx),
     )?;
     output.publication = page.publication.take();
     Ok(output)

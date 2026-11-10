@@ -31,6 +31,17 @@ impl<
             .await;
         accept_receipt(result, ctx)
     }
+    pub(super) fn overlay_mode(
+        &self,
+        path: &str,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<crate::demand::SourceOverlay, LazyWorkspaceError> {
+        let namespace = self.namespace_path(path, ctx)?;
+        let mode = self.source.overlay(namespace.value.components());
+        namespace.retire(ctx)?;
+        Ok(mode)
+    }
+
     /// Removes only the requested identity and records the deleted source version.
     pub async fn remove(
         &self,
@@ -41,11 +52,7 @@ impl<
         let lookup = self.lookup(path, ctx).await?;
         let result = async {
             if let LazyLookup::Authored { record, .. } = &lookup.0 {
-                let namespace = self.namespace_path(path, ctx)?;
-                let reveal = self.source.overlay(namespace.value.components())
-                    == crate::demand::SourceOverlay::Defaults;
-                namespace.retire(ctx)?;
-                if reveal {
+                if self.overlay_mode(path, ctx)? == crate::demand::SourceOverlay::Defaults {
                     if expected.is_some_and(|id| id != record.file_id) {
                         return Err(LazyWorkspaceError::StaleIdentity);
                     }
@@ -222,7 +229,35 @@ impl<
             };
         }
         let mut overlay = state.overlay;
+        let mut authored = None;
         for path in paths.iter().chain(selected) {
+            if self.overlay_mode(path, ctx)? == crate::demand::SourceOverlay::Defaults {
+                if authored.is_none() {
+                    authored = Some(
+                        self.workspace
+                            .checkout_accounted(
+                                crate::model::GenerationSelector::Head,
+                                crate::model::CheckoutMode::tracking_transaction(),
+                                ctx,
+                                cancellation(ctx),
+                            )
+                            .await?,
+                    );
+                }
+                if self
+                    .authored_record(
+                        authored.as_mut().ok_or(LazyWorkspaceError::NotFound)?,
+                        path,
+                        ctx,
+                    )
+                    .await?
+                    .is_some()
+                {
+                    // The DATA decision removes this authored override. Keep
+                    // the prior source observation instead of hiding its default.
+                    continue;
+                }
+            }
             let removed = self.removed_source_version(&state, path, ctx).await?;
             overlay = self
                 .insert_overlay(overlay, path, LazyOverlayChange::Tombstone { removed }, ctx)
