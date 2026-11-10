@@ -954,14 +954,16 @@ mod tests {
         // Spend the first attempt's capture identity before the merge reports
         // its conflict. Resolution is another capture under the same request.
         std::fs::write(checkout.path().join("local.txt"), b"local edit\n").map_err(storage)?;
-        assert!(sessions::merge(&second, "publish-second").await.is_err());
+        let conflict = sessions::merge(&second, "publish-second")
+            .await
+            .expect_err("concurrent edits must report a merge conflict");
         let conflicted =
             std::fs::read_to_string(checkout.path().join("shared.txt")).map_err(storage)?;
         assert!(
             conflicted.contains("<<<<<<<")
                 && conflicted.contains("first")
                 && conflicted.contains("second"),
-            "merge conflicts must remain ordinary checkout files: {conflicted}"
+            "merge conflicts must remain ordinary checkout files: {conflicted}; reported: {conflict}"
         );
         assert_eq!(
             std::fs::read(checkout.path().join("first.txt")).map_err(storage)?,

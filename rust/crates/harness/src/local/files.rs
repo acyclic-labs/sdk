@@ -71,7 +71,7 @@ impl LocalHarness {
                 signed.capabilities().clone(),
                 Default::default(),
             )?;
-            (Arc::clone(workspace), scope, signed, hosted.root().clone())
+            (Arc::clone(workspace), scope, signed, agent.clone())
         };
         let workspace = &destination;
         let branch = format!("agents/{}", agent.id());
@@ -98,13 +98,8 @@ impl LocalHarness {
                     }),
                 },
                 Box::pin(async {
-                    let (selected, _) = workspace.selected_view().await?;
                     acyclic_fs::GitCompatRepository::new(
-                        selected
-                            .as_ref()
-                            .unwrap_or_else(|| workspace.view())
-                            .workspace()
-                            .id(),
+                        workspace.view().workspace().id(),
                         workspace.store.clone(),
                     )
                     .register_branch_workspace(branch, source.workspace().id(), None, false)
