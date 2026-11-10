@@ -13,6 +13,22 @@ pub(crate) trait SourceDemandReadWork:
     fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         self.with_demand_work(operation)
     }
+    /// Runs a metered native read. A meter refusal reaches the runtime as an
+    /// opaque I/O error while its typed cause is recorded on the original
+    /// leaf; every metered read reports that recorded cause.
+    #[cfg(windows)]
+    fn metered_read<T>(
+        &mut self,
+        operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> Result<T, DemandError>,
+    ) -> Result<T, DemandError> {
+        self.with_native_read_meter(operation)
+            .map_err(|error| match error {
+                DemandError::Io(io) => self
+                    .with_original_leaf(DemandWork::take_native_io_failure)
+                    .unwrap_or(DemandError::Io(io)),
+                error => error,
+            })
+    }
     /// Borrows the original context; only an escaping owner needs a clone.
     #[cfg(any(test, windows, feature = "native-watch"))]
     fn native_source_work(&self) -> Option<&NativeMaterializationWork> {
