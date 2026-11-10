@@ -5,8 +5,7 @@ use crate::model::VolumeLimits;
 use crate::{CancellationToken, WorkBudget};
 use std::future::{Ready, ready};
 
-async fn dropping_the_last_customer_owner_retires_the_native_namespace()
--> Result<(), Box<dyn std::error::Error>> {
+async fn explicit_unmount_retires_the_native_namespace() -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
     let cancellation = CancellationToken::new();
     let physical = tempfile::tempdir()?;
@@ -37,23 +36,34 @@ async fn dropping_the_last_customer_owner_retires_the_native_namespace()
         b"source"
     );
     let source = Arc::downgrade(&mount.source);
-    // No explicit unmount and no new cleanup meter. Returning from the last
-    // owner must witness physical retirement, rather than just request it.
+    // Explicit unmount waits for physical cleanup on the mount's original
+    // credit. Drop only requests best-effort retirement.
+    mount.unmount().await.inspect_err(|error| {
+        let owner = mount.session.lock().unwrap();
+        eprintln!("explicit unmount failed: {error:?}");
+        if let Some(session) = owner.as_ref() {
+            eprintln!("retirement state: {:?}", session.cleanup_state());
+        }
+        eprintln!(
+            "source physically retired: {:?}",
+            mount.source.physically_retired()
+        );
+    })?;
     drop(mount);
     let retired = match crate::capture_root_identity(destination.path()) {
         Ok(identity) => identity,
         Err(error) => {
-            panic!("last mount owner returned before native namespace retirement: {error:?}")
+            panic!("unmount returned before native namespace retirement: {error:?}")
         }
     };
     assert_eq!(
         retired, before,
-        "last mount owner returned while its native namespace remained mounted"
+        "unmount returned while its native namespace remained mounted"
     );
     assert_eq!(
         std::fs::read_dir(destination.path())?.count(),
         0,
-        "last mount owner left projected entries in the native namespace"
+        "unmount left projected entries in the native namespace"
     );
     assert!(
         source.upgrade().is_none(),
@@ -72,7 +82,9 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         std::fs::write(path, b"native edit")?;
         return Ok(());
     }
-    dropping_the_last_customer_owner_retires_the_native_namespace().await?;
+    explicit_unmount_retires_the_native_namespace()
+        .await
+        .map_err(|error| format!("explicit unmount regression: {error}"))?;
     crate::initialize_native_mount_services()?;
     let cancellation = CancellationToken::new();
     let new_work = |budget| test_work(budget, &cancellation);
@@ -153,7 +165,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let identity = mount
         .native_root_identity()
         .ok_or("mount lost its root identity")?;
-    let io_work = new_work(WorkBudget::UNBOUNDED)?;
+    let io_work = mount.native_work()?;
     let foreign = new_work(WorkBudget::UNBOUNDED)?;
     let original_scope = mount.begin_original_work(&io_work)?;
     assert!(matches!(

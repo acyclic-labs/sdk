@@ -1,12 +1,20 @@
 //! Canonical durable facts for one workspace-attached native source.
 
-#[cfg(feature = "native-watch")]
+#[cfg(any(
+    test,
+    feature = "native-watch",
+    feature = "test-support",
+    feature = "fuzzing"
+))]
 use super::codec::Encoder;
 use super::codec::{CanonicalDecodeError, Decoder};
-use crate::foundation::{AuthorityId, Digest, GenerationId, VolumeId};
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+use crate::foundation::AuthorityId;
+use crate::foundation::{Digest, GenerationId, VolumeId};
 use thiserror::Error;
 
-const DOMAIN: &[u8] = b"acyclic-fs-source-state-v1\0";
+pub(super) const DOMAIN: &[u8] = b"acyclic-fs-source-state-v1\0";
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 const ID_DOMAIN: &[u8] = b"acyclic-fs-source-authority-v1\0";
 const VERSION: u16 = 1;
 
@@ -57,6 +65,7 @@ pub(crate) enum SourceFactError {
     Decode(#[from] CanonicalDecodeError),
 }
 
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) fn source_authority_id(volume_id: VolumeId) -> AuthorityId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(ID_DOMAIN);
@@ -66,7 +75,12 @@ pub(crate) fn source_authority_id(volume_id: VolumeId) -> AuthorityId {
     AuthorityId::from_bytes(bytes)
 }
 
-#[cfg(feature = "native-watch")]
+#[cfg(any(
+    test,
+    feature = "native-watch",
+    feature = "test-support",
+    feature = "fuzzing"
+))]
 pub(crate) fn encode_source_fact(value: SourceFact) -> Result<Vec<u8>, SourceFactError> {
     validate(value)?;
     let mut encoder = Encoder::new(DOMAIN, VERSION);
@@ -140,7 +154,11 @@ pub(crate) fn decode_source_fact(
     Ok(value)
 }
 
-#[cfg(any(test, feature = "local"))]
+#[cfg(all(
+    any(test, feature = "local"),
+    feature = "native-watch",
+    not(target_arch = "wasm32")
+))]
 pub(crate) fn decode_source_volume(
     bytes: &[u8],
     maximum_payload_bytes: u64,
@@ -158,7 +176,12 @@ fn validate(value: SourceFact) -> Result<(), SourceFactError> {
     Ok(())
 }
 
-#[cfg(feature = "native-watch")]
+#[cfg(any(
+    test,
+    feature = "native-watch",
+    feature = "test-support",
+    feature = "fuzzing"
+))]
 const fn reason_tag(reason: SourceInvalidation) -> u8 {
     match reason {
         SourceInvalidation::InitialSnapshotRequired => 1,
@@ -188,59 +211,14 @@ fn invariant(message: &'static str) -> CanonicalDecodeError {
     CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(message))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native-watch", not(target_arch = "wasm32")))]
 mod tests {
-    use super::*;
-
     #[test]
-    fn source_fact_round_trips_and_authority_is_domain_separated()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let volume_id = VolumeId::from_bytes([7; 16]);
-        let value = SourceFact {
-            volume_id,
-            root_identity: [8; 16],
-            mode: DurableSourceMode::Tracking,
-            maximum_paths: 10,
-            maximum_extent_spans: 11,
-            maximum_queued_changes: 12,
-            capture_policy: Digest::from_bytes([4; 32]),
-            state: DurableSourceState::NeedsRescan(SourceInvalidation::RootChanged),
-            generation_id: GenerationId::new(Digest::from_bytes([9; 32])),
-        };
-        let encoded = encode_source_fact(value)?;
-        assert_eq!(decode_source_fact(&encoded, 4096)?, value);
-        for version in [0_u16, 2, u16::MAX] {
-            let mut obsolete = encoded.clone();
-            obsolete[DOMAIN.len()..DOMAIN.len() + 2].copy_from_slice(&version.to_le_bytes());
-            assert!(matches!(
-                decode_source_fact(&obsolete, 4096),
-                Err(SourceFactError::Decode(CanonicalDecodeError::UnsupportedVersion { found: actual, .. }))
-                    if actual == version
-            ));
-        }
+    fn source_authority_is_domain_separated() {
+        let volume = super::VolumeId::from_bytes([7; 16]);
         assert_ne!(
-            source_authority_id(volume_id).into_bytes(),
-            volume_id.into_bytes()
+            super::source_authority_id(volume).into_bytes(),
+            volume.into_bytes()
         );
-        Ok(())
-    }
-
-    #[test]
-    fn source_fact_rejects_zero_bounds_and_unknown_tags() {
-        let value = SourceFact {
-            volume_id: VolumeId::from_bytes([1; 16]),
-            root_identity: [2; 16],
-            mode: DurableSourceMode::Pinned,
-            maximum_paths: 0,
-            maximum_extent_spans: 1,
-            maximum_queued_changes: 1,
-            capture_policy: Digest::from_bytes([4; 32]),
-            state: DurableSourceState::Clean,
-            generation_id: GenerationId::new(Digest::from_bytes([3; 32])),
-        };
-        assert!(matches!(
-            encode_source_fact(value),
-            Err(SourceFactError::ZeroBound)
-        ));
     }
 }

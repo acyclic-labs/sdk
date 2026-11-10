@@ -14,13 +14,15 @@ use std::{
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 
 /// Filesystem authority of an execution, including all its descendants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionAccess {
     /// Read and execute the granted paths; no workspace mutation.
     ReadOnly,
-    /// Read and execute granted paths; mutate only the workspace subtree.
+    /// Read and execute granted paths; mutate only workspace and writable volume subtrees.
     WorkspaceWrite,
 }
 
@@ -83,6 +85,8 @@ impl std::error::Error for ExecutionRefusal {}
 #[derive(Debug)]
 struct Grant {
     workspace: BoundPath,
+    workspace_write: bool,
+    write: acyclic_collections::CompiledPrefixIndex<BoundPath, ()>,
     read: acyclic_collections::CompiledPrefixIndex<BoundPath, ()>,
     network: ExecutionNetwork,
     #[cfg(target_os = "linux")]
@@ -90,13 +94,63 @@ struct Grant {
 }
 
 impl Grant {
-    fn read_roots(
+    fn contains(
         &self,
+        requested: &BoundPath,
+        writable: bool,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<bool> {
+        let roots = [
+            Some(Self::roots(&self.write, &requested.path, meter)?),
+            if writable {
+                None
+            } else {
+                Some(Self::roots(&self.read, &requested.path, meter)?)
+            },
+        ];
+        for matches in roots.iter().flatten() {
+            if let Some(root) = &matches.exact
+                && root.entry.contains(requested, meter)?
+            {
+                return Ok(true);
+            }
+        }
+        if (!writable || self.workspace_write) && self.workspace.contains(requested, meter)? {
+            return Ok(true);
+        }
+        for matches in roots.iter().flatten() {
+            if let Some(root) = &matches.shortest
+                && root.entry.contains(requested, meter)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn cwd_root(&self, cwd: &Path) -> io::Result<&BoundPath> {
+        if cwd.starts_with(&self.workspace.path) {
+            return Ok(&self.workspace);
+        }
+        for index in [&self.write, &self.read] {
+            let roots = Self::roots(index, cwd, None)?;
+            if let Some(root) = roots.exact.or(roots.shortest) {
+                return Ok(root.entry);
+            }
+        }
+        Err(refused(
+            "execution working directory escapes the granted workspace",
+        ))
+    }
+
+    fn roots<'a>(
+        roots: &'a acyclic_collections::CompiledPrefixIndex<BoundPath, ()>,
         path: &Path,
         meter: Option<&dyn crate::NativeReadMeter>,
-    ) -> io::Result<acyclic_collections::PrefixMatches<'_, BoundPath>> {
+    ) -> io::Result<acyclic_collections::PrefixMatches<'a, BoundPath>> {
         let query = path.as_os_str().as_encoded_bytes();
-        self.read
+        roots
             .matches(
                 query,
                 |root| {
@@ -197,6 +251,13 @@ impl BoundPath {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_PATH | libc::O_CLOEXEC);
         }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Binding or verifying a special-file root must never wait for a
+            // peer. Identity admission is independent of later guest I/O.
+            options.custom_flags(libc::O_NONBLOCK);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;
@@ -248,7 +309,9 @@ impl BoundPath {
             }
             #[cfg(target_os = "linux")]
             let child = linux::open_beneath(&root, relative, _meter)?;
-            #[cfg(target_os = "linux")]
+            #[cfg(target_os = "macos")]
+            let child = macos::open_beneath(root, relative, false, _meter)?;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 crate::meter::native_control_attempt(
                     _meter,
@@ -258,7 +321,7 @@ impl BoundPath {
                 Ok(true)
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         Err(unavailable(
             "native grant attenuation is unavailable on this platform",
         ))
@@ -284,53 +347,88 @@ impl AsRef<[u8]> for BoundPath {
     }
 }
 
+fn bind_roots(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> io::Result<acyclic_collections::CompiledPrefixIndex<BoundPath, ()>> {
+    let mut roots = paths
+        .into_iter()
+        .map(|path| BoundPath::new(&path))
+        .collect::<io::Result<Vec<_>>>()?;
+    roots.sort_unstable_by(|left, right| {
+        AsRef::<[u8]>::as_ref(left).cmp(AsRef::<[u8]>::as_ref(right))
+    });
+    roots.dedup_by(|left, right| left.path == right.path);
+    acyclic_collections::CompiledPrefixIndex::from_sorted(roots, &mut RootIndexBuild).map_err(
+        |error| {
+            use acyclic_collections::CompiledPrefixError;
+            match error {
+                CompiledPrefixError::Work(impossible) => match impossible {},
+                CompiledPrefixError::Order(_) => refused("execution root keys are not ordered"),
+                CompiledPrefixError::Capacity => {
+                    refused("execution root index exceeds address space")
+                }
+                CompiledPrefixError::Allocation(error) => failure(io::Error::other(error)),
+                CompiledPrefixError::Invariant => refused("execution root index invariant changed"),
+            }
+        },
+    )
+}
+
 impl ExecutionGrant {
     /// Binds existing, absolute workspace and read-only roots. Symlinks are
     /// resolved here; the adapter binds native objects again at active launch.
     /// No ambient home, temporary directory or filesystem root is added.
     /// Invalid network authority refuses before binding paths or consuming
     /// the read-root iterator.
+    /// On Linux, construction also makes the trusted host process non-dumpable
+    /// to protect its environment and memory from read-capable guests.
     pub fn new(
         workspace: &Path,
         access: ExecutionAccess,
         read: impl IntoIterator<Item = PathBuf>,
         network: ExecutionNetwork,
     ) -> io::Result<Self> {
+        Self::composed(workspace, access, [], read, network)
+    }
+
+    /// Binds one composed workspace, including independently writable volumes.
+    /// Additional roots are explicit host authority, never command arguments.
+    /// `access` controls the primary root; additional write roots remain
+    /// writable. `into_read_only` removes mutation from every root together. Roots are
+    /// pinned and indexed once; no process, mount, thread or watcher is created.
+    /// Linux construction makes the host non-dumpable for its remaining
+    /// lifetime. Embedders must not re-enable dumpability while guests exist.
+    pub fn composed(
+        workspace: &Path,
+        access: ExecutionAccess,
+        write: impl IntoIterator<Item = PathBuf>,
+        read: impl IntoIterator<Item = PathBuf>,
+        network: ExecutionNetwork,
+    ) -> io::Result<Self> {
         if matches!(&network, ExecutionNetwork::TcpPorts(ports) if ports.contains(&0)) {
             return Err(refused("TCP port zero is not a destination grant"));
         }
+        #[cfg(target_os = "linux")]
+        linux::protect_owner()?;
         let workspace = BoundPath::new(workspace)?;
         if !workspace.is_dir {
             return Err(refused("execution workspace is not a directory"));
         }
-        let mut read = read
-            .into_iter()
-            .map(|path| BoundPath::new(&path))
-            .collect::<io::Result<Vec<_>>>()?;
-        read.sort_unstable_by(|left, right| {
-            AsRef::<[u8]>::as_ref(left).cmp(AsRef::<[u8]>::as_ref(right))
-        });
-        read.dedup_by(|left, right| left.path == right.path);
-        let read = acyclic_collections::CompiledPrefixIndex::from_sorted(read, &mut RootIndexBuild)
-            .map_err(|error| {
-                use acyclic_collections::CompiledPrefixError;
-                match error {
-                    CompiledPrefixError::Work(impossible) => match impossible {},
-                    CompiledPrefixError::Order(_) => refused("execution root keys are not ordered"),
-                    CompiledPrefixError::Capacity => {
-                        refused("execution root index exceeds address space")
-                    }
-                    CompiledPrefixError::Allocation(error) => failure(io::Error::other(error)),
-                    CompiledPrefixError::Invariant => {
-                        refused("execution root index invariant changed")
-                    }
-                }
-            })?;
+        let write = bind_roots(write)?;
+        let read = bind_roots(read)?;
+        let workspace_write = access == ExecutionAccess::WorkspaceWrite;
+        let access = if workspace_write || !write.entries().is_empty() {
+            ExecutionAccess::WorkspaceWrite
+        } else {
+            ExecutionAccess::ReadOnly
+        };
         #[cfg(target_os = "linux")]
         let filter = linux::filter(&network)?;
         Ok(Self {
             policy: Arc::new(Grant {
                 workspace,
+                workspace_write,
+                write,
                 read,
                 network,
                 #[cfg(target_os = "linux")]
@@ -367,7 +465,12 @@ impl ExecutionGrant {
                 ..self
             })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::Prepared::new(&self.policy, self.access, None, None)?;
+            Ok(self)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ))
@@ -467,33 +570,33 @@ impl ExecutionGrant {
         requested: &Self,
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<()> {
-        if !self
-            .policy
-            .workspace
-            .contains(&requested.policy.workspace, meter)?
+        // Preserve the primary workspace proof before any index work. Apart
+        // from avoiding a lookup for the common case, this keeps admission's
+        // original operation and examination ordering on its funding ledger.
+        let writable =
+            requested.access == ExecutionAccess::WorkspaceWrite && requested.policy.workspace_write;
+        if !((!writable || self.policy.workspace_write)
+            && self
+                .policy
+                .workspace
+                .contains(&requested.policy.workspace, meter)?)
+            && !self
+                .policy
+                .contains(&requested.policy.workspace, writable, meter)?
         {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
-        for path in requested.policy.read.entries() {
-            // An already granted root needs only its original object proof.
-            // An overlapping ancestor may require an unavailable subtree proof.
-            let roots = self.policy.read_roots(&path.path, meter)?;
-            if let Some(root) = roots.exact
-                && root.entry.contains(path, meter)?
-            {
-                continue;
-            }
-            if self.policy.workspace.contains(path, meter)? {
-                continue;
-            }
-            // Keep the original shallowest component ancestor's object proof.
-            // The same radix traversal already found it beside the exact key.
-            let permitted = match roots.shortest {
-                Some(root) => root.entry.contains(path, meter)?,
-                None => false,
-            };
-            if !permitted {
-                return Err(refused("execution grant exceeds its authority ceiling"));
+        for (index, writable) in [
+            (
+                &requested.policy.write,
+                requested.access == ExecutionAccess::WorkspaceWrite,
+            ),
+            (&requested.policy.read, false),
+        ] {
+            for path in index.entries() {
+                if !self.policy.contains(path, writable, meter)? {
+                    return Err(refused("execution grant exceeds its authority ceiling"));
+                }
             }
         }
         Ok(())
@@ -523,7 +626,13 @@ impl ExecutionGrant {
             || cwd
                 .components()
                 .any(|component| component == std::path::Component::ParentDir)
-            || !cwd.starts_with(self.workspace())
+            || !(cwd.starts_with(self.workspace())
+                || [&self.policy.write, &self.policy.read]
+                    .into_iter()
+                    .any(|index| {
+                        Grant::roots(index, cwd, None)
+                            .is_ok_and(|roots| roots.exact.or(roots.shortest).is_some())
+                    }))
         {
             return Err(refused(
                 "execution working directory escapes the granted workspace",
@@ -554,11 +663,13 @@ impl ExecutionGrant {
             _cwd,
             _meter,
         )?;
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        let platform = macos::Prepared::new(&self.policy, self.access, _cwd, _meter)?;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         Ok(PreparedExecution {
             platform,
             grant: self.clone(),
@@ -571,6 +682,8 @@ impl ExecutionGrant {
 pub struct PreparedExecution {
     #[cfg(target_os = "linux")]
     platform: linux::Prepared,
+    #[cfg(target_os = "macos")]
+    platform: macos::Prepared,
     grant: ExecutionGrant,
 }
 
@@ -584,6 +697,12 @@ impl std::fmt::Debug for PreparedExecution {
 }
 
 impl PreparedExecution {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn wrap_command(&self, command: &mut crate::ProcessCommand) -> io::Result<()> {
+        macos::validate_stdio(command.sandbox_stdio()).map_err(failure)?;
+        command.wrap_sandbox(&self.platform.profile);
+        Ok(())
+    }
     #[cfg(target_os = "linux")]
     pub(crate) fn working_directory(&self) -> &std::fs::File {
         self.platform.working_directory()
@@ -595,11 +714,13 @@ impl PreparedExecution {
     pub(crate) fn install(self, _command: &mut std::process::Command) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         self.platform.install(_command, self.grant);
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        self.platform.install(_command)?;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return Err(unavailable(
             "native execution boundary is unavailable on this platform",
         ));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         Ok(())
     }
 

@@ -15,6 +15,16 @@ opening the client does not fetch a historical snapshot. View demand and live
 record/byte retention have finite policies. The canonical session owns receive
 credit, transport, authentication and recovery.
 
+The terminal follows `commands/commands.json` in its client-session volume
+alongside `layout.json` and presentation settings. An authored catalogue has
+the shape `{"version":1,"commands":[...]}`, with the same command descriptors
+as `src/client/commands.json`. It replaces the shipped catalogue for that
+session; when absent, shipped commands supply the default without a file write.
+Dispatch, help and completion use the same validated snapshot. Publishing a
+replacement updates an open completion popup and help view through the existing
+filesystem event; reopening the session retains its catalogue. Unsupported
+versions and invalid descriptors are refused before dispatch.
+
 Browser callers initialize the generated WASM module and construct `AgentClient`
 from `client-query` with their authenticated `WasmStream`, canonical agent path,
 explicit cursors and credential slot. The browser object drives the same Rust

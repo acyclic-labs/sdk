@@ -266,6 +266,7 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                         let error = context
                             .effective_tool_path(
                                 invocation.arguments["path"].as_str().unwrap(),
+                                None,
                                 Some(&io),
                             )
                             .await
@@ -285,6 +286,7 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                         let error = context
                             .effective_tool_path(
                                 invocation.arguments["path"].as_str().unwrap(),
+                                None,
                                 Some(&io),
                             )
                             .await

@@ -14,9 +14,34 @@ pub(crate) trait SourceDemandReadWork:
         self.with_demand_work(operation)
     }
     /// Borrows the original context; only an escaping owner needs a clone.
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, windows, feature = "native-watch"))]
     fn native_source_work(&self) -> Option<&NativeMaterializationWork> {
         None
+    }
+    #[cfg(windows)]
+    fn prepare_read_cancellation(&mut self) -> Result<crate::Cancelled<'static>, DemandError> {
+        if let Some(original) = self.native_source_work() {
+            return original.cancellation_wait().map_err(Into::into);
+        }
+        self.with_original_leaf(|work| {
+            let token = work.cancellation.clone();
+            work.prepare_cancelled(&token)
+                .map_err(|error| DemandError::from(error.into_native()))
+        })
+    }
+    #[cfg(windows)]
+    fn finish_read_cancellation(
+        &mut self,
+        registered: crate::Cancelled<'static>,
+    ) -> Result<(), DemandError> {
+        if self.native_source_work().is_some() {
+            drop(registered);
+            return Ok(());
+        }
+        self.with_original_leaf(|work| {
+            work.finish_cancelled(registered)
+                .map_err(|error| DemandError::from(error.into_native()))
+        })
     }
     #[cfg(any(test, feature = "native-watch"))]
     fn with_ordinary_work<T>(&mut self, _: impl FnOnce(&mut DemandWork) -> T) -> Option<T> {
@@ -85,7 +110,7 @@ impl SourceDemandReadWork for DemandWork {
 }
 
 impl SourceDemandReadWork for NativeMaterializationWork {
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, windows, feature = "native-watch"))]
     fn native_source_work(&self) -> Option<&NativeMaterializationWork> {
         Some(self)
     }

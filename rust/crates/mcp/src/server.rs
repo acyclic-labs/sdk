@@ -80,6 +80,12 @@ pub trait ToolProvider {
     /// before the server waits for its queued replies to be written.
     fn closed(&mut self) {}
 
+    /// Keys whose work advanced on a real event since the previous pass.
+    /// Quiet work must never manufacture progress or arm a periodic wake-up.
+    fn progressed(&mut self) -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+
     /// Advances the provider's work and pushes each `parked` key it settles
     /// with its result. Returns the wake-up that schedules the next pass
     /// alongside input, or `None` when nothing runs and input alone can make
@@ -112,6 +118,13 @@ pub struct ToolServer {
     pub parked: usize,
     /// Bytes of one request line, excluding its delimiter.
     pub frame_bytes: u32,
+}
+
+struct Parked {
+    id: Value,
+    key: String,
+    token: Option<Value>,
+    progress: u64,
 }
 
 impl ToolServer {
@@ -152,17 +165,31 @@ impl ToolServer {
         failed: &mut oneshot::Receiver<()>,
     ) -> Result<(), ServeError<P::Error>> {
         let mut messages = lines(input, self.frame_bytes);
-        let mut parked: Vec<(Value, String)> = Vec::new();
+        let mut parked: Vec<Parked> = Vec::new();
         let mut initialized = false;
         let mut settled = Vec::new();
         loop {
-            let keys = parked.iter().map(|(_, key)| key.clone()).collect();
+            let keys = parked.iter().map(|call| call.key.clone()).collect();
             let wake = provider
                 .progress(&keys, &mut settled)
                 .map_err(ServeError::Provider)?;
             for (key, value) in settled.drain(..) {
-                for (id, _) in parked.extract_if(.., |(_, parked)| *parked == key) {
-                    queue(backlog, &result(&id, value.clone()))?;
+                for call in parked.extract_if(.., |call| call.key == key) {
+                    queue(backlog, &result(&call.id, value.clone()))?;
+                }
+            }
+            let progressed = provider.progressed();
+            for call in &mut parked {
+                if backlog.len() < QUEUED_REPLIES
+                    && progressed.contains(&call.key)
+                    && let Some(token) = &call.token
+                {
+                    call.progress = call.progress.saturating_add(1);
+                    queue(
+                        backlog,
+                        &json!({"jsonrpc":"2.0", "method":"notifications/progress",
+                        "params":{"progressToken":token, "progress":call.progress}}),
+                    )?;
                 }
             }
             while let Some(line) = backlog.pop_front() {
@@ -217,9 +244,9 @@ impl ToolServer {
                 if method == Some("notifications/cancelled")
                     && let Some(request) = params.get("requestId")
                 {
-                    for (id, key) in parked.extract_if(.., |(id, _)| id == request) {
-                        provider.cancel(&key);
-                        queue(backlog, &failure(&id, -32800, "Request cancelled"))?;
+                    for call in parked.extract_if(.., |call| &call.id == request) {
+                        provider.cancel(&call.key);
+                        queue(backlog, &failure(&call.id, -32800, "Request cancelled"))?;
                     }
                 }
                 continue;
@@ -276,7 +303,15 @@ impl ToolServer {
                             result(id, Err(json!("parked call bound reached")))
                         }
                         Some(Ok(ToolCall::Park(key))) => {
-                            parked.push((id.clone(), key));
+                            parked.push(Parked {
+                                id: id.clone(),
+                                key,
+                                token: params
+                                    .pointer("/_meta/progressToken")
+                                    .filter(|token| token.is_string() || token.is_number())
+                                    .cloned(),
+                                progress: 0,
+                            });
                             continue;
                         }
                         Some(Err(error)) => result(id, Err(json!(error.to_string()))),

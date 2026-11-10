@@ -189,17 +189,11 @@ mod tests {
     /// point's EINVAL there as the negative control.
     #[test]
     fn waits_at_descriptors_beyond_fd_setsize() -> io::Result<()> {
-        use rustix::process::{Resource, getrlimit, setrlimit};
-        let mut limit = getrlimit(Resource::Nofile);
-        if limit.maximum.is_some_and(|maximum| maximum <= 1500) {
+        if crate::raise_descriptor_limit() <= 1500 {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "native high-descriptor control needs RLIMIT_NOFILE maximum above 1500",
             ));
-        }
-        if limit.current.is_some_and(|current| current <= 1500) {
-            limit.current = Some(limit.maximum.map_or(2048, |maximum| maximum.min(2048)));
-            setrlimit(Resource::Nofile, limit)?;
         }
         let (mut read, write) = std::io::pipe()?;
         let high = rustix::io::fcntl_dupfd_cloexec(&write, 1500)?;

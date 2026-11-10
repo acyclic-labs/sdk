@@ -354,7 +354,9 @@ where
             .map_err(Into::into)
     }
 
-    /// Publishes and detaches, retaining the owner on any failure.
+    /// Publishes and waits until physical namespace cleanup is complete.
+    /// A failure retains its owner and terminal cause; dropping the mount
+    /// requests best-effort retirement without waiting for completion.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
         let source = self.source.clone();

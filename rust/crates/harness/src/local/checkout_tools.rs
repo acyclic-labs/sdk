@@ -21,6 +21,7 @@ pub(super) mod shell;
 #[cfg(loom)]
 mod tests;
 
+#[derive(Clone)]
 pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
     signed: Scope,
@@ -166,6 +167,7 @@ struct PreparedCommand {
     fs: Option<crate::tools::FsCommand>,
     request: Vec<u8>,
     maximum: usize,
+    started: Option<tokio::sync::oneshot::Sender<ToolResult>>,
 }
 
 struct ShellCommand<'a> {
@@ -174,6 +176,7 @@ struct ShellCommand<'a> {
     shell: Option<crate::tools::ShellInput>,
     request: Vec<u8>,
     maximum: usize,
+    started: Option<tokio::sync::oneshot::Sender<ToolResult>>,
 }
 
 impl CheckoutTools {
@@ -190,6 +193,7 @@ impl CheckoutTools {
                 fs,
                 request,
                 maximum,
+                started,
             } = command;
             let result = serialized(&self.state, async |mut state| {
                 let owner = context.task();
@@ -218,6 +222,7 @@ impl CheckoutTools {
                             shell,
                             request,
                             maximum,
+                            started,
                         },
                         state,
                         &workspace,
@@ -247,6 +252,7 @@ impl CheckoutTools {
                 shell,
                 request,
                 maximum,
+                started,
             } = command;
             let execution_grant = context
                 .execution_grant()
@@ -265,17 +271,36 @@ impl CheckoutTools {
             )?
             .await?;
             let input = shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
+            let background = input.background;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let selected = view
+                .share(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work: &work,
+                    cancellation: &cancellation,
+                })
+                .map_err(storage)?;
+            let mut selected_watcher = if background {
+                state.watcher.take()
+            } else {
+                None
+            };
             let files = output::Output::open(context, request).await?;
             let mounts = Arc::clone(&state.mounts);
             let (result, mut state, mut files) =
                 workspace::volumes::native_scope(&mounts, async |claims| {
                     let (result, mut state, files, claims) = self
                         .shell(
-                            (input, invocation.operation_id, execution_grant),
+                            (input, invocation.operation_id, execution_grant, started),
                             maximum,
                             state,
                             files,
                             claims,
+                            context,
                         )
                         .await?;
                     // Native preparation refusals precede process acquisition.
@@ -298,7 +323,13 @@ impl CheckoutTools {
             let State {
                 active, watcher, ..
             } = &mut *state;
-            let view = active.as_ref().unwrap_or_else(|| self.workspace.view());
+            let current = active.as_ref().unwrap_or_else(|| self.workspace.view());
+            let view = if background { &*selected } else { current };
+            let watcher = if background {
+                &mut selected_watcher
+            } else {
+                watcher
+            };
             self.capture(
                 (workspace, view),
                 watcher,
@@ -461,17 +492,41 @@ impl ToolExecutor for CheckoutTools {
             };
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
-            self.run_checkout_command(
-                PreparedCommand {
-                    invocation,
-                    shell,
-                    fs,
-                    request,
-                    maximum,
-                },
-                context,
-            )?
-            .await
+            let background = shell.as_ref().is_some_and(|input| input.background);
+            let (started, launched) = tokio::sync::oneshot::channel();
+            let command = PreparedCommand {
+                invocation,
+                shell,
+                fs,
+                request,
+                maximum,
+                started: background.then_some(started),
+            };
+            if !background {
+                return self.run_checkout_command(command, context)?.await;
+            }
+            let tools = self.clone();
+            let context = context.clone();
+            let task = acyclic_native_runtime::TaskSpawner::current().spawn(async move {
+                let result = tools.run_checkout_command(command, &context)?.await;
+                if let Err(error) = &result {
+                    let terminal = serde_json::to_vec(&serde_json::json!({"error": error.to_string(), "indeterminate": matches!(error, Error::Indeterminate(_))})).map_err(storage)?;
+                    if let Err(cause) = output::writer::stage(&context, "result.json", &terminal, "application/json").await {
+                        tracing::error!(?cause, "background shell terminal publication failed");
+                    }
+                }
+                result
+            });
+            tokio::pin!(task);
+            tokio::select! {
+                result = &mut task => result.map_err(storage)?,
+                result = launched => {
+                    match result {
+                        Ok(result) => Ok(result),
+                        Err(_) => task.await.map_err(storage)?,
+                    }
+                }
+            }
         })
     }
 
@@ -482,6 +537,26 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
+            if invocation.name == crate::tools::shell::PLATFORM.name
+                && invocation
+                    .arguments
+                    .get("background")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && let Some(context) = context.as_ref()
+                && let (Some(file), _) = context
+                    .observe_staged_file_once(
+                        output::writer::operation(context, "started.json"),
+                        None,
+                    )
+                    .await?
+            {
+                let bytes = context.task().read_file(&file, None).await?;
+                let mut value: serde_json::Value =
+                    serde_json::from_slice(&bytes).map_err(storage)?;
+                value["output_volume"] = serde_json::to_value(file.volume()).map_err(storage)?;
+                return Ok(Some(ToolResult { value }));
+            }
             // A dispatched process is never launched again. A reopened owner
             // fences every tree its dead predecessor left before admitting
             // work, and a live command holds this guard until its tree is

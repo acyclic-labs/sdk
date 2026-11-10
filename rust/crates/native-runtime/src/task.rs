@@ -38,12 +38,22 @@ where
     }
 }
 
-/// Runtime for a single coordination owner. Durable storage uses its own shared,
-/// fixed service through [`spawn_persistence`]. Its one blocking slot runs only
+/// Shared coordination executor with one async worker per available CPU.
+///
+/// Tokio shards runnable work into worker-local queues, with work stealing for
+/// imbalance and an injection queue for submissions from outside the executor.
+/// Idle workers park on the runtime's OS readiness driver; there is no periodic
+/// readiness probe or per-agent thread. Tasks may move between workers: callers
+/// must not use thread identity as task identity. The caller's `block_on` future
+/// remains on the calling thread, so terminal ownership stays with its caller.
+///
+/// Durable storage uses its own shared, fixed service through
+/// [`spawn_persistence`]. The one additional blocking slot runs only
 /// work that completes on its own, in submission order; an open stdin, whose
 /// read may never return, is read on its own thread through [`crate::stdin`].
 pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
         .max_blocking_threads(1)
         .enable_all()
         .build()
@@ -372,6 +382,41 @@ mod native {
 mod tests {
     #[cfg(feature = "test-support")]
     use std::time::Duration;
+
+    #[test]
+    fn coordination_workers_make_independent_progress() {
+        let workers = std::thread::available_parallelism().unwrap().get();
+        let runtime = super::coordination_runtime().unwrap();
+        // Refuse the single-thread regression before entering the rendezvous.
+        assert_eq!(runtime.metrics().num_workers(), workers);
+        let release = std::sync::Arc::new(std::sync::Barrier::new(workers + 1));
+        let (entered, entering) = std::sync::mpsc::channel();
+        let jobs = {
+            let _scope = runtime.enter();
+            (0..workers)
+                .map(|_| {
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    super::spawn(async move {
+                        entered.send(std::thread::current().id()).unwrap();
+                        // Deliberately occupy this worker until every other
+                        // worker proves progress. No timing or scheduler luck.
+                        release.wait();
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let identities = (0..workers)
+            .map(|_| entering.recv().unwrap())
+            .collect::<std::collections::HashSet<_>>();
+        release.wait();
+        runtime.block_on(async {
+            for job in jobs {
+                job.await.unwrap();
+            }
+        });
+        assert_eq!(identities.len(), workers);
+    }
 
     #[test]
     fn coordination_blocking_pool_stays_flat_with_more_tasks() {

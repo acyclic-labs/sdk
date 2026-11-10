@@ -157,7 +157,7 @@ fn checkout_then_projection_order_cannot_deadlock() {
     assert!(diagnostic.contains("deadlock; threads ="), "{diagnostic}");
 }
 
-fn scope(slot: &StateArc<AsyncMutex<Option<u8>>>, users: &StateArc<SyncMutex<usize>>) {
+fn scope(slot: &StateArc<AsyncMutex<Option<u8>>>, users: &StateArc<Users>) {
     let entered = complete(enter(slot, users, async || Ok(7))).unwrap();
     assert!(
         complete(lock_owned(slot.clone())).is_some(),
@@ -176,7 +176,7 @@ fn scope(slot: &StateArc<AsyncMutex<Option<u8>>>, users: &StateArc<SyncMutex<usi
 // scope so this model explores only competing admission versus retirement.
 fn scoped_retirement() {
     let slot = StateArc::new(AsyncMutex::new(None));
-    let users = StateArc::new(SyncMutex::new(0));
+    let users = StateArc::new(Users::default());
     let entered = complete(enter(&slot, &users, async || Ok(7))).unwrap();
     let worker = {
         let (slot, users) = (slot.clone(), users.clone());
@@ -207,7 +207,7 @@ fn the_last_execution_scope_alone_retires_the_projection() {
 
 fn publication() {
     let slot = StateArc::new(AsyncMutex::new(None));
-    let users = StateArc::new(SyncMutex::new(0));
+    let users = StateArc::new(Users::default());
     let a = complete(enter(&slot, &users, async || Ok(0))).unwrap();
     let b = complete(enter(&slot, &users, async || Ok(0))).unwrap();
     let mut published = 0;
@@ -240,12 +240,12 @@ fn every_completed_command_publishes_before_its_acknowledgement() {
 
 fn competing_completions() {
     let slot = StateArc::new(AsyncMutex::new(None));
-    let users = StateArc::new(SyncMutex::new(0));
+    let users = StateArc::new(Users::default());
     let a = complete(enter(&slot, &users, async || Ok(7))).unwrap();
     let b = complete(enter(&slot, &users, async || Ok(7))).unwrap();
     let published = StateArc::new(Mutex::new(0));
     let completion = move |slot: StateArc<AsyncMutex<Option<u8>>>,
-                           users: StateArc<SyncMutex<usize>>,
+                           users: StateArc<Users>,
                            entered: Entered,
                            published: StateArc<Mutex<usize>>| {
         let publish = async |slot: &mut Option<u8>, retire| {

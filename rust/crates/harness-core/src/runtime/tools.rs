@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::layers::{EFFECTIVE_PATH, HOME_PATH, SEED_PATH};
+use crate::layers::{EFFECTIVE_PATH, HOME_PATH, SEED_PATH, SYSTEM_PATH};
 
 impl TaskContext {
     /// Retains complete tool output through the existing volume publisher.
@@ -866,7 +866,13 @@ impl ToolContext {
             path.strip_prefix(SEED_PATH),
             self.task().harness.seed.as_ref(),
         ) {
-            return Ok((seed, std::borrow::Cow::Borrowed(relative)));
+            return Ok((&seed.volume, std::borrow::Cow::Borrowed(relative)));
+        }
+        if let (Some(relative), Some(system)) = (
+            path.strip_prefix(SYSTEM_PATH),
+            self.task().harness.system.as_ref(),
+        ) {
+            return Ok((&system.volume, std::borrow::Cow::Borrowed(relative)));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let work = io.and_then(crate::executor::PreparationIo::original_native_work);
@@ -894,26 +900,21 @@ impl ToolContext {
         ))
     }
 
-    /// The layer path a read of `path` selects. A path under
-    /// [`EFFECTIVE_PATH`] resolves to the highest layer holding it, the home
-    /// over the seed (`sys/` only from the seed), so the read returns that
-    /// layer's own pinned file; other paths are returned unchanged. A home
-    /// file holding only `off: true` hides the seed's. A composed settings
-    /// file reads as its highest module; its value is the evaluated fold.
-    /// The caller must retain the returned selection and its original metadata
-    /// funding through the read, rather than select the layer's head again.
+    /// Resolves an effective alias once, retaining the home probe's exact
+    /// generation and its original custody. An explicit source routes to its
+    /// original layer without inspecting the current home head.
     pub(crate) async fn effective_tool_path<'a>(
         &self,
         path: &'a str,
+        original: Option<&VolumeRef>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(
         std::borrow::Cow<'a, str>,
-        Option<crate::conversation::FilePathSelection>,
-        u64,
+        Option<(crate::conversation::FilePathSelection, crate::NativeCustody)>,
     )> {
-        use crate::layers::{WHY_SUFFIX, is_off, layered};
+        use crate::layers::{WHY_SUFFIX, equals_from_prefix, layered, off_from_prefix};
         let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
-            return Ok((std::borrow::Cow::Borrowed(path), None, 0));
+            return Ok((std::borrow::Cow::Borrowed(path), None));
         };
         let missing = || Error::NotFound(format!("{path} is in no layer")).tool_input();
         if relative.ends_with(WHY_SUFFIX) {
@@ -922,42 +923,120 @@ impl ToolContext {
             ))
             .tool_input());
         }
-        let seed = || std::borrow::Cow::Owned(format!("{SEED_PATH}{relative}"));
+        let seed = || format!("{SEED_PATH}{relative}");
         let seeded = self.task().harness.seed.is_some();
         if !layered(relative) {
-            return if seeded {
-                Ok((seed(), None, 0))
+            let selected = if (relative.starts_with("sys/models/")
+                || relative.starts_with("sys/secrets/"))
+                && self.task().harness.system.is_some()
+            {
+                format!("{SYSTEM_PATH}{relative}")
+            } else if seeded {
+                seed()
             } else {
-                Err(missing())
+                return Err(missing());
             };
+            if let Some(volume) = original
+                && self.tool_path_selection(&selected, io)?.0 != volume
+            {
+                return Err(
+                    Error::Conflict("effective version belongs to another layer".into())
+                        .tool_input(),
+                );
+            }
+            return Ok((selected.into(), None));
         }
         let home = format!("{HOME_PATH}{relative}");
-        // An `off` marker is a few bytes; a longer file is never one.
+        if let Some(original) = original {
+            if self.tool_path_selection(&home, io)?.0 == original {
+                return Ok((home.into(), None));
+            }
+            if self
+                .task()
+                .harness
+                .seed
+                .as_ref()
+                .is_some_and(|seed| &seed.volume == original)
+            {
+                return Ok((seed().into(), None));
+            }
+            return Err(
+                Error::Conflict("effective version belongs to another layer".into()).tool_input(),
+            );
+        }
+        // Every request, including continuations, stays within this probe's
+        // size, so any reader allowance that admits the probe admits them.
         let probe = acyclic_fs::ByteRange {
             offset: 0,
             length: 32,
         };
-        let held = |result: Result<_>| match result {
-            Ok(selected) => Ok(Some(selected)),
-            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => Ok(None),
-            Err(error) => Err(error),
-        };
-        let mine = held(self.read_tool_path_range(&home, None, probe, io).await)?;
-        let Some((selected, bytes, retained)) = mine else {
-            return if seeded {
-                Ok((seed(), None, 0))
-            } else {
-                Err(missing())
+        let (selected, bytes, retained) =
+            match self.read_tool_path_range(&home, None, probe, io).await {
+                Ok(read) => read,
+                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
+                    return if seeded {
+                        Ok((seed().into(), None))
+                    } else {
+                        Err(missing())
+                    };
+                }
+                Err(error) => return Err(error),
             };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let custody = {
+            let _ = retained;
+            None
         };
-        if selected.byte_length <= probe.length && is_off(&bytes) {
-            #[cfg(feature = "filesystem")]
-            let _custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-            drop(bytes);
+        let continuation = |range: acyclic_fs::ByteRange| {
+            let home = &home;
+            let selected = &selected;
+            async move {
+                let (_, bytes, retained) = self
+                    .read_tool_path_range(home, Some(&selected.generation), range, io)
+                    .await?;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let custody = {
+                    let _ = retained;
+                    None::<()>
+                };
+                Ok(crate::layers::MarkerChunk {
+                    bytes,
+                    _hold: custody,
+                })
+            }
+        };
+        if off_from_prefix(&bytes, selected.byte_length, io, &continuation).await? {
             drop(selected);
+            drop(custody);
             return Err(missing());
         }
-        Ok((home.into(), Some(selected), retained))
+        // A home copy identical to the built-in skill inherits the seed, as
+        // in discovery; the comparison continues at the selected generation.
+        let inherits_seed = match crate::layers::seed_skill(relative).filter(|_| seeded) {
+            Some(seed) => {
+                equals_from_prefix(seed, &bytes, selected.byte_length, &continuation).await?
+            }
+            None => false,
+        };
+        if inherits_seed {
+            drop(selected);
+            drop(custody);
+            return Ok((seed().into(), None));
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = {
+            if let Some(custody) = custody {
+                custody.into_retained()?;
+            }
+            io.filter(|io| io.original_native_work().is_some())
+                .map(|io| io.take_native_custody(retained))
+                .transpose()?
+        };
+        Ok((home.into(), Some((selected, custody))))
     }
 
     /// Checks original directory authority for the selected mounted path.
@@ -990,6 +1069,30 @@ impl ToolContext {
         Ok((volume, relative))
     }
 
+    /// A supplied content reference preserves identity, not mounted authority.
+    /// Check both the resolved directory and metadata before returning any
+    /// projection, including projections that do not fetch content bytes.
+    pub(crate) fn authorize_tool_file_read(
+        &self,
+        path: &str,
+        file: &FileRef,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        self.authorize_tool_path_read(path, io)?;
+        self.task()
+            .authorize_file_read(
+                file,
+                self.effective_scope(),
+                self.effective_scope().grants(),
+                Some(acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 0,
+                }),
+                io,
+            )
+            .map(|_| ())
+    }
+
     /// Resolves and reads one current workspace path through its original bound
     /// reader, without broadening this invocation's effective grants.
     pub(crate) async fn read_tool_path(
@@ -999,6 +1102,7 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        let expected_generation = self.layer_generation(volume, expected_generation)?;
         let content = self
             .task()
             .content_binding(Some(volume))
@@ -1032,6 +1136,7 @@ impl ToolContext {
         u64,
     )> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        let expected_generation = self.layer_generation(volume, expected_generation)?;
         let (selected, bytes, hold) = self
             .task()
             .content_binding(Some(volume))
@@ -1080,6 +1185,57 @@ impl ToolContext {
             0
         };
         Ok((selected, bytes, retained))
+    }
+
+    /// A supplied version of a read-only layer must name this run's pinned
+    /// generation. A later host publication of the same volume is outside the
+    /// run, whichever form (content or authored) carries the version.
+    pub(crate) fn check_layer_version(
+        &self,
+        source: &crate::tool::files::FileReadSource,
+    ) -> Result<()> {
+        use crate::tool::files::FileReadSource;
+        let current = match source {
+            FileReadSource::Content(file) => self
+                .layer_generation(file.volume(), None)?
+                .is_none_or(|pinned| crate::conversation::names_generation(file, pinned)),
+            FileReadSource::Authored(selected) => {
+                self.layer_generation(&selected.volume, Some(&selected.generation))?;
+                true
+            }
+        };
+        if !current {
+            return Err(
+                Error::Conflict("read-only layer version differs from this run".into())
+                    .tool_input(),
+            );
+        }
+        Ok(())
+    }
+
+    fn layer_generation<'a>(
+        &'a self,
+        volume: &VolumeRef,
+        expected: Option<&'a crate::resources::GenerationRef>,
+    ) -> Result<Option<&'a crate::resources::GenerationRef>> {
+        for layer in self
+            .task()
+            .harness
+            .seed
+            .iter()
+            .chain(self.task().harness.system.iter())
+        {
+            if &layer.volume == volume {
+                if expected.is_some_and(|expected| expected != &layer.generation) {
+                    return Err(Error::Conflict(
+                        "read-only layer version differs from this run".into(),
+                    )
+                    .tool_input());
+                }
+                return Ok(Some(&layer.generation));
+            }
+        }
+        Ok(expected)
     }
 
     /// Resolves a write destination through the original admitted publisher.

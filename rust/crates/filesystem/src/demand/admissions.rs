@@ -1,5 +1,5 @@
 use super::*;
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, windows, feature = "native-mount"))]
 use crate::cancellation::{CancellationWaitError, Cancelled};
 use crate::kernel::ProofDataCustody;
 use crate::sync::atomic::{AtomicU64, Ordering, fence};
@@ -168,7 +168,7 @@ impl DemandWork {
             .as_ref()
             .is_some_and(|shared| token.is_registered_native_accounting(shared))
     }
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, windows, feature = "native-mount"))]
     pub(crate) fn prepare_cancelled(
         &mut self,
         token: &CancellationToken,
@@ -176,7 +176,7 @@ impl DemandWork {
         self.reconcile_cancellation_registry()?;
         token.prepare_cancelled_measured(&mut self.allocations, &mut self.work, self.budget)
     }
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, windows, feature = "native-mount"))]
     pub(crate) fn finish_cancelled(
         &mut self,
         prepared: Cancelled<'static>,

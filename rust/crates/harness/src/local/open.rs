@@ -426,7 +426,19 @@ impl Opening {
         } = opened;
         let verifier = issuer.verifier(&mut None)?;
         let seed = files.seed_layer().await?;
-        let volumes = (&owner.project, &scratch, &journal, &seed.0, &shared);
+        let system = if self.config.system_files.is_empty() {
+            None
+        } else {
+            Some(files.system_layer(&self.config.system_files).await?)
+        };
+        let volumes = (
+            &owner.project,
+            &scratch,
+            &journal,
+            &seed.0,
+            &shared,
+            system.as_ref().map(|layer| &layer.volume),
+        );
         let (scope, signed) = scopes(&self, &issuer, owner.agent, volumes)?;
         let reader = crate::filesystem::FilesystemContentVerifier::new(
             files.clone(),
@@ -475,7 +487,11 @@ impl Opening {
                 writer,
             }),
             targets: workspace_tools.map(super::agents::home).transpose()?,
-            seed: Some(seed.0.clone()),
+            seed: Some(crate::layers::PinnedLayer {
+                volume: seed.0.clone(),
+                generation: seed.1.clone(),
+            }),
+            system,
             ..crate::runtime::Bindings::local()
         }
         .build()?;
@@ -589,9 +605,16 @@ fn scopes(
     opening: &Opening,
     issuer: &AuthorityRoot,
     agent: AgentId,
-    volumes: (&VolumeRef, &VolumeRef, &VolumeRef, &VolumeRef, &VolumeRef),
+    volumes: (
+        &VolumeRef,
+        &VolumeRef,
+        &VolumeRef,
+        &VolumeRef,
+        &VolumeRef,
+        Option<&VolumeRef>,
+    ),
 ) -> Result<(RuntimeScope, Scope)> {
-    let (project, scratch, journal, seed, shared) = volumes;
+    let (project, scratch, journal, seed, shared, system) = volumes;
     let mut grants = Vec::new();
     if opening.config.model.is_some() {
         grants.extend([
@@ -610,10 +633,12 @@ fn scopes(
         }
         grants.push(volume.directory_read_capability("", &mut None)?);
     }
-    grants.extend([
-        seed.capability(VolumeOperation::Read, &mut None)?,
-        seed.directory_read_capability("", &mut None)?,
-    ]);
+    for volume in std::iter::once(seed).chain(system) {
+        grants.extend([
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.directory_read_capability("", &mut None)?,
+        ]);
+    }
     grants.extend(crate::tools::call_grants(
         &opening.tools,
         opening.config.default_tools.iter().map(String::as_str),

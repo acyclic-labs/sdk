@@ -24,7 +24,7 @@ const RECORD_DOMAIN: &[u8; 8] = b"ACYFSREC";
 const RECORD_VERSION: u16 = 1;
 
 mod page_codec;
-#[cfg(any(test, feature = "fuzzing"))]
+#[cfg(any(test, feature = "fuzzing", feature = "test-support"))]
 pub(crate) use page_codec::fuzz::check as check_fuzz;
 #[cfg(test)]
 use page_codec::record_copied_bytes;

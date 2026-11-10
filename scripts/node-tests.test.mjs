@@ -21,6 +21,7 @@ test('native Node and Bun failures survive discovery, selection and result repor
   writeFileSync(join(root, 'passed.test.mjs'), "import test from 'node:test';import {prepared} from './prepared.mjs';test('prepared input',()=>{if(!prepared)throw Error('missing preparation')});");
   for (const file of ['import.test.mjs', 'import.test.ts']) writeFileSync(join(root, file), "import './missing-module.mjs';");
   const run = args => spawnSync('node', [fileURLToPath(new URL('./node-tests.mjs', import.meta.url)), '--root', root, ...args], {cwd: root, encoding: 'utf8', env: {...process.env, SDK_TEMP_DIR: root, NODE_TEST_CONTEXT: undefined}});
+  writeFileSync(join(root, 'provider.integration.mjs'), "import test from 'node:test';throw Error('external provider must be selected explicitly');");
   const failed = run(['--all']);
   assert.equal(failed.status, 1, failed.stdout + failed.stderr);
   for (const file of ['node.test.mjs', 'bun.test.ts']) assert.ok(failed.stdout.includes(`NODE_TEST_FAIL ${file}::parent > failure <&> 😀`), failed.stdout + failed.stderr);

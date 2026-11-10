@@ -397,10 +397,45 @@ fn pending_registration_replays_changes_across_history_done() -> TestResult {
         &[floor + 1, floor + 1, floor + 2],
     );
     assert!(events.try_recv().is_err());
+    let (saved, preserved) = std::sync::mpsc::channel();
+    let pending = registration.clone();
+    let check: Box<Box<dyn FnOnce() + Send>> = Box::new(Box::new(move || {
+        let mut state = hub.state();
+        let floor = state.of(&pending).and_then(|shard| {
+            shard
+                .routes
+                .values()
+                .flatten()
+                .find(|route| Arc::ptr_eq(&route.registration, &pending))
+                .map(|route| route.floor)
+        });
+        let _ = saved.send(floor);
+    }));
+    extern "C" fn check_floor(context: *mut c_void) {
+        // SAFETY: the queue owns this boxed Send closure, consumed exactly once.
+        let check = unsafe { Box::from_raw(context.cast::<Box<dyn FnOnce() + Send>>()) };
+        check();
+    }
+    // SAFETY: this serial check follows retirement and replacement, and is
+    // queued before the new stream exists, so its callbacks cannot advance the
+    // route first. The queue takes ownership of the check until it runs.
+    unsafe { dispatch_async_f(hub.queue(), Box::into_raw(check).cast(), check_floor) };
+    drop(suspended);
+    assert_eq!(preserved.recv_timeout(DEADLINE)?, Some(floor));
+    assert!(wait_for_arm(hub, &registration, arms));
+    let suspended = suspend_callbacks(hub);
+    // Native retirement and replay run before the controlled replay below.
+    // Give that injected batch its own original cut, independent of unrelated
+    // host events that advanced the real stream during the queue handoff.
+    while events.try_recv().is_ok() {}
     let stream = {
         let mut state = hub.state();
         let shard = state.of(&registration).ok_or("missing shard")?;
         assert_eq!(shard.arms, arms + 1, "pending routes need their own replay");
+        shard.replaying = true;
+        for route in shard.routes.values_mut().flatten() {
+            route.floor = floor;
+        }
         shard.stream
     };
     hub.deliver(

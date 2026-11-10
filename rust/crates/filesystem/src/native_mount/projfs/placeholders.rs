@@ -29,18 +29,35 @@ pub(super) fn write_entry(
 ) -> Result<Placed, String> {
     let host = host_relative_path(path).map_err(|error| error.to_string())?;
     if entry.info.IsDirectory {
-        return match std::fs::create_dir(projection.runtime.root.as_path().join(&host)) {
+        let relative = projection.runtime.projfs_name(&host);
+        let placeholder = link_placeholder(entry.info);
+        // A source directory is a ProjFS placeholder, including when it
+        // replaces a deleted file. Ordinary mkdir can leave a cached negative
+        // lookup in front of the replacement's children.
+        let result = unsafe {
+            PrjWritePlaceholderInfo2(
+                projection.context,
+                &relative,
+                &raw const placeholder,
+                u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX),
+                None,
+            )
+        };
+        return match result {
             Ok(()) => Ok(Placed::Unowned),
             Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::AlreadyExists
-                        | std::io::ErrorKind::NotFound
-                        | std::io::ErrorKind::NotADirectory
-                ) =>
+                if [
+                    HR_ALREADY_EXISTS,
+                    HR_FILE_EXISTS,
+                    HR_FILE_NOT_FOUND,
+                    HR_PATH_NOT_FOUND,
+                    HR_DIRECTORY,
+                ]
+                .contains(&error.code()) =>
             {
                 Ok(Placed::Nothing)
             }
+            Err(error) if error.code() == HR_SHARING_VIOLATION => Ok(Placed::Retry),
             Err(error) => Err(format!("creating directory {path:?}: {error}")),
         };
     }

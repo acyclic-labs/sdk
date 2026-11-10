@@ -107,7 +107,14 @@ impl View {
     }
     /// Explicit demands only. Callers plan these at the visible priority and
     /// follow the selected status/conversation streams using the same reader.
-    pub fn wants(&self, agent: &AgentPath, path: &UiPath, tail: Option<u64>) -> Result<Vec<Want>> {
+    /// For directory reads, pass the cursor returned by `nodes` unchanged.
+    pub fn wants(
+        &self,
+        agent: &AgentPath,
+        path: &UiPath,
+        tail: Option<u64>,
+        cursor: u64,
+    ) -> Result<Vec<Want>> {
         if path.as_str().is_empty() {
             return Ok(Vec::new());
         }
@@ -126,7 +133,7 @@ impl View {
             }),
             "children" => wants.push(Want::Listing {
                 parent: agent.children()?,
-                index: 0,
+                index: u32::try_from(cursor >> 32).map_err(|_| Error::Invalid("child cursor"))?,
                 tail: None,
                 witness: Some(agent.status()?),
             }),

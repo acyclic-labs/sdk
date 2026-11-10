@@ -351,6 +351,31 @@ impl ProcessCommand {
 
     /// The same description as a standard command. Owned streams are
     /// duplicated, so this description stays reusable.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn sandbox_stdio(&self) -> [Option<std::os::fd::RawFd>; 3] {
+        use std::os::fd::AsRawFd;
+        let streams = [&self.stdin, &self.stdout, &self.stderr];
+        std::array::from_fn(
+            |index| match streams[index].as_ref().map(|stream| &stream.0) {
+                Some(Stdio::Piped | Stdio::Null) => None,
+                Some(Stdio::Owned(fd)) => Some(fd.as_raw_fd()),
+                Some(Stdio::Inherit) | None => Some(index as std::os::fd::RawFd),
+            },
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn wrap_sandbox(&mut self, profile: &str) {
+        let program = std::mem::replace(&mut self.program, "/usr/bin/sandbox-exec".into());
+        let original = std::mem::take(&mut self.args);
+        self.args = ["-p", profile, "--"]
+            .into_iter()
+            .map(|arg| Arg::Regular(arg.into()))
+            .chain(std::iter::once(Arg::Regular(program)))
+            .chain(original)
+            .collect();
+    }
+
     #[cfg(any(unix, test))]
     pub(crate) fn to_std(&self) -> std::io::Result<std::process::Command> {
         if self.boundary.is_some() {

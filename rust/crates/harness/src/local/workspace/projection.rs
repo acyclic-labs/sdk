@@ -44,7 +44,20 @@ pub(super) async fn initialize<T>(
 
 /// An owned execution claim, transferred to the physical command worker.
 /// Only worker cleanup or successful return can release it.
-pub(in crate::local) struct Entered(StateArc<SyncMutex<usize>>);
+#[derive(Default)]
+pub(in crate::local) struct Users {
+    count: SyncMutex<usize>,
+    idle: tokio::sync::Notify,
+}
+
+impl std::ops::Deref for Users {
+    type Target = SyncMutex<usize>;
+    fn deref(&self) -> &Self::Target {
+        &self.count
+    }
+}
+
+pub(in crate::local) struct Entered(StateArc<Users>);
 
 impl Drop for Entered {
     fn drop(&mut self) {
@@ -53,6 +66,11 @@ impl Drop for Entered {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *users = users.checked_sub(1).expect("projection claim underflow");
+        let idle = *users == 0;
+        drop(users);
+        if idle {
+            self.0.idle.notify_waiters();
+        }
     }
 }
 
@@ -61,7 +79,7 @@ impl Drop for Entered {
 // and a new scope never adopts one that is being retired.
 pub(in crate::local) async fn enter<T>(
     slot: &StateArc<AsyncMutex<Option<T>>>,
-    users: &StateArc<SyncMutex<usize>>,
+    users: &StateArc<Users>,
     create: impl AsyncFnOnce() -> Result<T>,
 ) -> Result<Entered> {
     let slot = initialize(slot, create).await?;
@@ -74,7 +92,7 @@ pub(in crate::local) async fn enter<T>(
 
 pub(in crate::local) async fn leave<T>(
     slot: &StateArc<AsyncMutex<Option<T>>>,
-    users: &SyncMutex<usize>,
+    users: &Users,
     entered: Entered,
     publish: impl AsyncFnOnce(&mut Option<T>, bool) -> Result<()>,
 ) -> Result<()> {
@@ -213,18 +231,22 @@ impl MountedVolume {
     }
 
     pub(super) async fn retire(&self) -> Result<()> {
-        let mut slot = self.native().await;
-        if *self
-            .users
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            != 0
-        {
-            return Err(Error::Conflict(
-                "native workers still own the volume projection".into(),
-            ));
+        loop {
+            let idle = self.users.idle.notified();
+            tokio::pin!(idle);
+            idle.as_mut().enable();
+            let mut slot = self.native().await;
+            if *self
+                .users
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                == 0
+            {
+                return self.publish_locked(&mut slot, true).await;
+            }
+            drop(slot);
+            idle.await;
         }
-        self.publish_locked(&mut slot, true).await
     }
 
     // The single retirement path: publish, detach, then remove the residue

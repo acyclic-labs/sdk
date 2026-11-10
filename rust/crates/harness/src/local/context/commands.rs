@@ -18,8 +18,7 @@ impl LocalHarness {
         &self,
         text: &str,
     ) -> Result<Option<String>> {
-        let catalog = CommandCatalog::builtins()?;
-        let Some((name, arguments)) = catalog.selected(text, u64::MAX)? else {
+        let Some((name, arguments)) = CommandCatalog::selected(text, u64::MAX)? else {
             return Ok(None);
         };
         let maximum = self.limits.file_bytes;

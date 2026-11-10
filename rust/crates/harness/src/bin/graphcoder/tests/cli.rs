@@ -1104,6 +1104,7 @@ async fn selected_agent_queries_use_the_explicit_owner_state() {
     registry.load_catalog(&model.catalog).unwrap();
     let config = registry
         .graphcoder(&fixture.workspace, Some("graphcoder-qual/tiny".into()))
+        .unwrap()
         .without_user_settings()
         .state_directory(&state)
         .working_directory(&fixture.workspace)
@@ -1172,6 +1173,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
                 &fixture.workspace,
                 Some(format!("graphcoder-qual/{selected}")),
             )
+            .unwrap()
             .without_user_settings()
             .state_directory(fixture._directory.path().join(state))
             .working_directory(&fixture.workspace)

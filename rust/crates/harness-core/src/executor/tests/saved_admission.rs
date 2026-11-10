@@ -1,6 +1,6 @@
 use super::*;
 
-/// The saved disabled-compaction format predates mandatory request accounting.
+/// A saved disabled-compaction turn binds no capacity and stages no count.
 async fn save_unaccounted_request(
     executor: &StockExecutor,
     journal: &Journal,
@@ -75,36 +75,38 @@ async fn save_unaccounted_request(
 }
 
 #[tokio::test]
-async fn saved_unaccounted_projection_requires_admission_before_fresh_dispatch() -> Result<()> {
-    for (length, fault, admitted) in [
-        (10, None, true),
-        (5_000, None, false),
-        (10, Some(AccountingFault::Digest), false),
-    ] {
-        let journal = Journal::default();
-        let (provider, counts) =
-            counted_model(4_096, fault, [ScriptedTurn::Text("done".into())], []);
-        let executor = uncompacted_executor(
-            Model::new("test".into(), "saved".into(), "1".into())?,
-            provider.clone(),
-            ContextPipeline::default(),
-            ToolRegistry::default(),
-        )
-        .with_max_output_tokens(1_024)?;
-        let input = TurnInput {
-            operation_id: OperationId::new(),
-            max_steps: None,
-            input: ModelContent::Text("x".repeat(length)),
-            selected_context: None,
-        };
-        save_unaccounted_request(&executor, &journal, &input, false).await?;
-        let result = executor.model_step(&journal, &input, 0, &[]).await;
-        assert_eq!(result.is_ok(), admitted, "{result:?}");
-        assert_eq!(counts.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.requests().len(), usize::from(admitted));
-        if admitted {
-            executor.model_step(&journal, &input, 0, &[]).await?;
-            assert_eq!(counts.load(Ordering::SeqCst), 1);
+async fn disabled_compaction_dispatches_fresh_and_saved_requests_without_accounting() -> Result<()>
+{
+    for saved in [false, true] {
+        for (capacity, output, length, fault) in [
+            (100, 1_024, 10, None),
+            (131_072, 8_192, 10, None),
+            (4_096, 1_024, 5_000, None),
+            (131_072, 1_024, 10, Some(AccountingFault::Digest)),
+        ] {
+            let journal = Journal::default();
+            let (provider, counts) =
+                counted_model(capacity, fault, [ScriptedTurn::Text("done".into())], []);
+            let executor = uncompacted_executor(
+                Model::new("test".into(), "unchecked".into(), "1".into())?,
+                provider.clone(),
+                ContextPipeline::default(),
+                ToolRegistry::default(),
+            )
+            .with_max_output_tokens(output)?;
+            let input = TurnInput {
+                operation_id: OperationId::new(),
+                max_steps: None,
+                input: ModelContent::Text("x".repeat(length)),
+                selected_context: None,
+            };
+            if saved {
+                save_unaccounted_request(&executor, &journal, &input, false).await?;
+            }
+            let result = executor.execute(input.clone(), &journal).await?;
+            assert_eq!(result.text, "done");
+            assert_eq!(executor.execute(input, &journal).await?, result);
+            assert_eq!(counts.load(Ordering::SeqCst), 0);
             assert_eq!(provider.requests().len(), 1);
         }
     }
@@ -180,14 +182,6 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
     assert!(matches!(
         replayed.last(),
         Some(ModelEvent::Completed { .. })
-    ));
-    let fresh = TurnInput {
-        operation_id: OperationId::new(),
-        ..input.clone()
-    };
-    assert!(matches!(
-        executor.model_step(&journal, &fresh, 0, &[]).await,
-        Err(Error::Unsupported(_))
     ));
     let changed = TurnInput {
         input: ModelContent::Text("changed".into()),

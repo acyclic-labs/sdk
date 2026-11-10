@@ -116,7 +116,7 @@ fn default_capacity() -> usize {
     const FLOOR: usize = 16;
     const CEILING: usize = 1 << 16;
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    let limit = match descriptor_limit() {
+    let limit = match raise_descriptor_limit() {
         0 => 1024,
         limit => limit,
     };
@@ -128,16 +128,80 @@ fn default_capacity() -> usize {
         .clamp(FLOOR, CEILING)
 }
 
+/// Raises this process's soft descriptor limit to the most the OS allows it,
+/// once, and returns the soft limit then in force (0 when it is unknown).
+///
+/// macOS starts every process at a soft limit of 256 although its hard limit
+/// is far higher; Go and rustc raise it at startup the same way. Product
+/// binaries call this first, and the native services call it before they
+/// start, so tests and products run with the same limit. It spends nothing:
+/// the descriptors are the process's own allowance, which the cache and
+/// [`admit_descriptors`](crate::admit_descriptors) then divide.
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-fn descriptor_limit() -> u64 {
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
+pub fn raise_descriptor_limit() -> u64 {
+    static RAISED: OnceLock<u64> = OnceLock::new();
+    *RAISED.get_or_init(|| {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        #[allow(unsafe_code, reason = "FFI: getrlimit")]
+        // SAFETY: getrlimit writes only the struct it is given.
+        let status = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) };
+        if status != 0 {
+            return 0;
+        }
+        let allowed =
+            descriptor_ceiling().map_or(limit.rlim_max, |ceiling| ceiling.min(limit.rlim_max));
+        if allowed <= limit.rlim_cur {
+            return limit.rlim_cur;
+        }
+        let raised = libc::rlimit {
+            rlim_cur: allowed,
+            rlim_max: limit.rlim_max,
+        };
+        #[allow(unsafe_code, reason = "FFI: setrlimit")]
+        // SAFETY: setrlimit reads only the struct it is given.
+        let status = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const raised) };
+        if status == 0 { allowed } else { limit.rlim_cur }
+    })
+}
+
+/// Windows bounds handles by memory, not by a per-process limit.
+#[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+pub fn raise_descriptor_limit() -> u64 {
+    0
+}
+
+/// The kernel's per-process ceiling below an unlimited hard limit: macOS
+/// refuses a soft limit above `kern.maxfilesperproc`.
+#[cfg(target_vendor = "apple")]
+fn descriptor_ceiling() -> Option<u64> {
+    let mut value: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    #[allow(unsafe_code, reason = "FFI: sysctlbyname")]
+    // SAFETY: the name is NUL-terminated, and the output pointer and length
+    // describe `value`; nothing is written to the kernel.
+    let status = unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            (&raw mut value).cast(),
+            &raw mut size,
+            std::ptr::null_mut(),
+            0,
+        )
     };
-    #[allow(unsafe_code, reason = "FFI: getrlimit")]
-    // SAFETY: getrlimit writes only the struct it is given.
-    let status = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) };
-    if status == 0 { limit.rlim_cur } else { 0 }
+    if status == 0 {
+        u64::try_from(value).ok().filter(|ceiling| *ceiling > 0)
+    } else {
+        None
+    }
+}
+
+/// Linux admits any soft limit up to the hard limit.
+#[cfg(target_os = "linux")]
+fn descriptor_ceiling() -> Option<u64> {
+    None
 }
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]

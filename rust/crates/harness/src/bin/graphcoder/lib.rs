@@ -206,7 +206,7 @@ fn configure(
     registry: Registry,
 ) -> Result<LocalHarnessConfig, Box<dyn std::error::Error>> {
     let mut config = registry
-        .graphcoder(&args.workspace, args.model.clone())
+        .graphcoder(&args.workspace, args.model.clone())?
         .working_directory(&std::env::current_dir()?)?;
     if let Some(directory) = &args.host_state_directory {
         config = config.state_directory(directory);
@@ -482,7 +482,15 @@ async fn drive(
                 "--usage-jsonl and --transcripts require -p or --input-format jsonl".into(),
             );
         }
-        return phase(|| view::run(conversation, args.inline, args.resume, terminal)).await;
+        return phase(|| {
+            view::run(
+                conversation,
+                args.inline,
+                args.resume || args.agent.is_some(),
+                terminal,
+            )
+        })
+        .await;
     }
     drop(terminal);
     let usage_stdout = args

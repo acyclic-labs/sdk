@@ -30,7 +30,9 @@ use crate::{
     runtime::ContentBindings,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamProvider};
+use acyclic_stream::{
+    BoxProviderFuture as BoxFuture, ReadRequest, StreamProvider, StreamProviderExt as _,
+};
 use futures::TryStreamExt;
 use std::sync::Arc;
 
@@ -1958,6 +1960,37 @@ where
 {
     fn agent(&self) -> &AgentPath {
         &self.agent
+    }
+
+    fn closed(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            let path = self.agent.inbox().map_err(agent_error)?;
+            // Archive's close marker and inbox delivery commit together. Watch
+            // the delivery, so active work stops before resource retirement.
+            let tail = self.stream.tail(path.clone()).await?;
+            match self
+                .stream
+                .tail(self.agent.closed().map_err(agent_error)?)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(acyclic_stream::StreamError::NotFound) => {}
+                Err(error) => return Err(error.into()),
+            }
+            let mut records = acyclic_stream::records_only(
+                self.stream
+                    .follow(acyclic_stream::FollowRequest::new(path, tail))
+                    .await?,
+            );
+            while let Some(record) = records.try_next().await? {
+                let record =
+                    crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?;
+                if matches!(record, crate::agent::InboxRecord::Archive(_)) {
+                    return Ok(());
+                }
+            }
+            Err(acyclic_stream::StreamError::Unavailable.into())
+        })
     }
 
     fn select<'a>(

@@ -72,7 +72,7 @@ export async function pty(processes, binary, fixture, input, capture) {
           error.code = "terminal_frame_failed";
           throw error;
         }
-        if (!action || settled) return;
+        if (!action || settled || !frames.available()) return;
         const unavailable = command && `${command} is not available in this view`;
         if (unavailable && visible.includes(unavailable)
             && !(action.when.contains ?? []).some(text => text && unavailable.includes(text))) {
@@ -93,6 +93,7 @@ export async function pty(processes, binary, fixture, input, capture) {
         failures.accept(diagnostic, action.when, action.assert);
         if (unavailable && visible.includes(unavailable)) command = undefined;
         snapshots.push({ action: index, visible });
+        if (action.prompt !== undefined || action.send !== undefined || action.kill) frames.consume();
         index++;
         if (action.prompt !== undefined) {
           command = action.prompt.trim().startsWith("/") ? action.prompt.trim() : undefined;
@@ -124,7 +125,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     finally {
       unsubscribe();
       unsubscribe = undefined;
-      await new Promise(resolve => screen.write("", resolve));
+      await new Promise(resolve => screen.write("", () => resolve(undefined)));
       frame(true);
     }
     const visible = screenText(screen);

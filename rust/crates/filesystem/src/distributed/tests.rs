@@ -841,7 +841,8 @@ async fn reservations_exclude_writers_and_recover_the_original_head() -> TestRes
     let path = stream_path(id, "/publication-gate")?;
     let tail = stream.tail(path.clone()).await?;
     assert_eq!(
-        decode_publication_gate(&read_one(stream.as_ref(), path, tail - 1).await?.value)?,
+        decode_publication_gate(&read_one(stream.as_ref(), path, tail - 1).await?.value)?
+            .map(|reserved| reserved.operation),
         Some(op)
     );
     Ok(())
@@ -893,7 +894,8 @@ async fn release_lost_ack_retains_its_original_decision_and_rejects_forged_envel
     let path = stream_path(reservation.authority_id, "/publication-gate")?;
     let tail = stream.tail(path.clone()).await?;
     assert_eq!(
-        decode_publication_gate(&read_one(stream.as_ref(), path, tail - 1).await?.value)?,
+        decode_publication_gate(&read_one(stream.as_ref(), path, tail - 1).await?.value)?
+            .map(|reserved| reserved.operation),
         Some(next_op)
     );
     let mut spy = ReleaseSpy::new(stream);

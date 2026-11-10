@@ -157,7 +157,7 @@
   },
   {
     "name": "shell",
-    "description": "This tool executes a shell command in the selected workspace and returns stdout, stderr, exit status and any retained output file. Commands use the workspace's native shell. Omitted execution lifetime is unbounded; cancellation and authorization expiry still apply. Background execution is unavailable.",
+    "description": "This tool executes a shell command in the selected workspace and returns stdout, stderr, exit status and any retained output file. Commands use the workspace's native shell. Omitted execution lifetime is unbounded; cancellation and authorization expiry still apply. Background execution returns output files and a cancellation file path.",
     "parametersJsonSchema": {
       "type": "object",
       "properties": {
@@ -175,7 +175,7 @@
         },
         "is_background": {
           "type": "boolean",
-          "description": "Background execution is unavailable. Omit this field or set it to false."
+          "description": "Return after launch while the command continues. Read its returned output directory for stdout, stderr and result.json; write its cancel path to stop only this job."
         },
         "delay_ms": {
           "type": "integer",

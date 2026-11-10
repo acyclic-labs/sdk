@@ -61,6 +61,8 @@ function declaredFeatures(item, features) {
 
 // Projection keeps the original requested feature policy. Never substitute
 // the declared closure for flags: Cargo resolves dependencies and target cfg.
+/** @param {any} selection
+ * @param {{manifest?: boolean, target?: string, targets?: string}} [options] */
 export function cargoFeatureArguments(selection, { manifest = false, target, targets } = {}) {
   if (manifest && selection.packages.length !== 1) {
     throw new Error("STEP_FAILED cargo-feature-projection: manifest selection requires one package; recovery: node scripts/check-feature-matrix.mjs --list");
@@ -80,8 +82,7 @@ export function enabled(item, features) {
   return declaredFeatures(item, features).join(" ");
 }
 
-export function featureSets(item, eachFeature = false) {
-  if (!eachFeature) return [["check", "--locked", "--manifest-path", item.manifest_path, "--lib", "--all-features"]];
+export function featureSets(item) {
   const own = Object.keys(item.features).filter(name => name !== "default").sort();
   const defaults = Object.hasOwn(item.features, "default") ? ["default"] : [];
   const sets = [

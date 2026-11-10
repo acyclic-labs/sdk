@@ -138,7 +138,7 @@ fn google_calls_map_to_canonical_inputs() -> Result<()> {
         (
             "shell",
             json!({"command":"ls","description":"list","dir_path":"src","is_background":false}),
-            json!({"command":"ls","cwd":"src"}),
+            json!({"command":"ls","cwd":"src","background":false}),
         ),
     ] {
         assert_eq!(adapt(google, variant, call)?, canonical, "{variant}");
@@ -162,22 +162,12 @@ fn refused_and_unmapped_arguments_never_reach_the_capability() -> Result<()> {
         (
             NativeToolProfile::Anthropic,
             "shell",
-            json!({"command":"sleep 9","run_in_background":true}),
-        ),
-        (
-            NativeToolProfile::Anthropic,
-            "shell",
             json!({"command":"ls","dangerouslyDisableSandbox":true}),
         ),
         (
             NativeToolProfile::Anthropic,
             "Read",
             json!({"file_path":"a.pdf","pages":"1-2"}),
-        ),
-        (
-            NativeToolProfile::Google,
-            "shell",
-            json!({"command":"ls","is_background":true}),
         ),
         (
             NativeToolProfile::Anthropic,

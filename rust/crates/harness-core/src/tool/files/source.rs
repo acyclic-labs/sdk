@@ -14,9 +14,15 @@ impl ReadSource {
         work: crate::NativeWork<'_>,
     ) -> Result<Self> {
         let (source, custody) = match version {
+            // An effective alias names no volume until its layer is selected;
+            // that selection checks the version's original layer.
             Some(version) => {
-                let (source, custody) =
-                    super::version::decode_tool_version(Some(context), path, version, work)?;
+                let (source, custody) = match path.strip_prefix(crate::layers::EFFECTIVE_PATH) {
+                    Some(relative) => super::version::decode_version(relative, version, work)?,
+                    None => {
+                        super::version::decode_tool_version(Some(context), path, version, work)?
+                    }
+                };
                 (Some(source), custody)
             }
             None => (None, None),
@@ -48,7 +54,7 @@ impl FileReadSource {
         }
     }
 
-    pub(super) fn volume(&self) -> &crate::conversation::VolumeRef {
+    pub(crate) fn volume(&self) -> &crate::conversation::VolumeRef {
         match self {
             Self::Content(file) => file.volume(),
             Self::Authored(file) => &file.volume,

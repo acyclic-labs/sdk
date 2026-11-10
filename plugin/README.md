@@ -74,6 +74,30 @@ acyclic host claude-code -- --model claude-haiku-5-5 \
 acyclic host pi --
 ```
 
+Harnesses start a headless root with `acyclic host HOST --prompt TEXT -- POLICY_ARGS`.
+This is supported for every host family and uses the same policy resolution as
+managed children, including AGY's relative file permissions and `..` refusal:
+
+```sh
+acyclic host agy --prompt 'Complete the task' -- --sandbox --mode accept-edits --model gemini-2.5-flash --settings '{"permissions":{"allow":["write_file(.)"]}}'
+acyclic host opencode --prompt 'Complete the task' -- --model provider/model
+acyclic host claude-code --prompt 'Complete the task' -- --settings /path/to/policy.json --permission-mode default
+acyclic host codex --prompt 'Complete the task' -- --sandbox workspace-write --ask-for-approval never
+acyclic host pi --prompt 'Complete the task' --
+```
+
+Headless output is the native JSON event stream, preceded by versioned
+`acyclic.host_context` metadata. Root output and managed conversation event logs
+retain the explicit `--model` selection when a native event omits its model;
+reported native model names take precedence. Select `--model` explicitly for
+cost attribution; the launcher does not guess a host's configured default.
+
+OpenCode 1.19.5 [requests and resets MCP progress](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts).
+Parked waits emit progress only when the child's native output advances.
+A quiet child needs no keepalive: the per-server `timeout` uses the maximum
+native JS timer delay, 2,147,483,647 ms (about 24.9 days), to protect an otherwise
+event-driven wait. No timer generates progress and wait returns only its result.
+
 For writing AGY swarms, select the native `accept-edits` mode explicitly:
 
 ```sh

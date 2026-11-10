@@ -215,10 +215,14 @@ async fn anthropic_native_calls_run_their_capabilities() -> Result<()> {
                 "shell".into(),
                 json!({"command":"ls","timeout_ms":5000}),
             ),
+            (
+                "toolu_4".into(),
+                "shell".into(),
+                json!({"command":"sleep 9","background":true}),
+            ),
         ]
     );
-    for (result, reason) in results[3..].iter().zip([
-        "run_in_background is not supported here",
+    for (result, reason) in results[4..].iter().zip([
         "tool `read` is not available",
         "tool `Bash` is not available",
     ]) {

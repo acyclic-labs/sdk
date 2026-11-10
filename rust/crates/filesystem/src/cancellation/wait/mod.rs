@@ -156,7 +156,7 @@ impl Cancelled<'_> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Cancelled<'static> {
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, windows, feature = "native-mount"))]
     pub(crate) fn cleanup_items(&self) -> u64 {
         u64::from(self.waiter.is_some())
     }
@@ -173,7 +173,7 @@ impl Cancelled<'static> {
         drop(waker);
     }
 
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, windows, feature = "native-mount"))]
     pub(crate) fn finish(
         mut self,
         allocations: &mut crate::kernel::allocation::AllocationLedger,

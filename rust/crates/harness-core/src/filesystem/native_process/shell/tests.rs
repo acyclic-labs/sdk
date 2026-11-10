@@ -95,6 +95,100 @@ fn invocation(root: &Path) -> Invocation {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases() -> Result<()> {
+    let temp = tempfile::tempdir().map_err(Error::process_io)?;
+    let root = temp.path().join("view");
+    let volume = temp.path().join("volume");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(root.join(".volumes")).map_err(Error::process_io)?;
+    std::fs::create_dir(&volume).map_err(Error::process_io)?;
+    std::fs::write(&outside, "original").map_err(Error::process_io)?;
+    std::os::unix::fs::symlink(&outside, root.join("escape")).map_err(Error::process_io)?;
+    std::os::unix::fs::symlink(&volume, root.join(".volumes/data")).map_err(Error::process_io)?;
+    let mut mounts = table(root.canonicalize().map_err(Error::process_io)?)?;
+    for (relative, mount) in mounts.mounts_mut() {
+        if !relative.is_empty() {
+            mount.native_root = Some(volume.clone());
+        }
+    }
+    // Both source and literal argv use production preparation and the original
+    // native capture owner. No optional-kernel skip: this is Linux qualification.
+    for (cwd, command) in [
+        (
+            None,
+            crate::tools::ShellCommand::Source(
+                r#"printf inside > inside; printf volume > .volumes/data/written;
+             printf temp > "$TMPDIR/tempfile";
+             test "$(/bin/cat "$OUTSIDE")" = original || exit 13;
+             /bin/cat /proc/self/environ >/dev/null 2>&1 || exit 14;
+             (printf escaped > escape) 2>/dev/null && exit 10;
+             /bin/sh -c 'printf escaped > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11;
+             /bin/cat "/proc/$OWNER/environ" >/dev/null 2>&1 && exit 12;
+             printf confined"#
+                    .into(),
+            ),
+        ),
+        (
+            Some(".volumes/data".into()),
+            crate::tools::ShellCommand::Argv(vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf mounted > cwd-write; printf mounted".into(),
+            ]),
+        ),
+    ] {
+        let mut native = invocation(&mounts.root);
+        native.environment.insert(
+            "OUTSIDE".into(),
+            outside.to_str().expect("fixture path").into(),
+        );
+        native
+            .environment
+            .insert("OWNER".into(), std::process::id().to_string());
+        let output = run(
+            ShellInput {
+                command,
+                cwd,
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            &mounts,
+            native,
+            1,
+            None,
+            || Ok(()),
+        )
+        .await?
+        .ok_or_else(|| Error::Storage("sandbox capture interrupted".into()))?;
+        assert!(output.success, "{output:?}");
+        assert!(!output.stdout.is_empty());
+        assert_eq!(
+            std::fs::read(&outside).map_err(Error::process_io)?,
+            b"original"
+        );
+    }
+    assert_eq!(
+        std::fs::read(root.join("inside")).map_err(Error::process_io)?,
+        b"inside"
+    );
+    assert_eq!(
+        std::fs::read(root.join("tempfile")).map_err(Error::process_io)?,
+        b"temp"
+    );
+    assert_eq!(
+        std::fs::read(volume.join("written")).map_err(Error::process_io)?,
+        b"volume"
+    );
+    assert_eq!(
+        std::fs::read(volume.join("cwd-write")).map_err(Error::process_io)?,
+        b"mounted"
+    );
+    Ok(())
+}
+
 // A declared native binding may leave the primary root, but resolving a
 // symlink within it must never leave that binding's own authorized root.
 #[test]
@@ -123,6 +217,7 @@ fn bound_volume_cwd_keeps_its_authority() {
             command: "printf escaped > should-not-exist".into(),
             cwd: Some("escape".into()),
             timeout_ms: None,
+            background: false,
             target: None,
         },
         &mounts,
@@ -141,15 +236,21 @@ fn bound_volume_cwd_keeps_its_authority() {
     ));
     proptest::test_runner::TestRunner::new(config)
         .run(
-            &("[a-z]{1,12}", proptest::bool::ANY),
-            |(component, escape)| {
+            &(
+                "[a-z]{1,12}",
+                proptest::bool::ANY,
+                proptest::option::of(300_001u32..=u32::MAX),
+            ),
+            |(component, escape, lifetime)| {
                 std::fs::create_dir_all(native.join(&component)).unwrap();
                 let suffix = if escape { ".escape" } else { &component };
+                let before = std::time::Instant::now();
                 let result = prepare(
                     ShellInput {
                         command: "pwd".into(),
                         cwd: Some(format!(".volumes/data/{suffix}")),
-                        timeout_ms: None,
+                        timeout_ms: lifetime,
+                        background: false,
                         target: None,
                     },
                     &mounts,
@@ -160,6 +261,23 @@ fn bound_volume_cwd_keeps_its_authority() {
                     prop_assert!(matches!(result, Err(Error::Invalid(_))));
                 } else {
                     let prepared = result.unwrap();
+                    match (lifetime, prepared.schedule) {
+                        (None, acyclic_native_runtime::CaptureSchedule::Unbounded) => {}
+                        (
+                            Some(milliseconds),
+                            acyclic_native_runtime::CaptureSchedule::Deadline(deadline),
+                        ) => {
+                            let duration =
+                                std::time::Duration::from_millis(u64::from(milliseconds));
+                            prop_assert!(deadline >= before + duration);
+                            prop_assert!(deadline <= std::time::Instant::now() + duration);
+                        }
+                        other => {
+                            return Err(TestCaseError::fail(format!(
+                                "shell lifetime changed: {other:?}"
+                            )));
+                        }
+                    }
                     prop_assert_eq!(prepared.cwd, native.join(&component));
                     prop_assert_eq!(
                         prepared.environment.get("ACYCLIC_VOLUME_DATA").unwrap(),
@@ -263,7 +381,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     let input = ShellInput {
         command: r#"test -z "${ANTHROPIC_API_KEY+x}" && test -z "${ACYCLIC_TEST_RENAMED_SECRET+x}" && test -z "${ACYCLIC_TEST_NATIVE_BYTES+x}" && test -z "${!ACYCLIC_TEST_NATIVE_BYTES*}" && test -z "${ACYCLIC_TEST_BASH_HOST_ENVIRONMENT+x}" && test -z "${BASH_ENV+x}" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-explicit-path-only"#.into(),
         cwd: None,
-        timeout_ms: Some(5000), target: None,
+        timeout_ms: Some(5000), background: false, target: None,
     };
     let configured = |inherit_environment| {
         let mut invocation = invocation(&mounts.root);
@@ -337,6 +455,9 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     // The old inheritance choice physically exposes both named credentials and
     // the ambient shell startup hook to exactly the same command.
     let mut broken = prepare(input, &mounts, configured(false), 1)?;
+    // This is the deliberately unconfined old path, not an attempt to make
+    // an authenticated grant accept an ambient environment.
+    broken.execution_grant = None;
     broken.inherit_environment = true;
     let output = capture::capture_with_custody(
         broken,
@@ -382,7 +503,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
             .open(path)?
             .write_all(bytes)
     });
-    let output = run(ShellInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout_ms: Some(5000), target: None, },
+    let output = run(ShellInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout_ms: Some(5000), background: false, target: None, },
         &mounts, invocation(&mounts.root), 1, Some(observer), || Ok(())).await?
         .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
     assert_eq!(output.exit_code, Some(7));
@@ -415,6 +536,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
             ]),
             cwd: None,
             timeout_ms: None,
+            background: false,
             target: None,
         },
         &mounts,

@@ -120,7 +120,7 @@ static CODE: ToolSpec = ToolSpec {
 
 static SHELL: ToolSpec = ToolSpec {
     name: super::shell::PLATFORM.name,
-    revision: "3",
+    revision: "4",
     description: super::shell::DESCRIPTION,
     hook_names: &[],
     binding: ToolBinding::Workspace,

@@ -7,7 +7,7 @@ impl PreparationIo {
     pub fn history_io(&self) -> &Self {
         self
     }
-    pub(super) fn charged(&self, work: WorkCounters) -> Result<()> {
+    pub(crate) fn charged(&self, work: WorkCounters) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(native) = self.original_native_work() {
             // Preserve the original typed denial without boxing an FsError

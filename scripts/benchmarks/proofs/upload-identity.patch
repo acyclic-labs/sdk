@@ -10,4 +10,4 @@ diff --git a/scripts/benchmarks/contracts.py b/scripts/benchmarks/contracts.py
 +        return f"chmod 755 {path}"
  
  
- def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: int):
+ def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: int,

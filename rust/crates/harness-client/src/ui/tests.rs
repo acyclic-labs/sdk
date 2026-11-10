@@ -143,7 +143,7 @@ async fn ui_default_projection() -> TestResult {
     driver.attach(&mut reader, 0);
     let index = UiPath::new("index.md")?;
     reader.plan(
-        view.wants(&selected, &index, None)?
+        view.wants(&selected, &index, None, 0)?
             .into_iter()
             .map(|w| (w, Priority::Visible)),
     );
@@ -171,7 +171,7 @@ async fn ui_default_projection() -> TestResult {
     let children = UiPath::new("children")?;
     reader.begin_frame(0);
     reader.plan(
-        view.wants(&selected, &children, Some(5))?
+        view.wants(&selected, &children, Some(5), 0)?
             .into_iter()
             .map(|w| (w, Priority::Visible)),
     );
@@ -192,11 +192,22 @@ async fn ui_default_projection() -> TestResult {
     );
     let first = view.nodes(&cut, &children, 0, 2)?;
     assert_eq!(first.nodes.len(), 2);
+    let partial = view.nodes(&cut, &children, 0, 1)?;
+    let within = partial.next.ok_or("in-page continuation")?;
+    assert!(
+        view.wants(&selected, &children, Some(5), within)?
+            .iter()
+            .any(|want| matches!(want, crate::reader::Want::Listing { index: 0, .. }))
+    );
+    assert_eq!(
+        view.nodes(&cut, &children, within, 1)?.nodes,
+        first.nodes[1..]
+    );
     let cursor = first.next.ok_or("next page")?;
     let issued = reader.issued();
     reader.begin_frame(0);
     reader.plan(
-        view.wants(&selected, &UiPath::new("children/pages/1.md")?, Some(5))?
+        view.wants(&selected, &children, Some(5), cursor)?
             .into_iter()
             .map(|w| (w, Priority::Visible)),
     );
@@ -235,7 +246,7 @@ async fn ui_default_projection() -> TestResult {
     let next = links.last().ok_or("continuation link")?;
     let next = UiPath::new(next.path().trim_start_matches('/'))?;
     assert!(
-        view.wants(&selected, &next, Some(5))?
+        view.wants(&selected, &next, Some(5), 0)?
             .iter()
             .any(|want| { matches!(want, crate::reader::Want::Listing { index: 2, .. }) })
     );
@@ -435,7 +446,7 @@ async fn ui_lazy_cost() -> TestResult {
         let mut driver = Driver::new(memory.clone());
         driver.attach(&mut reader, 0);
         reader.plan(
-            view.wants(&selected, &UiPath::new("index.md")?, None)?
+            view.wants(&selected, &UiPath::new("index.md")?, None, 0)?
                 .into_iter()
                 .map(|w| (w, Priority::Visible)),
         );

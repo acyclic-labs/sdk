@@ -5,9 +5,7 @@ use super::{
 use std::os::windows::io::AsRawHandle as _;
 use std::sync::{Arc, Mutex};
 use windows::Win32::{
-    Foundation::{
-        ERROR_HANDLE_EOF, ERROR_IO_PENDING, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_TIMEOUT,
-    },
+    Foundation::{ERROR_HANDLE_EOF, ERROR_IO_PENDING, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED},
     Storage::FileSystem::ReadFile,
     System::{
         IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, OVERLAPPED},
@@ -17,8 +15,8 @@ use windows::Win32::{
             REQUEST_OPLOCK_INPUT_FLAG_REQUEST, REQUEST_OPLOCK_OUTPUT_BUFFER,
         },
         Threading::{
-            CreateEventW, INFINITE, RegisterWaitForSingleObject, UnregisterWaitEx,
-            WT_EXECUTEONLYONCE, WaitForSingleObject,
+            CreateEventW, INFINITE, RegisterWaitForSingleObject, SetEvent, UnregisterWaitEx,
+            WT_EXECUTEONLYONCE, WaitForMultipleObjects, WaitForSingleObject,
         },
     },
 };
@@ -48,6 +46,22 @@ struct OplockRequest {
     input: REQUEST_OPLOCK_INPUT_BUFFER,
     output: REQUEST_OPLOCK_OUTPUT_BUFFER,
     event: Owned<HANDLE>,
+}
+
+struct ReadCancellation(Owned<HANDLE>);
+// SAFETY: the owned manual-reset event remains live until every waker retires;
+// SetEvent is thread-safe and never borrows the read's OVERLAPPED storage.
+unsafe impl Send for ReadCancellation {}
+// SAFETY: shared access only signals the same owned event.
+unsafe impl Sync for ReadCancellation {}
+impl std::task::Wake for ReadCancellation {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        // SAFETY: this waker owns the event for the entire call.
+        let _ = unsafe { SetEvent(*self.0) };
+    }
 }
 // SAFETY: request storage stays pinned until completion; handle access is locked.
 unsafe impl Send for YieldingHeld {}
@@ -190,6 +204,44 @@ impl YieldingFile {
         if destination.is_empty() {
             return Ok(0);
         }
+        let mut cancelled = work.prepare_read_cancellation()?;
+        let wake_bytes = acyclic_native_runtime::arc_allocation_bytes::<ReadCancellation>() as u64;
+        let mut claimed = false;
+        let result = (|| {
+            work.claim_allocation(wake_bytes, 1, WorkCounters::UNCHARGED)?;
+            claimed = true;
+            // SAFETY: creation transfers sole ownership of this manual-reset event.
+            let cancellation = Arc::new(ReadCancellation(unsafe {
+                Owned::new(CreateEventW(None, true, false, None).map_err(io::Error::other)?)
+            }));
+            let waker = std::task::Waker::from(cancellation.clone());
+            if std::future::Future::poll(
+                std::pin::Pin::new(&mut cancelled),
+                &mut std::task::Context::from_waker(&waker),
+            )
+            .is_ready()
+            {
+                waker.wake_by_ref();
+            }
+            self.read_cancellable(offset, destination, work, &cancellation)
+        })();
+        // The registration retains its waker, including on a failed read.
+        let finished = work.finish_read_cancellation(cancelled);
+        let released = if claimed {
+            work.release(wake_bytes)
+        } else {
+            Ok(())
+        };
+        result.and_then(|value| finished.and(released).map(|()| value))
+    }
+
+    fn read_cancellable<W: SourceDemandReadWork>(
+        &self,
+        offset: u64,
+        destination: &mut [u8],
+        work: &mut W,
+        cancellation: &ReadCancellation,
+    ) -> Result<usize, DemandError> {
         work.with_native_read_meter(|meter| {
             use acyclic_native_runtime::{
                 NativeByteReservation, NativeOperationKind, NativeOperationReservation,
@@ -236,29 +288,26 @@ impl YieldingFile {
             drop(held);
             let mut interrupted = None;
             if pending {
-                loop {
-                    let status = meter
-                        .examine(1, 0)
-                        .map_err(crate::demand::native_demand_error)
-                        .map(|()| {
-                            // SAFETY: the event remains owned by this live read through the wait.
-                            unsafe { WaitForSingleObject(*event, 10) }
-                        });
-                    match status {
-                        Ok(WAIT_TIMEOUT) => continue,
-                        Ok(WAIT_FAILED) => {
-                            interrupted = Some(DemandError::Io(io::Error::last_os_error()));
-                        }
-                        Err(error) => interrupted = Some(error),
-                        _ => {}
+                let handles = [*event, *cancellation.0];
+                let status = meter
+                    .examine(1, 0)
+                    .map_err(crate::demand::native_demand_error)
+                    .map(|()| {
+                        // SAFETY: the event remains owned by this live read through the wait.
+                        unsafe { WaitForMultipleObjects(&handles, false, INFINITE) }
+                    });
+                match status {
+                    Ok(WAIT_FAILED) => {
+                        interrupted = Some(DemandError::Io(io::Error::last_os_error()));
                     }
-                    if interrupted.is_some() {
-                        // SAFETY: the live request belongs to this held handle.
-                        let _ = unsafe {
-                            CancelIoEx(HANDLE(file.as_raw_handle()), Some(&raw const overlapped))
-                        };
-                    }
-                    break;
+                    Err(error) => interrupted = Some(error),
+                    _ => interrupted = meter.check().err().map(crate::demand::native_demand_error),
+                }
+                if interrupted.is_some() {
+                    // SAFETY: the live request belongs to this held handle.
+                    let _ = unsafe {
+                        CancelIoEx(HANDLE(file.as_raw_handle()), Some(&raw const overlapped))
+                    };
                 }
             }
             let mut transferred = 0;

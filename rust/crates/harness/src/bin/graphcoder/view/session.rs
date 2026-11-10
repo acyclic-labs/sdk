@@ -12,12 +12,24 @@ use std::collections::BTreeMap;
 pub(super) struct Session {
     pub snapshot: ClientFiles,
     pub config: ConfigView,
+    pub catalog: CommandCatalog,
     open_view: Option<String>,
     pub tree: Option<bool>,
 }
 
+const COMMANDS: &str = "commands/commands.json";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandFile {
+    version: u32,
+    commands: Vec<acyclic_harness::client::commands::CommandSpec>,
+}
+
 fn paths() -> Vec<String> {
-    std::iter::once("layout.json".to_owned())
+    ["layout.json", COMMANDS]
+        .into_iter()
+        .map(str::to_owned)
         .chain(
             ConfigFile::ALL
                 .into_iter()
@@ -34,6 +46,7 @@ impl Session {
         let mut session = Self {
             snapshot,
             config: ConfigView::default(),
+            catalog: CommandCatalog::builtins()?,
             open_view: None,
             tree: None,
         };
@@ -57,6 +70,18 @@ impl Session {
             })
             .transpose()?
             .flatten();
+        self.catalog = match self.snapshot.files.get(COMMANDS).and_then(Option::as_ref) {
+            Some(file) => {
+                let document: CommandFile = serde_json::from_str(&file.text)?;
+                if document.version != 1 {
+                    return Err(
+                        format!("unsupported {COMMANDS} version {}", document.version).into(),
+                    );
+                }
+                CommandCatalog::from_specs(document.commands)?
+            }
+            None => CommandCatalog::builtins()?,
+        };
         self.open_view = self
             .snapshot
             .files
@@ -79,6 +104,15 @@ impl Session {
                     .map(|file| file.text.as_str()),
             );
         }
+        Ok(())
+    }
+
+    /// Completion consumes the same validated, normalized descriptors as
+    /// dispatch and help. Shipped defaults are never written to the volume.
+    pub fn complete(&self, input: &mut PromptInput) -> Result<(), Failure> {
+        let commands = serde_json::to_vec(&self.catalog.commands().collect::<Vec<_>>())?;
+        input.completion.set_file(COMMANDS, Some(&commands))?;
+        input.refresh_completions();
         Ok(())
     }
 
@@ -179,6 +213,7 @@ mod tests {
         model::Model,
         test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
     };
+    use futures::TryFutureExt as _;
 
     #[tokio::test]
     async fn session_files_resume_reopen_and_version_refusal() -> Result<(), Failure> {
@@ -205,14 +240,79 @@ mod tests {
         let conversation = Conversation::open(connection.clone());
         let mut ui = Session::open(&conversation).await?;
         assert!(ui.open_view().is_none());
+        // Catalogue publications use the same real volume and follow as
+        // layout/configuration. Dispatch, help and an already-open popup must
+        // agree on each cut, including removal of a previous alias.
+        let mut input = PromptInput::default();
+        for alias in ["review", "inspect"] {
+            let text = serde_json::json!({"version":1,"commands":[{
+                "name": "changes",
+                "aliases": [alias],
+                "description": "Inspect captured workspace changes",
+                "arguments": "none",
+                "action": {"kind": "builtin", "command": "diff"}
+            }]})
+            .to_string();
+            let change = ClientFileChange {
+                path: COMMANDS.into(),
+                expected: ui
+                    .snapshot
+                    .files
+                    .get(COMMANDS)
+                    .and_then(Option::as_ref)
+                    .map(|file| file.file.clone()),
+                text,
+            };
+            let (snapshot, _) = futures::try_join!(
+                follow(Arc::clone(&conversation), ui.snapshot.generation.clone()),
+                conversation.publish_client_files(
+                    conversation.client_session(),
+                    OperationId::new(),
+                    vec![change],
+                ),
+            )?;
+            ui.snapshot = snapshot;
+            ui.project()?;
+            input.editor = Editor::new(&format!("/{alias}"));
+            ui.complete(&mut input)?;
+            assert_eq!(
+                input
+                    .completion
+                    .items()
+                    .map(|item| item.value.as_str())
+                    .collect::<Vec<_>>(),
+                [alias]
+            );
+            assert!(matches!(
+                ui.catalog.resolve(&format!("/{alias}"), u64::MAX)?,
+                Some(CommandResolution::Select {
+                    query: CommandQuery::Diff
+                })
+            ));
+            assert!(
+                View::help(&ui.catalog, &input)
+                    .iter()
+                    .any(|line| line.to_string().contains(&format!("/{alias}")))
+            );
+        }
+        input.editor = Editor::new("/review");
+        input.refresh_completions();
+        assert!(input.completion.items().next().is_none());
+        assert!(ui.catalog.resolve("/review", u64::MAX)?.is_none());
+        let reopened = Session::open(&conversation).await?;
+        assert!(matches!(
+            reopened.catalog.resolve("/inspect", u64::MAX)?,
+            Some(CommandResolution::Select {
+                query: CommandQuery::Diff
+            })
+        ));
         // Poll the original live query before publishing through a second call
         // on the same authenticated session. No timing or readiness probe.
-        let (changed, published) = futures::join!(
-            follow(Arc::clone(&conversation), ui.snapshot.generation.clone()),
+        let (changed, ()) = futures::try_join!(
+            follow(Arc::clone(&conversation), ui.snapshot.generation.clone())
+                .map_err(Failure::from),
             ui.select(&conversation, Some(&CommandQuery::Diff)),
-        );
-        published?;
-        let changed = changed?;
+        )?;
         let original = changed
             .files
             .get("layout.json")
@@ -292,11 +392,63 @@ mod tests {
                 .is_some_and(Option::is_none)
         );
         // A stale absent precondition cannot overwrite the committed view.
+        // Its error must also end the concurrent follow: that publication
+        // will never produce the filesystem event the reader is awaiting.
         assert!(
-            ui_create(&resumed, None, original.text.clone())
-                .await
-                .is_err()
+            futures::try_join!(
+                follow(Arc::clone(&resumed), reopened.snapshot.generation.clone()),
+                ui_create(&resumed, None, original.text.clone()),
+            )
+            .is_err()
         );
+        let commands = reopened
+            .snapshot
+            .files
+            .get(COMMANDS)
+            .and_then(Option::as_ref)
+            .ok_or("catalogue was not persisted")?;
+        let mut unsupported: Value = serde_json::from_str(&commands.text)?;
+        unsupported["version"] = Value::from(2);
+        resumed
+            .publish_client_files(
+                resumed.client_session(),
+                OperationId::new(),
+                vec![ClientFileChange {
+                    path: COMMANDS.into(),
+                    expected: Some(commands.file.clone()),
+                    text: unsupported.to_string(),
+                }],
+            )
+            .await?;
+        let error = Session::open(&resumed)
+            .await
+            .err()
+            .ok_or("unsupported catalogue was reopened")?;
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported commands/commands.json version 2")
+        );
+        // Restore the exact original catalogue through its new conditional cut
+        // before checking the independently versioned layout file.
+        let source = resumed
+            .client_files(resumed.client_session(), vec![COMMANDS.into()], None)
+            .await?;
+        resumed
+            .publish_client_files(
+                resumed.client_session(),
+                OperationId::new(),
+                vec![ClientFileChange {
+                    path: COMMANDS.into(),
+                    expected: source
+                        .files
+                        .get(COMMANDS)
+                        .and_then(Option::as_ref)
+                        .map(|file| file.file.clone()),
+                    text: commands.text.clone(),
+                }],
+            )
+            .await?;
         let replacement = serde_json::json!({"version":2,"open_view":"history"}).to_string();
         let command = acyclic_harness_client::AgentCommand::PublishClientFiles {
             agent: connection.root().clone(),

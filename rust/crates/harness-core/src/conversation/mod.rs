@@ -263,6 +263,7 @@ pub use directory::{
     PrivateDirectoryPage,
 };
 pub use file_source::FilePathSelection;
+pub(crate) use file_source::names_generation;
 pub use files::{FileDescriptor, FileRef};
 #[cfg(feature = "filesystem")]
 pub(crate) use files::{PublicationDomain, PublicationWitness};

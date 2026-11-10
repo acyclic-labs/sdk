@@ -2,10 +2,11 @@
 // R27: the shipping harness in stock Docker, using the existing acceptance cases.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { pipeline } from "node:stream/promises";
 import { Processes } from "./graphcoder-e2e/process.mjs";
 import { commandCancellation, withOwnedCase } from "./graphcoder-e2e/suite.mjs";
 import { acceptanceBinding } from "./graphcoder-e2e/serial.mjs";
@@ -34,6 +35,7 @@ export function confinement(status, fuse, helpers) {
 }
 
 async function inside(binary, mock, output) {
+  await mkdir(output);
   const status = await readFile("/proc/self/status", "utf8");
   const helpers = ["/usr/bin/fusermount", "/bin/fusermount", "/usr/bin/fusermount3", "/bin/fusermount3"]
     .filter(existsSync);
@@ -72,10 +74,11 @@ async function inside(binary, mock, output) {
 async function outside(image, binary, mock, output) {
   assert.ok(image && [binary, mock, output].every(path => path && isAbsolute(path)), recovery);
   await mkdir(output); // Evidence is fresh; an earlier PASS can never qualify this run.
+  await mkdir(join(output, "transcripts"));
   const processes = new Processes({ transcripts: join(output, "transcripts") });
   const cancellation = commandCancellation();
   const name = `graphcoder-no-fuse-${randomUUID()}`;
-  let creating;
+  let creating, started = false;
   const docker = async args => {
     const result = await processes.run("docker", args);
     process.stdout.write(result.stdout);
@@ -90,39 +93,67 @@ async function outside(image, binary, mock, output) {
     try {
       const created = creating && (await creating).code === 0;
       if (created) {
-        const result = await cleanup.run("docker", ["rm", "--force", name]);
-        assert.equal(result.code, 0, result.stderr);
+        try {
+          const stopped = await cleanup.run("docker", ["stop", name]);
+          assert.equal(stopped.code, 0, stopped.stderr);
+          if (started) {
+            const copied = await cleanup.run("docker", ["cp", `${name}:/tmp/evidence/.`, output]);
+            assert.equal(copied.code, 0, copied.stderr);
+          }
+        } finally {
+          const removed = await cleanup.run("docker", ["rm", "--force", name]);
+          assert.equal(removed.code, 0, removed.stderr);
+        }
       }
     } finally { await cleanup.close(); await processes.close(); }
   } };
   try {
     await withOwnedCase({ processes: owner, signal: cancellation.signal, prepare: async () => {
       const id = await docker(["image", "inspect", "--format", "{{.Id}}", image]);
-      const volume = (source, target, mode) => ["--volume", `${source}:${target}:${mode}`];
       // Cleanup joins create before removing its daemon-owned object. Merely
       // killing the CLI could otherwise leave a late successful create behind.
       creating = processes.run("docker", ["create", "--name", name,
         "--network", "none", "--user", `${process.getuid()}:${process.getgid()}`,
-        ...volume(root, "/sdk", "ro"), ...volume(binary, "/artifacts/graphcoder", "ro"),
-        ...volume(mock, "/artifacts/harness-mock-model", "ro"), ...volume(output, "/evidence", "rw"),
         "--workdir", "/sdk", "--entrypoint", "node", id,
-        "scripts/qualify-docker-no-fuse.mjs", "--inside", "/artifacts/graphcoder",
-        "/artifacts/harness-mock-model", "/evidence"]);
+        "scripts/qualify-docker-no-fuse.mjs", "--inside", "/graphcoder",
+        "/harness-mock-model", "/tmp/evidence"]);
       const result = await creating;
       assert.equal(result.code, 0, result.stderr);
-      const config = JSON.parse(await docker(["inspect", "--format", "{{json .HostConfig}}", name]));
+      // Client paths need not exist in the daemon's filesystem namespace.
+      // Transfer a committed source snapshot through the Docker API instead.
+      const archive = join(output, "source.tar");
+      const archived = await processes.run("git", ["-C", root, "archive", "--format=tar",
+        `--output=${archive}`, "HEAD", "scripts", "plugin/tests/hosts", "typescript/packages/sdk/native"]);
+      assert.equal(archived.code, 0, archived.stderr);
+      const copy = processes.start("docker", ["cp", "-", `${name}:/sdk`]);
+      await pipeline(createReadStream(archive), copy.input);
+      const copied = await copy.closed;
+      assert.equal(copied.code, 0, copied.stderr);
+      // Preserve the caller's executable ownership, including owner-only modes.
+      await docker(["cp", "--archive", "--follow-link", binary, `${name}:/graphcoder`]);
+      await docker(["cp", "--archive", "--follow-link", mock, `${name}:/harness-mock-model`]);
+      // Inspect only the contract's fields: unrelated daemon configuration
+      // (for example logging-driver credentials) must not enter evidence.
+      const format = '{"Privileged":{{json .HostConfig.Privileged}},"CapAdd":{{json .HostConfig.CapAdd}},'
+        + '"Devices":{{json .HostConfig.Devices}},"DeviceRequests":{{json .HostConfig.DeviceRequests}},'
+        + '"SecurityOpt":{{json .HostConfig.SecurityOpt}},"NetworkMode":{{json .HostConfig.NetworkMode}},'
+        + '"User":{{json .Config.User}}}';
+      const config = JSON.parse(await docker(["inspect", "--format", format, name]));
       assert.equal(config.Privileged, false);
       for (const key of ["CapAdd", "Devices", "DeviceRequests", "SecurityOpt"])
         assert.equal(config[key]?.length ?? 0, 0, `stock Docker requires default ${key}`);
-      await writeFile(join(output, "docker.json"), JSON.stringify({ image: id, config }, null, 2) + "\n");
+      await writeFile(join(output, "docker.json"), JSON.stringify({
+        image: id, config, sourceArchive: await sha256File(archive),
+      }, null, 2) + "\n");
     }, run: async () => {
+      started = true;
       await docker(["start", "--attach", name]);
       const code = await docker(["inspect", "--format", "{{.State.ExitCode}}", name]);
       assert.equal(code, "0", "Docker container failed");
-      const report = JSON.parse(await readFile(join(output, "container.json")));
-      assert.equal(report.status, "PASS");
-      console.log(`docker-no-fuse PASS ${JSON.stringify({ cases, output })}`);
     } });
+    const report = JSON.parse(await readFile(join(output, "container.json")));
+    assert.equal(report.status, "PASS");
+    console.log(`docker-no-fuse PASS ${JSON.stringify({ cases, output })}`);
   } finally { cancellation.dispose(); }
 }
 

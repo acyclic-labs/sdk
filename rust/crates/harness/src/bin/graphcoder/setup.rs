@@ -143,7 +143,7 @@ pub(super) async fn doctor(args: &Args) -> Result<(), Failure> {
         Err(_) => {
             refusals.push("local configuration: unavailable; recovery: repair workspace, approval policy and settings flags".into());
             Registry::new(Credentials::explicit(Default::default()))?
-                .graphcoder(&args.workspace, args.model.clone())
+                .graphcoder(&args.workspace, args.model.clone())?
                 .preflight()
         }
     };

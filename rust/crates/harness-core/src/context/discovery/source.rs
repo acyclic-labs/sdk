@@ -89,6 +89,14 @@ pub trait InstructionReader: DiscoverySource {
 }
 
 #[doc(hidden)]
+pub struct SkillPrefix {
+    pub bytes: acyclic_stream::OwnedBytes,
+    pub pinned: PinnedContextPath,
+    /// Computed through the selected EOF, independently of the metadata bound.
+    pub off: bool,
+}
+
+#[doc(hidden)]
 pub trait SkillReader: DiscoverySource {
     /// Preserves the provider's byte owner while metadata borrows its prefix.
     fn skill_prefix<'a>(
@@ -96,12 +104,7 @@ pub trait SkillReader: DiscoverySource {
         path: &'a str,
         revision: &'a Self::Revision,
         maximum: u32,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (acyclic_stream::OwnedBytes, PinnedContextPath),
-        >,
-    >;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillPrefix>>;
 }
 
 impl DiscoveryWork {
@@ -333,7 +336,7 @@ pub async fn discover_skills_from<S: SkillReader>(
     optional_root: bool,
 ) -> Result<Vec<SkillMetadata>> {
     Ok(
-        layer_skills(source, directory, name, work, revision, optional_root)
+        layer_skills(source, directory, name, work, revision, optional_root, None)
             .await?
             .into_iter()
             .filter_map(|(_, skill)| skill)
@@ -353,7 +356,17 @@ pub async fn discover_layered_skills<S: SkillReader>(
 ) -> Result<Vec<SkillMetadata>> {
     let mut effective = BTreeMap::new();
     for (source, revision) in layers.iter_mut() {
-        effective.extend(layer_skills(source, directory, name, work, Some(revision), true).await?);
+        let entries = layer_skills(
+            source,
+            directory,
+            name,
+            work,
+            Some(revision),
+            true,
+            Some(&effective),
+        )
+        .await?;
+        effective.extend(entries);
     }
     Ok(effective.into_values().flatten().collect())
 }
@@ -367,6 +380,7 @@ async fn layer_skills<S: SkillReader>(
     work: &mut DiscoveryWork,
     revision: Option<&S::Revision>,
     optional_root: bool,
+    lower: Option<&BTreeMap<String, Option<SkillMetadata>>>,
 ) -> Result<Vec<(String, Option<SkillMetadata>)>> {
     validate_content_path(name, &mut None)?;
     if name.contains('/') {
@@ -395,9 +409,43 @@ async fn layer_skills<S: SkillReader>(
         if file.kind != DiscoveryKind::File {
             return Err(Error::Invalid("skill entry is not a file".into()));
         }
-        let (prefix, pinned) =
-            skill_prefix(source, &child(&directory, name), &revision, work.limits).await?;
-        let skill = if crate::layers::is_off(&prefix) {
+        let path = child(&directory, name);
+        let SkillPrefix {
+            bytes: prefix,
+            pinned,
+            off,
+        } = skill_prefix(source, &path, &revision, work.limits).await?;
+        if let Some(Some(lower)) = lower.and_then(|lower| lower.get(&entry.name))
+            && lower.source.root.volume == crate::seed::volume(lower.source.root.volume.provider())?
+            && let Some(seed) = crate::layers::seed_skill(&path)
+        {
+            let same = if prefix.len() < work.limits.header_bytes as usize {
+                prefix.as_ref() == seed
+            } else if prefix.len() > seed.len() || !seed.starts_with(&prefix) {
+                false
+            } else {
+                // A short metadata prefix cannot establish body equality.
+                // This separate comparison remains bounded by the built-in
+                // file plus one byte, at the very same selected generation.
+                let maximum = u32::try_from(seed.len() + 1)
+                    .map_err(|_| Error::Invalid("seed skill comparison overflow".into()))?;
+                let SkillPrefix {
+                    bytes,
+                    pinned: selected,
+                    ..
+                } = source.skill_prefix(&path, &revision, maximum)?.await?;
+                if selected != pinned || bytes.len() > maximum as usize {
+                    return Err(Error::Storage(
+                        "seed comparison changed its selection".into(),
+                    ));
+                }
+                bytes.as_ref() == seed
+            };
+            if same {
+                continue;
+            }
+        }
+        let skill = if off {
             None
         } else {
             Some(parse_skill_metadata(&prefix, pinned)?)
@@ -412,15 +460,15 @@ async fn skill_prefix<S: SkillReader>(
     path: &str,
     revision: &S::Revision,
     limits: ContextDiscoveryLimits,
-) -> Result<(acyclic_stream::OwnedBytes, PinnedContextPath)> {
+) -> Result<SkillPrefix> {
     limits.validate()?;
-    let (prefix, pinned) = source
+    let selected = source
         .skill_prefix(path, revision, limits.header_bytes)?
         .await?;
-    if prefix.len() > limits.header_bytes as usize {
+    if selected.bytes.len() > limits.header_bytes as usize {
         return Err(Error::Storage("prefix reader exceeded bound".into()));
     }
-    Ok((prefix, pinned))
+    Ok(selected)
 }
 
 // Preserve the distinction between a failed authorized read and an invalid
@@ -431,7 +479,11 @@ async fn read_skill_metadata_parsed<S: SkillReader>(
     revision: &S::Revision,
     limits: ContextDiscoveryLimits,
 ) -> Result<Result<SkillMetadata>> {
-    let (prefix, pinned) = skill_prefix(source, path, revision, limits).await?;
+    let SkillPrefix {
+        bytes: prefix,
+        pinned,
+        ..
+    } = skill_prefix(source, path, revision, limits).await?;
     Ok(parse_skill_metadata(&prefix, pinned))
 }
 
@@ -601,12 +653,7 @@ impl SkillReader for VolumeDiscovery<'_> {
         path: &'a str,
         revision: &'a GenerationRef,
         maximum: u32,
-    ) -> Result<
-        crate::conversation::BoundedContentFuture<
-            'a,
-            (acyclic_stream::OwnedBytes, PinnedContextPath),
-        >,
-    > {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillPrefix>> {
         #[cfg(feature = "filesystem")]
         let content_io = self.io;
         #[cfg(not(feature = "filesystem"))]
@@ -615,21 +662,51 @@ impl SkillReader for VolumeDiscovery<'_> {
             let pinned = crate::executor::with_history_io(self.io, |work| {
                 PinnedContextPath::capture(self.root, revision, path, work)
             })?;
-            let prefix = self
+            let access = crate::conversation::ContentAccess {
+                ceiling: None,
+                io: content_io,
+            };
+            let (selected, prefix, _hold) = self
                 .reader
-                .read_private_prefix(
+                .read_private_range(
                     &self.root.volume,
                     &self.root.directory,
                     path,
-                    revision,
-                    u64::from(maximum),
-                    crate::conversation::ContentAccess {
-                        ceiling: None,
-                        io: content_io,
+                    Some(revision),
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: u64::from(maximum),
                     },
+                    access,
                 )?
                 .await?;
-            Ok((prefix, pinned))
+            let reader = self.reader;
+            let root = self.root;
+            let io = self.io;
+            let off = crate::layers::off_from_prefix(
+                &prefix,
+                selected.byte_length,
+                io,
+                |range| async move {
+                    let (_, bytes, hold) = reader
+                        .read_private_range(
+                            &root.volume,
+                            &root.directory,
+                            path,
+                            Some(revision),
+                            range,
+                            access,
+                        )?
+                        .await?;
+                    Ok(crate::layers::MarkerChunk { bytes, _hold: hold })
+                },
+            )
+            .await?;
+            Ok(SkillPrefix {
+                bytes: prefix,
+                pinned,
+                off,
+            })
         })
     }
 }

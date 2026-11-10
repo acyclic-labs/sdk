@@ -209,6 +209,38 @@ test("observed producer frame asserts captured content with one screen projectio
   }
 });
 
+test("request callbacks cannot send another action on consumed terminal cells", async () => {
+  let notifyRequest, terminalChild;
+  class TerminalProcess extends Processes {
+    startTerminal(binary, args, { cwd, env }) {
+      const running = this.start(binary, args, { cwd, env });
+      terminalChild = running.child;
+      running.child.stderr.once("data", () => {
+        notifyRequest({ path: "search", step: 1 });
+        terminalChild.stdin.end();
+      });
+      return running;
+    }
+  }
+  const root = mkdtempSync(join(tmpdir(), "consumed-frame-")), processes = new TerminalProcess();
+  let captured;
+  try {
+    const running = pty(processes, process.execPath, {
+      id: "consumed-frame", workspace: root,
+      args: ["-e", "process.stdin.once('data',()=>process.stderr.write('request\\n'));process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).stdout)", queryCapturePath],
+      onRequest(listener) { notifyRequest = listener; return () => { notifyRequest = undefined; }; },
+    }, { actions: [
+      { when: { contains: ["storage failure: diff command:"] }, send: "first\n" },
+      { when: { contains: ["storage failure: diff command:"] }, send: "second\n" },
+    ] }, value => { captured = value; });
+    await assert.rejects(running, /PTY completed 1\/2 actions/);
+    assert.equal(captured.actions, 1, "a request wakeup cannot reuse the previous transaction");
+  } finally {
+    await processes.close();
+    rmSync(root, { recursive: true });
+  }
+});
+
 test("owner exit permits recovery before a live descendant releases inherited pipes", async () => {
   const processes = new Processes();
   let descendant;

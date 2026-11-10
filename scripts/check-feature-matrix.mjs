@@ -1,25 +1,25 @@
 #!/usr/bin/env node
 // Checks isolated libraries, then all targets, in each feature set a consumer
 // can select on its own: no default features, the defaults and every feature,
-// and with --each-feature each feature alone as well. Every set is checked in its own Cargo invocation
+// each feature alone, and the feature groups requested by local dependents.
+// Every set is checked in its own Cargo invocation
 // for one package, selected by its manifest, so no other workspace member's
 // features unify into it and hide a missing gate. The crates and sets come
 // from the manifests, so a new crate or feature is covered without editing
 // this script.
 //
-// Usage: check-feature-matrix.mjs [WORKERS] [--each-feature] [--list]
-//        [--windows-msvc] [--package=NAME ...]
+// Usage: check-feature-matrix.mjs [WORKERS] [--list]
+//        [--windows-msvc | --target=TRIPLE] [--package=NAME ...]
 //        --consumers [--package=NAME ...] [--list]
 //        [--external-only] [--target=TRIPLE]
-// Use --each-feature for isolated feature checks.
 // Every extra worker uses its own target directory, so Cargo's build lock never
 // serializes them; the compiler cache still deduplicates their dependencies.
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { localCargoPackages, metadata } from "./publish-cargo-crates.mjs";
+import { localCargoPackages } from "./publish-cargo-crates.mjs";
 import { enabled, featureSets, selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
 import { runCommand } from "./run-command.mjs";
 export { enabled, featureSets } from "./cargo-feature-selection.mjs";
@@ -38,6 +38,7 @@ export function selectionWorker(name, flags, workers) {
   const key = [name, ...flags].join("\0");
   return createHash("sha256").update(key).digest().readUInt32LE(0) % workers;
 }
+/** @returns {NodeJS.ProcessEnv} */
 export function workerEnv(index, env = process.env) {
   return index === 0 ? { ...env } : { ...env, CARGO_TARGET_DIR: `${env.CARGO_TARGET_DIR ?? join(root, "target")}-features-${index}` };
 }
@@ -45,9 +46,9 @@ export function workerEnv(index, env = process.env) {
 // Keep the consumer library isolated from test dependencies, then compile
 // cfg(test) and other targets with the same feature selection. An all-features
 // test run cannot detect a feature-only field used by a test-visible caller.
-export function linuxCommands(selection) {
+export function linuxCommands(selection, target) {
   return ["lib", "all-targets"].map(targets => ["check", "--locked",
-    ...cargoFeatureArguments(selection, { manifest: true, targets })]);
+    ...cargoFeatureArguments(selection, { manifest: true, targets, target })]);
 }
 
 export function windowsCommands(selection) {
@@ -68,20 +69,37 @@ export function selectFeaturePackages(items, selected) {
 // consumers must never fund another consumer's feature requirements. Include
 // each declared consumer feature, with and without defaults, and their full
 // union. Cargo's metadata expands workspace dependency inheritance for us.
-export function consumerSelections(packages, selected = []) {
-  const published = packages.filter(item => item.source === null
-    && (item.publish === null || item.publish.includes("crates-io")));
+// Vendored dependency sources compile through their owning consumers and lockfile.
+// Their upstream manifests are not standalone SDK publication roots.
+export function publishedMatrixPackages(packages) {
+  const vendor = join(root, "rust", "vendor");
+  return packages.filter(item => {
+    const path = relative(vendor, resolve(item.manifest_path));
+    const outsideVendor = isAbsolute(path) || path === ".." || path.startsWith(".." + sep);
+    return outsideVendor && item.source === null
+      && (item.publish === null || item.publish.includes("crates-io"));
+  });
+}
+
+export function consumerSelections(packages, selected = [], { declared = false } = {}) {
+  const published = publishedMatrixPackages(packages);
   const inventory = new Map(published.map(item => [item.name, item]));
   const sets = new Map(selectFeaturePackages(published, selected).map(item => [item.name, new Map()]));
-  function add(name, features) {
+  function add(name, features, flags) {
     if (!sets.has(name)) return;
     const names = [...new Set(features)].sort();
     const key = enabled(inventory.get(name), names);
     if (!sets.get(name).has(key)) sets.get(name).set(key,
-      selectCargoFeatures(inventory, [name], ["--no-default-features",
+      selectCargoFeatures(inventory, [name], flags ?? ["--no-default-features",
         ...(names.length ? ["--features", names.join(",")] : [])]));
   }
   for (const item of published) {
+    if (declared) {
+      for (const args of featureSets(item)) {
+        const flags = args.slice(5);
+        add(item.name, selectCargoFeatures(inventory, [item.name], flags).roots[0].features, flags);
+      }
+    }
     add(item.name, []);
     if (Object.hasOwn(item.features, "default")) add(item.name, ["default"]);
   }
@@ -126,8 +144,7 @@ export function externalConsumerManifest(item, defaults, patches) {
 }
 
 async function externalConsumers(packages, selected, { list, target }) {
-  const published = packages.filter(item => item.source === null
-    && (item.publish === null || item.publish.includes("crates-io")));
+  const published = publishedMatrixPackages(packages);
   const items = selectFeaturePackages(published, selected);
   // Preserve the repository's dependency sources, including patched proc macros.
   const patches = [...readFileSync(join(root, "Cargo.toml"), "utf8")
@@ -172,9 +189,10 @@ async function main() {
   const selected = args.filter(arg => arg.startsWith("--package=")).map(arg => arg.slice(10));
   const workers = Number(args.find(arg => /^\d+$/u.test(arg)) ?? 1);
   const target = args.find(arg => arg.startsWith("--target="))?.slice(9);
+  if (windows && target) throw new Error("--windows-msvc and --target are mutually exclusive");
   if (!Number.isSafeInteger(workers) || workers < 1) throw new Error("WORKERS must be a positive integer");
   if (args.includes("--consumers")) {
-    if (workers !== 1 || windows || args.includes("--each-feature")) throw new Error("consumer checks require one shared target directory and native Cargo");
+    if (workers !== 1 || windows) throw new Error("consumer checks require one shared target directory and native Cargo");
     // Serial, standalone checks share Cargo's existing target directory. Check
     // libraries without dev dependencies so test-support cannot mask a defect.
     const packages = localCargoPackages();
@@ -191,31 +209,28 @@ async function main() {
     process.exitCode = await externalConsumers(packages, selected, { list, target });
     return;
   }
-  // Every publishable local crate, in publication order (the publish check
-  // already proves the order lists each exactly once).
-  const eachFeature = args.includes("--each-feature");
-  const inventory = metadata();
-  const items = [...inventory.values()];
-  const sets = selectFeaturePackages(items, selected).flatMap(item => featureSets(item, eachFeature)
-    .map(args => ({ name: item.name, args, selection: selectCargoFeatures(inventory, [item.name], args.slice(5)) })));
+  // Discover Cargo's published roots independently of release ordering. Private
+  // consumers contribute requests through the same projection as --consumers.
+  const sets = consumerSelections(localCargoPackages(), selected, { declared: true });
   if (list) {
-    for (const { selection } of sets) for (const command of windows ? windowsCommands(selection) : linuxCommands(selection)) console.log(`cargo ${command.join(" ")}`);
+    for (const selection of sets) for (const command of windows ? windowsCommands(selection) : linuxCommands(selection, target)) console.log(`cargo ${command.join(" ")}`);
     return;
   }
   const failures = [];
   let passed = 0;
+  /** @type {Array<Array<(typeof sets)[number]>>} */
   const queues = Array.from({ length: workers }, () => []);
-  for (const unit of sets) queues[featureWorker(unit.name, unit.args, workers)].push(unit);
+  for (const selection of sets) queues[selectionWorker(selection.packages[0].name, selection.flags, workers)].push(selection);
   async function worker(index) {
     const env = workerEnv(index);
     if (windows) {
       const cacheRoot = process.env.XWIN_CACHE_ROOT;
       if (cacheRoot) env.XWIN_CACHE_DIR = join(cacheRoot, `worker-${index}`);
     }
-    for (const { args: set, selection } of queues[index]) {
+    for (const selection of queues[index]) {
       const checkStarted = Date.now();
       let succeeded = true;
-      for (const command of windows ? windowsCommands(selection) : linuxCommands(selection)) {
+      for (const command of windows ? windowsCommands(selection) : linuxCommands(selection, target)) {
         const status = await runCommand("cargo", command, { cwd: root, env });
         if (status !== 0) {
           succeeded = false;
@@ -223,7 +238,7 @@ async function main() {
           process.stderr.write(`FAILED cargo ${command.join(" ")}\n`);
         }
       }
-      console.log(`feature check: worker=${index} seconds=${((Date.now() - checkStarted) / 1000).toFixed(1)} manifest=${set[3]} flags=${set.slice(5).join(" ") || "defaults"}`);
+      console.log(`feature check: worker=${index} seconds=${((Date.now() - checkStarted) / 1000).toFixed(1)} manifest=${selection.packages[0].manifest_path} flags=${selection.flags.join(" ") || "defaults"}`);
       if (succeeded) passed += 1;
     }
   }

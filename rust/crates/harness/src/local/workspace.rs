@@ -36,8 +36,8 @@ pub(super) struct MountedVolume {
     pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
     /// Native execution scopes currently using `native`.
-    pub(super) users: StateArc<crate::sync::SyncMutex<usize>>,
-    /// One writable projection cannot isolate effects from concurrent commands.
+    pub(super) users: StateArc<projection::Users>,
+    /// Serializes preflight synchronization of the selected projection.
     pub(super) execution: StateArc<AsyncMutex<()>>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
@@ -58,6 +58,7 @@ pub(super) type TaskMount = acyclic_fs::native_mount::LazyMount<
 
 /// Lazy view over a held checkout root, with persistent source identity.
 pub struct LocalWorkspace {
+    pub(super) shutdown: acyclic_fs::CancellationToken,
     pub(super) native_mount_probe: acyclic_fs::NativeMountProbe,
     pub(super) path: PathBuf,
     pub(super) fresh: bool,
@@ -457,6 +458,7 @@ pub(super) async fn open(
     )));
     let mount_directory = path.join(HOST_VIEW_ROOT);
     Ok(LocalWorkspace {
+        shutdown: acyclic_fs::CancellationToken::new(),
         native_mount_probe: attach.native_mount_probe.clone(),
         #[cfg(all(test, not(loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),

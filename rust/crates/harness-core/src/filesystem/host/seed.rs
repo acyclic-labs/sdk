@@ -1,6 +1,47 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    /// Publishes host-selected public system metadata once per distinct catalog.
+    /// Callers project names and metadata before this boundary; secret values
+    /// and endpoint headers must never be supplied. Agents receive read grants
+    /// only, and an open composition retains this exact generation.
+    pub async fn system_layer(
+        &self,
+        files: &std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
+    ) -> Result<crate::layers::PinnedLayer> {
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.system-layer.v1");
+        for (path, bytes) in files {
+            crate::conversation::validate_content_path(path, &mut None)?;
+            if !(path.starts_with("sys/models/") || path.starts_with("sys/secrets/")) {
+                return Err(Error::Invalid(
+                    "system metadata must belong to models or secrets".into(),
+                ));
+            }
+            hash.update(&(path.len() as u64).to_be_bytes());
+            hash.update(path.as_bytes());
+            hash.update(&(bytes.len() as u64).to_be_bytes());
+            hash.update(bytes);
+        }
+        let digest = hash.finalize().to_hex();
+        let volume = VolumeRef::new(
+            self.provider.clone(),
+            format!("system-{}", &digest[..32]),
+            VolumeClass::Project,
+            crate::conversation::VolumeOwner::Project("system".into()),
+            &mut None,
+        )?;
+        let reference = self.create_volume(&volume).await?.workspace;
+        let generation = self
+            .seed_once(&reference, &IdempotencyKey::new("system-v1")?, || {
+                Ok(files
+                    .iter()
+                    .map(|(path, bytes)| (format!("/{path}"), bytes.clone()))
+                    .collect())
+            })
+            .await?;
+        Ok(crate::layers::PinnedLayer { volume, generation })
+    }
+
     /// This build's seed layer on this host's provider (see [`crate::seed`]):
     /// its volume, created and written once per store, and the generation
     /// every agent reads it at. Agents receive only read grants on it.

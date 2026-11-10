@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
 import { clippySelections } from "./clippy-feature-sets.mjs";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
-import { featureSets, featureWorker, linuxCommands, windowsCommands, selectFeaturePackages, consumerSelections, consumerCommand } from "./check-feature-matrix.mjs";
+import { featureSets, featureWorker, linuxCommands, windowsCommands, selectFeaturePackages, consumerSelections, consumerCommand, publishedMatrixPackages } from "./check-feature-matrix.mjs";
 
 test("consumer projections retain standalone checks and declared renamed, optional and target feature combinations", () => {
   const crate = (name, features, dependencies = [], publish = null) => ({
@@ -56,7 +58,7 @@ test("feature package selection refuses missing members and empty inventories", 
 
 const selection = (item, args) => selectCargoFeatures(new Map([["crate", { ...item, name: "crate" }]]), ["crate"], args.slice(5));
 
-const sets = features => featureSets({ manifest_path: "c/Cargo.toml", features }, true)
+const sets = features => featureSets({ manifest_path: "c/Cargo.toml", features })
   .map(args => args.slice(5).join(" ") || "(defaults)");
 
 test("Linux checks test cfgs without losing consumer library isolation", () => {
@@ -65,13 +67,13 @@ test("Linux checks test cfgs without losing consumer library isolation", () => {
     assert.ok(commands.some(args => args.includes("--all-targets") && args.includes("--no-default-features") && !args.includes("--features")),
       "no-default test cfg must compile before a feature matrix can pass");
   };
-  for (const args of featureSets(item, true)) {
+  for (const args of featureSets(item)) {
     const commands = linuxCommands(selection(item, args));
     assert.deepEqual(commands.map(command => command.slice(0, 4)), [args.slice(0, 4), args.slice(0, 4)]);
     assert.deepEqual(commands.map(command => command[4]), ["--lib", "--all-targets"]);
     for (const command of commands) assert.deepEqual(command.slice(5), args.slice(5));
   }
-  const args = featureSets(item, true)[0];
+  const args = featureSets(item)[0];
   requireTestCfg(linuxCommands(selection(item, args)));
   // Actual previous command selection: isolated --lib alone misses cfg(test).
   assert.throws(() => requireTestCfg([args]), /no-default test cfg must compile/);
@@ -79,7 +81,7 @@ test("Linux checks test cfgs without losing consumer library isolation", () => {
 
 test("MSVC checks isolated libraries and all targets for the identical feature matrix", () => {
   const item = { manifest_path: "c/Cargo.toml", features: { default: ["a"], a: [], b: [], c: ["dep:d"] } };
-  for (const args of featureSets(item, true)) {
+  for (const args of featureSets(item)) {
     const commands = windowsCommands(selection(item, args));
     assert.deepEqual(commands.map(command => command.slice(0, 7)), Array(2).fill([
       "xwin", "check", "--locked", "--manifest-path", "c/Cargo.toml", "--target", "x86_64-pc-windows-msvc",
@@ -113,23 +115,14 @@ test("a crate without features is checked once", () => {
   assert.deepEqual(sets({}), ["--no-default-features"]);
 });
 
-test("the default matrix checks each crate once with --all-features; the full matrix is explicit", () => {
-  const item = { manifest_path: "c/Cargo.toml", features: { default: ["a"], a: [], b: [] } };
-  assert.deepEqual(featureSets(item), [["check", "--locked", "--manifest-path", "c/Cargo.toml", "--lib", "--all-features"]]);
-  assert.deepEqual(featureSets({ ...item, features: {} }), featureSets(item));
-  // Every selected configuration compiles its test cfg too.
-  assert.deepEqual(linuxCommands(selection(item, featureSets(item)[0])).map(command => command[4]), ["--lib", "--all-targets"]);
-  assert.equal(featureSets(item, true).length, 5);
-});
-
-test("PR and full matrices reuse the same worker for their shared sets", () => {
+test("adding features or relocating checkouts preserves worker targets", () => {
   const item = { name: "crate", manifest_path: "/main/crate/Cargo.toml", features: { default: ["a"], a: [], b: [], c: [] } };
-  const full = featureSets(item, true).map(args => [args.slice(5).join(" "), featureWorker(item.name, args, 6)]);
+  const full = featureSets(item).map(args => [args.slice(5).join(" "), featureWorker(item.name, args, 6)]);
   for (const args of featureSets({ ...item, manifest_path: "/pr/crate/Cargo.toml" })) {
     assert.equal(featureWorker(item.name, args, 6), full.find(([key]) => key === args.slice(5).join(" "))[1]);
   }
   // Inserting another crate or feature cannot renumber existing sets' caches.
-  const expanded = featureSets({ ...item, features: { ...item.features, extra: [] } }, true);
+  const expanded = featureSets({ ...item, features: { ...item.features, extra: [] } });
   for (const args of expanded) {
     const previous = full.find(([key]) => key === args.slice(5).join(" "));
     if (previous) assert.equal(featureWorker(item.name, args, 6), previous[1]);
@@ -141,8 +134,26 @@ test("shipped feature admission uses actual defining packages and preserves inde
   // only the admitted package boundary for the refusal controls below.
   const inventory = new Map(localCargoPackages().map(item => [item.name, item]));
   const consumers = consumerSelections([...inventory.values()]);
-  for (const item of inventory.values()) {
-    if (item.source !== null || (item.publish !== null && !item.publish.includes("crates-io"))) continue;
+  const published = publishedMatrixPackages([...inventory.values()]);
+  const vendorPath = /(?:^|[\\/])rust[\\/]vendor[\\/]/;
+  assert.ok([...inventory.values()].some(item => vendorPath.test(item.manifest_path)),
+    "the real inventory must exercise vendored manifests");
+  for (const item of published) assert.ok(!vendorPath.test(item.manifest_path),
+    `${item.name} is a vendored dependency, not a standalone SDK root`);
+  for (const selection of consumers) {
+    assert.ok(!vendorPath.test(selection.packages[0].manifest_path),
+      "consumer commands must not restore standalone vendor roots");
+    assert.ok(published.some(item => item.id === selection.packages[0].id),
+      "vendored manifests must compile under the owning consumer lockfile");
+  }
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const adjacent = { ...published[0], id: "vendor-adjacent", name: "vendor-adjacent",
+    manifest_path: join(root, "rust", "vendor-sdk", "Cargo.toml") };
+  const vendored = { ...adjacent, id: "vendored", name: "vendored",
+    manifest_path: join(root, "rust", "vendor", "dependency", "Cargo.toml") };
+  assert.deepEqual(publishedMatrixPackages([vendored, adjacent]), [adjacent],
+    "exclude the vendor directory itself while retaining a nearby SDK package");
+  for (const item of published) {
     const standalone = consumers.find(selection => selection.packages[0].id === item.id
       && selection.flags.length === 1 && selection.flags[0] === "--no-default-features");
     assert.ok(standalone, `${item.name} must compile without features supplied by consumers`);
@@ -166,7 +177,13 @@ test("shipped feature admission uses actual defining packages and preserves inde
   assert.ok(defaults.roots[0].features.includes("default"));
   // The full matrix must not erase cfg(feature = "default") by treating it
   // as only an alias for the features it forwards.
-  const expanded = featureSets(fs, true).map(args => selectCargoFeatures(inventory, [fs.name], args.slice(5)));
+  const matrix = consumerSelections([...inventory.values()], [fs.name], { declared: true });
+  assert.ok(matrix.length > 1);
+  const targeted = linuxCommands(matrix[0], "x86_64-pc-windows-gnu");
+  assert.ok(targeted.every(args => args[args.indexOf("--target") + 1] === "x86_64-pc-windows-gnu"));
+  const expanded = featureSets(fs).map(args => selectCargoFeatures(inventory, [fs.name], args.slice(5)));
+  for (const selection of expanded) assert.ok(matrix.some(candidate =>
+    JSON.stringify(candidate.roots) === JSON.stringify(selection.roots)), "the ordinary matrix retains every declared standalone selection");
   assert.ok(expanded.some(selection => !selection.roots[0].features.includes("default")));
   assert.ok(expanded.some(selection => selection.roots[0].features.includes("default")));
   const commands = linuxCommands(defaults);

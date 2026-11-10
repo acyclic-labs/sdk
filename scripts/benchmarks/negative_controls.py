@@ -52,6 +52,10 @@ def main():
             package.mkdir(parents=True)
             for file in source.glob("*.py"):
                 shutil.copyfile(file, package / file.name)
+            counters = Path("rust/crates/harness-providers/src/token_counters.json")
+            destination = Path(temporary) / counters
+            destination.parent.mkdir(parents=True)
+            shutil.copyfile(source.parents[1] / counters, destination)
             target = package / filename
             text = target.read_text()
             if text.count(old) != 1:
