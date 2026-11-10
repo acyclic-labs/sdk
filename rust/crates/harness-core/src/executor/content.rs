@@ -205,7 +205,8 @@ impl StockExecution<'_> {
                 "max_steps must be positive",
             ));
         }
-        self.model_capacity()?;
+        // Capacity admission belongs to fresh dispatch, after saved requests
+        // have had the opportunity to reconcile or replay.
         with_history_io(self.io, |work| input.input.validate_turn_input(work))?;
         let scope = self
             .original_context()

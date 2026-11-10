@@ -91,26 +91,30 @@ pub(super) fn stock_json_bound<T: Serialize>(
 }
 
 impl StockExecution<'_> {
-    pub(super) fn model_capacity(&self) -> Result<Option<crate::context::ModelContextCapacity>> {
-        if self.single_request {
-            let capacity =
-                stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
+    pub(super) async fn response_accounting(
+        &self,
+        prepared: &crate::model::PreparedModelRequest,
+    ) -> Result<ContextAccounting> {
+        let capacity = self.model_capacity()?;
+        let ceiling = self.input_ceiling(capacity)?;
+        let count =
+            stock_count_tokens(self.stock.provider.as_ref(), prepared, ceiling, self.io).await?;
+        with_history_io(self.io, |work| count.validate(prepared, work))?;
+        Ok(ContextAccounting { capacity, count })
+    }
+
+    pub(super) fn model_capacity(&self) -> Result<crate::context::ModelContextCapacity> {
+        let capacity =
+            stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
+        if !self.single_request
+            && let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()?
+        {
+            policy.validate(capacity, self.output_tokens())?;
+        } else {
             capacity.validate()?;
             capacity.output_reservation(self.output_tokens())?;
-            return Ok(Some(capacity));
         }
-        match self.compaction_policy()? {
-            crate::context::CompactionPolicy::Disabled => Ok(None),
-            crate::context::CompactionPolicy::Threshold(policy) => {
-                let capacity = stock_context_capacity(
-                    self.stock.provider.as_ref(),
-                    &self.stock.model,
-                    self.io,
-                )?;
-                policy.validate(capacity, self.output_tokens())?;
-                Ok(Some(capacity))
-            }
-        }
+        Ok(capacity)
     }
 
     /// The most input this execution admits without compacting or refusing.
@@ -126,7 +130,10 @@ impl StockExecution<'_> {
             crate::context::CompactionPolicy::Threshold(policy) => {
                 policy.input_ceiling(capacity, self.output_tokens())
             }
-            crate::context::CompactionPolicy::Disabled => Ok(0),
+            crate::context::CompactionPolicy::Disabled => {
+                let output = capacity.output_reservation(self.output_tokens())?;
+                Ok(u64::from(capacity.context_tokens - output))
+            }
         }
     }
 

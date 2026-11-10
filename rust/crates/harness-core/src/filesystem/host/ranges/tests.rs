@@ -233,6 +233,78 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
+async fn private_generation_selection_preserves_absence_and_authority() -> Result<()> {
+    let (host, file) = ordinary(b"existing").await?;
+    let volume = file.volume();
+    let (_issuer, read) = grant(volume, VolumeOperation::Read)?;
+    let selected = host
+        .select_private_generation(
+            volume,
+            &read,
+            "absent",
+            None,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await?;
+    let workspace = bounded_io::content_workspace(&host.provider, volume, None)?;
+    host.apply(
+        &workspace,
+        None,
+        &[crate::filesystem::WorkspaceMutation::PutFile {
+            path: "/absent".into(),
+            bytes: bytes::Bytes::from_static(b"new").into(),
+        }],
+        &IdempotencyKey::new("publish-after-absence")?,
+    )
+    .await?;
+    let range = acyclic_fs::ByteRange {
+        offset: 0,
+        length: 1,
+    };
+    let error = host
+        .read_private_range(
+            volume,
+            &read,
+            "absent",
+            Some(&selected),
+            range,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), crate::wire::ErrorCode::NotFound);
+    let (bytes, current, _) = host
+        .read_private_range(
+            volume,
+            &read,
+            "absent",
+            None,
+            range,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await?;
+    assert_eq!(bytes.as_ref(), b"n");
+    assert_ne!(host.generation_ref_id(current, None)?, selected);
+    let denied = Capabilities::default();
+    let error = host
+        .select_private_generation(
+            volume,
+            &read,
+            "absent",
+            Some(&selected),
+            crate::conversation::ContentAccess {
+                ceiling: Some(&denied),
+                io: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
 async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
     let body: Vec<u8> = (0..2 * 1024 * 1024).map(|index| index as u8).collect();
     let (host, file) = ordinary(&body).await?;

@@ -126,7 +126,7 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
         ContextPipeline::new([stage.clone() as Arc<dyn crate::context::ContextStage>]),
         ToolRegistry::default(),
     )
-    .with_max_output_tokens(8_192)?;
+    .with_max_output_tokens(1_024)?;
     let journal = Journal::default();
     let input = TurnInput {
         max_steps: Some(1),
@@ -145,12 +145,12 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
         )?
         .request()
         .max_output_tokens,
-        Some(8_192)
+        Some(1_024)
     );
     assert!(
         executor
             .clone()
-            .with_max_output_tokens(16_384)?
+            .with_max_output_tokens(2_048)?
             .model_step(&journal, &input, 0, &[])
             .await
             .is_err()

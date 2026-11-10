@@ -52,16 +52,7 @@ impl StockExecution<'_> {
         let (mut projection, prepared) = self
             .prepare_response_context(journal, input, step, prior_messages)
             .await?;
-        let accounting = if let Some(capacity) = self.model_capacity()? {
-            let ceiling = self.input_ceiling(capacity)?;
-            let count =
-                stock_count_tokens(self.stock.provider.as_ref(), &prepared, ceiling, self.io)
-                    .await?;
-            with_history_io(self.io, |work| count.validate(&prepared, work))?;
-            Some(ContextAccounting { capacity, count })
-        } else {
-            None
-        };
+        let accounting = Some(self.response_accounting(&prepared).await?);
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
         })?;
@@ -235,7 +226,7 @@ impl StockExecution<'_> {
                     "compacted context requires threshold policy",
                 ));
             };
-            if self.model_capacity()? != Some(final_accounting.capacity)
+            if self.model_capacity()? != final_accounting.capacity
                 || proof.summary.as_ref().is_none_or(|summary| {
                     summary.operation_id != input.operation_id || summary.step != step
                 })
@@ -274,23 +265,41 @@ impl StockExecution<'_> {
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step, prior_messages) = turn;
         let (mut projection, accounting) = captured;
-        if self.single_request {
-            let accounting = accounting.ok_or_else(|| {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Storage,
-                    "inference request has no verified accounting",
-                )
-            })?;
-            if self.model_capacity()? != Some(accounting.capacity) {
+        let accounting = match accounting {
+            Some(accounting) => accounting,
+            // Projections prepared with compaction disabled may have no count.
+            // Started calls recover their immutable request in dispatch; a
+            // fresh call must pass the same admission as a new projection.
+            None if matches!(
+                self.compaction_policy()?,
+                crate::context::CompactionPolicy::Disabled
+            ) =>
+            {
+                self.response_accounting(&prepared).await?
+            }
+            None => {
                 return Err(stock_boundary(
                     self.io,
-                    crate::wire::ErrorCode::Conflict,
-                    "selected capacity differs from captured accounting",
+                    crate::wire::ErrorCode::Storage,
+                    "model request has no verified accounting",
                 ));
             }
-            let input_tokens =
-                with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+        };
+        if self.model_capacity()? != accounting.capacity {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Conflict,
+                "selected capacity differs from captured accounting",
+            ));
+        }
+        let input_tokens =
+            with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+        if self.single_request
+            || matches!(
+                self.compaction_policy()?,
+                crate::context::CompactionPolicy::Disabled
+            )
+        {
             let output = accounting
                 .capacity
                 .output_reservation(self.output_tokens())?;
@@ -300,10 +309,10 @@ impl StockExecution<'_> {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Invalid,
-                    "inference request exceeds selected model capacity",
+                    "model request exceeds selected model capacity",
                 ));
             }
-            if !prepared.request().tools.is_empty() {
+            if self.single_request && !prepared.request().tools.is_empty() {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Unauthorized,
@@ -312,77 +321,61 @@ impl StockExecution<'_> {
             }
             return Ok(prepared);
         }
-        match (self.compaction_policy()?, accounting) {
-            (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
-            (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
-                if self.model_capacity()? != Some(accounting.capacity) {
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Conflict,
-                        "selected capacity differs from captured accounting",
-                    ));
-                }
-                let input_tokens =
-                    with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
-                if let Some(retained) = self
-                    .retained_compacted_response(
-                        journal,
-                        input,
-                        step,
-                        (&mut projection, &prepared),
-                        records,
-                    )
-                    .await?
-                {
-                    return Ok(retained);
-                }
-                let token_pressure = policy.needs_compaction(
-                    accounting.capacity,
-                    input_tokens,
-                    self.output_tokens(),
-                )?;
-                let selected_base = step == 0 && input.selected_context.is_some();
-                let possible_message_pressure = selected_base
-                    && prepared.request().messages.len() > self.compaction_message_limit(true, 0);
-                if !possible_message_pressure && !token_pressure {
-                    return Ok(prepared);
-                }
-                projection.context.messages =
-                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
-                let source = self
-                    .response_compaction_source(journal, turn, &projection, &accounting, policy)
-                    .await?;
-                let source_context = match &source {
-                    CompactionSource::Projected => &projection.context,
-                    CompactionSource::Base { context, .. } => context,
-                };
-                let stage_messages = projection
-                    .context
-                    .messages
-                    .len()
-                    .saturating_sub(source_context.messages.len());
-                let message_pressure = selected_base
-                    && source_context.messages.len() > 1
-                    && source_context.messages.len()
-                        > self.compaction_message_limit(true, stage_messages);
-                if !message_pressure && !token_pressure {
-                    return Ok(prepared);
-                }
-                self.compact_response(
-                    journal,
-                    (input, step, prior_messages.len()),
-                    (projection, accounting),
-                    source,
-                    policy,
-                )
-                .await
-            }
-            _ => Err(stock_boundary(
+        let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()? else {
+            return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Storage,
                 "captured accounting differs from compaction policy",
-            )),
+            ));
+        };
+        if let Some(retained) = self
+            .retained_compacted_response(
+                journal,
+                input,
+                step,
+                (&mut projection, &prepared),
+                records,
+            )
+            .await?
+        {
+            return Ok(retained);
         }
+        let token_pressure =
+            policy.needs_compaction(accounting.capacity, input_tokens, self.output_tokens())?;
+        let selected_base = step == 0 && input.selected_context.is_some();
+        let possible_message_pressure = selected_base
+            && prepared.request().messages.len() > self.compaction_message_limit(true, 0);
+        if !possible_message_pressure && !token_pressure {
+            return Ok(prepared);
+        }
+        projection.context.messages =
+            crate::model::clone_messages(&prepared.request().messages, self.io)?;
+        let source = self
+            .response_compaction_source(journal, turn, &projection, &accounting, policy)
+            .await?;
+        let source_context = match &source {
+            CompactionSource::Projected => &projection.context,
+            CompactionSource::Base { context, .. } => context,
+        };
+        let stage_messages = projection
+            .context
+            .messages
+            .len()
+            .saturating_sub(source_context.messages.len());
+        let message_pressure = selected_base
+            && source_context.messages.len() > 1
+            && source_context.messages.len() > self.compaction_message_limit(true, stage_messages);
+        if !message_pressure && !token_pressure {
+            return Ok(prepared);
+        }
+        self.compact_response(
+            journal,
+            (input, step, prior_messages.len()),
+            (projection, accounting),
+            source,
+            policy,
+        )
+        .await
     }
 
     async fn validate_compacted_checkpoint(
