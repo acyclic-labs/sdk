@@ -55,6 +55,62 @@ fn materialization_queue_retains_original_errors_and_retires_panicking_items() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn concurrent_revalidations_observe_the_same_failed_cache_clear()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = windows_checkout_source().await?;
+    let (_root, _destination, mut session) = mount_source(&source)?;
+    let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+    let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
+    let denied = crate::NativeMaterializationWork::new(
+        crate::WorkBudget {
+            backend_write_operations: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        },
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
+    let scope = session.begin_original_work(&denied)?;
+    let tree = lock_recover(&runtime.projector.tree);
+    lock_recover(&runtime.projector.state).negative_cache_dirty = true;
+    std::thread::scope(|threads| {
+        let first = threads.spawn(|| runtime.projector.settle());
+        let second = threads.spawn(|| runtime.projector.settle());
+        let mut state = lock_recover(&runtime.projector.state);
+        while state.settlers != 2 {
+            state = runtime
+                .projector
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        drop(state);
+        // Both controls now wait on the same real, work-denied native clear.
+        drop(tree);
+        let first = first
+            .join()
+            .expect("first control panicked")
+            .expect_err("clear was admitted");
+        let second = second
+            .join()
+            .expect("second control panicked")
+            .expect_err("clear was admitted");
+        assert_eq!(first.to_string(), second.to_string());
+    });
+    assert_eq!(denied.receipt().backend_write_operations, 0);
+    {
+        let state = lock_recover(&runtime.projector.state);
+        assert_eq!(state.settlers, 0);
+        assert!(state.failure.is_none());
+        assert!(state.negative_cache_dirty);
+    }
+    drop(scope);
+    session.revalidate(&setup_work()?)?;
+    assert!(!lock_recover(&runtime.projector.state).negative_cache_dirty);
+    drop(runtime);
+    session.stop()?;
+    Ok(())
+}
+#[tokio::test(flavor = "multi_thread")]
 async fn a_failed_negative_cache_clear_is_retried_without_a_source_change()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = windows_checkout_source().await?;
