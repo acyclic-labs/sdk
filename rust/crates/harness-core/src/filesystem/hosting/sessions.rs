@@ -135,8 +135,31 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     pub async fn prepare_isolated_session(
         &self,
         intent: &IntentId,
+        root: RootRequest,
+        source: &AgentPath,
+    ) -> Result<Prepared, Error> {
+        self.prepare_session_fork(intent, root, source, None).await
+    }
+
+    /// A parentless session at an indexed coupled cut, born paused. Its
+    /// original session remains available with every later turn and file.
+    pub async fn prepare_session_history(
+        &self,
+        intent: &IntentId,
+        root: RootRequest,
+        source: &AgentPath,
+        at: u64,
+    ) -> Result<Prepared, Error> {
+        self.prepare_session_fork(intent, root, source, Some(at))
+            .await
+    }
+
+    async fn prepare_session_fork(
+        &self,
+        intent: &IntentId,
         mut root: RootRequest,
         source: &AgentPath,
+        at: Option<u64>,
     ) -> Result<Prepared, Error> {
         self.admit_sessions()?;
         self.admit_path(source)?;
@@ -147,8 +170,21 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         }
         let source = self.agents.state(source).await?;
         self.admit_agent(&source.path, &source.volumes)?;
+        let saved = match at {
+            Some(at) => Some(
+                super::super::history::read(self.agents.provider().as_ref(), &source.path, at)
+                    .await
+                    .map_err(turn)?,
+            ),
+            None => None,
+        };
+        let history = saved.as_ref().map(|saved| crate::agent::HistorySelection {
+            conversation: saved.conversation,
+            checkpoint: saved.checkpoint,
+        });
         let child = AgentPath::root(&root.agent);
-        root.fresh = super::super::spawn_volumes::fork_bindings(&child, &source.volumes, None)?;
+        root.fresh =
+            super::super::spawn_volumes::fork_bindings(&child, &source.volumes, history.as_ref())?;
         self.admit_root(&root)?;
         let adopted = ForkAdopted {
             agent: root.agent,
@@ -161,11 +197,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             brief: root.brief,
             policy: root.policy,
         };
-        let Spawn { child, mut request } = self.agents.prepare_root(intent, adopted)?;
+        let Spawn { child, mut request } = match (at, saved.as_ref()) {
+            (Some(at), Some(saved)) => self
+                .agents
+                .prepare_root_history(intent, &source, adopted, at, saved)?,
+            _ => self.agents.prepare_root(intent, adopted)?,
+        };
         self.index_session(&child, &mut request)?;
         let commit = self
             .spawns
-            .root_volumes(&source, &child, None, request)
+            .root_volumes(&source, &child, history.as_ref(), request)
             .await
             .map_err(|error| {
                 turn(crate::Error::Invalid(format!(
