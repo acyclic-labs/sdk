@@ -12,6 +12,8 @@ pub struct SkillMetadata {
     /// Additional declarative frontmatter fields; no execution authority is inferred.
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WasmModelJsonValue>"))]
     pub fields: BTreeMap<String, serde_json::Value>,
+    /// Stable original source identity, independent of the retained body version.
+    pub identity: String,
     /// Exact lazy body location and provenance.
     pub source: PinnedContextPath,
 }
@@ -145,7 +147,8 @@ impl SkillMetadata {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.source.validate(work)?;
-        if self.name.is_empty()
+        if self.identity.is_empty()
+            || self.name.is_empty()
             || self.name.starts_with('-')
             || self.name.ends_with('-')
             || self.name.contains("--")
@@ -253,6 +256,8 @@ pub fn parse_skill_metadata(prefix: &[u8], source: PinnedContextPath) -> Result<
         name: metadata.name,
         description: metadata.description,
         fields: metadata.fields,
+        identity: serde_json::to_string(&(&source.root, &source.path))
+            .map_err(|error| Error::Invalid(error.to_string()))?,
         source,
     };
     metadata.validate(&mut None)?;

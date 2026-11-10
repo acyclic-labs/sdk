@@ -29,6 +29,17 @@ pub struct BoundaryCut {
     pub through: u64,
 }
 
+/// How an inbox observation ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundaryEnd {
+    /// Observe the current bounded window.
+    Open,
+    /// Stop at this exclusive source cursor or the end of a window.
+    Fence(u64),
+    /// Replay exactly the admitted source range.
+    Exact(u64),
+}
+
 /// Read one window at an actual model boundary. A later arrival belongs to a
 /// later boundary. Cancel/archive are barriers and remain explicit interrupts.
 /// `from` is the last admitted model frontier; a frozen range is replayed
@@ -37,8 +48,12 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
     provider: &P,
     agent: &AgentPath,
     from: u64,
-    until: Option<u64>,
+    boundary: BoundaryEnd,
 ) -> Result<BoundarySelection, Error> {
+    let until = match boundary {
+        BoundaryEnd::Open => None,
+        BoundaryEnd::Fence(fence) | BoundaryEnd::Exact(fence) => Some(fence),
+    };
     if until.is_some_and(|until| until < from) {
         return Err(Error::Record("steering cursor precedes its source range"));
     }
@@ -67,7 +82,11 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
             .await;
         let mut records = match records {
             Ok(records) => records,
-            Err(acyclic_stream::StreamError::NotFound) if until.is_none() => break,
+            Err(acyclic_stream::StreamError::NotFound)
+                if !matches!(boundary, BoundaryEnd::Exact(_)) =>
+            {
+                break;
+            }
             Err(error) => return Err(Error::Stream(error)),
         };
         let mut read = 0;
@@ -108,7 +127,7 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
             );
         }
     }
-    if until.is_some_and(|until| until != selection.through) {
+    if matches!(boundary, BoundaryEnd::Exact(until) if until != selection.through) {
         return Err(Error::Record("frozen steering range is unavailable"));
     }
     Ok(selection)
@@ -127,6 +146,19 @@ pub struct SteeringSnapshot {
 /// A journal's model-boundary binding. The executor freezes the selected range
 /// with ContextPrepared; replay must reconstruct only that immutable range.
 pub trait ModelBoundary: acyclic_stream::ProviderPlatform {
+    /// Include a source update published during turn preparation in the first
+    /// request. Its committed exclusive cursor fences the ordered inbox window;
+    /// unrelated later arrivals remain for their original next boundary.
+    fn include_prepared_sources(
+        &self,
+        _operation: crate::OperationId,
+        _through: u64,
+    ) -> crate::Result<()> {
+        Err(crate::Error::Unsupported(
+            "model boundary cannot include prepared sources".into(),
+        ))
+    }
+
     /// Inputs at this safe boundary, after every prior tool result settled.
     fn messages(
         &self,
