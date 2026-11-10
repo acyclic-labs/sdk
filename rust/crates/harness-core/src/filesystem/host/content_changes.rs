@@ -465,17 +465,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                         .await,
                                 )?;
                             }
-                            io.sdk(
-                                transaction
-                                    .write_if(
-                                        &absolute,
-                                        bounded_io::clone_bytes(bytes, Some(io))?,
-                                        acyclic_fs::FileCondition::Absent,
-                                        io,
-                                        io.cancellation(),
-                                    )
-                                    .await,
-                            )?;
+                            let (written, recorded) = transaction
+                                .write_if(
+                                    &absolute,
+                                    bounded_io::clone_bytes(bytes, Some(io))?,
+                                    acyclic_fs::FileCondition::Absent,
+                                    io,
+                                    io.cancellation(),
+                                )
+                                .await;
+                            // This API's StaleIdentity is exactly a false file
+                            // condition. Other SDK and accounting failures keep
+                            // their original terminal cause; sdk checks the
+                            // recorded native work before the condition result.
+                            io.sdk((
+                                written.map_err(|error| match error {
+                                    WorkspaceError::StaleIdentity => Error::ToolRejected {
+                                        code: crate::wire::ErrorCode::Conflict,
+                                        reason: "conditional file already exists",
+                                    },
+                                    error => Error::from(error),
+                                }),
+                                recorded,
+                            ))?;
                         }
                         ContentChange::UpdateExpected { bytes, .. } => {
                             io.sdk(
