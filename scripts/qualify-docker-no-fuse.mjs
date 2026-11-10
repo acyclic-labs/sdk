@@ -110,7 +110,13 @@ async function outside(image, binary, mock, output) {
         "/artifacts/harness-mock-model", "/evidence"]);
       const result = await creating;
       assert.equal(result.code, 0, result.stderr);
-      const config = JSON.parse(await docker(["inspect", "--format", "{{json .HostConfig}}", name]));
+      // Inspect only the contract's fields: unrelated daemon configuration
+      // (for example logging-driver credentials) must not enter evidence.
+      const format = '{"Privileged":{{json .HostConfig.Privileged}},"CapAdd":{{json .HostConfig.CapAdd}},'
+        + '"Devices":{{json .HostConfig.Devices}},"DeviceRequests":{{json .HostConfig.DeviceRequests}},'
+        + '"SecurityOpt":{{json .HostConfig.SecurityOpt}},"NetworkMode":{{json .HostConfig.NetworkMode}},'
+        + '"User":{{json .Config.User}}}';
+      const config = JSON.parse(await docker(["inspect", "--format", format, name]));
       assert.equal(config.Privileged, false);
       for (const key of ["CapAdd", "Devices", "DeviceRequests", "SecurityOpt"])
         assert.equal(config[key]?.length ?? 0, 0, `stock Docker requires default ${key}`);
