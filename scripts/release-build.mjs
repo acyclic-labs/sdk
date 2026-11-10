@@ -5,6 +5,9 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+/** @param {{id: string, command: string, args: string[], cwd: string,
+ * env?: NodeJS.ProcessEnv, output?: string, outputs?: string[], context?: string,
+ * validate?: () => void | Promise<void>}} options */
 export async function releaseBuild({ id, command, args, cwd, env = process.env, output, outputs,
   context = env.SDK_RELEASE_BUILD_CONTEXT, validate }) {
   const started = performance.now();
@@ -13,7 +16,7 @@ export async function releaseBuild({ id, command, args, cwd, env = process.env, 
     await validate?.();
     if (context) {
       if (!env.SDK_ARTIFACT_BUILD_MODULE) throw new Error("artifact context requires SDK_ARTIFACT_BUILD_MODULE");
-      const { artifactBuild } = await import(pathToFileURL(env.SDK_ARTIFACT_BUILD_MODULE));
+      const { artifactBuild } = await import(pathToFileURL(env.SDK_ARTIFACT_BUILD_MODULE).href);
       status = await artifactBuild({ id, command, args, cwd, env, output,
         ...(outputs ? { outputs } : {}), context });
     } else {

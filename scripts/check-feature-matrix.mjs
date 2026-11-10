@@ -38,6 +38,7 @@ export function selectionWorker(name, flags, workers) {
   const key = [name, ...flags].join("\0");
   return createHash("sha256").update(key).digest().readUInt32LE(0) % workers;
 }
+/** @returns {NodeJS.ProcessEnv} */
 export function workerEnv(index, env = process.env) {
   return index === 0 ? { ...env } : { ...env, CARGO_TARGET_DIR: `${env.CARGO_TARGET_DIR ?? join(root, "target")}-features-${index}` };
 }
@@ -207,6 +208,7 @@ async function main() {
   }
   const failures = [];
   let passed = 0;
+  /** @type {Array<Array<(typeof sets)[number]>>} */
   const queues = Array.from({ length: workers }, () => []);
   for (const selection of sets) queues[selectionWorker(selection.packages[0].name, selection.flags, workers)].push(selection);
   async function worker(index) {
