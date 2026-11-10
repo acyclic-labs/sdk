@@ -287,7 +287,7 @@ async fn every_effective_projection_keeps_the_original_probe_generation() -> Res
 }
 
 #[tokio::test]
-async fn explicit_versions_keep_their_selection_across_a_new_home_probe() -> Result<()> {
+async fn explicit_versions_keep_their_selection_without_a_new_home_probe() -> Result<()> {
     for selection in [None, Some(json!({"kind":"lines","offset":0,"limit":1}))] {
         let storage = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 4096).await?);
         storage
@@ -330,21 +330,7 @@ async fn explicit_versions_keep_their_selection_across_a_new_home_probe() -> Res
         arguments["path"] = json!(format!("{}text.txt", crate::layers::EFFECTIVE_PATH));
         arguments["version"] = json!(version);
         let result = read(&task, arguments).await;
-        assert_eq!(reader.unpinned_reads.load(Ordering::Relaxed), 1);
-        let probe = reader
-            .selected
-            .lock()
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        let probe = probe
-            .as_ref()
-            .ok_or_else(|| Error::Storage("actual home probe did not execute".into()))?;
-        let authored: crate::tool::files::FileReadSource =
-            serde_json::from_value(original.value["file"].clone())
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_ne!(
-            authored,
-            crate::tool::files::FileReadSource::Authored(probe.clone())
-        );
+        assert_eq!(reader.unpinned_reads.load(Ordering::Relaxed), 0);
         match result {
             Ok((result, _)) => {
                 assert_eq!(result.value["file"], original.value["file"]);
@@ -517,14 +503,12 @@ async fn effective_reads_preserve_the_selected_layers_authority() -> Result<()> 
         .ok_or_else(|| Error::Storage("actual seed read omitted its version".into()))?;
     let mut arguments = arguments;
     arguments["version"] = json!(version);
-    match read(&task, arguments).await {
-        Err(error) => assert_eq!(error.code(), crate::wire::ErrorCode::Invalid),
-        Ok(_) => {
-            return Err(Error::Storage(
-                "seed version replaced a selected home file".into(),
-            ));
-        }
-    }
-    assert_eq!(reader.unpinned_reads.load(Ordering::Relaxed), 1);
+    let (selected, projection) = read(&task, arguments).await?;
+    assert_eq!(
+        projection["value"]["version"],
+        seed_projection["value"]["version"]
+    );
+    assert_eq!(selected.value["text"], "content");
+    assert_eq!(reader.unpinned_reads.load(Ordering::Relaxed), 0);
     Ok(())
 }
