@@ -669,24 +669,22 @@ impl<'io> StockExecution<'io> {
         _invocation: &ToolInvocation,
         result: &FileRef,
         projection: &FileRef,
-        tool: &crate::tool::Tool,
+        (definition, _code_mode): (&crate::tool::ToolDefinition, bool),
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<(crate::model::ToolResultContent, Option<ToolReceipt<'io>>)> {
         let result = load_json::<ToolResult>(journal, result, self.io).await?;
         with_history_io(self.io, |work| {
             validate_json_schema_value(
-                &tool.definition.output_schema,
+                &definition.output_schema,
                 &result.0.value,
                 "tool output",
                 work,
             )
         })?;
         let projection = load_json::<Value>(journal, projection, self.io).await?;
-        let content =
-            tool.definition
-                .validate_projection(&projection.0, self.stock.limits, self.io)?;
+        let content = definition.validate_projection(&projection.0, self.stock.limits, self.io)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if tool.executor.is_code_mode() {
+        if _code_mode {
             self.restore_js_context(&result.0.value, _hook_context)?;
         }
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
