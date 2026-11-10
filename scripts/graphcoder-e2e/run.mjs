@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -152,6 +152,15 @@ async function execute(test, prepared) {
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
       const inputFixture = { ...fixture, env: { ...fixture.env, ...input.environment } };
+      if (input.select_spawned_agent) {
+        const { record, name } = input.select_spawned_agent;
+        assert.ok(!isAbsolute(record) && !record.split(/[\\/]/).includes(".."), "unsafe spawn record path");
+        const hooks = (await readFile(join(fixture.workspace, record), "utf8")).trim().split("\n").map(JSON.parse);
+        const spawned = hooks.find(hook => hook.hook_event_name === "PostToolUse"
+          && hook.tool_name === "spawn" && hook.tool_input?.name === name);
+        assert.equal(typeof spawned?.tool_response?.agent, "string", "missing original spawn result");
+        inputFixture.args = [...fixture.args, "--agent", spawned.tool_response.agent];
+      }
       if (input.mode === "conversation") {
         await conversation(processes, binary, fixture, { ...input, operation: input.operation ?? operation },
           capture => captures.push(capture));
@@ -169,7 +178,7 @@ async function execute(test, prepared) {
       const op = input.operation ?? operation;
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
       await withFileSource(processes, fixture, input.file_source, async (path, closed) => {
-        const arguments_ = [...fixture.args, ...args, ...(input.extra_args ?? [])]
+        const arguments_ = [...inputFixture.args, ...args, ...(input.extra_args ?? [])]
           .map(argument => argument === "{{file_source}}" ? path : argument);
         const running = await processes.startReported(binary, arguments_, { cwd: input.cwd ?? fixture.workspace, env: inputFixture.env });
         if (input.kill_on) {
