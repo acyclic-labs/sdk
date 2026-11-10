@@ -29,6 +29,10 @@ mod guest_metadata;
 #[path = "protoc_path.rs"]
 mod protoc_path;
 
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+#[path = "live_update.rs"]
+mod live_update;
+
 #[cfg(all(loom, feature = "model-checking", not(target_arch = "wasm32")))]
 #[path = "guest_loom.rs"]
 mod guest_loom;
