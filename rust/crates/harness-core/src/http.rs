@@ -3,7 +3,7 @@ use crate::Result;
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, ProviderPlatform};
 use bytes::Bytes;
 use std::collections::BTreeMap;
-// Native work has the same availability as NativeFutureBundle and acyclic_fs::NativeWork.
+// Native work and future admission are always available on native targets.
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 /// Native response payload custody shared by protocol codecs.
