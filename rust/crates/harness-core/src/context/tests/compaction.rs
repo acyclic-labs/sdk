@@ -453,13 +453,29 @@ fn compaction_keeps_fragmented_schemas_only_for_retained_exchanges() -> Result<(
         ..Default::default()
     };
     let count = ModelTokenCount::from_upper_bounds([0; 32], 0, vec![1; source.messages.len()]);
-    for maximum in 2..=source.messages.len() {
-        if let Ok((through, maximum)) =
-            policy.projection_budget(&source, &count, maximum, 1, &mut None)
-        {
-            let (retained, _) = compact(&source, maximum, through)?;
-            prepare(retained.messages, Vec::new())?;
+    let messages = u32::try_from(source.messages.len())
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let schema_position = source
+        .messages
+        .iter()
+        .position(|message| message == &second[0])
+        .expect("schema position");
+    let mut planned_retained_schema = false;
+    for recent_tokens in 1..=messages {
+        for maximum in 2..=source.messages.len() {
+            if let Ok((through, maximum)) =
+                policy.projection_budget(&source, &count, maximum, recent_tokens, &mut None)
+            {
+                let (retained, proof) = compact(&source, maximum, through)?;
+                validate_compaction(&proof, &source, &retained, None)?;
+                planned_retained_schema |= through > schema_position && has_call(&retained, "d");
+                prepare(retained.messages, Vec::new())?;
+            }
         }
     }
+    assert!(
+        planned_retained_schema,
+        "automatic planning must retain the original table across its summary cut"
+    );
     Ok(())
 }
