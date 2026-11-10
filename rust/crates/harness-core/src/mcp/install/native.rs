@@ -233,19 +233,6 @@ impl Connection {
     }
 }
 
-/// Materializes the shared page stream for an eagerly exposed catalog.
-pub(super) async fn discover<F, Fut>(list: F) -> Result<Vec<McpToolDefinition>>
-where
-    F: Fn(Option<String>) -> Fut,
-    Fut: std::future::Future<Output = Result<rmcp::model::ListToolsResult>>,
-{
-    super::super::tool_pages(list)
-        .try_fold(Vec::new(), |mut tools, page| async move {
-            tools.extend(page);
-            Ok(tools)
-        })
-        .await
-}
 /// Resolved credentials of one server, held only by the host, zeroed on drop.
 pub(super) type Credentials = std::collections::BTreeMap<String, zeroize::Zeroizing<String>>;
 

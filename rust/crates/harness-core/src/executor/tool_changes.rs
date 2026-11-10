@@ -167,8 +167,9 @@ impl StockExecution<'_> {
                 crate::conversation::ContentHold<'_>,
             )> = None;
             decoded = match funded {
-                Some((table, hold)) => {
-                    hold.into_retained()?;
+                Some((table, _hold)) => {
+                    #[cfg(feature = "filesystem")]
+                    _hold.into_retained()?;
                     table
                 }
                 None => serde_json::from_str(&previous)
