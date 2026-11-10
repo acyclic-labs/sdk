@@ -119,6 +119,3 @@ export function list(path, after) {
     })();
     return Object.freeze({get cursor() { return cursor; }, [Symbol.asyncIterator]() { return iterator; }});
 }
-
-export async function spawn() { throw new DeniedError('needs P2'); }
-export async function fork() { throw new DeniedError('needs P2'); }
