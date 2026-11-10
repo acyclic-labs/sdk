@@ -72,42 +72,47 @@ where
     recover_pending(workspace, view, pending, before_effect).await
 }
 
-pub(in crate::local) async fn recover_pending<F, Fut>(
-    workspace: &LocalWorkspace,
-    view: &workspace::View,
+pub(in crate::local) fn recover_pending<'a, F, Fut>(
+    workspace: &'a LocalWorkspace,
+    view: &'a workspace::View,
     pending: Option<Pending>,
-    before_effect: &F,
-) -> Result<bool>
+    before_effect: &'a F,
+) -> BoxProviderFuture<'a, Result<bool>>
 where
     F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<()>> + Send,
+    Fut: Future<Output = Result<()>> + Send + 'a,
 {
-    let Some(pending) = pending else {
-        return Ok(false);
-    };
-    let (_, source) = pending;
-    if source.workspace_id != view.workspace().id() {
-        return Err(Error::Conflict(
-            "unpublished reconciliation belongs to another checkout".into(),
-        ));
-    }
-    before_effect().await?;
-    let outcome =
-        acyclic_fs::OperationWindowCoordinator::new(workspace.filesystem.operation_window_store())
-            .recover_workspace(
-                view.workspace(),
-                acyclic_stream::UnixMillisClock::now_unix_millis(
-                    &acyclic_stream::SystemUnixMillisClock,
-                ),
-                acyclic_fs::OperationReconcileLimits::default(),
-            )
-            .await
-            .map_err(storage)?;
-    if let Some(outcome) = outcome {
-        super::git::reconciliation_generation(outcome)?;
-    }
-    replay(workspace, view, pending, true, before_effect).await?;
-    Ok(true)
+    // Mount binding and tool initialization share this recovery producer.
+    // Keep its operation-window and publication futures out of both layouts.
+    Box::pin(async move {
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        let (_, source) = pending;
+        if source.workspace_id != view.workspace().id() {
+            return Err(Error::Conflict(
+                "unpublished reconciliation belongs to another checkout".into(),
+            ));
+        }
+        before_effect().await?;
+        let outcome = acyclic_fs::OperationWindowCoordinator::new(
+            workspace.filesystem.operation_window_store(),
+        )
+        .recover_workspace(
+            view.workspace(),
+            acyclic_stream::UnixMillisClock::now_unix_millis(
+                &acyclic_stream::SystemUnixMillisClock,
+            ),
+            acyclic_fs::OperationReconcileLimits::default(),
+        )
+        .await
+        .map_err(storage)?;
+        if let Some(outcome) = outcome {
+            super::git::reconciliation_generation(outcome)?;
+        }
+        replay(workspace, view, pending, true, before_effect).await?;
+        Ok(true)
+    })
 }
 
 /// A file publication's owed capture: its operation and staged generation.

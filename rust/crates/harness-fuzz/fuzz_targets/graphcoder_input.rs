@@ -1,6 +1,6 @@
 #![no_main]
 
-use graphcoder::test_support as input;
+use acyclic_plugin::test_support as input;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let Ok(text) = std::str::from_utf8(bytes) else {

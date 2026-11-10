@@ -1,6 +1,7 @@
 //! The shipping binary over a loopback model: argv, provider catalog, the local
 //! harness and its root agent, end to end.
 use acyclic_native_runtime::{ProcessCommand as Command, ProcessStdio as Stdio};
+use axum::response::IntoResponse as _;
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
@@ -61,10 +62,14 @@ struct Model {
 }
 
 async fn model(directory: &Path) -> Model {
-    model_response(directory, ANSWER).await
+    model_response(directory, axum::http::StatusCode::OK, ANSWER).await
 }
 
-async fn model_response(directory: &Path, response: &'static str) -> Model {
+async fn model_response(
+    directory: &Path,
+    status: axum::http::StatusCode,
+    response: &'static str,
+) -> Model {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -72,7 +77,13 @@ async fn model_response(directory: &Path, response: &'static str) -> Model {
     let app = Router::new()
         .route(
             "/count",
-            post(|| async { Json(json!({"input_tokens": 64})) }),
+            post(move || async move {
+                if status.is_success() {
+                    Json(json!({"input_tokens": 64})).into_response()
+                } else {
+                    (status, [("content-type", "application/json")], response).into_response()
+                }
+            }),
         )
         .route(
             "/responses",
@@ -152,7 +163,7 @@ fn fixture() -> Fixture {
 }
 
 fn graphcoder_command(fixture: &Fixture) -> Command {
-    let mut command = Command::new(acyclic_test_support::cargo_binary!("graphcoder"));
+    let mut command = Command::new(acyclic_test_support::cargo_binary!("acyclic"));
     fixture.custody.configure(|key, value| {
         command.env(key, value);
     });
@@ -164,8 +175,8 @@ fn graphcoder_command(fixture: &Fixture) -> Command {
         .env("XDG_DATA_HOME", &fixture.settings)
         .env("XDG_STATE_HOME", &fixture.settings)
         .env("TERM", "dumb")
-        .env("GRAPHCODER_LOG", "off")
-        .env_remove("GRAPHCODER_MODEL")
+        .env("ACYCLIC_LOG", "off")
+        .env_remove("ACYCLIC_MODEL")
         .env_remove("OPENAI_API_KEY")
         .current_dir(&fixture.workspace)
         .arg("--workspace")
@@ -508,6 +519,7 @@ async fn failed_prompt_and_replay_report_the_original_cause() {
     let fixture = fixture();
     let model = model_response(
         fixture._directory.path(),
+        axum::http::StatusCode::OK,
         concat!(
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture partial\"}\n\n",
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":403}}}\n\n",
@@ -528,7 +540,7 @@ async fn failed_prompt_and_replay_report_the_original_cause() {
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         assert_eq!(output.stdout, b"fixture partial\n");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(stderr.trim_end(), format!("graphcoder: {cause}"));
+        assert_eq!(stderr.trim_end(), format!("acyclic: {cause}"));
         assert_eq!(model.generated(), 1, "replay dispatched model work");
     }
     model.close().await;
@@ -712,7 +724,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
     for (args, diagnostic) in [
-        (vec!["exec"], "recovery: graphcoder"),
+        (vec!["exec"], "recovery: acyclic"),
         (vec!["--output-format", "jsonl"], "no task or JSONL input"),
         (
             vec!["--event-cursor", "cursor.json", "exec", "hello"],
@@ -1276,9 +1288,68 @@ async fn catalog_errors_exit_with_their_cause_on_stderr() {
         assert!(output.stdout.is_empty());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.starts_with("graphcoder: ") && stderr.trim_end().len() > "graphcoder:".len(),
+            stderr.starts_with("acyclic: ") && stderr.trim_end().len() > "acyclic:".len(),
             "{stderr:?}"
         );
-        assert_eq!(stderr.matches("graphcoder: ").count(), 1, "{stderr:?}");
+        assert_eq!(stderr.matches("acyclic: ").count(), 1, "{stderr:?}");
+    }
+}
+
+#[tokio::test]
+async fn execution_recorded_provider_refusal_settles_through_the_shipping_binary() {
+    // Unmodified llama.cpp HTTP 401 captured on 2026-10-26; its request,
+    // response headers, digest and provenance remain beside the original body.
+    let refusal =
+        include_str!("../../rust/crates/conformance/fixtures/inference/llamacpp/auth.body");
+    for versioned in [false, true] {
+        let fixture = fixture();
+        let model = model_response(
+            fixture._directory.path(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            refusal,
+        )
+        .await;
+        let mut args = vec![
+            "run",
+            "--operation",
+            "recorded-refusal",
+            "--input-format",
+            "jsonl",
+        ];
+        if versioned {
+            args.extend(["--output-format", "jsonl"]);
+        }
+        let output = graphcoder(
+            &fixture,
+            &model.catalog,
+            args,
+            "{\"id\":\"refused\",\"prompt\":\"hello\"}\n",
+        )
+        .await;
+        assert!(!output.status.success(), "{output:?}");
+        let records = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let result = records
+            .iter()
+            .find(|record| record["id"] == "refused")
+            .unwrap();
+        assert!(
+            result["error"].as_str().unwrap().contains("401"),
+            "{result}"
+        );
+        assert!(result.get("text").is_none(), "{result}");
+        if versioned {
+            let completed = records.last().unwrap();
+            assert_eq!(completed["kind"], "completed");
+            assert_eq!(completed["success"], false);
+        }
+        assert_eq!(
+            model.generated(),
+            0,
+            "count refusal must prevent generation"
+        );
+        model.close().await;
     }
 }

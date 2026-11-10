@@ -200,7 +200,7 @@ bun run --filter '@acyclic-labs/fs' test:composition
 # The installed host creates the real local provider scenario; pipes here are
 # process E2E evidence, not a claim that an interactive PTY was exercised.
 $GraphcoderInstall = Join-Path $env:SDK_TEMP_DIR 'graphcoder-installed'
-cargo install --path rust/crates/harness/src/bin/graphcoder --locked --debug `
+cargo install --path plugin --locked --debug `
     --root $GraphcoderInstall --target-dir $CargoTargetDir
 cargo install --path rust/crates/harness-mock-model --locked --debug `
     --root $GraphcoderInstall --target-dir $CargoTargetDir
@@ -218,6 +218,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "STEP_FAILED terminal-compiler; recovery: & `"$csc`" /nologo /target:exe /out:`"$env:E2E_CONPTY_HOST`" `"$ConptySource`""
 }
 $env:E2E_SCRATCH_ROOT = [IO.Path]::GetFullPath((Join-Path $env:SDK_TEMP_DIR 'graphcoder-e2e'))
+node scripts/qualify-cli-input.mjs (Join-Path $GraphcoderInstall 'bin/acyclic.exe') (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs
 foreach ($case in @('pty-conversation', 'pty-markdown', 'pty-slash', 'pty-cancel-ctrl-c',

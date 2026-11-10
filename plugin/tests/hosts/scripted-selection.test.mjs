@@ -2,9 +2,8 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {scriptedScenario} from './qualify-scripted.mjs';
 
-test('framing admits only its CLI artifact without Codex or GraphCoder',()=>{
- const artifacts={artifacts:{acyclic:{path:process.execPath},
-  get graphcoder(){throw new Error('unselected GraphCoder dependency');}}};
+test('framing admits its CLI artifact without Codex',()=>{
+ const artifacts={artifacts:{acyclic:{path:process.execPath}}};
  const scenario=scriptedScenario(artifacts,undefined,'managed:bounded-framing');
  assert.equal(scenario.selection,'managed:bounded-framing');
  assert.equal(scenario.args.length,2);
@@ -13,7 +12,7 @@ test('framing admits only its CLI artifact without Codex or GraphCoder',()=>{
 });
 
 test('scale does not require Codex; managed sandbox scenarios refuse its absence',()=>{
- const artifacts={artifacts:{acyclic:{path:process.execPath},graphcoder:{path:process.execPath}}};
+ const artifacts={artifacts:{acyclic:{path:process.execPath}}};
  for(const host of ['codex','claude-code','pi'])
   assert.equal(scriptedScenario(artifacts,undefined,'scale:'+host).args.at(-1),host);
  for(const name of ['lifecycle','recursive','resume'])

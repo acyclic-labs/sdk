@@ -115,7 +115,7 @@ bounded-json = ["core", "dep:acyclic-native-runtime"]
 oidc = ["core", "acyclic-harness-core/oidc", "dep:bytes", "dep:acyclic-stream", "dep:p256", "dep:ed25519-dalek"]
 native-answer = ["native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime"]
 command-result = ["core", "dep:acyclic-harness"]
-graphcoder = ["dep:graphcoder", "graphcoder/test-support"]
+graphcoder = ["dep:acyclic-plugin", "acyclic-plugin/test-support"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
 native-arguments = ["core", "acyclic-harness-core/filesystem"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
@@ -127,7 +127,6 @@ filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness
 
 [dependencies]
 acyclic-plugin = { path = "../../../plugin", optional = true }
-graphcoder = { path = "../harness/src/bin/graphcoder", optional = true }
 acyclic-mcp = { path = "../mcp", features = ["stdio"], optional = true }
 ed25519-dalek = { version = "3.0.0", optional = true }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"], optional = true }
