@@ -165,6 +165,7 @@ pub struct NativeChildren {
     children: BTreeMap<String, Running>,
     accepted: BTreeMap<String, Accepted>,
     ready: Arc<Ready>,
+    progressed: BTreeSet<String>,
     _ownership: FileLock,
     _root: acyclic_fs::HeldRoot,
 }
@@ -223,6 +224,7 @@ impl NativeChildren {
             children: BTreeMap::new(),
             accepted: BTreeMap::new(),
             ready: Arc::default(),
+            progressed: BTreeSet::new(),
             _ownership: ownership,
             _root: root,
         };
@@ -399,7 +401,11 @@ impl NativeChildren {
         let claim = running.claim.operation;
         if let Err(error) = running
             .process
-            .spawn(&mut command, claim)
+            .spawn(
+                &mut command,
+                claim,
+                launch::selected_model(&self.host, &self.flags),
+            )
             .and_then(|()| running.process.queue_stdin(prompt))
         {
             running.failure = Some(error.to_string());
@@ -429,8 +435,13 @@ impl NativeChildren {
         self.pump_output(&mut [0; 8192])
     }
 
+    fn take_progress(&mut self) -> BTreeSet<String> {
+        std::mem::take(&mut self.progressed)
+    }
+
     /// Reuses one scratch page across the ready children and their exit drains.
     fn pump_output(&mut self, buffer: &mut [u8]) -> Result<()> {
+        self.progressed.clear();
         let mut ready = self.ready.take().into_iter();
         while let Some(reference) = ready.next() {
             let Some(mut running) = self.children.remove(&reference) else {
@@ -444,6 +455,7 @@ impl NativeChildren {
                 Ok(Some(mut settled)) => self.launch(&reference, &mut settled),
                 Ok(None) => {
                     if running.process.take_output_progress() {
+                        self.progressed.insert(reference.clone());
                         self.ready.push(&reference);
                     } else {
                         self.arm(&reference, &mut running);

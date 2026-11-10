@@ -17,6 +17,21 @@ fn is_switch(host: &str, name: &str) -> bool {
     )
 }
 
+/// The explicit model in an admitted policy. Option values never become names.
+pub(super) fn selected_model<'a>(host: &str, args: &'a [String]) -> Option<&'a str> {
+    let mut args = args.iter();
+    let mut model = None;
+    while let Some(name) = args.next() {
+        if !is_switch(host, name) {
+            let value = args.next()?;
+            if name == "--model" {
+                model = Some(value.as_str());
+            }
+        }
+    }
+    model
+}
+
 /// Decodes the root's serialized argument vector at the child-owner boundary.
 pub fn inherited_arguments(encoded: &str) -> Result<Vec<String>> {
     serde_json::from_str(encoded).map_err(storage)
@@ -102,7 +117,7 @@ pub fn validate(host: &str, args: &[String]) -> Result<()> {
         }
         if !allowed.contains(&name.as_str()) || arguments.next().is_none() {
             return Err(invalid(
-                "provide admitted native policy switches or --option VALUE pairs; prompts belong in the native host",
+                "provide admitted native policy switches or --option VALUE pairs; use host HOST --prompt TEXT -- POLICY_ARGS for a headless root",
             ));
         }
         for (option, count) in &mut required {
@@ -397,20 +412,58 @@ pub(super) fn child_input(host: &str, prompt: &str) -> Result<Vec<u8>> {
     Ok(input)
 }
 
+/// Root event mode uses the same policy and command construction as children.
+/// Prompts are native argument values, never inherited policy or options.
+pub(super) fn root_arguments(
+    host: &str,
+    args: &[String],
+    cwd: &Path,
+    prompt: Option<&str>,
+) -> Result<Vec<OsString>> {
+    let Some(prompt) = prompt else {
+        return policy_arguments(host, args, cwd);
+    };
+    let mut arguments = child_arguments(host, args, cwd, None)?;
+    match host {
+        "codex" => {
+            arguments.pop(); // Child stdin selector.
+            arguments.extend([OsString::from("--"), prompt.into()]);
+        }
+        "agy" => {
+            arguments.drain(..2); // Native --print supplies input instead of stream-JSON stdin.
+            arguments.push(format!("--print={prompt}").into());
+        }
+        _ => arguments.extend([OsString::from("--"), prompt.into()]),
+    }
+    Ok(arguments)
+}
+
+fn invocation(args: &[String]) -> Result<(&str, Option<&str>, &[String])> {
+    let (host, rest) = args
+        .split_first()
+        .ok_or_else(|| invalid("host requires codex, claude-code, pi, opencode or agy"))?;
+    let (prompt, flags) = match rest {
+        [option, prompt, separator, flags @ ..] if option == "--prompt" && separator == "--" => {
+            (Some(prompt.as_str()), flags)
+        }
+        [option, ..] if option == "--prompt" => {
+            return Err(invalid(
+                "headless root requires --prompt TEXT -- POLICY_ARGS",
+            ));
+        }
+        [separator, flags @ ..] if separator == "--" => (None, flags),
+        flags => (None, flags),
+    };
+    Ok((host, prompt, flags))
+}
+
 /// Runs `acyclic host HOST -- POLICY_ARGS`: the interactive native root under
 /// its validated policy, which every managed child inherits unchanged.
 pub fn launch(args: &[String]) -> Result<()> {
-    let host = args
-        .first()
-        .ok_or_else(|| invalid("host requires codex, claude-code, pi, opencode or agy"))?;
-    let flags = args.get(1..).unwrap_or_default();
-    let flags = match flags {
-        [separator, rest @ ..] if separator == "--" => rest,
-        _ => flags,
-    };
+    let (host, prompt, flags) = invocation(args)?;
     let cwd = std::env::current_dir().map_err(storage)?;
     let flags = parent_flags(host, flags, &cwd)?;
-    let status = run_root_session(&cwd, host, OsStr::new(program(host)?), &flags)?;
+    let status = run_root_session(&cwd, host, OsStr::new(program(host)?), &flags, prompt)?;
     if !status.success() {
         return Err(invalid(format!("native {host} exited {status}")));
     }

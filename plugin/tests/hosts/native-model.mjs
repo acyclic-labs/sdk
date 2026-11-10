@@ -246,8 +246,7 @@ export function nativePackage(binary,packageRoot) {
 
 // One installed host session under the caller's process scope: stage the
 // production package, install through the shipping CLI or the host's native
-// plugin directory, open the root through the workspace API, then run the
-// actual host once against the caller's admitted provider.
+// plugin directory, then launch a headless root with the shipping launcher.
 export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer,execute,packageStage}) {
  const {env,hosts}=await nativeHostEnvironment([host],fixture.env);
  const native=hosts[host];
@@ -302,7 +301,7 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   }
   const configuration={url:fixture.url,live:fixture.live,root,packageRoot,workspace,env,tools,nativePermissions,prompt,
    extension:fixture.live&&host==='pi'?join(root,'acyclic.ts'):undefined};
-  const {policy,args}=await launchNativeHost(host,configuration);
+  const {policy}=await launchNativeHost(host,configuration);
   step='start shipping workspace owner';
   // The harness approval chain the native permission hook asks: the case's
   // coordination tools only; exhausting it refuses every other one.
@@ -314,15 +313,17 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   step='initialize workspace Git';
   const initialized=await run(env.E2E_GIT_BINARY??'git',['init','--quiet']);
   assert.equal(initialized.code,0,initialized.stderr);
-  step='open native root through the workspace API';
-  const opened=await run(executable,['__workspace'],JSON.stringify({kind:'open',host,session:randomUUID()}));
-  assert.equal(opened.code,0,opened.stderr);
-  Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
   step='complete installed native session';
-  if(execute)return await execute({native,configuration,run});
+  if(execute) {
+   // Paired native controls own their raw/installed session scheduling.
+   const opened=await run(executable,['__workspace'],JSON.stringify({kind:'open',host,session:randomUUID()}));
+   assert.equal(opened.code,0,opened.stderr);
+   Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
+   return await execute({native,configuration,run});
+  }
   const nativeEnv=fixture.nativeCapability===undefined?env:
    {...env,ACYCLIC_E2E_MODEL_CAPABILITY:fixture.nativeCapability};
-  const completed=await run(native.program,[...native.args,...args],undefined,nativeEnv);
+  const completed=await run(executable,['host',host,'--prompt',prompt,'--',...policy],undefined,nativeEnv);
   assertNativeCompletion(host,completed,answer,host==='claude-code'
    ?{model:nativeModel(host,fixture.live),installed:true}:undefined);
  } catch(error) {

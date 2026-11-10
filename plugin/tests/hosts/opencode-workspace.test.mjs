@@ -79,7 +79,7 @@ test("installed native OpenCode records its original session through the shared 
           models: { tiny: { name: "tiny", limit: { context: 4096, output: 100 } } } } },
       }));
       step = "complete the native local turn with the installed extension";
-      const completed = await run(opencode, ["run", "--format", "json", "--model", "fixture/tiny", "Reply with a greeting."]);
+      const completed = await run(staged.executable, ["host", "opencode", "--prompt", "Reply with a greeting.", "--", "--model", "fixture/tiny"]);
       assert.equal(completed.code, 0, completed.stderr);
       const events = completed.stdout.trim().split("\n").map(line => JSON.parse(line));
       const terminal = events.findLast(event => event.type === "step_finish");
@@ -88,7 +88,8 @@ test("installed native OpenCode records its original session through the shared 
       assert.ok(requests.some(request => request.body.model === "tiny" &&
         JSON.stringify(request.body.messages).includes("Reply with a greeting.")), "original native provider request absent");
       step = "join the native session identity through the original shared writer";
-      const recorded = await request({ kind: "hook", host: "opencode", event: "NativeSession", input: { task } });
+      const rootTask = events.find(event => event.type === "acyclic.host_context").task;
+      const recorded = await request({ kind: "hook", host: "opencode", event: "NativeSession", input: { task: rootTask } });
       assert.equal(recorded.code, 0, "native OpenCode session was not recorded through shared workspace: " + recorded.stderr);
       assert.equal(JSON.parse(recorded.stdout).id, terminal.sessionID);
       step = "recover the installed admission after an actual workspace refusal";
@@ -134,8 +135,7 @@ test("installed native OpenCode records its original session through the shared 
       configured.provider.fixture.options.baseURL = `http://127.0.0.1:${port}/native/v1`;
       configured.permission = { edit: "allow", [tool("spawn")]: "allow", [tool("wait")]: "allow" };
       await writeFile(join(config, "opencode.json"), JSON.stringify(configured));
-      env.ACYCLIC_HOST_ARGS = JSON.stringify(["--model", "fixture/tiny"]);
-      const coordinated = await run(opencode, ["run", "--format", "json", "--model", "fixture/tiny", prompt]);
+      const coordinated = await run(staged.executable, ["host", "opencode", "--prompt", prompt, "--", "--model", "fixture/tiny"]);
       assert.equal(coordinated.code, 0, coordinated.stderr + coordinated.stdout);
       assert.ok(coordinated.stdout.includes(answer), "native parent omitted the completed child reply");
       const calls = (await readFile(record, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
