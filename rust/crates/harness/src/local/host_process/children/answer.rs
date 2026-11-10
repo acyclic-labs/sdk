@@ -1,7 +1,7 @@
 //! Completion from the native host's original turn terminal.
 use super::{Outcome, Value};
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod validation;
 
 /// Byte bound of a retained answer.
