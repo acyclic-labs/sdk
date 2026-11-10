@@ -1417,13 +1417,17 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
             return Err(Error::Invalid("spawn did not return its child".into()));
         };
         let history = settled(&harness, &child).await?;
-        let entry = ConversationEntry::decode(&history[0]).map_err(agent)?;
+        let state = agents.state(&child).await.map_err(agent)?;
+        let first = usize::try_from(state.conversation_base).map_err(agent)?;
+        let entry =
+            ConversationEntry::decode(history.get(first).expect("child's original brief turn"))
+                .map_err(agent)?;
+        assert!(matches!(&entry.input, TurnInput::Brief { .. }), "{entry:?}");
         assert_eq!(
             entry.outcome,
             crate::agent::TurnOutcome::Completed,
             "child {name} must complete its original model turn before archive: {entry:?}"
         );
-        let state = agents.state(&child).await.map_err(agent)?;
         let project = state
             .volumes
             .iter()
@@ -1442,9 +1446,9 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
             std::fs::read(path.join("kept.txt")).map_err(agent)?,
             b"inherited"
         );
-        children.push((child, path, history, state.volumes));
+        children.push((child, path, history, state.volumes, entry));
     }
-    let (child, path, history, bindings) = &children[0];
+    let (child, path, history, bindings, entry) = &children[0];
     agents
         .archive(
             child,
@@ -1465,7 +1469,6 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
         records(&**agents.provider(), child.conversation().map_err(agent)?).await?,
         *history
     );
-    let entry = ConversationEntry::decode(&history[0]).map_err(agent)?;
     let output = Conversation::read(
         &connection,
         child,
