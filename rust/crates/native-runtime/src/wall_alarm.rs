@@ -4,7 +4,7 @@
 //! once from that time misses a forward clock change. Every registration here
 //! shares one index and one thread, which waits on the platform's own
 //! wall-clock primitive: a `CLOCK_REALTIME` absolute timerfd that is cancelled
-//! on clock changes on Linux, a `NOTE_ABSOLUTE` kqueue timer plus the
+//! on clock changes on Linux, a kqueue timer plus the
 //! `com.apple.system.clock_set` notification on Apple platforms, and an
 //! absolute waitable timer, which follows system time changes, on Windows.
 //! Each wake re-reads the clock and fires every elapsed registration, so a
@@ -529,14 +529,23 @@ mod platform {
 
         pub(super) fn wait(&self, deadline: Option<u64>) -> io::Result<()> {
             match deadline {
-                // An absolute calendar timer; the clock-set notification
-                // covers a clock change made after it was armed.
+                // XNU converts calendar deadlines to u64 nanoseconds,
+                // which cannot represent every public u64 millisecond
+                // deadline. Keep the original deadline in the shared index
+                // and split only its native wait into representable chunks.
+                // Clock-set notifications wake this wait on wall changes;
+                // every wake recomputes the remaining original duration.
                 Some(deadline) => self.change(&[event(
                     TIMER,
                     libc::EVFILT_TIMER,
                     libc::EV_ADD | libc::EV_ONESHOT,
-                    libc::NOTE_ABSOLUTE | libc::NOTE_USECONDS,
-                    isize::try_from(deadline.saturating_mul(1000)).unwrap_or(isize::MAX),
+                    libc::NOTE_NSECONDS | libc::NOTE_MACH_CONTINUOUS_TIME,
+                    isize::try_from(
+                        deadline
+                            .saturating_sub(super::now_unix_ms())
+                            .saturating_mul(1_000_000),
+                    )
+                    .unwrap_or(isize::MAX),
                 )])?,
                 None => {
                     // Absent when it already fired or was never armed.
@@ -699,6 +708,16 @@ mod tests {
 
     #[test]
     fn signed_scope_expiry_wakes_a_quiet_owner_without_a_task_deadline() -> io::Result<()> {
+        #[cfg(target_vendor = "apple")]
+        {
+            // Exercise native arming even if cancellation wins the driver
+            // race. The queued user event makes the wait deterministic.
+            let waiter = platform::Waiter::new()?;
+            waiter.rearm()?;
+            waiter.wait(Some(u64::MAX))?;
+            waiter.rearm()?;
+            waiter.wait(Some(0))?;
+        }
         // Nothing else registers or changes after this alarm: only the
         // platform's wall-clock wait can deliver it.
         let (sender, received) = mpsc::channel();
