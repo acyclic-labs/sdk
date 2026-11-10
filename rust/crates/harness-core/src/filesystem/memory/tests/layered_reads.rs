@@ -432,6 +432,15 @@ async fn effective_reads_preserve_the_selected_layers_authority() -> Result<()> 
             "text.txt",
         )
         .await?;
+    let image = seed
+        .stage(
+            OperationId::new(),
+            "image.png",
+            include_bytes!("../../../../tests/fixtures/notebook-output.png"),
+            "image/png",
+            "image.png",
+        )
+        .await?;
     let reader = Arc::new(ReplaceAfterProbe {
         storage: home.clone(),
         replacement: b"replacement".to_vec(),
@@ -471,20 +480,28 @@ async fn effective_reads_preserve_the_selected_layers_authority() -> Result<()> 
         ]),
         task.scope().limits().clone(),
     )?);
-    let mut content_arguments = arguments.clone();
-    content_arguments["version"] = json!(
-        serde_json::to_string(&seed_file).map_err(|error| Error::Invalid(error.to_string()))?
-    );
-    match read(&denied_seed, content_arguments).await {
-        Err(error) => assert_eq!(
-            error.code(),
-            crate::wire::ErrorCode::Unauthorized,
-            "virtual path lost the original content token grant"
-        ),
-        Ok(_) => {
-            return Err(Error::Storage(
-                "virtual path bypassed the original content token grant".into(),
-            ));
+    for (file, selection) in [
+        (&seed_file, None),
+        (&image, Some(json!({"kind":"image","detail":"auto"}))),
+    ] {
+        let mut content_arguments = json!({
+            "path": format!("{}{}", crate::layers::EFFECTIVE_PATH, file.path()),
+            "version": serde_json::to_string(file).map_err(|error| Error::Invalid(error.to_string()))?,
+        });
+        if let Some(selection) = selection {
+            content_arguments["selection"] = selection;
+        }
+        match read(&denied_seed, content_arguments).await {
+            Err(error) => assert_eq!(
+                error.code(),
+                crate::wire::ErrorCode::Unauthorized,
+                "virtual path lost the original content token grant",
+            ),
+            Ok(_) => {
+                return Err(Error::Storage(
+                    "virtual path bypassed the original content token grant".into(),
+                ));
+            }
         }
     }
     assert_eq!(
