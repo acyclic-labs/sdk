@@ -22,14 +22,15 @@ wasm-no-default-features = true
 targets = [
     "x86_64-pc-windows-msvc",
     "x86_64-unknown-linux-gnu",
-    "aarch64-apple-darwin"]
+    "aarch64-apple-darwin",
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["native-javascript"] }
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["grpc"] }
 napi = { workspace = true, features = ["tokio_rt"] }
 napi-derive.workspace = true
 futures.workspace = true
@@ -43,7 +44,7 @@ tokio-util = { version = "=0.7.20", features = ["rt"] }
 napi-build = "2.6.0"
 
 [dev-dependencies]
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["grpc", "test-support"] }
 parking_lot.workspace = true
 proptest.workspace = true
 async-trait.workspace = true

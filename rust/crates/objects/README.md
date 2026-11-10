@@ -24,7 +24,7 @@ gRPC server. Every provider passes `conformance::verify`, including the
 cross-account probes. Persisted formats are v1.
 
 The real S3 capability group runs with
-`cargo test --locked -p acyclic-objects --lib s3::capability::`.
+`cargo test --locked -p acyclic-objects --features s3 --lib s3::capability::`.
 Provide a disposable bucket through `STORAGE_S3_BUCKET`, `STORAGE_S3_ENDPOINT`,
 `STORAGE_S3_REGION`, `STORAGE_S3_ACCESS_KEY` and `STORAGE_S3_SECRET_KEY`.
 Set `STORAGE_S3_ALLOW_HTTP=1` only for an HTTP endpoint. Missing required settings

@@ -55,7 +55,7 @@ fn final_owner_acquires_all_retirement_before_discarding_accounting() {
     });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 #[test]
 fn final_consumer_settles_original_read_credit_before_discarding_accounting() {
     use super::super::DemandWork;

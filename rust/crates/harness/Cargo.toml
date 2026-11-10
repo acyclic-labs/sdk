@@ -20,13 +20,16 @@ path = "tests/main.rs"
 [[test]]
 name = "native_receipt"
 path = "tests/native_receipt.rs"
+required-features = ["filesystem-local", "native-execution"]
 
 [[bin]]
 name = "acyclic-virtiofsd"
 path = "src/bin/virtiofsd.rs"
+required-features = ["filesystem-local", "native-execution"]
 
 [[example]]
 name = "native-process-approval"
+required-features = ["filesystem"]
 
 [[example]]
 name = "custom_executor"
@@ -34,27 +37,52 @@ required-features = ["test-support"]
 
 [[example]]
 name = "explicit-image-conversion"
+required-features = ["filesystem"]
+
 # Selections real consumers compile (Cloud's native root, harness-conformance,
 # the filesystem-napi N-API generator, and browser Wasm). Explicit targets keep
 # each selection on the platform that implements its contract.
 [package.metadata.acyclic]
-consumer-features = [{ features = ["browser"], target = "wasm32-unknown-unknown" }]
+consumer-features = [["filesystem"], ["filesystem-local", "test-support"], ["filesystem-local", "native-execution"], { features = ["browser"], target = "wasm32-unknown-unknown" }]
 
 [features]
 research = ["acyclic-harness-core/research"]
 provenance-export = ["metrics-export", "acyclic-harness-core/provenance-export"]
 metrics-export = ["acyclic-harness-core/metrics-export"]
-conformance = ["acyclic-fs/conformance", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "dep:ed25519-dalek"]
-test-support = ["acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
-model-checking = ["dep:loom", "dep:same-file", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
-browser = ["wasm", "acyclic-objects/javascript", "acyclic-fs/browser", "acyclic-harness-core/browser"]
+conformance = ["hosting", "oidc", "acyclic-fs/conformance", "dep:acyclic-objects", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/session", "acyclic-stream/test-support", "acyclic-harness-core/test-support", "dep:ed25519-dalek"]
+oidc = ["filesystem", "acyclic-harness-core/oidc"]
+oidc-http = ["oidc", "acyclic-harness-core/oidc-http"]
+tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui", "acyclic-harness-core/tui"]
+test-support = ["acyclic-auth/test-support", "acyclic-machines?/test-support", "acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
+model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
+browser = ["wasm", "hosting", "machines", "dep:acyclic-objects", "acyclic-objects/javascript", "acyclic-fs/browser", "acyclic-harness-core/browser"]
+hosting = ["filesystem", "acyclic-harness-client/agents"]
 wasm-journal = ["browser", "acyclic-stream/wasm-journal"]
-wasm = ["acyclic-stream/wasm", "acyclic-harness-client/wasm", "dep:serde-wasm-bindgen", "dep:tsify", "acyclic-harness-core/wasm"]
+# Native presentation only; this does not select providers or grant authority.
+terminal = ["dep:hex", "dep:ratatui"]
+wasm = ["acyclic-stream/wasm", "acyclic-harness-client/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "acyclic-harness-core/wasm"]
+# Provider adapters. Each pulls only its own SDK family.
+filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "acyclic-harness-core/filesystem", "acyclic-harness-search/filesystem"]
+filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-fs/session", "acyclic-stream/local", "acyclic-stream/session", "hosting", "dep:dirs", "dep:getrandom", "dep:tempfile", "acyclic-harness-core/filesystem-local"]
+# Explicit native host composition; portable defaults never select it.
+native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio", "dep:notify", "acyclic-harness-core/native-execution"]
+# Native lifecycle commands can also be embedded without filesystem mounts.
+hooks = ["dep:regex-lite", "dep:toml", "acyclic-harness-core/hooks"]
+# Optional native HTTP I/O. Browser hosts implement the same portable boundary.
+mcp-http = ["dep:reqwest", "dep:toml", "acyclic-harness-core/mcp-http"]
+mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml", "dep:which", "acyclic-harness-core/mcp-stdio"]
+search-http = ["dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio-rustls", "tokio/net", "tokio/io-util", "acyclic-harness-core/search-http", "acyclic-harness-search/search-http"]
+mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls", "acyclic-harness-core/mcp-oauth"]
+objects = ["dep:acyclic-objects", "acyclic-harness-core/objects"]
+machines = ["dep:acyclic-machines", "dep:acyclic-machines-daytona", "acyclic-harness-core/machines"]
+grpc = ["acyclic-stream/grpc", "acyclic-harness-client/grpc", "acyclic-harness-core/grpc"]
+# The local harness's agents served as a self-hosted gRPC endpoint.
+serve = ["grpc", "filesystem-local", "dep:tonic", "dep:rustls", "dep:tokio-rustls", "dep:x509-parser"]
 
 [dependencies]
 ed25519-dalek = { version = "3.0.0", optional = true }
 once_cell = "1.21.3"
-notify = { workspace = true }
+notify = { workspace = true, optional = true }
 pulldown-cmark.workspace = true
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
@@ -62,24 +90,25 @@ acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
-acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false }
+acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
+ratatui = { version = "=0.30.2", default-features = false, optional = true }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
-acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
-acyclic-machines-daytona = { version = "=0.2.0", path = "../machines-daytona" }
-acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, optional = true }
+acyclic-machines-daytona = { version = "=0.2.0", path = "../machines-daytona", optional = true }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 base64 = "=0.23.1"
 blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
-hex = { workspace = true }
+hex = { workspace = true, optional = true }
 http.workspace = true
 jsonschema.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
-regex-lite = { version = "0.1.9" }
-js-sys = { workspace = true }
+regex-lite = { version = "0.1.9", optional = true }
+js-sys = { workspace = true, optional = true }
 prost.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
 schemars = "=1.2.3"
@@ -89,38 +118,36 @@ serde-saphyr = { version = "=2.0.0", default-features = false, features = ["dese
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-toml = { workspace = true }
+toml = { workspace = true, optional = true }
 sse-stream.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
 uuid.workspace = true
 serde-wasm-bindgen = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }
-wasm-bindgen = { workspace = true }
-wasm-bindgen-futures = { workspace = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ratatui = { version = "=0.30.2", default-features = false }
-rmcp = { workspace = true, features = ["auth", "reqwest-tls-no-provider"] }
-acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
-dirs = { workspace = true }
-tempfile = { version = "3.27.0" }
-getrandom = { workspace = true }
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["grpc"], optional = true }
+dirs = { workspace = true, optional = true }
+tempfile = { version = "3.27.0", optional = true }
+getrandom = { workspace = true, optional = true }
 loom = { version = "=0.7.3", optional = true }
 same-file = { version = "1.0.6", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
-reqwest = { workspace = true }
-hyper = { version = "1.11.0", default-features = false, features = ["client", "http1"] }
-hyper-util = { workspace = true }
-http-body-util = { version = "0.1.3" }
-rustls = { workspace = true }
-rustls-platform-verifier = { workspace = true }
-tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"] }
-keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
-tonic = { workspace = true }
-x509-parser = { version = "0.18.1" }
-which = { version = "8.0.6" }
-tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "net", "process"] }
+reqwest = { workspace = true, optional = true }
+hyper = { version = "1.11.0", default-features = false, features = ["client", "http1"], optional = true }
+hyper-util = { workspace = true, optional = true }
+http-body-util = { version = "0.1.3", optional = true }
+rustls = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true, optional = true }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"], optional = true }
+keyring = { version = "3.6.3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+tonic = { workspace = true, optional = true }
+x509-parser = { version = "0.18.1", optional = true }
+which = { version = "8.0.6", optional = true }
+tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "net"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { workspace = true, features = ["fs"] }
@@ -137,8 +164,8 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 which = "8.0.6"
-acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
-acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support", "native-execution"] }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["local", "native-mount", "test-support"] }
 tokio-util = { workspace = true, features = ["rt"] }
 rcgen = "0.14.10"
 tonic.workspace = true
@@ -147,15 +174,15 @@ serde-saphyr = { version = "=2.0.0", default-features = false, features = ["seri
 shuttle = "=0.9.8"
 tracing-subscriber.workspace = true
 loom = "0.7.3"
-acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local", "test-support"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 tempfile = "3.27.0"
-tokio = { workspace = true, features = ["test-util", "process", "io-util", "net"] }
+tokio = { workspace = true, features = ["test-util", "process"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
-acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["test-support", "conformance"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc", "test-support", "conformance"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["javascript"] }
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["javascript"], optional = true }
 # Rust SDK execution uses the real browser event loop even without exports.
 js-sys.workspace = true
 wasm-bindgen.workspace = true

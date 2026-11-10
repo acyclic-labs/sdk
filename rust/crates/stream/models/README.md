@@ -61,7 +61,7 @@ removing the production delay. The kept source mutation exercises that boundary:
 
 ```sh
 git apply rust/crates/stream/models/mutations/initial_retry_delay.patch
-RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features model-checking --test main client_pool_loom::initial_eof_retry_yields_to_deadline_and_cancellation -- --exact --nocapture
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::initial_eof_retry_yields_to_deadline_and_cancellation -- --exact --nocapture
 git apply --reverse rust/crates/stream/models/mutations/initial_retry_delay.patch
 ```
 
@@ -82,7 +82,7 @@ This component check does not qualify credential rotation or transport lifecycle
 The unchanged matrix command must then fail at `source admission differs`:
 
 ```sh
-cargo test --locked -p acyclic-stream --no-default-features --lib session::sources::tests::every_local_and_global_credit_combination_matches_the_admission_contract -- --exact --nocapture
+cargo test --locked -p acyclic-stream --no-default-features --features session --lib session::sources::tests::every_local_and_global_credit_combination_matches_the_admission_contract -- --exact --nocapture
 ```
 
 Restore the patch before using that command as the positive control. The former
@@ -98,7 +98,7 @@ the unchanged positive oracle:
 
 ```sh
 git apply rust/crates/stream/models/mutations/replay_durability_requirement.patch
-RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features model-checking --test main local_replay_model::replay_and_flush_preserve_durability -- --exact --nocapture
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features local,model-checking --test main local_replay_model::replay_and_flush_preserve_durability -- --exact --nocapture
 git apply --reverse rust/crates/stream/models/mutations/replay_durability_requirement.patch
 ```
 
@@ -116,7 +116,7 @@ shipping generation check without changing the model or its positive oracle:
 
 ```sh
 git apply rust/crates/stream/models/mutations/progress_generation_fence.patch
-RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features model-checking --test main client_pool_loom::latest_consumption_and_move_fence_share_one_application_cut -- --exact --nocapture
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::latest_consumption_and_move_fence_share_one_application_cut -- --exact --nocapture
 git apply --reverse rust/crates/stream/models/mutations/progress_generation_fence.patch
 ```
 
@@ -136,7 +136,7 @@ removes the acquire from the shipping hint reset without changing the model:
 
 ```sh
 git apply rust/crates/stream/models/mutations/source_wake_acquire.patch
-RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features model-checking --test main client_pool_loom::source_deduplication_survives_pending_rechecks_during_drain -- --exact --nocapture
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::source_deduplication_survives_pending_rechecks_during_drain -- --exact --nocapture
 git apply --reverse rust/crates/stream/models/mutations/source_wake_acquire.patch
 ```
 
@@ -234,7 +234,7 @@ retained while its actual route delivers a record and admits another open.
 
 ```sh
 git apply rust/crates/stream/models/mutations/response_read_cancellation.patch
-RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features model-checking --test main client_pool_loom::malformed_node_cannot_terminate_independent_routes_or_opens -- --exact --nocapture
+RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream --no-default-features --features grpc,model-checking --test main client_pool_loom::malformed_node_cannot_terminate_independent_routes_or_opens -- --exact --nocapture
 git apply --reverse rust/crates/stream/models/mutations/response_read_cancellation.patch
 ```
 

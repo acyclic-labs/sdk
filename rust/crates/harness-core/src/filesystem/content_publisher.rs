@@ -516,7 +516,11 @@ fn upload_key(
     })?)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemContentPublisher<A, O>
 {

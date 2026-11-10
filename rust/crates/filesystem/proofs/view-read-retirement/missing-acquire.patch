@@ -7,6 +7,6 @@
 -        if owners == 1 {
 -            fence(Ordering::Acquire);
 -        }
-         #[cfg(not(target_arch = "wasm32"))]
+         #[cfg(feature = "native-mount")]
          {
              let (completed, unused, failed) = shared.take_view_reads();

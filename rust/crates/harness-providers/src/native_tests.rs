@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
+use acyclic_harness_core::NativeFutureBundle;
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[path = "native_stock_tests.rs"]
 pub(crate) mod stock;
@@ -41,9 +42,7 @@ impl HttpTransport for Fixture {
         &self,
         _: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<
-        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-    > {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(std::time::Duration::MAX, work)
     }
     /// The agent host's ordinary dispatch, for fixtures that answer at once.
@@ -78,8 +77,8 @@ impl HttpTransport for Fixture {
         &'a self,
         request: HttpRequest,
         work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+    ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
+        NativeFutureBundle::new(work, || async move {
             if let Some(response) = fixture_count(&request) {
                 return HttpResponse::with_native_body(response.status, response.body, work);
             }

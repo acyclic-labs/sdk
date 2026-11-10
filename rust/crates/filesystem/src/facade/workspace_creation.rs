@@ -130,7 +130,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     id: id.volume_id(),
                     config,
                 },
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 source: None,
                 access: None,
             };
@@ -219,7 +219,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     id: id.volume_id(),
                     config,
                 },
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 source: None,
                 access: None,
             };
@@ -268,7 +268,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 name,
                 id,
                 volume,
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 source: None,
                 access: None,
             })
@@ -304,7 +304,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     name,
                     id,
                     volume,
-                    #[cfg(not(target_arch = "wasm32"))]
+                    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                     source: None,
                     access: None,
                 })

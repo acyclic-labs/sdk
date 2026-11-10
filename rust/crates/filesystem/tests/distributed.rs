@@ -1,4 +1,5 @@
 //! Black-box conformance for canonical distributed adapters over public memory providers.
+#![cfg(feature = "distributed")]
 
 #[macro_use]
 #[path = "support/unbounded.rs"]

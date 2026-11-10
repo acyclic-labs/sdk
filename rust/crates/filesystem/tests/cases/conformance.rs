@@ -9,7 +9,7 @@ async fn memory() -> Result<impl Backend, Failure> {
 }
 suite!(public_memory_suite, memory);
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 mod local {
     use super::*;
     use acyclic_objects::{LocalMedium, LocalObjects, Store};

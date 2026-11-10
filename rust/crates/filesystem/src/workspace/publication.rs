@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "memory"))]
 mod tests;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {

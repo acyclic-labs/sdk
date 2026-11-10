@@ -356,5 +356,6 @@ pub enum TreeMutationError {
 }
 
 #[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/tree_mutation.rs"]
 mod tests;

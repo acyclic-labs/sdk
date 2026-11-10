@@ -33,6 +33,7 @@ proptest! {
     }
 }
 
+#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn unreadable_dispatch_history_preserves_its_failure() -> Result<()> {
     let journal = Journal::default();

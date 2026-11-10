@@ -92,7 +92,7 @@ fn walk_host_tree<E: From<CaptureError>>(
             };
             let recurse = stat.file_type() == crate::demand::SourceNodeKind::Directory;
             let move_leaf = !recurse;
-            #[cfg(test)]
+            #[cfg(all(test, feature = "memory"))]
             let move_leaf = move_leaf && !super::leaf_path_tests::clone_leaves();
             if move_leaf {
                 meter.clone().check().map_err(capture_demand_error)?;

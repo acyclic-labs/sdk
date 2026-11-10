@@ -7,10 +7,10 @@ use std::mem::size_of;
 // archive, index_buffer) and the indexes vector to ConversationState. Keep the
 // record bounds independent of this feature's inline custody, and bound the
 // allocation ticket separately so its growth cannot hide behind this formula.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 const CONVERSATION_CUSTODY_BYTES: usize = 4 * size_of::<Option<acyclic_fs::NativeAllocation>>()
     + size_of::<Vec<acyclic_fs::NativeAllocation>>();
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 const CONVERSATION_CUSTODY_BYTES: usize = 0;
 
 macro_rules! ceiling {
@@ -44,7 +44,7 @@ ceiling!(
     ConversationState,
     424 + CONVERSATION_CUSTODY_BYTES
 );
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 ceiling!(
     native_conversation_allocation_ticket,
     Option<acyclic_fs::NativeAllocation>,

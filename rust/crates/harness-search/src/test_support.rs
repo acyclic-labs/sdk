@@ -52,25 +52,19 @@ impl ScriptedSearchProvider {
 }
 
 impl SearchProvider for ScriptedSearchProvider {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_search(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;
         Ok(true)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn search_with_native_work<'a>(
         &'a self,
         request: &'a SearchRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (SearchResponse, acyclic_fs::NativeAllocation),
-            crate::Error,
-        >,
-    > {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+    ) -> Result<crate::NativeFutureBundle<'a, (SearchResponse, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
             request.validate_with_work(Some(work))?;
             let mut steps = self.steps.lock().unwrap_or_else(|p| p.into_inner());
             let step = steps

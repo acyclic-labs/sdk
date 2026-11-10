@@ -29,7 +29,11 @@ fn exchange(file: &FileRef, range: Option<(u64, u64)>) -> [ModelMessage; 2] {
         },
     ]
 }
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 fn fixture(reads: usize) -> Vec<ModelMessage> {
     let source = file("AGENTS.md", "rules", "rules");
     let mut messages = vec![project_instruction(&source.clone().into(), None).unwrap()];
@@ -81,7 +85,11 @@ fn reused_ids_consume_pending_calls_in_both_orders_and_partial_reads() {
     }
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(8))]
     #[test]

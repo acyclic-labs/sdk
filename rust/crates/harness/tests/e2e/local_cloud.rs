@@ -1,5 +1,6 @@
 //! Shared positive contracts over in-process Streams and SDK TLS localhost.
 //! Both paths require the same executor outcomes.
+#[cfg(feature = "objects")]
 #[path = "substrate_matrix.rs"]
 mod substrate_matrix;
 use super::{

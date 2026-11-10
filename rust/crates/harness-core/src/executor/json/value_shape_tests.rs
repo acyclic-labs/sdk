@@ -1,4 +1,4 @@
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 
 use super::*;
 #[test]

@@ -365,7 +365,7 @@ async fn memory_prepared_commit_rejects_a_forged_change_index_before_publication
     prepared_ingress(&MemoryStream::default()).await;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn local_prepared_commit_rejects_a_forged_change_index_before_publication() {
     let directory = tempfile::tempdir().unwrap();
@@ -475,7 +475,7 @@ async fn memory_projects_both_history_and_live_checked_follows() {
     qualify(&MemoryStream::default()).await;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_projects_both_history_and_live_checked_follows() {
     let directory = tempfile::tempdir().unwrap();

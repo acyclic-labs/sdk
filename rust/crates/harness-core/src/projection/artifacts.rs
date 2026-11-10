@@ -10,7 +10,10 @@ pub(crate) async fn read_tool_call(
     io: Option<&PreparationIo>,
 ) -> Result<ToolCall> {
     let (mut value, hold) = read_value(resolver, file, maximum, io).await?;
+    #[cfg(feature = "filesystem")]
     let source_hold = hold;
+    #[cfg(not(feature = "filesystem"))]
+    let _ = hold;
     crate::model::charge_items(io, 5)?;
     let object = value
         .as_object_mut()
@@ -41,6 +44,7 @@ pub(crate) async fn read_tool_call(
     let arguments = object
         .remove("arguments")
         .ok_or_else(|| stock_boundary(io, Invalid, "tool invocation lacks its arguments"))?;
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let strings = (call_id.capacity() as u64)
             .checked_add(name.capacity() as u64)
@@ -78,6 +82,7 @@ pub(super) async fn read_reasoning(
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::ReasoningBlock> {
     let (value, hold) = read_value(resolver, file, maximum, io).await?;
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let (event, hold) = convert::<crate::model::ModelEvent>(
             (
@@ -122,6 +127,7 @@ pub(super) async fn read_result(
     io: Option<&PreparationIo>,
 ) -> Result<ToolResultContent> {
     let (value, hold) = read_value(resolver, file, maximum, io).await?;
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let (result, hold) = convert(
             (
@@ -151,6 +157,7 @@ pub(crate) async fn read_value<'a>(
     maximum: u64,
     io: Option<&'a PreparationIo>,
 ) -> Result<(Value, Option<ContentHold<'a>>)> {
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.check_cancellation()?;
     }
@@ -163,8 +170,10 @@ pub(crate) async fn read_value<'a>(
             "tool artifact type or rendering limit is invalid",
         ));
     }
+    #[cfg(feature = "filesystem")]
     let _bytes_hold;
     let bytes = resolver.read(file, maximum, None, io)?.await?;
+    #[cfg(feature = "filesystem")]
     {
         _bytes_hold = match io {
             Some(io) if io.original_native_work().is_none() => bytes
@@ -182,6 +191,7 @@ pub(crate) async fn read_value<'a>(
         ));
     }
     with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let (value, hold) = io.decode(std::marker::PhantomData::<Value>, &bytes, Invalid)?;
         with_history_io(Some(io), |work| {
@@ -196,6 +206,7 @@ pub(crate) async fn read_value<'a>(
 }
 
 /// The conversion's typed layout cost, its serde diagnostics and the record.
+#[cfg(feature = "filesystem")]
 fn conversion_allowance<T: crate::filesystem::UploadRecord>(
     shape: crate::executor::json::JsonValueShape,
     layout: crate::executor::json::LayoutCost,
@@ -220,6 +231,7 @@ fn conversion_allowance<T: crate::filesystem::UploadRecord>(
         })
 }
 
+#[cfg(feature = "filesystem")]
 fn convert<'a, T: crate::filesystem::UploadRecord>(
     source: (Value, crate::filesystem::DecodeReservation<'a>),
     maximum_bytes: u64,

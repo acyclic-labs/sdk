@@ -1,20 +1,20 @@
 use super::{ExaResponse, TinyFishResponse};
 use crate::tool::edit::{allocation, charge, reserve_string, reserve_vec};
-use crate::{Result, SearchResponse, SearchResult, error};
+use crate::{NativeCustody, NativeWork, Result, SearchResponse, SearchResult, error};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::filesystem::UploadRecord as Record;
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 use serde::de::DeserializeOwned as Record;
 
 fn decode<T: Record + crate::HeapLayout>(
     bytes: &[u8],
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(T, acyclic_fs::NativeCustody)> {
+    work: NativeWork<'_>,
+) -> Result<(T, NativeCustody)> {
     if bytes.len() > super::MAXIMUM_RESPONSE_BYTES {
         return Err(crate::rejection(work, "search response exceeds byte limit"));
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         let decoded: T = io.decode_json(bytes).map_err(|failure| match failure {
@@ -45,13 +45,9 @@ fn decode<T: Record + crate::HeapLayout>(
 }
 
 fn finish(
-    mut paid: (
-        SearchResponse,
-        acyclic_fs::NativeCustody,
-        acyclic_fs::NativeCustody,
-    ),
-) -> Result<(SearchResponse, acyclic_fs::NativeCustody)> {
-    #[cfg(not(target_arch = "wasm32"))]
+    mut paid: (SearchResponse, NativeCustody, NativeCustody),
+) -> Result<(SearchResponse, NativeCustody)> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let (Some(output), Some(input)) = (&mut paid.1, &mut paid.2) {
         // Raw DTO containers and unused sources have dropped. Moved strings
         // retain their existing ledger; only the final output capacity remains.
@@ -65,16 +61,16 @@ fn finish(
 pub(super) fn exa(
     bytes: &[u8],
     maximum: u32,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(SearchResponse, acyclic_fs::NativeCustody)> {
+    work: NativeWork<'_>,
+) -> Result<(SearchResponse, NativeCustody)> {
     normalize_exa(decode::<ExaResponse>(bytes, work)?, maximum, work)
 }
 
 fn normalize_exa(
-    raw: (ExaResponse, acyclic_fs::NativeCustody),
+    raw: (ExaResponse, NativeCustody),
     maximum: u32,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(SearchResponse, acyclic_fs::NativeCustody)> {
+    work: NativeWork<'_>,
+) -> Result<(SearchResponse, NativeCustody)> {
     let mut held = allocation(work, std::mem::size_of::<SearchResponse>())?;
     let mut results = Vec::new();
     reserve_vec(
@@ -117,14 +113,14 @@ fn normalize_exa(
 }
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod tests;
 
 pub(super) fn tinyfish(
     bytes: &[u8],
     maximum: u32,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(SearchResponse, acyclic_fs::NativeCustody)> {
+    work: NativeWork<'_>,
+) -> Result<(SearchResponse, NativeCustody)> {
     let raw = decode::<TinyFishResponse>(bytes, work)?;
     let mut held = allocation(work, std::mem::size_of::<SearchResponse>())?;
     let mut results = Vec::new();
@@ -144,7 +140,7 @@ pub(super) fn tinyfish(
     finish((SearchResponse { results }, held, raw.1))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl Record for ExaResponse {
     fn diagnostic_label_bytes() -> u64 {
         crate::native::labels()
@@ -170,7 +166,7 @@ impl Record for ExaResponse {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl Record for TinyFishResponse {
     fn diagnostic_label_bytes() -> u64 {
         crate::native::labels()
@@ -188,7 +184,7 @@ impl Record for TinyFishResponse {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn overflow() -> crate::Error {
     crate::Error::NativeBoundary {
         code: crate::wire::ErrorCode::Invalid,

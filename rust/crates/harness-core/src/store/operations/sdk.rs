@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_stream::StreamProviderExt as _;
+#[cfg(feature = "filesystem")]
 use futures::Stream as _;
 use futures::TryStreamExt as _;
 
@@ -7,7 +8,7 @@ pub(crate) fn stream_error_with_work(
     source: StreamError,
     work: &Option<&mut dyn HistoryIo>,
 ) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.as_deref().is_some_and(original_native_decode_mode) {
         let code = if matches!(&source, StreamError::IdempotencyMismatch) {
             crate::wire::ErrorCode::Conflict
@@ -36,7 +37,7 @@ pub(crate) fn sdk_record_retained_bytes(record: &Record, work: &Option<&mut dyn 
 /// The original finite producer; the native cursor guard follows its box.
 pub(crate) enum ObservedRecords {
     Ordinary(RecordStream),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     Native(NativeStreamOutput<NativeRecordStream>),
 }
 
@@ -44,7 +45,7 @@ pub(crate) enum ObservedRecords {
 #[derive(Debug)]
 pub(crate) struct ObservedRecord {
     record: Record,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 
@@ -55,7 +56,7 @@ impl std::ops::Deref for ObservedRecord {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn original_sdk_metadata_output<T>(
     original: &acyclic_fs::NativeMaterializationWork,
     output: NativeStreamOutput<T>,
@@ -70,10 +71,11 @@ pub(super) fn original_sdk_metadata_output<T>(
 }
 
 impl ObservedRecords {
+    #[cfg(feature = "filesystem")]
     pub(crate) fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Ordinary(records) => records.size_hint(),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Native(records) => records.value().size_hint(),
         }
     }
@@ -95,11 +97,11 @@ impl ObservedRecords {
                 }
                 Ok(record.map(|record| ObservedRecord {
                     record,
-                    #[cfg(not(target_arch = "wasm32"))]
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     _allocation: None,
                 }))
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Native(records) => {
                 let observer = work.as_deref_mut().ok_or(Error::NativeBoundary {
                     code: Storage,
@@ -147,7 +149,7 @@ pub(crate) async fn read_records<P: crate::store::JournalProvider + ?Sized>(
         limit: count,
         at_least: Default::default(),
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
         let result = client.native_read(request, original.runtime_meter()).await;
         return match crate::distributed::native_call_result(original, result)? {
@@ -169,7 +171,7 @@ async fn tail_result_with_work<P: crate::store::JournalProvider + ?Sized>(
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::result::Result<u64, StreamError>> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work
         .as_deref()
         .and_then(|observer| observer.original_native_work())

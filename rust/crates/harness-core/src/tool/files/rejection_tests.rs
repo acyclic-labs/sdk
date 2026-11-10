@@ -65,7 +65,7 @@ proptest! {
         let limits = super::patch::PatchLimits { maximum_bytes: 256, maximum_work: 4096, maximum_hunks: 8 };
         let options = super::text::SearchOptions { maximum_input_bytes:256, maximum_query_bytes:8, maximum_work:4096, maximum_matches:8 };
         for kind in 0..3 {
-            let execute = |custody: &mut acyclic_fs::NativeCustody| -> Result<()> {
+            let execute = |custody: &mut crate::NativeCustody| -> Result<()> {
                 match kind {
                     0 => super::edit::replace(&source, &needle, "x", false, 256, custody).map(|_| ()),
                     1 => super::patch::apply_update(&source, &diff, limits, custody).map(|_| ()),

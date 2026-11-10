@@ -19,13 +19,20 @@ use async_trait::async_trait;
 use std::future::Future;
 use thiserror::Error;
 
+#[cfg(any(
+    test,
+    feature = "conformance",
+    feature = "http",
+    feature = "test-support",
+    feature = "model-checking"
+))]
 pub mod conformance;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod filtered_follow_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod follow_tests;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -34,7 +41,7 @@ pub mod http_response;
 pub mod pages;
 mod pending;
 pub mod persistence;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
 pub mod postgres;
 pub mod preparation;
 #[cfg(not(target_arch = "wasm32"))]
@@ -44,13 +51,20 @@ pub mod pull;
 pub mod request;
 pub mod runtime;
 #[cfg(any(
-    not(target_arch = "wasm32"),
+    all(feature = "session", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub mod session;
+#[cfg(any(
+    test,
+    feature = "conformance",
+    feature = "http",
+    feature = "test-support",
+    feature = "model-checking"
+))]
 pub mod testing;
 // The WASM adapter consumes this module on browser builds; native builds keep
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -62,24 +76,43 @@ pub use journal_provider::{JournalStream, JournalStreamLimits};
 #[cfg(any(all(feature = "wasm", target_arch = "wasm32"), loom))]
 mod change;
 #[cfg(any(
-    not(target_arch = "wasm32"),
+    all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 mod http_codec;
 mod http_validation;
 mod interest;
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 mod journal;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 mod local;
 mod memory;
 mod operation_claim;
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 mod replicated;
 pub use operation_claim::{
     OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
 };
 mod follow_filter;
 mod follow_index;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "grpc", feature = "http", feature = "local")
+))]
 mod obs;
 #[doc(hidden)]
 pub mod query_sync;
@@ -99,22 +132,22 @@ pub use wasm::{
     WasmFollow, WasmProviderRequest, WasmSessionAuthority, WasmStream, serve_wasm_grpc_session,
     serve_wasm_session,
 };
-#[cfg(any(feature = "test-support", all(test, not(target_arch = "wasm32"))))]
+#[cfg(any(feature = "test-support", all(test, feature = "local")))]
 #[doc(hidden)]
 pub mod codec_fuzz;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
-#[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, feature = "local"))]
 #[path = "memory/recovery_model.rs"]
 /// Bounded schedule verification of production query concurrency paths.
 pub mod verification;
-#[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, feature = "local"))]
 #[doc(hidden)]
 pub use local::replay_model::{
     negative_control_acknowledges_an_unflushed_original, replay_and_flush_preserve_durability,
 };
-#[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, feature = "local"))]
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
 
@@ -139,9 +172,9 @@ pub mod wire {
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-stream-v1.bin"));
-#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
+#[cfg(all(feature = "local", feature = "test-support"))]
 pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamFailure, LocalStreamLimits,
     deferring_durability, deferring_provider_durability, requiring_durability,
@@ -235,12 +268,16 @@ pub use native::{
     PreparedNativeCommit,
 };
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod test_latency;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod test_meter;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "grpc", feature = "local")
+))]
 mod test_trace;
 
 #[cfg(test)]

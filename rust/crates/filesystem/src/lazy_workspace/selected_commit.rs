@@ -95,7 +95,7 @@ impl<
         record.retire(ctx)?;
         result
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) async fn finish_selected_import(
         &self,
         operation: crate::OperationId,

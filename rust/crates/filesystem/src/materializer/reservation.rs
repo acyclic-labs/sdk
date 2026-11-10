@@ -1,6 +1,6 @@
 use super::*;
 use crate::{DemandError, WorkCounters};
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "native-watch"))]
 use std::sync::Arc;
 
 /// Completion work withheld from its original SDK ledger.
@@ -145,7 +145,7 @@ impl NativeWorkReservation {
             }
         }
     }
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn started_drop_io(&self, actual: WorkCounters) {
         self.begin_drop(&mut self.state.lock(), actual);
     }
@@ -187,7 +187,7 @@ impl NativeWorkReservation {
         self.finish(&mut state, actual, actual)?;
         Ok(result)
     }
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn partition_work(
         &self,
         maximum: WorkCounters,
@@ -202,7 +202,7 @@ impl NativeWorkReservation {
         state.remaining = maximum.remaining(state.remaining)?;
         Ok(Self::new(self.meter.clone(), maximum))
     }
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn absorb(
         &mut self,
         other: &mut Self,
@@ -223,7 +223,7 @@ impl NativeWorkReservation {
     }
     /// Funds another attempt at this accepted cleanup from its original finite
     /// ledger. Cancellation cannot revoke cleanup, and no new ledger is made.
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn refill_cleanup(
         &mut self,
         maximum: WorkCounters,
@@ -252,7 +252,7 @@ impl NativeWorkReservation {
                 .map_err(|_| NativeTreeMaterializationError::Cancelled)
         })
     }
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn started_io(
         &self,
         actual: WorkCounters,
@@ -265,7 +265,7 @@ impl NativeWorkReservation {
                 error => NativeTreeMaterializationError::from(error),
             })
     }
-    #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
+    #[cfg(all(feature = "native-mount", target_os = "macos"))]
     pub(crate) fn into_runtime_credit(
         mut self,
     ) -> Result<Arc<Self>, NativeTreeMaterializationError> {

@@ -8,7 +8,7 @@ the staging generation produced by `JoinPreview::directory` and
 `ef1d2a58e493b32ed9a5920d5c0cb2f54731c90f`, Linux x86_64, 2026-11-07:
 
 ```sh
-cargo run --locked -p acyclic-fs --no-default-features --example capture_merge_directory
+cargo run --locked -p acyclic-fs --no-default-features --features local --example capture_merge_directory
 ```
 
 The example uses `Fs::local` and durable local storage, forks a child and a
@@ -86,7 +86,7 @@ Restart, upgrades and remote serving remain outside this capture.
 Capture command:
 
 ```sh
-cargo test --locked -p acyclic-fs --no-default-features --lib volume_changes_subtree -- --nocapture
+cargo test --locked -p acyclic-fs --no-default-features --features memory,session --lib volume_changes_subtree -- --nocapture
 ```
 
 The source uses `Fs`, `StreamAuthorityStore`, `MemoryStream` and `MemoryObjectStore`, publishes through the ordinary workspace API, and checks three actual filesystem forks, replay, resume and policy revocation. Authorization is supplied through the test credential helper. This is a library producer capture, not a served network frame or a deployed credential fixture. The seed retains the complete generation and entry references exactly as emitted; no identities or metadata were substituted.

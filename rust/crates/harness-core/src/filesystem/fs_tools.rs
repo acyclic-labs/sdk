@@ -293,7 +293,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
-        work: acyclic_fs::NativeWork<'a>,
+        work: crate::NativeWork<'a>,
     ) -> Option<BoxProviderFuture<'a, Result<()>>> {
         Some(Box::pin(async move {
             #[cfg(not(target_arch = "wasm32"))]
@@ -351,7 +351,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
         _: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
         if work.is_some() {
             return Err(Error::Unsupported(

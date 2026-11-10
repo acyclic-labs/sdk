@@ -1,17 +1,17 @@
 use super::*;
 
 // The pool fixtures and searches drive the native gRPC transport.
-#[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, loom), feature = "grpc", not(target_arch = "wasm32")))]
 pub(super) mod fixture;
-#[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub(super) mod model;
 #[cfg(test)]
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), feature = "grpc", not(target_arch = "wasm32")))]
 mod ordering;
-#[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub(super) mod retry_model;
 #[cfg(test)]
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), feature = "grpc", not(target_arch = "wasm32")))]
 mod route_searches;
 
 // Only the original dispatcher produces handshakes. Client and observation
@@ -941,5 +941,5 @@ pub(super) fn poll_dials(
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), feature = "grpc", not(target_arch = "wasm32")))]
 mod filtered_credit_tests;

@@ -18,6 +18,7 @@ impl AuthorityVerifier {
         self.public.trust.clone()
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn bind_checkpoint_stop(&mut self, stop: &acyclic_actors::guest::CancellationToken) {
         if let runtime_signing::AdmissionPort::Platform(_, _, checkpoint_stop) = &mut self.admission
         {
@@ -74,11 +75,12 @@ impl VerifiedScope {
         &self.scope
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) const fn verifier(&self) -> &AuthorityVerifier {
         &self.verifier
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn copy_verifier(
         &self,
         work: &mut Option<&mut dyn HistoryIo>,
@@ -164,7 +166,7 @@ impl AuthorityVerifier {
             .ok_or_else(|| Error::Invalid("verifier owned byte count overflows".into()))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     pub(crate) fn admit_native_descendant(
         &self,
         parent: &Scope,
@@ -322,6 +324,7 @@ impl AuthorityVerifier {
         }
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn execution_checkpoint_proof(
         &self,
         digest: [u8; 32],
@@ -330,6 +333,7 @@ impl AuthorityVerifier {
         self.checkpoint_proof(CheckpointKind::Execution, digest, work)
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn verify_execution_checkpoint(
         &self,
         digest: [u8; 32],
@@ -366,6 +370,7 @@ impl AuthorityVerifier {
         )
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn model_request_proof(
         &self,
         digest: [u8; 32],
@@ -374,6 +379,7 @@ impl AuthorityVerifier {
         self.checkpoint_proof(CheckpointKind::ModelRequest, digest, work)
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn authenticates_model_request(
         &self,
         digest: [u8; 32],

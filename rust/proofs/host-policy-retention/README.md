@@ -11,7 +11,7 @@ On Linux with Landlock and native FUSE mounting, build the control first:
 
 ```sh
 cargo test --locked -p acyclic-harness \
-  --lib \
+  --lib --features filesystem-local,native-execution \
   --no-run --message-format=json
 ```
 

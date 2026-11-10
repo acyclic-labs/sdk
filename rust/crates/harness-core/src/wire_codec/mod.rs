@@ -1,5 +1,6 @@
 //! Canonical protocol, authority and error wire conversions.
-
+#[cfg(feature = "filesystem")]
+use crate::NativeCustody;
 use crate::{
     AgentId, Capabilities, Error, Result,
     core::{AggregateKind, Authority, Scope},
@@ -24,7 +25,7 @@ pub use authority::decode_aggregate_kind;
 pub use authority::encode_authority;
 pub(crate) use authority::{decode_authority, decode_scope};
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod admission_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

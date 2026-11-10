@@ -27,10 +27,15 @@ test-support = [
     "acyclic-actors/test-support",
     "acyclic-auth/test-support",
     "acyclic-native-runtime/test-support",
-    "acyclic-stream/test-support"]
+    "acyclic-stream/test-support",
+]
+default = ["grpc"]
+
 http-codec = ["dep:acyclic-protobuf-json", "dep:prost-reflect"]
 
-javascript = ["dep:js-sys", "dep:wasm-bindgen-futures"]
+local = ["dep:rustix", "tokio/time", "tokio/macros"]
+grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros"]
+javascript = ["grpc", "dep:js-sys", "dep:wasm-bindgen-futures"]
 
 [dependencies]
 acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json", optional = true }
@@ -47,9 +52,9 @@ sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1.48.0", default-features = false, features = ["sync", "time", "macros"] }
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
-tonic-prost = { workspace = true }
+tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen"], optional = true }
+tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
@@ -58,14 +63,14 @@ acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = fa
 proptest.workspace = true
 rcgen = "0.14.10"
 tokio-stream.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-hyper-util = { workspace = true }
-rustix = { workspace = true, features = ["fs"] }
-tower = { workspace = true }
-tonic = { workspace = true }
-tokio = { version = "1.48.0", default-features = false, features = ["net", "time", "rt-multi-thread", "macros"] }
+hyper-util = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true, features = ["fs"] }
+tower = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
+tokio = { version = "1.48.0", default-features = false, features = ["net", "time", "rt-multi-thread"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 tracing.workspace = true
 
@@ -77,7 +82,7 @@ wasm-bindgen.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "test-support"] }
 tempfile = "3.27.0"
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }

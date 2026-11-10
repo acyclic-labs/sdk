@@ -1,11 +1,7 @@
-diff --git a/rust/crates/harness-core/src/model/conformance/counted.rs b/rust/crates/harness-core/src/model/conformance/counted.rs
-index 181884bbe1e..7da01f5694a 100644
 --- a/rust/crates/harness-core/src/model/conformance/counted.rs
 +++ b/rust/crates/harness-core/src/model/conformance/counted.rs
-@@ -31,17 +31,6 @@ where
-     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
-         self.inner().model_profile(model)
-     }
+@@ -34,12 +34,0 @@
+-    #[cfg(feature = "filesystem")]
 -    fn admit_profile(
 -        &self,
 -        model: &Model,
@@ -17,6 +13,3 @@ index 181884bbe1e..7da01f5694a 100644
 -            Arc::new(Counted::with_ledger(provider, self.ledger())),
 -        ))
 -    }
-     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
-         self.inner().native_tool_profile(model)
-     }

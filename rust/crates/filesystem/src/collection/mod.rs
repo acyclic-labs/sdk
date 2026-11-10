@@ -1,7 +1,7 @@
 //! Collection roots and admission while a live store keeps writing.
 
 #![cfg_attr(
-    target_arch = "wasm32",
+    not(all(feature = "local", not(target_arch = "wasm32"))),
     allow(dead_code, reason = "only a local store collects")
 )]
 
@@ -358,7 +358,7 @@ pub(crate) use epoch::{CollectionEpoch, Epochs};
 pub(crate) use holds::{GenerationHold, Hold};
 use holds::{Holds, Slot};
 pub(crate) use roots::CheckoutRoots;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(crate) use sweep::Worklist;
 #[cfg(test)]
 mod tests;

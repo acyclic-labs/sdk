@@ -151,7 +151,7 @@ fn empty_notebook_insert_delete_retains_metadata() {
     assert_eq!(removed, source);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};

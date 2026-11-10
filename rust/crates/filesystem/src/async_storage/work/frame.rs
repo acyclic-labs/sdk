@@ -48,7 +48,7 @@ impl<'a> AuthorityFrame<'a> {
                 cancellation,
                 #[cfg(not(target_arch = "wasm32"))]
                 original: None,
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "distributed")))]
                 request_allocation: None,
             },
             restore: Some((allocations, work)),

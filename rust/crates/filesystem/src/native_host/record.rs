@@ -1,8 +1,8 @@
 use super::*;
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "local"))]
 mod prepared;
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "local"))]
 pub(crate) use prepared::PreparedMaterializationRecord;
 
 #[cfg(windows)]

@@ -8,7 +8,7 @@ pub struct SourceCursor {
     /// The native enumeration this continuation resumes. Erased: a cursor is a
     /// value consumers hold across awaits, and its auto-trait proof must not
     /// walk the native source's owner graph in every downstream crate.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     pub(super) native: Option<crate::kernel::allocation::retained::ErasedRetainedArc>,
 }
 
@@ -17,7 +17,7 @@ impl SourceCursor {
         Self {
             source,
             token,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
             native: None,
         }
     }

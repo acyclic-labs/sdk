@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn observed_generations_keep_the_original_hold_until_the_last_alias()
 -> Result<(), Box<dyn Error>> {
@@ -128,7 +128,7 @@ async fn observed_generations_keep_the_original_hold_until_the_last_alias()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
@@ -199,7 +199,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
@@ -262,7 +262,7 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
 }
 
 /// Account-level collections that sweep whatever no root retains.
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 async fn account_collections(
     fs: &Fs<crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
 ) -> Result<(), Box<dyn Error>> {
@@ -274,7 +274,7 @@ async fn account_collections(
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_publication_straddling_an_epoch_switch_stays_retained() -> Result<(), Box<dyn Error>> {
     use acyclic_objects::Blobs as _;
@@ -386,7 +386,7 @@ async fn a_publication_straddling_an_epoch_switch_stays_retained() -> Result<(),
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_dropped_publication_never_holds_a_collection() -> Result<(), Box<dyn Error>> {
     // A publication that retained and is then dropped before its record
@@ -421,7 +421,7 @@ async fn a_dropped_publication_never_holds_a_collection() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_crash_at_every_epoch_step_loses_nothing_and_is_reclaimed_after()
 -> Result<(), Box<dyn Error>> {
@@ -498,7 +498,7 @@ async fn a_crash_at_every_epoch_step_loses_nothing_and_is_reclaimed_after()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_quiet_account_collection_opens_no_epoch() -> Result<(), Box<dyn Error>> {
     use acyclic_objects::Blobs as _;
@@ -566,7 +566,7 @@ async fn a_quiet_account_collection_opens_no_epoch() -> Result<(), Box<dyn Error
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_publication_during_an_epoch_switch_never_waits_on_the_collector()
 -> Result<(), Box<dyn Error>> {
@@ -616,7 +616,7 @@ async fn a_publication_during_an_epoch_switch_never_waits_on_the_collector()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_collection_dropped_mid_drain_leaves_its_drain_to_the_next() -> Result<(), Box<dyn Error>>
 {
@@ -669,11 +669,7 @@ async fn a_collection_dropped_mid_drain_leaves_its_drain_to_the_next() -> Result
     Ok(())
 }
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "test-support",
-    any(unix, windows)
-))]
+#[cfg(all(feature = "local", feature = "test-support", any(unix, windows)))]
 #[tokio::test]
 async fn a_dropped_epoch_writer_keeps_the_original_root_until_physical_completion()
 -> Result<(), Box<dyn Error>> {
@@ -732,12 +728,12 @@ async fn a_dropped_epoch_writer_keeps_the_original_root_until_physical_completio
 }
 
 /// Names the root a child process holds open in `one_process_owns_a_local_root`.
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 const ROOT_OWNER: &str = "ACYCLIC_FS_ROOT_OWNER";
 
 /// Child of `one_process_owns_a_local_root`: publishes into the root it names,
 /// then holds it open until killed. Outside that test it does nothing.
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_root_owner_holds_its_root_until_killed() -> Result<(), Box<dyn Error>> {
     let Some(root) = std::env::var_os(ROOT_OWNER) else {
@@ -755,7 +751,7 @@ async fn a_root_owner_holds_its_root_until_killed() -> Result<(), Box<dyn Error>
 /// Epoch switching is safe only because one process owns a local root: a
 /// second process cannot open either of its stores, and a dead owner's root
 /// reopens and repairs.
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_process_owns_a_local_root() -> Result<(), Box<dyn Error>> {
     use acyclic_native_runtime::{ProcessCommand, ProcessPipeReader, ProcessStdio, ProcessTree};

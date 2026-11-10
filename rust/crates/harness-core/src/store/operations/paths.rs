@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::store) fn release_owned_after_drop<T>(
     result: Result<T>,
     bytes: u64,
@@ -23,7 +23,7 @@ pub fn owned_bytes_from_retained_vec(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(OwnedBytes, u64)> {
     let capacity = bytes.capacity() as u64;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(observer) = work.as_deref_mut()
         && let Some(original) = observer.original_native_work().cloned()
     {

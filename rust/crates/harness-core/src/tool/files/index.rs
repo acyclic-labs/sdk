@@ -90,7 +90,7 @@ fn cursor(
     first: u64,
     ordinal: u64,
     source_length: u64,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
 ) -> Result<(u64, u64)> {
     let invalid = || executor::rejection(work, "ordinal index differs from its source");
     if bytes.len() < HEADER + 8
@@ -138,19 +138,19 @@ pub(super) struct OrdinalIndex<'a> {
     origin: u64,
     logical_end: u64,
     page: Page,
-    _hold: acyclic_fs::NativeCustody,
+    _hold: crate::NativeCustody,
 }
 
 impl<'a> OrdinalIndex<'a> {
-    fn work(&self) -> acyclic_fs::NativeWork<'_> {
-        #[cfg(not(target_arch = "wasm32"))]
+    fn work(&self) -> crate::NativeWork<'_> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         return self._hold.as_ref().map(|hold| hold.work());
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         None
     }
 
-    fn path(&self, operation: OperationId) -> Result<(String, acyclic_fs::NativeCustody)> {
-        #[cfg(not(target_arch = "wasm32"))]
+    fn path(&self, operation: OperationId) -> Result<(String, crate::NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(hold) = &self._hold {
             let (path, hold) = hold.work().display(&format_args!(
                 "projections/v1/{}/{operation}.bin",
@@ -183,11 +183,11 @@ impl<'a> OrdinalIndex<'a> {
         version: &str,
         source_length: u64,
         projection: Projection,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Self> {
         let domain = projection.domain();
         let hold = edit::allocation(work, std::mem::size_of::<Self>())?;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             work.charge(acyclic_fs::WorkCounters {
                 bytes_hashed: domain.len() as u64 + version.len() as u64,
@@ -213,7 +213,7 @@ impl<'a> OrdinalIndex<'a> {
     }
 
     fn operation(&self, first: u64) -> Result<OperationId> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(hold) = &self._hold {
             hold.work().charge(acyclic_fs::WorkCounters {
                 bytes_hashed: 8,
@@ -231,7 +231,7 @@ impl<'a> OrdinalIndex<'a> {
         &self,
         first: u64,
         ordinal: u64,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<(u64, u64)>> {
         let Some(bytes) = self
@@ -299,7 +299,7 @@ impl<'a> OrdinalIndex<'a> {
 
     fn metadata_operation(&self) -> Result<OperationId> {
         edit::charge(&self._hold, 0, 1)?;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(hold) = &self._hold {
             hold.work().charge(acyclic_fs::WorkCounters {
                 bytes_hashed: 4,
@@ -351,7 +351,7 @@ impl<'a> OrdinalIndex<'a> {
     pub async fn seek(
         &mut self,
         ordinal: u64,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(u64, u64)> {
         if ordinal == 0 {

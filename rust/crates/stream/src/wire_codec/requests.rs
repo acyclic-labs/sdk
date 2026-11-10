@@ -188,6 +188,14 @@ fn condition_len(condition: &CommitCondition) -> usize {
         }
     })
 }
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 fn mutation_len(mutation: &CommitMutation) -> usize {
     mutation_len_with(mutation, &append_record_len)
 }
@@ -248,7 +256,7 @@ fn commit_len_with(request: &CommitRequest, length: &impl Fn(&AppendRecord) -> u
 /// A prepared single-record command admits unknown value and header bytes.
 /// Count every possible field, then use the ordinary nesting calculation so
 /// length-delimiter growth is included at every protobuf boundary.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 pub(crate) fn prepared_commit_command_len(request: &CommitRequest, maximum: usize) -> usize {
     let fields = 1 + crate::MAX_RECORD_KEYS + 3 * crate::MAX_RECORD_ATTRIBUTES;
     let field_overhead = 1 + prost::length_delimiter_len(crate::MAX_COMMAND_BYTES);
@@ -256,20 +264,56 @@ pub(crate) fn prepared_commit_command_len(request: &CommitRequest, maximum: usiz
     block_len(commit_len_with(request, &|_| record))
 }
 
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(test, feature = "http"),
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 pub(crate) fn header(out: &mut Vec<u8>, tag: u32, length: usize) {
     prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
     prost::encoding::encode_varint(length as u64, out);
 }
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(test, feature = "http"),
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 fn bytes(out: &mut Vec<u8>, tag: u32, value: &[u8]) {
     header(out, tag, value.len());
     out.extend_from_slice(value);
 }
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(test, feature = "http"),
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 fn uint(out: &mut Vec<u8>, tag: u32, value: Option<u64>) {
     if let Some(value) = value {
         prost::encoding::encode_key(tag, prost::encoding::WireType::Varint, out);
         prost::encoding::encode_varint(value, out);
     }
 }
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(test, feature = "http"),
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 fn records(out: &mut Vec<u8>, tag: u32, records: &[AppendRecord]) {
     for record in records {
         header(out, tag, append_record_len(record));
@@ -289,12 +333,29 @@ fn records(out: &mut Vec<u8>, tag: u32, records: &[AppendRecord]) {
     }
 }
 
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(test, feature = "http"),
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 pub(crate) fn append(out: &mut Vec<u8>, request: &AppendRequest) {
     bytes(out, 1, request.path.as_str().as_bytes());
     records(out, 2, &request.records);
     uint(out, 3, request.if_tail);
     bytes(out, 4, request.idempotency_key.as_bytes());
 }
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
     for path in &request.exclude {
         bytes(out, 5, path.as_str().as_bytes());
@@ -304,6 +365,14 @@ pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
     uint(out, 3, request.at_tail);
     bytes(out, 4, request.idempotency_key.as_bytes());
 }
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     for condition in &request.conditions {
         header(out, 1, condition_len(condition));
@@ -409,14 +478,14 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
 }
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::OwnedBytes;
     use prost::Message;
 
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "local")]
     fn commit_size_matches_generated_protobuf_at_wire_boundaries()
     -> Result<(), Box<dyn std::error::Error>> {
         let path = crate::StreamPath::new("request/events")?;
@@ -592,7 +661,7 @@ mod tests {
 // bytes); the envelope adds its commit id, timestamp and enclosing delimiter.
 // Count vector lengths, never records, payload bytes or unrelated retained history.
 #[cfg(any(
-    not(target_arch = "wasm32"),
+    all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub(crate) fn accepted_response_limit(

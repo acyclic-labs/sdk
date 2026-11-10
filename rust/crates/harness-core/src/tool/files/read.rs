@@ -7,9 +7,9 @@ impl FileTool {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+    ) -> Result<(ToolResult, crate::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let mut input = decode::<ReadFileInput>(&invocation.arguments, work)?;
         if input.0.range.is_some() && input.0.selection.is_some() {
@@ -73,9 +73,9 @@ impl FileTool {
         context: &ToolContext,
         input: &ReadFileInput,
         source: super::source::ReadSource,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+    ) -> Result<(ToolResult, crate::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let start = input.range.map_or(0, |range| range.start);
         let count = input
@@ -153,8 +153,8 @@ impl FileTool {
         &self,
         file: FileRef,
         selection: Option<ReadSelection>,
-        work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+        work: crate::NativeWork<'_>,
+    ) -> Result<(ToolResult, crate::NativeCustody)> {
         let valid = match &selection {
             Some(ReadSelection::Image { .. }) => matches!(
                 file.descriptor().media_type(),
@@ -190,9 +190,9 @@ fn text_result(
     path: &str,
     interval: (u64, u64),
     maximum: u64,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+) -> Result<(ToolResult, crate::NativeCustody)> {
     let (start, end) = interval;
     let _version_hold;
     let (version, version_hold) = super::version::encode_source(&file, work)?;
@@ -246,7 +246,7 @@ pub(super) fn encoded_text_budget(
     version: &str,
     path: &str,
     maximum: u64,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
     let empty = FileView {
@@ -274,7 +274,7 @@ pub(super) fn page_text<'a>(
     bytes: &'a [u8],
     empty: bool,
     truncated: bool,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
 ) -> Result<&'a str> {
     if !empty && truncated {
         match std::str::from_utf8(bytes) {

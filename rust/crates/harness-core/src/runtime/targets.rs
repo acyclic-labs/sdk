@@ -47,12 +47,12 @@ pub trait TargetResolver: acyclic_stream::ProviderPlatform {
     fn read_path<'a>(
         &'a self,
         _path: &'a str,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
     )> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
@@ -139,7 +139,7 @@ impl TargetResolver for InProcessTargets {
     fn read_path<'a>(
         &'a self,
         path: &'a str,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,

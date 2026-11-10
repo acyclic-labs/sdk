@@ -15,6 +15,7 @@ struct Review {
     verdict: RuleVerdict,
     reason: Option<String>,
 }
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for Review {}
 
 pub(super) async fn review_model(
@@ -25,8 +26,12 @@ pub(super) async fn review_model(
     limits: Limits,
 ) -> Result<(RuleVerdict, Option<String>)> {
     let (model, provider) = binding;
+    #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(execution.1)?;
+    #[cfg(feature = "filesystem")]
     let io = scope.io();
+    #[cfg(not(feature = "filesystem"))]
+    let io = execution.1;
     let profile = provider.model_profile(model)?;
     let mut messages = Vec::new();
     crate::executor::stock_vec_push(
@@ -87,6 +92,7 @@ pub(super) async fn review_model(
     drop(result);
     drop(input);
     drop(executor);
+    #[cfg(feature = "filesystem")]
     scope.finish(
         review
             .reason
@@ -96,7 +102,7 @@ pub(super) async fn review_model(
     Ok((review.verdict, review.reason))
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::{

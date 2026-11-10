@@ -111,7 +111,7 @@ impl DiscoveredContext {
         skill_bytes: u64,
         sources: &crate::model::InstructionSources<'_>,
     ) -> Result<Vec<ModelMessage>> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io
             && let Some(work) = io.original_native_work()
         {
@@ -185,7 +185,7 @@ impl ContextSource for DiscoveredContext {
         )
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool {
         true
     }

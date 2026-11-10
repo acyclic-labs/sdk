@@ -23,11 +23,17 @@ fn component(name: &str) -> bool {
 }
 
 /// Explicit credential variables in the original host process.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EnvSecrets;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
 impl SecretSource for EnvSecrets {
     fn secret<'a>(
         &'a self,

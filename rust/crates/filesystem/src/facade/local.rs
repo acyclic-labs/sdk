@@ -1,8 +1,8 @@
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use super::*;
 
 /// Self-contained local backend options.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalOptions {
     /// Durable root containing canonical Stream and Objects provider state.
@@ -19,7 +19,7 @@ pub struct LocalOptions {
     pub object_cache: crate::cache::ObjectCacheOptions,
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl LocalOptions {
     /// Creates local options without a whole-object admission limit.
     #[must_use]
@@ -33,7 +33,7 @@ impl LocalOptions {
     }
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) struct LocalRootRegistration {
     pub(super) options: LocalOptions,
     pub(super) live: Weak<FsInner<LocalAuthorityBackend, LocalObjectBackend>>,
@@ -41,10 +41,10 @@ pub(super) struct LocalRootRegistration {
     pub(super) lifecycle: Arc<tokio::sync::Mutex<()>>,
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) type LocalRootRegistry = std::collections::BTreeMap<PathBuf, LocalRootRegistration>;
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 async fn canonical_local_root(
     requested: PathBuf,
     owner: Option<OwnershipAnchor>,
@@ -66,7 +66,7 @@ async fn canonical_local_root(
 
 #[cfg(all(
     test,
-    any(test, not(target_arch = "wasm32")),
+    any(test, feature = "local"),
     not(target_arch = "wasm32"),
     not(loom)
 ))]
@@ -85,7 +85,7 @@ mod local_root_tests;
 /// only while both live on one device; across devices neither ordering nor
 /// the drain carries over, so the objects flush fully there. Platforms with
 /// no ordering primitive weaker than the full flush issue the full flush.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) async fn publication_object_durability(
     root: &Path,
     owner: Option<OwnershipAnchor>,
@@ -112,7 +112,7 @@ pub(super) async fn publication_object_durability(
     })
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), unix))]
+#[cfg(all(any(test, feature = "local"), unix))]
 fn same_device(first: &Path, second: &Path) -> std::io::Result<bool> {
     use std::os::unix::fs::MetadataExt as _;
     Ok(std::fs::metadata(first)?.dev() == std::fs::metadata(second)?.dev())
@@ -120,12 +120,12 @@ fn same_device(first: &Path, second: &Path) -> std::io::Result<bool> {
 
 // Windows has no ordering flush weaker than `FlushFileBuffers`, so either
 // answer issues the same full flush.
-#[cfg(all(any(test, not(target_arch = "wasm32")), windows))]
+#[cfg(all(any(test, feature = "local"), windows))]
 fn same_device(_: &Path, _: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) fn prepare_local_root_open(
     registry: &mut LocalRootRegistry,
     root: &Path,
@@ -148,7 +148,7 @@ pub(super) fn prepare_local_root_open(
     opening
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) async fn run_local_initialization<T, F, I>(
     ownership: tokio::sync::OwnedMutexGuard<()>,
     initialize: I,
@@ -169,7 +169,7 @@ where
         .map_err(|_| FsError::LocalInitializationWorker)
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl<O> Fs<LocalAuthorityBackend, O> {
     /// Flushes the authority frames written under
     pub fn flush_deferred_authority(&self) -> Result<(), acyclic_stream::StreamError> {
@@ -177,7 +177,7 @@ impl<O> Fs<LocalAuthorityBackend, O> {
     }
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     /// Observes release of every provider derived from this local root.
     #[doc(hidden)]

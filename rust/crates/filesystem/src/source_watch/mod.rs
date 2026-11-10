@@ -22,11 +22,11 @@ mod inotify;
 pub(crate) use directory_changes::NativeSourceWatch;
 #[cfg(target_os = "macos")]
 pub(crate) use fsevents::NativeSourceWatch;
-#[cfg(all(test, target_os = "macos", not(target_arch = "wasm32")))]
+#[cfg(all(test, target_os = "macos", feature = "native-mount"))]
 pub(crate) use fsevents::tests::terminal_cancellation_watch;
 #[cfg(target_os = "linux")]
 pub(crate) use inotify::NativeSourceWatch;
-#[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+#[cfg(all(test, target_os = "linux", feature = "native-mount"))]
 pub(crate) use tests::terminal_failure_watch;
 
 /// Known SDK control storage: Arc's two counters, alignment, and Rust payload.

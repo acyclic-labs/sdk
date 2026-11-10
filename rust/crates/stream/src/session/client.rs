@@ -3,12 +3,12 @@ use super::*;
 use crate::{BoxProviderFuture, BoxProviderStream, RecordStream};
 use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod native;
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 use crate::grpc::ChannelConnector as Connect;
-#[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, loom), feature = "grpc", not(target_arch = "wasm32")))]
 use tonic::transport::Channel as TransportChannel;
 pub mod transport;
 use transport::Endpoint;
@@ -23,11 +23,11 @@ mod socket;
 use admissions::Admissions;
 pub use application::{ApplicationDelivery, ApplicationSubscription};
 pub use socket::{ActorSocket, ActorSocketSender};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod cache;
 mod credit;
 mod observation;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use cache::Cache;
 use observation::Observation;
 mod outbound;
@@ -39,15 +39,15 @@ mod pool;
 mod routes;
 #[cfg(loom)]
 pub use admissions::{verify_admission_binding, verify_admission_cancellation};
-#[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use cache::verify_cache;
-#[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use pool::model::{
     verify_abandoned_reconnect, verify_cancel_before_open, verify_cancelled_queued_open,
     verify_follow_data, verify_interest_accounting, verify_link_isolation, verify_node_dials,
     verify_pool_lifetime, verify_registration_cancellation, verify_terminal_cursor_dial,
 };
-#[cfg(all(loom, not(target_arch = "wasm32")))]
+#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use pool::retry_model::verify_initial_retry_yield;
 use routes::Routes;
 mod progress;
@@ -56,7 +56,7 @@ use progress::Progress;
 pub use progress::verify_latest_progress;
 // The client tests drive the native gRPC transport.
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod tests;
 type Ready = (String, Link, Response);
 struct Dial {
@@ -351,7 +351,7 @@ impl Client {
         self
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
     pub(crate) fn into_pool(self) -> PoolHandle {
         self.pool
     }

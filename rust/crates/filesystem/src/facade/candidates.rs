@@ -9,7 +9,7 @@ pub(super) struct PreparedCheckoutRoots {
 }
 
 /// Sealed proof merge for the private candidate adoption fence. The snapshots
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 pub(crate) struct PreparedCandidateAdoption {
     pub(super) dependencies: CheckoutDependencies,
     pub(super) live: CheckoutDependencies,
@@ -18,12 +18,12 @@ pub(crate) struct PreparedCandidateAdoption {
 
 /// A pinned rebase target retaining the original mode and shared proof.
 /// Only candidate rebasing is exposed; this pin cannot publish or mutate it.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 pub(crate) struct NativeCandidateRebase<A: 'static, O: 'static> {
     pub(super) checkout: Checkout<A, O>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 pub(crate) enum NativeCandidateRebasePlan<A: 'static, O: 'static> {
     Unchanged,
     Stale,
@@ -32,7 +32,7 @@ pub(crate) enum NativeCandidateRebasePlan<A: 'static, O: 'static> {
 
 impl<A, O> Checkout<A, O> {
     /// Replaces a refresh pin only while its original root and proof still match.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn adopt_refreshed_candidate(
         &mut self,
         base: &Self,
@@ -53,7 +53,7 @@ impl<A, O> Checkout<A, O> {
         true
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn prepare_candidate_adoption(
         &self,
         base: &Self,
@@ -88,7 +88,7 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Installs only the proof sealed by preparation. Both snapshots retain
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn adopt_prepared_candidate(
         &mut self,
         base: &Self,
@@ -116,7 +116,7 @@ impl<A, O> Checkout<A, O> {
         true
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(super) fn candidate_base_unchanged(&self, base: &Self) -> bool {
         self.generation_root == base.generation_root
             && self.base_root == base.base_root
@@ -131,7 +131,7 @@ impl<A, O> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn pin_native_candidate_rebase(
         &self,
         base: &Self,
@@ -255,7 +255,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn private_control_custody(&self) -> Arc<crate::kernel::ProofDataCustody> {
         Arc::clone(&self.dependencies.data_custody)
     }
@@ -389,7 +389,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn into_unpublishable_capture_candidate(mut self) -> Self {
         self.mode = CheckoutMode {
             access: AccessMode::ReadWrite,
@@ -401,7 +401,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     }
 
     /// Constructs a read-only alias retaining observations on the original proof.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn observer(
         &self,
         accounting: &mut KernelAccounting<'_>,
@@ -418,7 +418,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     }
 
     /// Constructs an isolated read-only candidate.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn inspector(
         &self,
         accounting: &mut KernelAccounting<'_>,

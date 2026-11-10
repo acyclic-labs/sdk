@@ -167,7 +167,7 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
     ));
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn incremental_capture_applies_only_changed_eligible_paths() {
     let workspace = memory_workspace("git-capture-incremental").await;

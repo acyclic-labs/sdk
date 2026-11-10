@@ -62,14 +62,14 @@ pub fn condition_conflict(
             })
         }
         CommitCondition::Absent { .. } if actual.is_some() => {
-            #[cfg(all(loom, not(target_arch = "wasm32")))]
+            #[cfg(all(loom, feature = "local"))]
             if crate::verification::fault_is(crate::verification::Fault::IgnoreAbsent) {
                 return Ok(None);
             }
             Some(CommitConflict::Exists { path: path.clone() })
         }
         CommitCondition::Head { commit_id, .. } => {
-            #[cfg(all(loom, not(target_arch = "wasm32")))]
+            #[cfg(all(loom, feature = "local"))]
             if crate::verification::fault_is(crate::verification::Fault::IgnoreHead) {
                 return Ok(None);
             }

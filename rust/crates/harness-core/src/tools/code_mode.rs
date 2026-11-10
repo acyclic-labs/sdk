@@ -13,12 +13,13 @@ impl crate::tool::ToolProjection for CodeMode {
         &self,
         _: &ToolInvocation,
         result: &ToolResult,
-        work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<(serde_json::Value, acyclic_fs::NativeCustody)> {
+        work: crate::NativeWork<'_>,
+    ) -> Result<(serde_json::Value, crate::NativeCustody)> {
         crate::tool::schema::project_json(projected(&result.value)?, work)
     }
 
-    fn supports_native_projection(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        #[cfg(feature = "filesystem")]
         if let Some(work) = work {
             work.remaining()?;
         }
@@ -80,8 +81,9 @@ impl ToolExecutor for CodeMode {
         _: Option<&crate::runtime::RuntimeScope>,
         _: Option<&ToolContext>,
         _: &ToolInvocation,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
+        #[cfg(feature = "filesystem")]
         if let Some(work) = work {
             work.remaining()?;
         }
@@ -89,6 +91,7 @@ impl ToolExecutor for CodeMode {
         Ok(())
     }
 
+    #[cfg(feature = "filesystem")]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,

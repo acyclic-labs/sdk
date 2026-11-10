@@ -96,6 +96,7 @@ impl MachinesWorkspace {
 
     /// Materializes the selected logical volume for any non-attaching provider.
     /// The caller opens this workspace through the original filesystem facade.
+    #[cfg(feature = "filesystem")]
     pub(crate) async fn bind_copy<
         A: acyclic_fs::AsyncAuthorityStore,
         O: acyclic_fs::AsyncObjectStore,
@@ -268,15 +269,15 @@ impl ToolExecutor for MachinesWorkspace {
     fn read_path<'a>(
         &'a self,
         path: &'a str,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let io = owned_io.as_ref();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let io = {
             let _ = work;
             None
@@ -300,9 +301,9 @@ impl ToolExecutor for MachinesWorkspace {
         _scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,

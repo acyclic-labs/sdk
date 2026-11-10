@@ -4,7 +4,7 @@ pub(super) fn validate_journal(
     journal: &dyn ExecutionJournal,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work)
         && !journal.supports_native_execution(work)?
     {
@@ -234,6 +234,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Admits an immutable conversation item at its original journal cursor.
     /// The reference and retry association publish through the ordinary journal
     /// cut. This does not assert source-publication or model-exchange closure.
+    #[cfg(feature = "filesystem")]
     fn append_envelope_if_tail<'a>(
         &'a self,
         _expected_tail: u64,
@@ -290,15 +291,13 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     }
 
     /// Observes an already staged immutable payload by its original operation and retry key.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn staged_ref_with_native_work<'a>(
         &'a self,
         _operation_id: OperationId,
         _idempotency_key: &'a str,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation), crate::Error>,
-    > {
+    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
         work.remaining()?;
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
@@ -444,7 +443,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>>;
 
     /// Pure original-work capability check, before a native frame or provider callback.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,

@@ -96,7 +96,7 @@ mod borrowed_records {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod digest_properties {
     use super::*;
     use proptest::prelude::*;
@@ -545,6 +545,7 @@ fn nested_digest_has_no_encoding_heap() -> Result<()> {
     assert_encoding_needs_no_heap(&serde_json::json!({"z": rows, "a": [true, null]}))
 }
 
+#[cfg(feature = "filesystem")]
 #[test]
 fn canonical_digest_preserves_hash_admission_and_charge() -> Result<()> {
     let value = serde_json::json!({"z": [0, 1, 255], "a": "\0\n\"é"});
@@ -576,7 +577,7 @@ fn canonical_digest_preserves_hash_admission_and_charge() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn preparation_digest_batches_stream_canonical_output_on_original_work() -> Result<()> {
     let value = serde_json::json!({"z": "q".repeat(128 * 1024), "a": [1, 2, 3]});

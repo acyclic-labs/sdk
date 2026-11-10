@@ -149,6 +149,7 @@ pub(crate) use api::{
 };
 
 #[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "../tests/path_access/mod.rs"]
 mod tests;
 pub(super) fn path_error(error: crate::FsError) -> PathLookupError {

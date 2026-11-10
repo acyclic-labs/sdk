@@ -43,6 +43,7 @@ pub enum AcceptedCommitOutcome {
 }
 
 impl WriteOutcome {
+    #[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
     pub(crate) fn commit_receipt(&self) -> Option<&CommitReceipt> {
         match self {
             Self::Commit(CommitOutcome::Committed(receipt))

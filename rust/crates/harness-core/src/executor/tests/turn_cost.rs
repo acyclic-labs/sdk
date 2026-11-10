@@ -2,7 +2,7 @@ use super::*;
 
 mod identity;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_growth;
 
 fn lookup_executor() -> Result<StockExecutor> {
@@ -347,7 +347,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;

@@ -18,11 +18,14 @@ pub(super) fn source_key_history(
     if work.is_none() {
         return crate::executor::json::serialized_json_digest(&(volume, path));
     }
+    #[cfg(feature = "filesystem")]
     let maximum = work
         .as_deref()
         .map(|work| work.remaining().map(|b| b.bytes_encoded))
         .transpose()?
         .unwrap_or(u64::MAX);
+    #[cfg(not(feature = "filesystem"))]
+    let maximum = u64::MAX;
     crate::executor::json::canonical_json_digest(&(volume, path), maximum, work)
 }
 
@@ -42,7 +45,12 @@ fn trace_step(items: u64) {
 }
 pub(super) fn trace_operation(name: &'static str, items: u64) {
     let _ = (name, items);
-    #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+    #[cfg(all(
+        test,
+        feature = "test-support",
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
     TRACE_STEPS.with(|active| {
         if active.get() {
             acyclic_test_support::differential::record((name, items));
@@ -50,9 +58,19 @@ pub(super) fn trace_operation(name: &'static str, items: u64) {
     });
 }
 
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    test,
+    feature = "test-support",
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
 thread_local! { static TRACE_STEPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    test,
+    feature = "test-support",
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
 pub(super) fn traced<T>(run: impl FnOnce() -> T) -> T {
     TRACE_STEPS.with(|active| assert!(!active.replace(true)));
     struct Reset;

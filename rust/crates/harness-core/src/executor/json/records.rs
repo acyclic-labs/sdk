@@ -49,7 +49,11 @@ where
         value_shape,
     })?;
     charge(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
-    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+    #[cfg(all(
+        any(test, feature = "test-support"),
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
     acyclic_differential::record(super::CodecOperation::DecodeBytes);
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
     decoder.disable_recursion_limit();
@@ -97,7 +101,11 @@ where
         maximum_owned_bytes: decoded_bytes::<T>(layout)?,
         value_shape,
     })?;
-    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+    #[cfg(all(
+        any(test, feature = "test-support"),
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
     acyclic_differential::record(super::CodecOperation::DecodeValue);
     match source {
         Cow::Borrowed(value) => T::deserialize(value),
@@ -110,7 +118,7 @@ pub(super) fn decode_error(
     source: serde_json::Error,
     code: Option<crate::wire::ErrorCode>,
 ) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(code) = code {
         return Error::NativeJson {
             code,

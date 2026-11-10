@@ -51,7 +51,7 @@ impl NativeSourceWatch {
     }
 
     /// Observes the production driver's terminal publication.
-    #[cfg(all(test, target_os = "linux", not(target_arch = "wasm32")))]
+    #[cfg(all(test, target_os = "linux", feature = "native-mount"))]
     pub(crate) fn observe_retirement(&self, complete: std::sync::mpsc::Sender<()>) {
         let previous = self
             .delivery()

@@ -104,5 +104,5 @@ impl IntoIterator for Routes {
     }
 }
 
-#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[cfg(all(test, feature = "grpc", not(loom), not(target_arch = "wasm32")))]
 mod tests;

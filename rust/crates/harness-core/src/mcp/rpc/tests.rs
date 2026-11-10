@@ -53,7 +53,7 @@ fn notification_and_initialization_share_the_closed_policy() {
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn native_work(bytes: u64, items: u64) -> acyclic_fs::NativeMaterializationWork {
     acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {
@@ -67,7 +67,7 @@ fn native_work(bytes: u64, items: u64) -> acyclic_fs::NativeMaterializationWork 
     .expect("finite original operation")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn closed_dto_quota_denial_precedes_serde_and_does_not_report_allocator_calls() {
     let work = native_work(
@@ -93,7 +93,7 @@ fn closed_dto_quota_denial_precedes_serde_and_does_not_report_allocator_calls() 
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn malformed_typed_cause_keeps_original_quota_until_error_drop() {
     let work = native_work(1 << 20, 1000);
@@ -132,7 +132,7 @@ fn malformed_typed_cause_keeps_original_quota_until_error_drop() {
     assert_eq!(work.live_allocation_bytes(), live_before);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn foreign_identity_and_callback_keep_static_original_classification() {
     let work = native_work(1 << 20, 100);

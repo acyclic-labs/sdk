@@ -136,7 +136,7 @@ enum ResolutionView<'a> {
     /// Keep clean decisions and leave unresolved regions at the target value.
     /// A preview is never a publication resolution.
     Preview,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     DistinctAdditions,
     Map(&'a BTreeMap<MergeConflict, MergeConflictResolution>),
     #[cfg(not(target_arch = "wasm32"))]
@@ -150,7 +150,7 @@ impl<'a> ResolutionView<'a> {
 
     fn converges_additions(self) -> bool {
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "native-mount")]
             Self::DistinctAdditions => false,
             _ => true,
         }
@@ -163,7 +163,7 @@ impl<'a> ResolutionView<'a> {
     ) -> Result<Option<&'a MergeConflictResolution>, FsError> {
         match self {
             Self::Preview => Ok(None),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "native-mount")]
             Self::DistinctAdditions => Ok(None),
             Self::Map(map) => {
                 for (key, value) in map {

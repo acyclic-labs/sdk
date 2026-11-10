@@ -291,7 +291,7 @@ impl ContextStage for ManifestStage {
             .map_or(Ok(None), |facts| facts.project(context, limits, io))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool {
         true
     }

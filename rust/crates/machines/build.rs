@@ -5,7 +5,7 @@ mod client;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiler = acyclic_proto_build::Compiler::new()?;
-
+    let grpc = std::env::var_os("CARGO_FEATURE_GRPC").is_some();
     let mut config = compiler.config();
     config.type_attribute(
         ".acyclic.harness.v2",
@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".acyclic.harness.v2",
         "#[serde(rename_all = \"camelCase\")]",
     );
-    let services = acyclic_proto_build::services(true)
+    let services = acyclic_proto_build::services(grpc)
         .build_transport(std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32")
         .server_mod_attribute(".", "#[cfg(not(target_arch = \"wasm32\"))]");
     compiler.compile(

@@ -45,7 +45,7 @@ impl AsyncAuthorityStore for OriginalPageAuthority<'_> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn pages_retain_original_frame_and_fact_backing_until_retirement()
 -> Result<(), Box<dyn Error>> {
@@ -640,7 +640,7 @@ async fn refused_archive_and_closure_preserve_exact_spent_work() -> Result<(), B
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn record_admission_refusals_preserve_proven_prefix() -> Result<(), Box<dyn Error>> {
     use std::sync::atomic::{AtomicU64, Ordering};

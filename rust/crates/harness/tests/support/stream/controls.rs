@@ -56,6 +56,7 @@ pub struct LostSessionAck<P = MemoryStream> {
     pub hide_effect_node_read: std::sync::atomic::AtomicBool,
     pub hide_effect_transition_position: std::sync::atomic::AtomicU64,
     pub history_read_fault: std::sync::atomic::AtomicU8,
+    #[cfg(feature = "filesystem")]
     pub history_cancel_after_tail: std::sync::Mutex<Option<acyclic_fs::CancellationToken>>,
     pub message_head_race: std::sync::Mutex<Option<acyclic_stream::CommitRequest>>,
     pub aggregate_commit_fault: std::sync::atomic::AtomicU8,
@@ -155,6 +156,7 @@ impl<P> LostSessionAck<P> {
             hide_effect_node_read: Default::default(),
             hide_effect_transition_position: Default::default(),
             history_read_fault: Default::default(),
+            #[cfg(feature = "filesystem")]
             history_cancel_after_tail: Default::default(),
             message_head_race: Default::default(),
             aggregate_commit_fault: Default::default(),

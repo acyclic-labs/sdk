@@ -13,7 +13,7 @@ async fn memory(case: Case) -> TestResult {
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 async fn local(case: Case) -> TestResult {
     use acyclic_stream::{LocalStream, LocalStreamLimits};
     let directory = tempfile::tempdir()?;
@@ -44,27 +44,27 @@ async fn memory_composed_fork() -> TestResult {
     memory(Case::ComposedFork).await
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_append_retry() -> TestResult {
     local(Case::AppendRetry).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_commit_retry() -> TestResult {
     local(Case::CommitRetry).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_absent_zero_tail() -> TestResult {
     local(Case::AbsentZeroTail).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_subtree_fork() -> TestResult {
     local(Case::SubtreeFork).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_composed_fork() -> TestResult {
     local(Case::ComposedFork).await
@@ -85,22 +85,22 @@ async fn memory_inherited_follow() -> TestResult {
 async fn memory_fork_lineage() -> TestResult {
     memory(Case::ForkLineage).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_spawn() -> TestResult {
     local(Case::Spawn).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_closed_inbox() -> TestResult {
     local(Case::ClosedInbox).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_inherited_follow() -> TestResult {
     local(Case::InheritedFollow).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_fork_lineage() -> TestResult {
     local(Case::ForkLineage).await
@@ -109,7 +109,7 @@ async fn local_fork_lineage() -> TestResult {
 async fn memory_record_origin() -> TestResult {
     memory(Case::RecordOrigin).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_record_origin() -> TestResult {
     local(Case::RecordOrigin).await

@@ -1,5 +1,5 @@
 //! Wire conformance, transport partition invariance and recovery after rejection.
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(feature = "tui")]
 
 use acyclic_harness_tui::key_event::{
     InputEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,

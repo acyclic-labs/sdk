@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 fn assert_local_open_pending(opening: std::pin::Pin<&mut impl std::future::Future>) {
     // Finish canonicalization inline, so Pending observes the real registry lock.
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
@@ -8,7 +8,7 @@ fn assert_local_open_pending(opening: std::pin::Pin<&mut impl std::future::Futur
     assert!(std::future::Future::poll(opening, &mut context).is_pending());
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_reopens_durable_volume_and_exact_generation()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -62,7 +62,7 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test]
 async fn local_root_lifecycle_outlives_provider_destruction()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -109,7 +109,7 @@ async fn local_root_lifecycle_outlives_provider_destruction()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn detached_provider_handles_retain_local_root_ownership()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -139,7 +139,7 @@ async fn detached_provider_handles_retain_local_root_ownership()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test]
 async fn cancelled_local_open_keeps_the_canonical_lifecycle_gate()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -169,7 +169,7 @@ async fn cancelled_local_open_keeps_the_canonical_lifecycle_gate()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test]
 async fn cancelled_local_initialization_keeps_root_owned_until_startup_stops()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -205,7 +205,7 @@ async fn cancelled_local_initialization_keeps_root_owned_until_startup_stops()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_shares_bounded_object_acceleration_across_handles()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -265,7 +265,7 @@ async fn local_facade_shares_bounded_object_acceleration_across_handles()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rejected_open_leaves_no_provider_opening_behind_it()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -301,7 +301,7 @@ async fn a_rejected_open_leaves_no_provider_opening_behind_it()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -436,7 +436,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_centralizes_same_process_owners_and_rejects_option_drift()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -456,7 +456,7 @@ async fn local_facade_centralizes_same_process_owners_and_rejects_option_drift()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_facade_waits_per_root_without_serializing_independent_roots()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -492,7 +492,7 @@ async fn local_facade_waits_per_root_without_serializing_independent_roots()
 
 /// Counts one local commit of `files` new files: the ordering barriers and
 /// the full device drains its durable trace issues.
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 async fn local_commit_flushes(files: u8) -> Result<(usize, usize), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
@@ -584,7 +584,7 @@ async fn local_commit_flushes(files: u8) -> Result<(usize, usize), Box<dyn std::
 
 /// A commit's objects are only ordered ahead of its Stream frame, and the
 /// frame's flush is the commit's one device drain, at any commit size.
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test]
 async fn a_local_commit_drains_the_device_once_at_any_size()
 -> Result<(), Box<dyn std::error::Error>> {

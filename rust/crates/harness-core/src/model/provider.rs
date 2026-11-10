@@ -129,7 +129,7 @@ impl futures::Stream for ModelStream<'_> {
 /// Concrete stream box admitted before invoking its builder.
 /// The first error or EOF terminates the stream; later polls return EOF.
 /// Cancellation wakes a pending stream independently of its source.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeModelStream<'a> {
     stream: BoxStream<'a, Result<(ModelEvent, NativeAllocation)>>,
     cancelled: Option<acyclic_fs::Cancelled<'static>>,
@@ -137,7 +137,7 @@ pub struct NativeModelStream<'a> {
     terminated: bool,
     delivery: ModelDelivery,
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl<'a> NativeModelStream<'a> {
     /// Funds the concrete frame and original cancellation subscription before
     /// invoking the stream builder.
@@ -179,7 +179,7 @@ impl<'a> NativeModelStream<'a> {
         self.delivery
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl futures::Stream for NativeModelStream<'_> {
     type Item = Result<(ModelEvent, NativeAllocation)>;
     fn poll_next(
@@ -212,15 +212,16 @@ impl futures::Stream for NativeModelStream<'_> {
         next
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl futures::stream::FusedStream for NativeModelStream<'_> {
     fn is_terminated(&self) -> bool {
         self.terminated
     }
 }
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 #[path = "provider_tests.rs"]
 mod tests;
+#[cfg(feature = "filesystem")]
 impl ModelEvent {
     pub(crate) fn retained_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
@@ -240,7 +241,7 @@ impl ModelEvent {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ModelEvent {
     /// Resident capacity transferred with a native event, including unused
     /// object-node slots retained until the event's JSON values are destroyed.
@@ -263,7 +264,7 @@ impl ModelEvent {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn unsupported() -> Error {
     Error::NativeBoundary {
         code: Unsupported,
@@ -276,6 +277,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// Derives an immutable epoch selection from this original provider. The
     /// caller retains the returned model and provider together; the original
     /// selection remains available to other sessions. Admission performs no I/O.
+    #[cfg(feature = "filesystem")]
     fn admit_profile(
         &self,
         _: &Model,
@@ -307,6 +309,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// with replaced declarations return their original binding owner here;
     /// family defaults use the shared native constructor. The stock executor
     /// reserves and retains the returned owner once, before preparing a turn.
+    #[cfg(feature = "filesystem")]
     fn native_tools(
         &self,
         model: &Model,
@@ -363,18 +366,18 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         &self,
         _operation: OperationId,
         _call_id: &str,
-        _work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<Option<(super::RecordedToolOutcome, acyclic_fs::NativeCustody)>> {
+        _work: crate::NativeWork<'_>,
+    ) -> Result<Option<(super::RecordedToolOutcome, crate::NativeCustody)>> {
         Ok(None)
     }
     /// Pure native capability query.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_model(&self, work: &NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;
         Ok(false)
     }
     /// Native capacities without ordinary fallback.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn context_capacity_with_native_work(
         &self,
         _: &Model,
@@ -384,47 +387,36 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         Err(unsupported())
     }
     /// Paid token DTO for the admitted native request.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn count_tokens_with_native_work<'a>(
         &'a self,
         _: &'a PreparedModelRequest,
         _ceiling: u64,
         work: &'a NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (crate::context::ModelTokenCount, NativeAllocation),
-            crate::Error,
-        >,
-    > {
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::context::ModelTokenCount, NativeAllocation)>>
+    {
         work.remaining()?;
         Err(unsupported())
     }
     /// Starts an original-ledger stream of paid SDK events.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn generate_with_native_work<'a>(
         &'a self,
         _: &'a PreparedModelRequest,
         _: ModelDispatch,
         work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, NativeModelStream<'a>, crate::Error>> {
+    ) -> Result<crate::NativeFutureBundle<'a, NativeModelStream<'a>>> {
         work.remaining()?;
         Err(unsupported())
     }
     /// Reconciles a borrowed durable prefix on the original ledger.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_work<'a>(
         &'a self,
         _: ModelDispatch,
         _: &'a [ModelEvent],
         work: &'a NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (Option<Vec<ModelEvent>>, NativeAllocation),
-            crate::Error,
-        >,
-    > {
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
         work.remaining()?;
         Err(unsupported())
     }

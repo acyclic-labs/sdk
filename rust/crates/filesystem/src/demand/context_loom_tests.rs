@@ -1,4 +1,4 @@
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-watch")]
 fn read_and_invalidate(legacy_inspection: bool) {
     use super::{NativeMountAllocationCustody, SourcePayloadOwnership};
     use crate::sync::{Mutex, atomic::AtomicU64};
@@ -77,12 +77,12 @@ fn read_and_invalidate(legacy_inspection: bool) {
         spent.verify(budget).unwrap();
     });
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-watch")]
 #[test]
 fn custody_inspection_completes_read_callback_and_invalidation() {
     read_and_invalidate(false);
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-watch")]
 #[test]
 fn previous_custody_inspection_deadlocks_the_real_leaf() {
     const BROKEN: &str = "ACYCLIC_FS_LOOM_LEGACY_CUSTODY";

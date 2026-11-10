@@ -15,7 +15,7 @@ pub(super) fn configuration(
         }
         None => SettingsConfig::new(project.root(), user_home()?),
     };
-    configured.load_mcp = true;
+    configured.load_mcp = cfg!(any(feature = "mcp-stdio", feature = "mcp-http"));
     Ok(Arc::new(configured))
 }
 

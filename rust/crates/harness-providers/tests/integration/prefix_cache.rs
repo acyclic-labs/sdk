@@ -114,10 +114,8 @@ impl HttpTransport for Scripted {
         &self,
         _: Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<
-        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-    > {
-        acyclic_fs::NativeFutureBundle::new(work, || async { Ok(()) })
+    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+        acyclic_harness::NativeFutureBundle::new(work, || async { Ok(()) })
     }
     fn send(
         &self,
@@ -144,10 +142,8 @@ impl HttpTransport for Scripted {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<
-        acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>,
-    > {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, HttpResponse>> {
+        acyclic_harness::NativeFutureBundle::new(work, || async move {
             let bytes = self.reply(request)?;
             HttpResponse::with_native_body(200, futures::stream::iter([Ok(bytes)]), work)
         })

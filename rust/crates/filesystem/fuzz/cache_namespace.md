@@ -10,6 +10,6 @@ test to pass. This replaces direct test-state corruption and a duplicate
 panic-text test; it does not claim provider I/O or persistence coverage.
 
 ```sh
-cargo test --locked -p acyclic-fs --no-default-features --lib -- \
+cargo test --locked -p acyclic-fs --no-default-features --features memory --lib -- \
   --exact cache::pool::tests::namespaces_isolate_bytes_decoders_and_clear
 ```

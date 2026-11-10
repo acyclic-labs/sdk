@@ -41,9 +41,9 @@ syn = { version = "=3.0.9", features = ["full", "visit"], optional = true }
 acyclic-proto-build = { path = "../../compatibility", optional = true }
 acyclic-observability = { path = "../crates/observability", features = ["research"], optional = true }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, optional = true }
-acyclic-harness-client = { path = "../crates/harness-client", default-features = false, optional = true }
+acyclic-harness-client = { path = "../crates/harness-client", default-features = false, features = ["agents"], optional = true }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, optional = true }
-acyclic-harness = { path = "../crates/harness", default-features = false, optional = true }
+acyclic-harness = { path = "../crates/harness", default-features = false, features = ["filesystem-local", "native-execution", "grpc"], optional = true }
 libfuzzer-sys = "0.4"
 prost = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }

@@ -29,13 +29,13 @@ impl LocalHarness {
             project: &self.project,
             scratch: &self.scratch,
             reader: reader.as_ref(),
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             journal: &self.journal,
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             verifier: self.verifier.clone(),
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             scope: &self.signed,
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace: self.workspace.clone(),
         };
         self.bound_skills(&binding, generation, work)?.await
@@ -61,16 +61,16 @@ impl LocalHarness {
         work: &mut DiscoveryWork,
     ) -> Result<Vec<SkillMetadata>> {
         let mut skills = Vec::new();
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         let sources = self.bound_skill_sources(binding)?;
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         let native_project = generation.is_none()
             && self.checkout_context
             && sources.is_some()
             && binding.workspace.is_some();
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+        #[cfg(not(any(test, feature = "native-execution")))]
         let native_project = false;
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         if native_project
             && let Some(sources) = &sources
             && let Some(workspace) = &binding.workspace
@@ -85,7 +85,7 @@ impl LocalHarness {
             skills = sources.catalog(&workspace.path, view, work)?.await?;
         }
         if !native_project {
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             if let Some(sources) = sources {
                 skills = sources.user_catalog(work)?.await?;
             }
@@ -96,7 +96,7 @@ impl LocalHarness {
         Ok(skills)
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-execution"))]
     fn bound_skill_sources(
         &self,
         binding: &Binding<'_>,

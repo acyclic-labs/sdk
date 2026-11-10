@@ -723,14 +723,13 @@ where
         maximum_entries: u32,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_fs::NativeFutureBundle<
+        crate::NativeFutureBundle<
             'a,
             ((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation),
-            crate::Error,
         >,
     > {
         self.supports_native_directory_list(volume, work)?;
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+        crate::NativeFutureBundle::new(work, || async move {
             self.verify_exact_file(None, Some(&PreparationIo::from_native_work(work)?))?;
             let mut observer = crate::store::HistoryWork::new(
                 crate::filesystem::PreparationIo::from_native_work(work)?,

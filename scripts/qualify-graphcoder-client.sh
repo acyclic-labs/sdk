@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-features=test-support,model-checking
-core_features=test-support,model-checking
+features=filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http,model-checking
+core_features=filesystem-local,native-execution,tui,test-support,grpc,search-http,model-checking
 artifact_dir=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 cargo test -p acyclic-harness --features "$features" --test main context_discovery::manifest::
 cargo test -p acyclic-harness --features "$features" --test main default_tools::
@@ -13,12 +13,12 @@ done
 RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test -p acyclic-harness --features "$features" --features model-checking --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py local::checkout_tools::tests::
 
-cargo test -p acyclic-harness-tui --lib --no-run --message-format=json |
+cargo test -p acyclic-harness-tui --features tui --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py term::session::tests:: term::tty::tests:: term::region::tests:: term::frame:: completion::
 
-cargo test --locked -p acyclic-harness-tui --test main -- completion:: terminal:: terminal_regions:: terminal_frame_faults::
-cargo test --locked -p acyclic-harness-tui --test terminal_frames
+cargo test --locked -p acyclic-harness-tui --features tui --test main -- completion:: terminal:: terminal_regions:: terminal_frame_faults::
+cargo test --locked -p acyclic-harness-tui --features tui --test terminal_frames
 cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness-tui/fuzz completion_events --target x86_64-unknown-linux-gnu --dev -- -runs=128 -max_len=128 -timeout=5 -max_total_time=5
 
-RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test -p acyclic-harness-tui --features model-checking --lib --no-run --message-format=json |
+RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test -p acyclic-harness-tui --features tui --features model-checking --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py term::frame::frame_model:: term::lifecycle::terminal_lifecycle_model:: term::console_owner::tests::input_observes_output_close

@@ -1,5 +1,5 @@
 //! Production native-root admission and source-bound attachment failure receipts.
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 
 #[macro_use]
 #[path = "support/unbounded.rs"]

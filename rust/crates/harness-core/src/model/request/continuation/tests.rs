@@ -20,7 +20,11 @@ fn request(count: usize) -> Result<ModelRequest> {
     })
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 #[test]
 fn suffix_validation_work_is_flat_from_one_to_one_thousand_messages() -> Result<()> {
     for native in [false, true] {
@@ -308,6 +312,10 @@ fn instruction_reservations_span_the_immutable_prefix_and_new_suffix() -> Result
     Ok(())
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 #[path = "ownership_tests.rs"]
 mod ownership_tests;

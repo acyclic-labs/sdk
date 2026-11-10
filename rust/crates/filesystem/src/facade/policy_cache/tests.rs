@@ -105,7 +105,7 @@ fn evicted_open_views_keep_their_exact_charge_until_the_last_handle_drops() -> T
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 async fn load(
     owner: &crate::Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectStore>,
     work: &crate::NativeMaterializationWork,
@@ -124,7 +124,7 @@ async fn load(
     Ok(checkout.compiled_access_policy(work, cancel).await?)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn shared_policy_bytes_have_cache_custody_independent_of_invocation_ledgers()
 -> Result<(), Box<dyn std::error::Error>> {

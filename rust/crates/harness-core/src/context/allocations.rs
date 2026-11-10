@@ -6,7 +6,7 @@ pub(super) fn context_contract<T: Serialize>(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Value> {
     let _ = io;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io
         && let Some(work) = io.original_native_work()
     {
@@ -56,7 +56,7 @@ pub(super) fn context_contract<T: Serialize>(
     serde_json::to_value(value).map_err(|error| crate::Error::Invalid(error.to_string()))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn reserve_context_vec_native<T>(
     values: &mut Vec<T>,
     capacity: usize,

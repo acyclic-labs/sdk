@@ -25,4 +25,4 @@ diff --git a/rust/crates/filesystem/src/materializer/reservation.rs b/rust/crate
 +        self.finish(&mut state, maximum, maximum)?;
          Ok(result)
      }
-     #[cfg(any(test, not(target_arch = "wasm32")))]
+     #[cfg(any(test, feature = "native-watch"))]

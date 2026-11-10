@@ -9,11 +9,11 @@ pub(in crate::executor) fn stock_tool_definitions(
 }
 
 pub(in crate::executor) fn stock_is_native(io: Option<&PreparationIo>) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
         io.and_then(PreparationIo::original_native_work).is_some()
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     {
         let _ = io;
         false
@@ -31,14 +31,14 @@ pub(in crate::executor) fn stock_recorded_tool_result<'a>(
         Option<crate::conversation::ContentHold<'a>>,
     )>,
 > {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let work = io.and_then(PreparationIo::original_native_work);
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let work = None;
     let Some((outcome, custody)) = provider.recorded_tool_result(operation, call_id, work)? else {
         return Ok(None);
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let hold = if let Some(io) = io.filter(|_| work.is_some()) {
         Some(io.hold_native_custody(custody.ok_or_else(|| {
             stock_boundary(
@@ -50,7 +50,7 @@ pub(in crate::executor) fn stock_recorded_tool_result<'a>(
     } else {
         None
     };
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let hold = {
         let _ = (io, custody);
         None
@@ -66,7 +66,7 @@ pub(in crate::executor) fn stock_authorize_tool(
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     let _ = io;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
         let context = context.ok_or_else(|| crate::Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
@@ -88,14 +88,14 @@ pub(in crate::executor) async fn stock_tool_call<'a, T>(
     context: &'a mut Option<crate::runtime::ToolContext>,
     io: Option<&'a PreparationIo>,
     ordinary: impl FnOnce(Option<crate::runtime::ToolContext>) -> BoxFuture<'a, Result<T>>,
-    #[cfg(not(target_arch = "wasm32"))] native: impl FnOnce(
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] native: impl FnOnce(
         &'a crate::runtime::ToolContext,
         &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_fs::NativeFutureBundle<'a, (T, acyclic_fs::NativeAllocation), crate::Error>,
+        crate::NativeFutureBundle<'a, (T, acyclic_fs::NativeAllocation)>,
     >,
 ) -> Result<T> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io
         && let Some(work) = io.original_native_work()
     {
@@ -110,7 +110,7 @@ pub(in crate::executor) async fn stock_tool_call<'a, T>(
         io.absorb_native_custody(custody)?;
         return Ok(result);
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
     ordinary(context.take()).await
 }
@@ -123,12 +123,12 @@ pub(in crate::executor) async fn stock_project_tool(
     io: Option<&PreparationIo>,
     context: Option<&crate::runtime::TaskContext>,
 ) -> Result<Result<(Value, crate::model::ToolResultContent)>> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let work = io.and_then(PreparationIo::original_native_work);
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let work = None;
     let (value, custody) = tool.projection.project(invocation, result, work)?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|_| work.is_some()) {
         io.absorb_native_custody(custody.ok_or_else(|| {
             stock_boundary(
@@ -138,7 +138,7 @@ pub(in crate::executor) async fn stock_project_tool(
             )
         })?)?;
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = custody;
     // Check the authored projection before the harness adds its common spill
     // envelope. Large output is retained, never silently replaced with a prefix.
@@ -174,7 +174,7 @@ pub(in crate::executor) async fn stock_project_tool(
             io,
         )
         .await?;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io.filter(|_| work.is_some()) {
             io.absorb_native_custody(custody.ok_or_else(|| {
                 stock_boundary(
@@ -184,7 +184,7 @@ pub(in crate::executor) async fn stock_project_tool(
                 )
             })?)?;
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = custody;
         bounded
     } else {

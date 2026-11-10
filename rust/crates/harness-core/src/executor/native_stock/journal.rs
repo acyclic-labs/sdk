@@ -9,7 +9,9 @@ pub(in crate::executor) async fn stage_bytes(
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
     validate_journal(journal, io)?;
+    #[cfg(feature = "filesystem")]
     let _key_hold;
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.preflight(acyclic_fs::WorkCounters {
             bytes_hashed: bytes.len() as u64 * (1 + u64::from(bind_content)),
@@ -19,6 +21,7 @@ pub(in crate::executor) async fn stage_bytes(
     use sha2::Digest as _;
     let digest: [u8; 32] = sha2::Sha256::digest(bytes).into();
     let identity = bind_content.then(|| blake3::hash(bytes));
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.spent(acyclic_fs::WorkCounters {
             bytes_hashed: bytes.len() as u64 * (1 + u64::from(bind_content)),
@@ -35,6 +38,7 @@ pub(in crate::executor) async fn stage_bytes(
             })
         })
         .transpose()?;
+    #[cfg(feature = "filesystem")]
     {
         _key_hold = io
             .zip(copied.as_ref())
@@ -72,6 +76,7 @@ pub(crate) async fn stage_json<T: Serialize>(
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
     validate_journal(journal, io)?;
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let hold;
         let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
@@ -85,7 +90,7 @@ pub(crate) async fn stage_json<T: Serialize>(
     stage_bytes(journal, operation, key, &bytes, true, None).await
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::executor) fn native_size_add(left: u64, right: u64) -> Result<u64> {
     left.checked_add(right)
         .ok_or_else(|| crate::Error::NativeBoundary {
@@ -94,7 +99,7 @@ pub(in crate::executor) fn native_size_add(left: u64, right: u64) -> Result<u64>
         })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::executor) fn native_size_slots(capacity: usize, size: usize) -> Result<u64> {
     (capacity as u64)
         .checked_mul(size as u64)

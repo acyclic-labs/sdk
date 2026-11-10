@@ -2,7 +2,7 @@
 +++ b/rust/crates/harness-core/src/native_environment.rs
 @@ -126,18 +126,6 @@
              .map(PathBuf::into_os_string),
-         #[cfg(not(target_arch = "wasm32"))]
+         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
          Read::State(None) => {
 -            // Native directory APIs can ignore process-level overrides. Resolve
 -            // the caller's explicit root before consulting the platform default.

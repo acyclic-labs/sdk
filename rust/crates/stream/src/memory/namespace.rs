@@ -474,7 +474,7 @@ impl Namespace {
         out.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
         out
     }
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "local"))]
     fn values(&self) -> impl Iterator<Item = &PathState> {
         self.entries().into_iter().map(|(_, data)| data)
     }

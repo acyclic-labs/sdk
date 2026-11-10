@@ -2,7 +2,7 @@ use crate::{Error, Result, conversation::VolumeRef};
 use acyclic_fs::access::{
     Action, Capability, Context, MountMode, PathTrie, Policy, Principal, Resource,
 };
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
 use std::borrow::Cow;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
@@ -55,9 +55,9 @@ impl<T> Mount<T> {
         action: Action,
         path: &str,
         now: u64,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             work.remaining()?;
         }
@@ -113,7 +113,7 @@ impl<T> MountTable<T> {
     }
 
     /// Resolves either a task-relative path or an exact volume's relative path.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     #[doc(hidden)]
     pub fn file<'a>(
         &'a self,
@@ -125,13 +125,13 @@ impl<T> MountTable<T> {
 
     /// Borrowed canonical content-path routing on the original tool ledger.
     /// Explicit-volume native routing is refused before allocating a path.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     #[doc(hidden)]
     pub fn file_with_work<'a>(
         &'a self,
         volume: Option<&VolumeRef>,
         path: &'a str,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
         if volume.is_none() {
             #[cfg(not(target_arch = "wasm32"))]
@@ -192,7 +192,7 @@ impl<T> MountTable<T> {
     }
     /// Resolves a qualifier through the visible namespace, never by opening a
     /// model-supplied volume identity.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     #[doc(hidden)]
     pub fn named(&self, name: Option<&str>) -> Result<(&str, &Mount<T>)> {
         self.mounts()
@@ -246,7 +246,7 @@ impl<T> MountTable<T> {
     fn select<'a>(
         &self,
         relative: &'a str,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<(&Mount<T>, &'a str)> {
         let mut prefix = relative;
         loop {
@@ -280,9 +280,9 @@ impl<T> MountTable<T> {
 fn path_error(
     code: crate::wire::ErrorCode,
     reason: &'static str,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
 ) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
         return Error::NativeBoundary { code, reason };
     }

@@ -36,15 +36,14 @@ impl ProviderAttempt {
         provider.generate(request, dispatch)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) fn generate_native<'a>(
         self,
         provider: &'a dyn ModelProvider,
         request: &'a crate::model::PreparedModelRequest,
         dispatch: crate::model::ModelDispatch,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, crate::model::NativeModelStream<'a>, crate::Error>>
-    {
+    ) -> Result<crate::NativeFutureBundle<'a, crate::model::NativeModelStream<'a>>> {
         provider.generate_with_native_work(request, dispatch, work)
     }
 }
@@ -142,9 +141,9 @@ impl DispatchPhase {
 pub(crate) fn claim<T>(
     future: impl std::future::Future<Output = Result<T>>,
 ) -> impl std::future::Future<Output = Result<T>> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     return acyclic_stream::requiring_durability(future);
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
     future
 }
 
@@ -208,7 +207,7 @@ impl<'a> PreparedPhase<'a> {
         journal: &'a dyn ExecutionJournal,
         io: Option<&'a PreparationIo>,
     ) -> Result<Self> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         if journal.supports_deferred_durability() {
             return Ok(Self {
                 barrier: Some(journal.durability_barrier(io)?),
@@ -222,7 +221,7 @@ impl<'a> PreparedPhase<'a> {
         self,
         future: impl std::future::Future<Output = Result<T>>,
     ) -> Result<T> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         if let Some(barrier) = self.barrier {
             let result = acyclic_stream::deferring_durability(future).await;
             // Includes errors and the winning branch of a cancellation race.

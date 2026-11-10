@@ -68,7 +68,7 @@ fn file(path: &str, bytes: &[u8]) -> Result<FileRef> {
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn native_budget() -> acyclic_fs::WorkBudget {
     acyclic_fs::WorkBudget {
         source_bytes_read: 1_048_576,
@@ -82,7 +82,7 @@ fn native_budget() -> acyclic_fs::WorkBudget {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn native_typed_request_error_keeps_original_serde_source_and_custody() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
@@ -129,7 +129,7 @@ fn native_typed_request_error_keeps_original_serde_source_and_custody() -> Resul
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn native_request_preserves_original_raw_value_schema_semantics() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};
@@ -167,7 +167,7 @@ fn native_request_preserves_original_raw_value_schema_semantics() -> Result<()> 
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn native_tool_approval_preserves_literal_arguments_and_original_custody() -> Result<()> {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};

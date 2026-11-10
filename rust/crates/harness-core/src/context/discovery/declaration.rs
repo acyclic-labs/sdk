@@ -258,10 +258,13 @@ impl PinnedContextPath {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         crate::wire_codec::CodecQuota::produce(work, |quota| {
+            #[cfg(feature = "filesystem")]
             let generation = GenerationRef::from_resource(
                 crate::core::copy_resource(generation.as_resource(), quota)?,
                 quota.work(),
             )?;
+            #[cfg(not(feature = "filesystem"))]
+            let generation = generation.clone();
             let pinned = Self {
                 root: ContextRoot {
                     volume: root.volume.clone_in_quota(quota)?,

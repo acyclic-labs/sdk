@@ -96,7 +96,7 @@ impl ContextStage for PinnedContextStage {
             ));
         }
         validate_reference(&self.reference, self.limits, io)?;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if io
             .and_then(crate::executor::PreparationIo::original_native_work)
             .is_some()
@@ -112,7 +112,7 @@ impl ContextStage for PinnedContextStage {
     }
 
     fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if io.is_some_and(|io| io.original_native_work().is_some()) {
             self.validate(io)?;
         }
@@ -143,7 +143,7 @@ impl ContextStage for PinnedContextStage {
         limits: Limits,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if io
             .and_then(crate::executor::PreparationIo::original_native_work)
             .is_some()
@@ -169,7 +169,7 @@ impl ContextStage for PinnedContextStage {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool {
         true
     }

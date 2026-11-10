@@ -240,7 +240,7 @@ fn register(
 }
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "mcp-stdio")]
 mod path_tests;
 #[cfg(test)]
 mod tests;

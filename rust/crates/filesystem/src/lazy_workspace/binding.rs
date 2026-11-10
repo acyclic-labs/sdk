@@ -147,7 +147,7 @@ impl<
         Self::open(workspace, Arc::clone(&self.source), self.store.clone(), ctx).await
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn watch_source(
         &self,
         sink: Arc<dyn crate::demand::SourceChangeSink>,
@@ -162,7 +162,7 @@ impl<
         accept_receipt(result, ctx)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn source_reference(&self) -> SourceReference {
         self.source.reference()
     }
@@ -245,7 +245,7 @@ impl<
     }
 
     /// Selects companion indexes for a retained mounted checkout without mutation.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) async fn mounted_read_state(
         &self,
         checkout: &crate::native_mount::SharedCheckoutObservation<'_, A, O>,

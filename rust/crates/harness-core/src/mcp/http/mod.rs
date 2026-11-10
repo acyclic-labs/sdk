@@ -17,11 +17,11 @@ pub use body::ResponseByteFrontier;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod codec_fuzz;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
 mod native;
 mod response;
 mod sse;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
 pub use native::NativeMcpHttpProvider;
 
 /// One portable HTTP request with finite I/O bounds.

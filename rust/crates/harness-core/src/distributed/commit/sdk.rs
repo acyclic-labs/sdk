@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn native_call_result<T>(
     original: &acyclic_fs::NativeMaterializationWork,
     result: acyclic_stream::NativeStreamResult<T>,
@@ -22,7 +22,7 @@ pub(in crate::distributed) async fn inspect_idempotency<
     phase: Option<&mut CommitPhase>,
 ) -> Result<(IdempotencyOutcome, Option<acyclic_stream::Revision>)> {
     let observation = async {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = quota
             .work()
             .as_deref()

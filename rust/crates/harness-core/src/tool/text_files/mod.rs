@@ -33,7 +33,7 @@ fn finite_result_bound(maximum: u64) -> Result<()> {
 
 mod inputs;
 pub use inputs::{SearchInput, SearchResult};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod records;
 #[cfg(test)]
 mod tests;

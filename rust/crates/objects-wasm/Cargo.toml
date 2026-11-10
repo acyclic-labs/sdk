@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["javascript"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["json", "javascript"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["js-bytes"] }
 futures.workspace = true
 

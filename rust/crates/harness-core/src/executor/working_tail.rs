@@ -37,6 +37,7 @@ impl WorkingCut {
     }
 }
 
+#[cfg(feature = "filesystem")]
 impl PreparationRecord for WorkingCut {
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         crate::core::owned_sum([
@@ -249,8 +250,12 @@ impl<'a> StockExecution<'a> {
         reference: &FileRef,
         expected: Option<&crate::context::CompactionReference>,
     ) -> Result<RetainedCut<'a>> {
+        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
+        #[cfg(feature = "filesystem")]
         let io = scope.io();
+        #[cfg(not(feature = "filesystem"))]
+        let io = self.io;
         let cut = retain_preparation(load_json::<WorkingCut>(journal, reference, io).await?)?;
         if cut.version != 1 {
             return Err(self.invalid_working_cut());
@@ -282,6 +287,7 @@ impl<'a> StockExecution<'a> {
         )?;
         // Both decoded values already own their admitted backing. Keep that
         // custody while validating, then transfer it instead of copying them.
+        #[cfg(feature = "filesystem")]
         let decoded = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         if authenticated {
             crate::context::validate_projected_context(&original_context, self.stock.limits, io)?;
@@ -307,8 +313,10 @@ impl<'a> StockExecution<'a> {
                 )?;
             }
         }
+        #[cfg(feature = "filesystem")]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let reference = crate::model::clone_file(reference, io)?;
+        #[cfg(feature = "filesystem")]
         let hold = {
             let retained = io.map_or(Ok(0), |io| {
                 io.owned_bytes()?
@@ -319,6 +327,8 @@ impl<'a> StockExecution<'a> {
             scope.finish(retained)?;
             self.io.map(|io| io.guard_owned(retained)).transpose()?
         };
+        #[cfg(not(feature = "filesystem"))]
+        let hold = None;
         Ok(RetainedCut {
             journal: journal.cache_identity(),
             reference,

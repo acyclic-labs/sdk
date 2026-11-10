@@ -8,7 +8,7 @@ durable evidence; verification cannot start a review or execute an effect.
 Run the real filesystem-backed control:
 
 ```sh
-cargo test --locked --offline -p acyclic-harness-core --features test-support --lib filesystem::memory::tests::approvals::approval_dispatch_and_verification_retain_one_original_request -- --exact
+cargo test --locked --offline -p acyclic-harness-core --features filesystem,test-support --lib filesystem::memory::tests::approvals::approval_dispatch_and_verification_retain_one_original_request -- --exact
 ```
 
 The control forwards original request/review files, uses the production policy

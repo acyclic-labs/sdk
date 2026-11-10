@@ -124,7 +124,7 @@ impl<
         result
     }
     /// Stages a live identity in an unpublished mounted checkout.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) async fn stage_into_checkout(
         &self,
         checkout: &mut crate::Checkout<A, O>,
@@ -181,7 +181,7 @@ impl<
         result
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(super) async fn stage_source_parents(
         &self,
         transaction: &mut crate::Transaction<A, O>,

@@ -3,7 +3,7 @@
 Run the production growth control:
 
 ```sh
-cargo test --locked -p acyclic-fs --lib --no-default-features kernel::persistent_point::tests::owned_growth_admits_the_original_and_replacement_before_allocating -- --exact --nocapture
+cargo test --locked -p acyclic-fs --lib --no-default-features --features memory,native-mount kernel::persistent_point::tests::owned_growth_admits_the_original_and_replacement_before_allocating -- --exact --nocapture
 ```
 
 `delta-only.patch` restores the original `Owned<Vec<T>>::ensure_for_push`
@@ -29,7 +29,7 @@ allocator error and the original native allocator cause. Its existing bound
 control also refuses simultaneous backing before any physical allocation:
 
 ```sh
-cargo test --locked -p acyclic-fs --lib --no-default-features kernel::blob::index::tests::small_blob_reservations_do_not_depend_on_page_width -- --exact --nocapture
+cargo test --locked -p acyclic-fs --lib --no-default-features --features memory,native-mount kernel::blob::index::tests::small_blob_reservations_do_not_depend_on_page_width -- --exact --nocapture
 ```
 
 `blob-delta-only.patch` restores the original `reserve_blob_vec` from
@@ -43,7 +43,7 @@ The existing real tree-diff control also checks that growing the change vector
 keeps every moved key and value name funded on both accounting paths:
 
 ```sh
-cargo test --locked -p acyclic-fs --lib --no-default-features kernel::persistent_diff::tests::leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation -- --exact --nocapture
+cargo test --locked -p acyclic-fs --lib --no-default-features --features memory,native-mount kernel::persistent_diff::tests::leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation -- --exact --nocapture
 ```
 
 `element-credit.patch` restores the growth body that released element funding
@@ -61,7 +61,7 @@ wrapped entries, refused replacement with zero physical allocations, admitted
 replacement with one allocation, preserved order, and final backing retirement:
 
 ```sh
-cargo test --locked -p acyclic-fs --lib --no-default-features watch_queue::tests::native_queue_custody_tracks_backing_and_retries_denied_growth -- --exact --nocapture
+cargo test --locked -p acyclic-fs --lib --no-default-features --features memory,native-mount watch_queue::tests::native_queue_custody_tracks_backing_and_retries_denied_growth -- --exact --nocapture
 ```
 
 `queue-delta-only.patch` restores the original queue growth body from

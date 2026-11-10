@@ -8,6 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(loom)");
     println!("cargo:rustc-check-cfg=cfg(fuzzing)");
     case_fold::generate()?;
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_NATIVE_MOUNT");
     if std::env::var_os("CARGO_FEATURE_NAPI_TYPES").is_some() {
         // napi-derive emits the shared enums into this external directory.
         // A native build without declaration output must not leave Cargo's
@@ -17,7 +18,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // A build script runs on the host, so the target comes from Cargo.
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
+        && std::env::var_os("CARGO_FEATURE_NATIVE_MOUNT").is_some()
+    {
         build_darwin_mount();
     }
     Ok(())

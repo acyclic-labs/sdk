@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_fs::NativeMaterializationWork;
+use acyclic_harness_core::NativeFutureBundle;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Backend {
@@ -33,9 +34,7 @@ impl HttpTransport for Backend {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<
-        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-    > {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(wait, work)
     }
     /// The agent host's ordinary dispatch.
@@ -59,8 +58,8 @@ impl HttpTransport for Backend {
         &'a self,
         request: HttpRequest,
         work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+    ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
+        NativeFutureBundle::new(work, || async move {
             let (status, body) = self.answer(&request);
             drop(request);
             HttpResponse::with_native_body(

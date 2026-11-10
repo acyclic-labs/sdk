@@ -60,7 +60,7 @@ pub mod inspect;
 pub mod stream_records;
 
 /// Original settled logical Machine placement, without current configuration.
-#[cfg(feature = "research")]
+#[cfg(all(feature = "research", feature = "machines"))]
 pub mod placement;
 
 /// Caller-owned invocation receipts from the shared Actors call protocol.

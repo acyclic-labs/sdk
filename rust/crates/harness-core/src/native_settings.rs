@@ -10,7 +10,7 @@ use std::{
     io::Read as _,
     path::{Path, PathBuf},
 };
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+#[cfg(all(feature = "hooks", any(test, feature = "test-support")))]
 #[doc(hidden)]
 pub mod codec_fuzz;
 mod model;
@@ -20,7 +20,7 @@ mod workspace;
 /// Production native settings boundaries for decoder conformance.
 #[cfg(feature = "test-support")]
 pub mod test_support {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "hooks")]
     pub use super::validation::check_settings;
     pub use super::validation::{check_model_selection, check_workspace};
     /// Admits the same model and provider fields as the configured-model loader.
@@ -58,7 +58,7 @@ pub struct SettingsConfig {
 }
 
 impl SettingsConfig {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-execution")]
     #[doc(hidden)]
     pub fn skill_roots(&self) -> [PathBuf; 3] {
         [
@@ -67,7 +67,7 @@ impl SettingsConfig {
             self.codex_home.join("skills"),
         ]
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-execution")]
     #[doc(hidden)]
     pub fn command_roots(&self) -> [(PathBuf, &'static str); 2] {
         [
@@ -102,7 +102,11 @@ impl SettingsConfig {
         }
     }
 
-    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+    #[cfg(all(
+        any(test, feature = "test-support"),
+        feature = "filesystem-local",
+        any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+    ))]
     #[doc(hidden)]
     pub fn for_test(workspace: impl Into<PathBuf>) -> Result<Self> {
         let home = tempfile::tempdir().map_err(Error::process_io)?;
@@ -148,7 +152,7 @@ impl SettingsConfig {
 #[derive(Default)]
 pub struct NativeSettings {
     /// Normalized, compiled lifecycle hooks.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "hooks")]
     pub hooks: crate::hooks::Hooks,
     /// Enabled MCP declarations after whole-entry scope overrides.
     pub mcp: McpConfig,
@@ -179,13 +183,16 @@ impl NativeSettings {
         Self::snapshot(config, load_mcp, true).await
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "hooks", feature = "filesystem-local"))]
     #[doc(hidden)]
     pub async fn load_hooks(config: std::sync::Arc<SettingsConfig>) -> Result<crate::hooks::Hooks> {
         Ok(Self::snapshot(config, false, true).await?.hooks)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        any(feature = "mcp-stdio", feature = "mcp-http")
+    ))]
     #[doc(hidden)]
     pub async fn load_mcp(config: std::sync::Arc<SettingsConfig>) -> Result<McpConfig> {
         Ok(Self::snapshot(config, true, false).await?.mcp)
@@ -214,7 +221,7 @@ impl NativeSettings {
     fn read(config: &SettingsConfig, load_mcp: bool, load_hooks: bool) -> Result<Self> {
         let configured_workspace = &config.workspace;
         let workspace = std::fs::canonicalize(configured_workspace).map_err(Error::process_io)?;
-        let hooks = load_hooks;
+        let hooks = cfg!(feature = "hooks") && load_hooks;
         let mut sources = vec![
             Source {
                 path: config.home.join(".claude.json"),
@@ -279,9 +286,9 @@ impl NativeSettings {
         }
         let mut snapshot = Self::default();
         let mut selected = BTreeMap::new();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "hooks")]
         let mut hook_documents = Vec::new();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "hooks")]
         let mut disable_hooks: Option<(usize, Value)> = None;
         let mut unique = BTreeMap::<PathBuf, ReadPolicy>::new();
         for (order, source) in sources
@@ -346,7 +353,7 @@ impl NativeSettings {
                 ));
             }
             let mut document: BTreeMap<String, Value> = parse(&bytes, source.toml)?;
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "hooks")]
             if let Some(order) = source.hook_order {
                 if let Some(disabled) = document.remove("disableAllHooks")
                     && disable_hooks
@@ -386,7 +393,7 @@ impl NativeSettings {
                 .map_err(|error| Error::Invalid(format!("MCP server {name}: {error}")))?;
             snapshot.mcp.insert(name, imported, dialect)?;
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "hooks")]
         {
             let disabled = disable_hooks
                 .map(|(_, value)| serde_json::from_value::<bool>(value))

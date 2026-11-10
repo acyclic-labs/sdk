@@ -1,7 +1,7 @@
 //! Trusted host composition: cached identity verification, then ordinary scope delegation.
 //! Token admission never reads keys, storage, environment or the network.
 mod claims;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "oidc-http", not(target_arch = "wasm32")))]
 mod http;
 mod keys;
 
@@ -15,7 +15,7 @@ use bytes::Bytes;
 use std::collections::BTreeMap;
 
 pub use claims::VerifiedIdentity;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "oidc-http", not(target_arch = "wasm32")))]
 pub use http::HttpSource;
 pub use keys::{Config, Limits, SigningAlgorithm};
 

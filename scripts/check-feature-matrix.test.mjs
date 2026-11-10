@@ -163,6 +163,12 @@ test("shipped feature admission uses actual defining packages and preserves inde
 
   const fs = inventory.get("acyclic-fs");
   const defaults = selectCargoFeatures(inventory, [fs.name], []);
+  assert.ok(defaults.roots[0].features.includes("default"));
+  // The full matrix must not erase cfg(feature = "default") by treating it
+  // as only an alias for the features it forwards.
+  const expanded = featureSets(fs, true).map(args => selectCargoFeatures(inventory, [fs.name], args.slice(5)));
+  assert.ok(expanded.some(selection => !selection.roots[0].features.includes("default")));
+  assert.ok(expanded.some(selection => selection.roots[0].features.includes("default")));
   const commands = linuxCommands(defaults);
   assert.notDeepEqual(commands[0], commands[1]);
   assert.deepEqual(commands.map(args => args[4]), ["--lib", "--all-targets"]);
@@ -178,14 +184,14 @@ test("shipped feature admission uses actual defining packages and preserves inde
   assert.throws(() => clippySelections(missing), /STEP_FAILED cargo-feature-selection: unknown package acyclic-fs/);
   const renamed = new Map(inventory);
   const features = { ...fs.features };
-  delete features.browser;
+  delete features["native-watch"];
   renamed.set(fs.name, { ...fs, features });
   // A feature on another root cannot supply the defining crate's cfg.
   const stream = inventory.get("acyclic-stream");
-  renamed.set(stream.name, { ...stream, features: { ...stream.features, browser: [] } });
-  assert.throws(() => selectCargoFeatures(renamed, [fs.name], ["--features", "browser"]), /unknown selected-root feature browser/);
+  renamed.set(stream.name, { ...stream, features: { ...stream.features, "native-watch": [] } });
+  assert.throws(() => clippySelections(renamed), /unknown selected-root feature native-watch/);
   assert.throws(() => selectCargoFeatures(inventory, [fs.name], ["--features"]), /missing feature names/);
-  assert.throws(() => selectCargoFeatures(inventory, [fs.name], ["--features", `${stream.name}/wasm`]), /unknown selected-root feature/);
+  assert.throws(() => selectCargoFeatures(inventory, [fs.name], ["--features", `${stream.name}/local`]), /unknown selected-root feature/);
   // Neither cfg(test) nor a dev dependency can admit an unknown root feature.
   assert.throws(() => selectCargoFeatures(inventory, [fs.name], ["--features", "not-a-defined-root-feature"]), /unknown selected-root feature/);
 });

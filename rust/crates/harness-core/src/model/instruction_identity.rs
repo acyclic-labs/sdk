@@ -42,6 +42,7 @@ impl InstructionIdentity {
         &self.path
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn payload_bytes(&self) -> Result<u64> {
         super::inventory::add(
             self.volume.logical_owned_bytes()?,

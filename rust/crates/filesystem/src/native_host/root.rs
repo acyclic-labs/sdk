@@ -248,7 +248,7 @@ impl HostRoot {
             }
         })
     }
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "linux")))]
+    #[cfg(all(feature = "native-watch", not(target_os = "linux")))]
     pub(crate) fn stat_source<W: SourceDemandReadWork>(
         &self,
         path: &NativePath,
@@ -294,7 +294,7 @@ impl HostRoot {
             })
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-watch")]
     pub(crate) fn stat_source_metadata<W: SourceDemandReadWork>(
         &self,
         path: &NativePath,
@@ -318,7 +318,12 @@ impl HostRoot {
             self.stat_source(path, work)
         }
     }
-    #[cfg(any(test, not(target_arch = "wasm32"), not(target_os = "linux")))]
+    #[cfg(any(
+        test,
+        feature = "native-mount",
+        feature = "native-watch",
+        not(target_os = "linux")
+    ))]
     pub(crate) fn stat_file<W: NativeHostWork>(
         &self,
         file: &File,
@@ -337,7 +342,7 @@ impl HostRoot {
             )
         }
     }
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn stat_file_metadata<W: NativeHostWork>(
         &self,
         file: &File,
@@ -434,7 +439,7 @@ impl HostRoot {
         )
     }
     /// Opens a held-root output with the access needed by FlushFileBuffers.
-    #[cfg(all(windows, any(test, not(target_arch = "wasm32"))))]
+    #[cfg(all(windows, any(test, feature = "native-mount")))]
     pub(crate) fn open_file_for_sync<W: NativeHostWork>(
         &self,
         path: &[u16],
@@ -452,7 +457,7 @@ impl HostRoot {
             .map(cap_std::fs::File::from_std)
         })
     }
-    #[cfg(all(windows, any(test, not(target_arch = "wasm32"))))]
+    #[cfg(all(windows, any(test, feature = "native-mount")))]
     pub(crate) fn clone_file_from<W: SourceDemandReadWork>(
         &self,
         source_root: &HostRoot,
@@ -483,7 +488,7 @@ impl HostRoot {
         }
         Ok(cloned)
     }
-    #[cfg(all(target_os = "linux", any(not(target_arch = "wasm32"), test)))]
+    #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
     pub(crate) fn open_linux_metadata_target<W: SourceDemandReadWork>(
         &self,
         path: &Path,
@@ -506,7 +511,7 @@ impl HostRoot {
             )
         })
     }
-    #[cfg(all(windows, any(not(target_arch = "wasm32"), test)))]
+    #[cfg(all(windows, any(feature = "native-mount", test)))]
     pub(crate) fn open_windows_metadata_target<W: SourceDemandReadWork>(
         &self,
         path: &[u16],

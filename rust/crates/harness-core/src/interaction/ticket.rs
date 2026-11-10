@@ -51,7 +51,7 @@ impl InteractionTicket {
         &self,
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<(Interaction, u64, acyclic_fs::NativeCustody)> {
+    ) -> Result<(Interaction, u64, crate::NativeCustody)> {
         self.validate(work)?;
         self.request.descriptor().verify(bytes, work)?;
         let mut decoded = decode_interaction_json::<Interaction>(
@@ -105,7 +105,7 @@ impl InteractionTicket {
                 ));
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = if decoded
             .1
             .work()
@@ -118,7 +118,7 @@ impl InteractionTicket {
         } else {
             None
         };
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let custody = None;
         decoded.1.transfer();
         let (request, quota) = decoded;

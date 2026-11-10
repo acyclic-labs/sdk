@@ -32,7 +32,7 @@ four positive controls from the repository root:
 
 ```sh
 RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test --locked \
-  -p acyclic-harness-tui --features model-checking --lib \
+  -p acyclic-harness-tui --features tui,model-checking --lib \
   term::frame::frame_model::
 ```
 
@@ -60,7 +60,7 @@ the eight positive controls from the repository root:
 
 ```sh
 RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test --locked \
-  -p acyclic-harness-tui --features model-checking --lib \
+  -p acyclic-harness-tui --features tui,model-checking --lib \
   term::lifecycle::terminal_lifecycle_model::
 ```
 
@@ -123,7 +123,7 @@ notification, and the production close transition and assertion stay unchanged.
 
 `native-profile-reused-directory.patch` restores the exporter's predictable
 temporary directory and unconditional recursive cleanup. Build the existing
-exporter with `cargo test -p acyclic-harness-tui --test main
+exporter with `cargo test -p acyclic-harness-tui --features tui --test main
 --no-run`, then invoke
 `terminal_regions::native_profiles::export_windows_screen_fixtures --exact
 --ignored` in that test binary. With `ACYCLIC_REGION_SCREEN_FIXTURES` unset,

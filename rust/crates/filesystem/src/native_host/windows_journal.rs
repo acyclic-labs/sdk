@@ -1,4 +1,4 @@
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, feature = "native-watch"))]
 use super::{
     DemandError, DemandWork, NativeMaterializationWork, WorkBudget, ordinary_work, test_root,
 };
@@ -335,7 +335,7 @@ pub(crate) fn stat_windows_name(
     Ok(Some(HostStat::from_stat_information(&information, volume)?))
 }
 
-#[cfg(any(not(target_arch = "wasm32"), test))]
+#[cfg(any(feature = "native-watch", feature = "native-mount", test))]
 pub(crate) fn query_windows_stat<W: NativeHostWork>(
     work: &mut W,
     charge: WorkCounters,
@@ -528,6 +528,6 @@ pub(crate) fn set_windows_name<W: NativeHostWork>(
 }
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-watch")]
 #[path = "tests_windows_stat.rs"]
 mod stat_tests;

@@ -46,7 +46,7 @@ pub(super) struct Payload {
 #[derive(Default)]
 pub(super) struct Spans {
     pub payloads: Vec<Payload>,
-    pub hold: acyclic_fs::NativeCustody,
+    pub hold: crate::NativeCustody,
     active: Option<u64>,
     cell_start: u64,
     checkpoint: usize,
@@ -67,12 +67,7 @@ impl Spans {
         self.key.take()
     }
 
-    pub fn supply(
-        &mut self,
-        bytes: &[u8],
-        level: u32,
-        work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<()> {
+    pub fn supply(&mut self, bytes: &[u8], level: u32, work: crate::NativeWork<'_>) -> Result<()> {
         match level {
             1 => self.cell_field = false,
             3 => self.output_field = false,
@@ -114,7 +109,7 @@ impl Spans {
         depth: u32,
         cell: u64,
         selected: bool,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<bool> {
         let invalid = || executor::rejection(work, "invalid notebook output bundle");
         if let SpanEvent::Start {
@@ -238,14 +233,14 @@ pub(super) struct Retained {
     pub values: Vec<NotebookOutput>,
     pub remaining: u64,
     pub next: Option<(u64, u64)>,
-    hold: acyclic_fs::NativeCustody,
+    hold: crate::NativeCustody,
 }
 
 fn path(
     operation: crate::OperationId,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(String, acyclic_fs::NativeCustody)> {
-    #[cfg(not(target_arch = "wasm32"))]
+    work: crate::NativeWork<'_>,
+) -> Result<(String, crate::NativeCustody)> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let (path, hold) =
             work.display(&format_args!("projections/v1/notebook-output/{operation}"))?;
@@ -264,7 +259,7 @@ pub(super) async fn retain(
     source: (&str, u64),
     spans: &[Payload],
     budget: u64,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Retained> {
     let (version, position) = source;
@@ -288,7 +283,7 @@ pub(super) async fn retain(
             )
         })?;
     let domain = b"file-projection/notebook-output/v1\0";
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
             bytes_hashed: (domain.len() + version.len()) as u64,
@@ -318,7 +313,7 @@ pub(super) async fn retain(
             .ok_or_else(|| {
                 executor::rejection(work, "notebook payload exceeds source byte credit")
             })?;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             work.charge(acyclic_fs::WorkCounters {
                 bytes_hashed: 16,
@@ -421,7 +416,7 @@ pub(super) async fn retain(
             std::mem::size_of::<NotebookOutput>() as u64,
             1,
         )?;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let (Some(total), Some(incoming)) = (&mut retained.hold, &mut file_hold) {
             total.absorb(incoming)?;
         }
@@ -439,10 +434,10 @@ pub(super) async fn retain(
 
 struct Decoded {
     bytes: Vec<u8>,
-    _hold: acyclic_fs::NativeCustody,
+    _hold: crate::NativeCustody,
 }
 
-fn decode_payload(source: &[u8], work: acyclic_fs::NativeWork<'_>) -> Result<Decoded> {
+fn decode_payload(source: &[u8], work: crate::NativeWork<'_>) -> Result<Decoded> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     let text = std::str::from_utf8(source)
         .map_err(|_| executor::rejection(work, "invalid notebook MIME value"))?;

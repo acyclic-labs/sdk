@@ -56,6 +56,7 @@ impl ProviderRef {
     pub(super) fn parts(&self) -> [&str; 3] {
         [&self.namespace, &self.family, &self.version]
     }
+    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         capacity_sum([
             self.namespace.capacity(),
@@ -63,6 +64,7 @@ impl ProviderRef {
             self.version.capacity(),
         ])
     }
+    #[cfg(feature = "filesystem")]
     pub(crate) fn clone_with_io(&self, io: &crate::filesystem::PreparationIo) -> Result<Self> {
         crate::executor::with_history_io(Some(io), |work| {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;

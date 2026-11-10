@@ -85,7 +85,7 @@ proptest! {
             sampling: Default::default(), max_output_tokens: Some(output),
         };
         let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let count = {
             let mut result = None;
             let physical = acyclic_test_support::measure(|| {
@@ -122,7 +122,7 @@ proptest! {
             prop_assert_eq!(work.live_allocation_bytes(), baseline);
             count
         };
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let count = prepared.serialized_token_upper_bound(None).unwrap().0;
         prop_assert_eq!(count.validate(&prepared, &mut None).unwrap(), prepared.bytes().len() as u64);
         for (message, tokens) in request.messages.iter().zip(&count.message_tokens) {

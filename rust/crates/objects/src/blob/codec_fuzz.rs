@@ -74,7 +74,7 @@ fn check_admission<T: PartialEq>(
 }
 
 /// Prepare an obsolete value using the original local compaction chunk size.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub fn compaction_chunk_bytes() -> usize {
     usize::try_from(crate::local::COMPACTION_CHUNK)
         .expect("local compaction chunk fits a native allocation")
@@ -177,7 +177,7 @@ pub fn check(bytes: &[u8]) -> bool {
             return false;
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     if !crate::local::codec_fuzz::check(bytes) {
         return false;
     }
@@ -422,7 +422,7 @@ pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
             .encode(),
         ));
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     seeds.extend(crate::local::codec_fuzz::seeds());
     seeds
 }

@@ -1,4 +1,5 @@
 use super::OperationId;
+#[cfg(any(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::wire::ErrorCode;
 
 /// Reasons an interaction settled without approving its action. Tool callers
@@ -176,7 +177,7 @@ pub enum Error {
         /// Original diagnostic, moved without copying.
         message: String,
         /// Original custody, released after the diagnostic.
-        custody: acyclic_fs::NativeCustody,
+        custody: crate::NativeCustody,
     },
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
@@ -259,9 +260,11 @@ pub enum Error {
     #[error("{0}")]
     Target(crate::agent::TargetRefusal),
     /// A Machines provider failure with no operation receipt, keeping its exact cause.
+    #[cfg(feature = "machines")]
     #[error("Machines {0}")]
     Machines(#[source] acyclic_machines::ProviderError),
     /// A possibly dispatched Machine effect, retaining its receipt and cause.
+    #[cfg(feature = "machines")]
     #[error("{}: {cause}", indeterminate_display(*operation_id, None))]
     MachinesIndeterminate {
         /// Original operation to reconcile, never a new dispatch identity.
@@ -271,6 +274,7 @@ pub enum Error {
         cause: acyclic_machines::ProviderError,
     },
     /// The original Machine ownership traversal failed before all holders settled.
+    #[cfg(feature = "machines")]
     #[error("Machine ownership: {0}")]
     MachineOwnership(#[source] acyclic_stream::StreamError),
     /// An owned native failure, preserving its cause and existing allocation custody.
@@ -303,7 +307,7 @@ pub enum Error {
         reason: &'static str,
     },
     /// An already-owned diagnostic with its original classification and custody.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{message}")]
     NativeDiagnostic {
         /// The classification of the original diagnostic.
@@ -314,7 +318,7 @@ pub enum Error {
         custody: acyclic_fs::NativeAllocation,
     },
     /// A fixed JSON input failure without an allocated diagnostic.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{kind}")]
     NativeJsonAdmission {
         /// The original boundary classification.
@@ -323,7 +327,7 @@ pub enum Error {
         kind: crate::executor::json::JsonInputError,
     },
     /// A JSON failure preserving its original cause and classification.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeJson {
         /// Invalid for a request; Storage for a persisted record.
@@ -335,7 +339,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual protobuf decode failure on the original native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeProstDecode {
         /// Invalid for request input; Storage for persisted records.
@@ -347,7 +351,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// Original JSON Schema failure with custody for its owned input instance.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeSchema {
         /// Invalid at a request boundary; contextual uncertainty after dispatch.
@@ -359,7 +363,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual Stream failure in a native operation.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeStream {
         /// Preserved contract classification for the original provider failure.
@@ -371,7 +375,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual native supervisor failure.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeSupervisor {
         /// The original join error, including its actual panic or cancellation.
@@ -381,7 +385,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual selected lazy-source failure.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeSource {
         /// The original source error.
@@ -391,7 +395,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual native workspace failure, moved without diagnostic conversion.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeWorkspace {
         /// The original workspace cause.
@@ -401,7 +405,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// A physical native action whose journal completion is uncertain.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{failure}")]
     NativeStageUncertain {
         /// The original cause and durable/live work prefixes.
@@ -409,7 +413,7 @@ pub enum Error {
         failure: acyclic_fs::NativeStageUncertainty<Error>,
     },
     /// A driven workspace join failure with its complete original typed cause.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeDrivenJoin {
         /// The complete planning, resolution or publication failure.
@@ -419,7 +423,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// A native reservation failure retaining its original physical cleanup owner.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeReservation {
         /// The original primary failure's wire classification.
@@ -431,7 +435,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An original SDK filesystem failure without a diagnostic projection.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeFilesystem {
         /// The complete filesystem cause, including any existing payload custody.
@@ -441,7 +445,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// A native view failure, including any retained physical cleanup owner.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{cause}")]
     NativeView {
         /// The original lifecycle failure and its actual cleanup ownership.
@@ -451,7 +455,11 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual SDK workspace publication failure, including its original prefix.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     #[error("{source}")]
     NativeWorkspacePublication {
         /// The original publication cause and any physical cleanup ownership.
@@ -461,6 +469,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An SDK git operation failure retaining the complete typed cause.
+    #[cfg(feature = "filesystem")]
     #[error("{source}")]
     NativeGit {
         /// Original capture, coordination, patch, lineage or durable-state cause.
@@ -468,7 +477,7 @@ pub enum Error {
         source: Box<crate::tools::git::Failure>,
     },
     /// An actual native process timeout, without a new boxed IO error.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeTimeout {
         /// The original elapsed timeout.
@@ -502,6 +511,7 @@ pub(crate) fn native_work_error_code(
 }
 
 /// Classify the original cause without formatting or copying its diagnostic.
+#[cfg(feature = "filesystem")]
 fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
     use acyclic_fs::{AuthorityStoreError, FsError};
     match source {
@@ -516,6 +526,7 @@ fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
 }
 
 /// Wire classification of a retained Machines cause.
+#[cfg(feature = "machines")]
 const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
     use crate::wire::ErrorCode;
     use acyclic_machines::ProviderError as Machines;
@@ -541,6 +552,7 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
 }
 
 impl Error {
+    #[cfg(feature = "filesystem")]
     pub(crate) fn workspace_error_code(source: &acyclic_fs::WorkspaceError) -> ErrorCode {
         use acyclic_fs::WorkspaceError;
         match source {
@@ -630,6 +642,7 @@ impl Error {
             | Self::CommandIndeterminate {
                 operation_id: id, ..
             } => Some(*id),
+            #[cfg(feature = "machines")]
             Self::MachinesIndeterminate { operation_id, .. } => Some(*operation_id),
             Self::Cleanup(failure) => failure.classification.operation_id,
             _ => None,
@@ -735,33 +748,43 @@ impl Error {
                 crate::agent::Refused::Offline => ErrorCode::Unsupported,
                 crate::agent::Refused::Declined(_) => ErrorCode::Unauthorized,
             },
+            #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
+            #[cfg(feature = "machines")]
             Self::MachinesIndeterminate { .. } => ErrorCode::Indeterminate,
+            #[cfg(feature = "machines")]
             Self::MachineOwnership(_) => ErrorCode::Storage,
             Self::ModelDiagnostic { code, .. } => *code,
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeBoundary { code, .. }
-            | Self::NativeJsonAdmission { code, .. }
+            Self::NativeBoundary { code, .. } => *code,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeJsonAdmission { code, .. }
             | Self::NativeDiagnostic { code, .. }
             | Self::NativeJson { code, .. }
             | Self::NativeProstDecode { code, .. }
             | Self::NativeStream { code, .. }
             | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWorkspace { source, .. } => Self::workspace_error_code(source),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeFilesystem { source, .. } => filesystem_error_code(source),
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeConstruction { .. }
-            | Self::NativeSupervisor { .. }
+            Self::NativeConstruction { .. } => ErrorCode::Storage,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeSupervisor { .. }
             | Self::NativeSource { .. }
             | Self::NativeDrivenJoin { .. }
             | Self::NativeStageUncertain { .. } => ErrorCode::Storage,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } | Self::NativeTimeout { .. } => ErrorCode::Storage,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::NativeWorkspacePublication { .. } => ErrorCode::Storage,
+            #[cfg(feature = "filesystem")]
             Self::NativeGit { .. } => ErrorCode::Storage,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
@@ -800,6 +823,7 @@ impl Error {
         if let Self::Cleanup(failure) = self {
             return failure.classification.effect_uncertain;
         }
+        #[cfg(feature = "machines")]
         if matches!(
             self,
             Self::MachineOwnership(_) | Self::MachinesIndeterminate { .. }
@@ -873,7 +897,7 @@ impl Error {
         if self.uncertain() || matches!(self, Self::Cleanup(_)) {
             return false;
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if matches!(
             self,
             Self::NativeJson {
@@ -891,7 +915,7 @@ impl Error {
         }
         // A retained workspace cause is model feedback only as a definitive
         // refusal; exhausted work stays a harness failure despite its Invalid code.
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Self::NativeWorkspace { source, .. } = self {
             use crate::wire::ErrorCode;
             return !matches!(
@@ -965,6 +989,7 @@ impl Error {
             | Self::Target(_)
             | Self::SearchPublicationDeferred => false,
             Self::ModelDiagnostic { .. } => false,
+            #[cfg(feature = "machines")]
             Self::Machines(_) | Self::MachinesIndeterminate { .. } | Self::MachineOwnership(_) => {
                 false
             }
@@ -975,38 +1000,43 @@ impl Error {
             Self::NativeConstruction { .. } => true,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeBoundary { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeDiagnostic { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeJsonAdmission { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeJson { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeProstDecode { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeSchema { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeStream { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeSupervisor { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeSource { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWorkspace { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeStageUncertain { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeDrivenJoin { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeReservation { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeFilesystem { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::NativeWorkspacePublication { .. } => true,
+            #[cfg(feature = "filesystem")]
             Self::NativeGit { .. } => true,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeTimeout { .. } => true,
         }
     }
@@ -1249,7 +1279,11 @@ impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 impl From<acyclic_fs::NativeWorkspacePublicationError> for Error {
     fn from(source: acyclic_fs::NativeWorkspacePublicationError) -> Self {
         match source {
@@ -1263,6 +1297,7 @@ impl From<acyclic_fs::NativeWorkspacePublicationError> for Error {
 }
 
 /// Moves the complete filesystem cause and its intrinsic custody without formatting.
+#[cfg(feature = "filesystem")]
 impl From<acyclic_fs::FsError> for Error {
     fn from(source: acyclic_fs::FsError) -> Self {
         if matches!(source, acyclic_fs::FsError::UnauthenticatedAccessFacts) {
@@ -1286,6 +1321,7 @@ impl From<acyclic_fs::FsError> for Error {
 }
 
 /// Moves the complete workspace cause and its intrinsic custody without formatting.
+#[cfg(feature = "filesystem")]
 impl From<acyclic_fs::WorkspaceError> for Error {
     fn from(source: acyclic_fs::WorkspaceError) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1303,7 +1339,7 @@ impl From<acyclic_fs::WorkspaceError> for Error {
 }
 
 /// Moves the complete driven-join cause and its intrinsic custody without formatting.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl From<acyclic_fs::DrivenJoinError> for Error {
     fn from(source: acyclic_fs::DrivenJoinError) -> Self {
         Self::NativeDrivenJoin {
@@ -1314,6 +1350,7 @@ impl From<acyclic_fs::DrivenJoinError> for Error {
 }
 
 /// Moves the complete lazy-source failure and its intrinsic custody without formatting.
+#[cfg(feature = "filesystem")]
 impl From<acyclic_fs::LazyWorkspaceError> for Error {
     fn from(source: acyclic_fs::LazyWorkspaceError) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1331,7 +1368,7 @@ impl From<acyclic_fs::LazyWorkspaceError> for Error {
 }
 
 /// Moves a lifecycle failure without dropping any retained physical cleanup owner.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 impl From<acyclic_fs::native_mount::MountLifecycleError> for Error {
     fn from(cause: acyclic_fs::native_mount::MountLifecycleError) -> Self {
         Self::NativeView {
@@ -1342,7 +1379,7 @@ impl From<acyclic_fs::native_mount::MountLifecycleError> for Error {
 }
 
 /// Moves the complete native source cause and its intrinsic custody without formatting.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 impl From<acyclic_fs::native_mount::MountSourceError> for Error {
     fn from(cause: acyclic_fs::native_mount::MountSourceError) -> Self {
         Self::NativeView {
@@ -1353,7 +1390,7 @@ impl From<acyclic_fs::native_mount::MountSourceError> for Error {
 }
 
 /// Wraps the actual mount cause in the existing lifecycle error.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 impl From<acyclic_fs::native_mount::NativeMountError> for Error {
     fn from(cause: acyclic_fs::native_mount::NativeMountError) -> Self {
         Self::NativeView {
@@ -1483,7 +1520,7 @@ mod boundary_tests {
             .get_enum_by_name("acyclic.harness.v2.ErrorCode")
             .unwrap();
         let reason = "the caller's original reason";
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let original = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(16_384, 16 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
@@ -1496,7 +1533,7 @@ mod boundary_tests {
             assert_eq!(encoded.code, value.number(), "{portable:?}");
             assert!(encoded.message.contains(reason), "{portable:?}");
             assert!(!portable.is_native_failure(), "{portable:?}");
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             {
                 let io = crate::filesystem::PreparationIo::from_native_work(&original).unwrap();
                 let mut history = &io;

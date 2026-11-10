@@ -14,7 +14,7 @@ pub(crate) use std::sync::Mutex as InlineMutex;
 
 // Native namespace and helper coordination has a dedicated model domain.
 // The unchanged ledger uses the separate filesystem accounting proofs.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 pub(crate) mod native {
     #[cfg(loom)]
     pub(crate) use loom::{sync::*, thread};

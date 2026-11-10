@@ -671,7 +671,7 @@ async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_o
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_change_records_survive_reopen_with_their_authority_commit() -> TestResult {
     let directory = tempfile::tempdir()?;

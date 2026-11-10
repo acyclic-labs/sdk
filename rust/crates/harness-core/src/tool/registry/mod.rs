@@ -57,10 +57,11 @@ struct RegistryData {
 }
 
 mod merge;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 const REGISTRY_BYTES: usize = std::mem::size_of::<ToolRegistry>()
     + std::mem::size_of::<RegistryData>()
     + 2 * std::mem::size_of::<usize>();
+#[cfg(feature = "filesystem")]
 const VERSION_SLOT_BYTES: usize = std::mem::size_of::<(String, String)>()
     + std::mem::size_of::<Arc<Tool>>()
     + std::mem::size_of::<Tool>()
@@ -68,7 +69,7 @@ const VERSION_SLOT_BYTES: usize = std::mem::size_of::<(String, String)>()
     + 2 * std::mem::size_of::<usize>();
 
 mod lookup;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 mod registration;
 mod selection;
@@ -76,7 +77,7 @@ mod selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 const OWNERSHIP_OVERFLOW: Error = Error::NativeBoundary {
     code: crate::wire::ErrorCode::Invalid,
     reason: "tool registry ownership overflow",

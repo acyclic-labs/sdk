@@ -15,7 +15,7 @@ impl ContextSource for Context {
             })
         })
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool {
         true
     }

@@ -173,7 +173,7 @@ fn check_comparison(value: &Value, expected: &[u8], buffered: bool) -> TestCaseR
                 json_bytes_match_bounded(&once, expected, bounds, None, &mut charge).unwrap()
             }
         };
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
             let mut actual = None;
             let physical = acyclic_test_support::measure(|| actual = Some(compare()));
@@ -183,7 +183,7 @@ fn check_comparison(value: &Value, expected: &[u8], buffered: bool) -> TestCaseR
             );
             actual.unwrap()
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         compare()
     };
     let bytes = serde_json::to_vec(value).unwrap();
@@ -291,7 +291,7 @@ fn index_scan_examines_exactly_its_admitted_items() {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod allocation_prefixes {
     use super::*;
     #[derive(Clone, Copy)]

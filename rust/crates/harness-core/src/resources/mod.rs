@@ -33,6 +33,7 @@ fn validate_text<'a>(
     }
     Ok(())
 }
+#[cfg(feature = "filesystem")]
 fn capacity_sum(parts: impl IntoIterator<Item = usize>) -> Result<u64> {
     parts.into_iter().try_fold(0_u64, |sum, n| {
         sum.checked_add(n as u64)
@@ -40,14 +41,14 @@ fn capacity_sum(parts: impl IntoIterator<Item = usize>) -> Result<u64> {
     })
 }
 fn invalid(reason: &'static str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
         Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
             reason,
         }
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     {
         Error::Invalid(reason.into())
     }

@@ -236,7 +236,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", feature = "hooks", not(target_arch = "wasm32")))]
     #[test]
     fn execution_refusal_keeps_its_reason_in_the_ordinary_tool_failure() -> Result<()> {
         let error = acyclic_native_runtime::execution::ExecutionGrant::new(
@@ -296,7 +296,7 @@ mod tests {
             3 => Error::Unauthorized(text),
             4 => Error::Storage(text),
             5 => Error::InteractionRejected(crate::InteractionRejection::Denied),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             6 => Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Conflict,
                 reason: ["", " ", "\n\t", "\u{1b}"][text.len() % 4],
@@ -330,7 +330,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn a_blank_error_is_described_by_its_class() -> Result<()> {
         let blank = Error::NativeBoundary {
@@ -358,7 +358,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
         #[test]

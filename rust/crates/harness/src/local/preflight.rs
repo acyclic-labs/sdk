@@ -54,7 +54,7 @@ impl LocalHarnessConfig {
 
     pub(super) fn native_refusals(&self, native: bool) -> Vec<Error> {
         let mut failures = Vec::new();
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         if native {
             if self.workspace_mounting == WorkspaceMounting::Native
                 && matches!(self.project, LocalProject::Workspace(_))
@@ -70,7 +70,7 @@ impl LocalHarnessConfig {
                 )));
             }
         }
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+        #[cfg(not(any(test, feature = "native-execution")))]
         if native && matches!(self.project, LocalProject::Workspace(_)) {
             failures.push(Error::Unsupported("checkout workspaces require native-execution; recovery: install a native-execution build".into()));
         }

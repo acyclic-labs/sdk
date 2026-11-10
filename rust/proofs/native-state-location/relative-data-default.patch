@@ -9,5 +9,5 @@
 -                .map(PathBuf::into_os_string)
 +            dirs::data_local_dir().map(PathBuf::into_os_string)
          }
-         #[cfg(not(target_arch = "wasm32"))]
+         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
          Read::State(Some(directory)) => Some(directory.as_os_str().to_owned()),

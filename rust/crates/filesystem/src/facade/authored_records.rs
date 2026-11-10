@@ -55,7 +55,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         Ok(file_id)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) async fn compile_copied_record(
         &self,
         input: crate::kernel::Owned<NamespacePath>,

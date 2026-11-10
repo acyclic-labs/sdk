@@ -32,6 +32,7 @@ fn part_slack(part: &ModelContentPart) -> Result<u64> {
     }
 }
 
+#[cfg(feature = "filesystem")]
 impl ToolResultContent {
     pub(crate) fn retained_payload_bytes(&self) -> Result<u64> {
         add(
@@ -44,7 +45,7 @@ impl ToolResultContent {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod moved_tests;
 
 impl ModelRequest {
@@ -70,6 +71,7 @@ impl ModelRequest {
     }
 }
 
+#[cfg(feature = "filesystem")]
 impl ModelContent {
     pub(crate) fn retained_payload_bytes(&self) -> Result<u64> {
         let mut bytes = self.payload_bytes()?;
@@ -132,7 +134,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn every_model_json_copy_retains_and_releases_its_original_map_custody() -> Result<()> {
         let source = sparse_request()?;

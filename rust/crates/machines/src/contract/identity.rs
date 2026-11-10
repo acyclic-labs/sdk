@@ -118,7 +118,7 @@ pub mod identity_codec_fuzz {
     /// UUID syntax is owned by the UUID library; each public identity must add
     /// exactly the non-nil constraint and preserve all original bits.
     pub fn check(bytes: &[u8]) {
-        #[cfg(feature = "test-support")]
+        #[cfg(all(feature = "grpc", feature = "test-support"))]
         crate::grpc::codec_fuzz::check_identities(bytes);
         let expected_bytes = <[u8; 16]>::try_from(bytes)
             .ok()

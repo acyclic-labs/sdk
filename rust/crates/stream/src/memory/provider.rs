@@ -431,7 +431,7 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
                 tail_record,
                 origin,
             };
-            #[cfg(all(loom, not(target_arch = "wasm32")))]
+            #[cfg(all(loom, feature = "local"))]
             let size =
                 if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes)
                 {
@@ -439,7 +439,7 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
                 } else {
                     crate::wire_codec::requests::child_len(&child)
                 };
-            #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
+            #[cfg(not(all(loom, feature = "local")))]
             let size = crate::wire_codec::requests::child_len(&child);
             page_bytes = page_bytes.saturating_add(size).saturating_add(10);
             if page_bytes > crate::MAX_COMMAND_BYTES {

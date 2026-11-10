@@ -5,7 +5,7 @@ use prost::Message as _;
 
 /// Indexed filesystem selection must retain every path admitted by the original
 /// signed credential. Lossless byte inputs use the owning resource encoder.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "session", not(target_arch = "wasm32")))]
 pub fn filesystem_paths(path: &[u8]) -> Result<(), StreamError> {
     use acyclic_auth::{authority::PolicyDecision, contract::*};
     if path.contains(&0)
@@ -69,7 +69,7 @@ pub fn filesystem_paths(path: &[u8]) -> Result<(), StreamError> {
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "session", not(target_arch = "wasm32")))]
 fn session_admission() -> crate::wire::SessionFrame {
     static CREDENTIAL: std::sync::OnceLock<bytes::Bytes> = std::sync::OnceLock::new();
     crate::wire::SessionFrame {
@@ -96,7 +96,7 @@ fn session_admission() -> crate::wire::SessionFrame {
 }
 
 /// Actual SessionHello output, using deterministic public test credentials.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "session", not(target_arch = "wasm32")))]
 pub fn session_seed() -> Vec<u8> {
     session_admission().encode_to_vec()
 }
@@ -106,7 +106,7 @@ pub fn session_seed() -> Vec<u8> {
 /// An arbitrary Hello is the first request, so version and credential refusals
 /// cannot be hidden behind successful admission. Other frames follow a real
 /// Hello. Closing the request producer must end every source without a timer.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "session", not(target_arch = "wasm32")))]
 pub fn session(bytes: &[u8]) -> bool {
     use crate::{MemoryStream, session, wire::session_frame::Body};
     use futures::{StreamExt as _, stream};
@@ -148,6 +148,14 @@ fn truncated_header_is_invalid<T>(
         || matches!(decoded, Err(StreamError::InvalidArgument))
 }
 
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
 pub(crate) fn command(bytes: &[u8]) -> bool {
     match crate::journal::decode_command(bytes) {
         Ok(command) => command.encode_to_vec() == bytes,
@@ -187,10 +195,18 @@ pub fn check(bytes: &[u8]) -> bool {
             _ => return false,
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "local")]
     if !crate::memory::check_snapshot_codec(bytes) {
         return false;
     }
+    #[cfg(any(
+        feature = "local",
+        feature = "postgres",
+        all(
+            any(feature = "wasm", feature = "wasm-journal"),
+            target_arch = "wasm32"
+        )
+    ))]
     {
         if !command(bytes) {
             return false;
@@ -308,7 +324,7 @@ pub fn check(bytes: &[u8]) -> bool {
             }
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     if !crate::local::codec_fuzz::check(bytes) {
         return false;
     }
@@ -477,7 +493,7 @@ async fn publications(
         crate::MemoryLimits::default(),
         std::sync::Arc::new(Clock),
     );
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "local")]
     let memory = memory.with_authority(crate::RevisionScope::new(b"codec-corpus".to_vec()), 7);
     let mut publications = Vec::with_capacity(3);
     for (name, mut command) in commands(value)? {
@@ -536,8 +552,16 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
         envelope,
     } in publications
     {
+        #[cfg(any(
+            feature = "local",
+            feature = "postgres",
+            all(
+                any(feature = "wasm", feature = "wasm-journal"),
+                target_arch = "wasm32"
+            )
+        ))]
         seeds.push((name.to_owned(), _command.encode_to_vec()));
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         seeds.push((
             format!("frame-{name}"),
             crate::local::codec_fuzz::frame(&_command)?,
@@ -551,9 +575,9 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
             persistence::encode_envelope(&envelope, usize::MAX)?,
         ));
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     seeds.push(("journal-header".into(), crate::local::codec_fuzz::header()?));
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "local")]
     {
         let state = _memory.capture_state().await.encode();
         #[cfg(not(target_arch = "wasm32"))]
@@ -702,7 +726,7 @@ fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> 
             );
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "local")]
     for (name, command) in commands(None)? {
         let frame = crate::local::codec_fuzz::repeated_command_frame(&command)?;
         assert!(

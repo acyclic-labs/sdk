@@ -47,10 +47,9 @@ impl ToolPolicy for FixedToolPolicy {
         _: &'a ToolInvocation,
         _: &'a RuntimeScope,
         _native_io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<
-        crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
-    > {
-        #[cfg(not(target_arch = "wasm32"))]
+    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
+    {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = _native_io
             .map(|io| {
                 io.original_native_work()
@@ -61,7 +60,7 @@ impl ToolPolicy for FixedToolPolicy {
             })
             .transpose()?
         {
-            return acyclic_fs::NativeFutureBundle::new(work, || async move {
+            return crate::NativeFutureBundle::new(work, || async move {
                 use crate::store::history::HistoryIo;
                 let mut io = crate::store::HistoryWork::new(
                     crate::filesystem::PreparationIo::from_native_work(work)?,
@@ -88,7 +87,7 @@ impl ToolPolicy for FixedToolPolicy {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn identity_with_native_work(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -97,7 +96,7 @@ impl ToolPolicy for FixedToolPolicy {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn native_fixture_policy_identity(
     identity: &ComponentIdentity,
     work: &acyclic_fs::NativeMaterializationWork,

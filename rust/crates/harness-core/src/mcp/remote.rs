@@ -1,6 +1,6 @@
 use super::McpToolTransport;
 use crate::{
-    Error, Result,
+    Error, NativeWork, Result,
     runtime::{RuntimeScope, ToolContext},
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
@@ -55,7 +55,7 @@ impl ToolExecutor for RemoteTool {
         scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: acyclic_fs::NativeWork<'_>,
+        work: NativeWork<'_>,
     ) -> Result<()> {
         if context.is_some_and(|context| {
             context.operation_id() != invocation.operation_id
@@ -65,7 +65,7 @@ impl ToolExecutor for RemoteTool {
                 "MCP tool context identity mismatch".into(),
             ));
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,

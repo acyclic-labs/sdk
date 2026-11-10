@@ -200,6 +200,7 @@ fn check_aliases(profile: NativeToolProfile, registry: &ToolRegistry) -> Result<
                 .definitions_for_grants(&crate::Capabilities::new(["tool:call:read"]), None)?
                 .is_empty()
         );
+        #[cfg(feature = "filesystem")]
         {
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(

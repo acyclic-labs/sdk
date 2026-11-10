@@ -38,9 +38,9 @@ impl ToolSettlementQuery<'_> {
         with_history_io(io, |work| {
             ToolInvocation::validate_identity(self.call_id, None, work)
         })?;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let native = io.and_then(PreparationIo::original_native_work);
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let native = None;
         if native.is_none()
             && let Some(io) = io
@@ -55,11 +55,14 @@ impl ToolSettlementQuery<'_> {
                         "tool call hash length overflow",
                     )
                 })?;
+            #[cfg(feature = "filesystem")]
             io.charge(acyclic_fs::WorkCounters {
                 bytes_hashed,
                 items_examined: 4,
                 ..Default::default()
             })?;
+            #[cfg(not(feature = "filesystem"))]
+            let _ = bytes_hashed;
         }
         if ToolInvocation::model_call_operation(self.turn, self.step, self.call_id, native)?
             != self.effect

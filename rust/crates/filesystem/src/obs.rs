@@ -48,7 +48,7 @@ pub(crate) async fn in_span<F: std::future::Future>(span: &OperationSpan, future
         reason = "WASM records no spans or synchronous native work"
     )
 )]
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn scope<T>(span: &OperationSpan, job: impl FnOnce() -> T) -> T {
     #[cfg(not(target_arch = "wasm32"))]
     return span.in_scope(job);
@@ -57,13 +57,13 @@ pub(crate) fn scope<T>(span: &OperationSpan, job: impl FnOnce() -> T) -> T {
 }
 
 /// Captures caller ancestry for worker attribution.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "native-watch"), not(target_arch = "wasm32")))]
 pub(crate) fn caller_context() -> OperationSpan {
     OperationSpan::new(tracing::Span::current())
 }
 
 /// Carries an explicitly selected operation/ancestry context through actual work.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "native-watch"), not(target_arch = "wasm32")))]
 pub(crate) fn in_context<T>(
     span: OperationSpan,
     job: impl FnOnce() -> T + Send + 'static,
@@ -163,7 +163,7 @@ fn record_outcome(span: &tracing::Span, kind: Option<&'static str>) {
 }
 
 #[cfg(test)]
-#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+#[cfg(all(feature = "native-mount", target_os = "linux"))]
 pub(crate) use worker_context_tests::assert_filtered_callback_isolation;
 
 #[cfg(test)]
@@ -451,7 +451,7 @@ mod worker_context_tests {
         }
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+    #[cfg(all(feature = "native-mount", target_os = "linux"))]
     pub(crate) fn assert_filtered_callback_isolation(
         body: impl Fn(&tracing::span::EnteredSpan) -> i32,
     ) {

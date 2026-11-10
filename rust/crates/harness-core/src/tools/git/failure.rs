@@ -4,7 +4,11 @@ use acyclic_fs::{
     StreamOperationWindowStoreError, WorkspaceLineageError,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 use acyclic_fs::{LocalCoreStateStore, LocalCoreStateStoreError};
 
 /// Original SDK causes from the managed git facade.
@@ -40,18 +44,30 @@ pub enum Failure {
     Capture(#[from] GitCaptureError),
     /// Lazy tree authentication failure.
     #[error(transparent)]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     CaptureAuthentication(#[from] GitCaptureAuthenticationError<LocalCoreStateStoreError>),
     /// Workspace ancestry failure.
     #[error(transparent)]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     Lineage(#[from] WorkspaceLineageError<LocalCoreStateStoreError>),
     /// Patch application failure.
     #[error(transparent)]
     Patch(#[from] GitPatchError),
     /// Durable git state failure.
     #[error(transparent)]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     State(#[from] LocalCoreStateStoreError),
 }
 
@@ -80,7 +96,11 @@ impl From<GitCaptureError> for Error {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 impl From<GitCaptureAuthenticationError<LocalCoreStateStoreError>> for Error {
     fn from(source: GitCaptureAuthenticationError<LocalCoreStateStoreError>) -> Self {
         Self::NativeGit {
@@ -89,7 +109,11 @@ impl From<GitCaptureAuthenticationError<LocalCoreStateStoreError>> for Error {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 impl From<WorkspaceLineageError<LocalCoreStateStoreError>> for Error {
     fn from(source: WorkspaceLineageError<LocalCoreStateStoreError>) -> Self {
         Self::NativeGit {
@@ -106,7 +130,11 @@ impl From<GitPatchError> for Error {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 impl From<LocalCoreStateStoreError> for Error {
     fn from(source: LocalCoreStateStoreError) -> Self {
         Self::NativeGit {
@@ -115,7 +143,11 @@ impl From<LocalCoreStateStoreError> for Error {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 impl From<acyclic_fs::GitCompatError<LocalCoreStateStoreError>> for Error {
     fn from(source: acyclic_fs::GitCompatError<LocalCoreStateStoreError>) -> Self {
         super::errors::compat_error::<LocalCoreStateStore>(source)

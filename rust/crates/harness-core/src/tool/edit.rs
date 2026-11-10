@@ -1,7 +1,7 @@
 //! Portable exact text replacement.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::wire::ErrorCode::{Conflict, Invalid};
-use crate::{Error, Result};
+use crate::{Error, NativeCustody, Result};
 
 /// A definitive exact-match refusal from the shared edit engine.
 #[derive(Debug)]
@@ -28,11 +28,8 @@ impl std::fmt::Display for EditRejection {
 impl std::error::Error for EditRejection {}
 
 #[doc(hidden)]
-pub fn allocation(
-    work: acyclic_fs::NativeWork<'_>,
-    bytes: usize,
-) -> Result<acyclic_fs::NativeCustody> {
-    #[cfg(not(target_arch = "wasm32"))]
+pub fn allocation(work: crate::NativeWork<'_>, bytes: usize) -> Result<NativeCustody> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         return Ok(Some(work.claim(
             bytes as u64,
@@ -44,8 +41,8 @@ pub fn allocation(
     Ok(None)
 }
 
-pub(super) fn invalid(work: &acyclic_fs::NativeCustody, reason: &'static str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+pub(super) fn invalid(work: &NativeCustody, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
         return Error::ToolRejected {
             code: Invalid,
@@ -55,8 +52,8 @@ pub(super) fn invalid(work: &acyclic_fs::NativeCustody, reason: &'static str) ->
     let _ = work;
     Error::Invalid(reason.into())
 }
-pub(super) fn conflict(work: &acyclic_fs::NativeCustody, reason: &'static str) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+pub(super) fn conflict(work: &NativeCustody, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
         return Error::ToolRejected {
             code: Conflict,
@@ -67,8 +64,8 @@ pub(super) fn conflict(work: &acyclic_fs::NativeCustody, reason: &'static str) -
     Error::Conflict(reason.into())
 }
 
-fn capacity_overflow(work: &acyclic_fs::NativeCustody) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+fn capacity_overflow(work: &NativeCustody) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
         return Error::NativeBoundary {
             code: Invalid,
@@ -78,8 +75,8 @@ fn capacity_overflow(work: &acyclic_fs::NativeCustody) -> Error {
     invalid(work, "tool vector capacity overflow")
 }
 
-pub(super) fn retain(work: &mut acyclic_fs::NativeCustody, bytes: usize) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
+pub(super) fn retain(work: &mut NativeCustody, bytes: usize) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(custody) = work {
         let total = custody
             .bytes()
@@ -94,8 +91,8 @@ pub(super) fn retain(work: &mut acyclic_fs::NativeCustody, bytes: usize) -> Resu
     Ok(())
 }
 
-fn admit(work: &mut acyclic_fs::NativeCustody, bytes: usize) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
+fn admit(work: &mut NativeCustody, bytes: usize) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(custody) = work {
         custody.grow(bytes as u64)?;
     }
@@ -103,13 +100,8 @@ fn admit(work: &mut acyclic_fs::NativeCustody, bytes: usize) -> Result<()> {
     Ok(())
 }
 
-fn capacity(
-    work: &mut acyclic_fs::NativeCustody,
-    requested: usize,
-    actual: usize,
-    old: usize,
-) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
+fn capacity(work: &mut NativeCustody, requested: usize, actual: usize, old: usize) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(custody) = work {
         // The allocator retired the old buffer before capacity reconciliation.
         let bytes = custody
@@ -128,7 +120,7 @@ fn capacity(
 }
 
 fn allocation_error(
-    work: &acyclic_fs::NativeCustody,
+    work: &NativeCustody,
     cause: std::collections::TryReserveError,
     reason: &'static str,
 ) -> Error {
@@ -140,11 +132,7 @@ fn allocation_error(
 }
 
 #[doc(hidden)]
-pub fn reserve_vec<T>(
-    work: &mut acyclic_fs::NativeCustody,
-    value: &mut Vec<T>,
-    length: usize,
-) -> Result<()> {
+pub fn reserve_vec<T>(work: &mut NativeCustody, value: &mut Vec<T>, length: usize) -> Result<()> {
     if length <= value.capacity() {
         return Ok(());
     }
@@ -165,11 +153,7 @@ pub fn reserve_vec<T>(
 }
 
 #[doc(hidden)]
-pub fn reserve_string(
-    work: &mut acyclic_fs::NativeCustody,
-    value: &mut String,
-    length: usize,
-) -> Result<()> {
+pub fn reserve_string(work: &mut NativeCustody, value: &mut String, length: usize) -> Result<()> {
     if length <= value.capacity() {
         return Ok(());
     }
@@ -183,12 +167,8 @@ pub fn reserve_string(
 }
 
 #[doc(hidden)]
-pub fn charge(
-    work: &acyclic_fs::NativeCustody,
-    bytes_copied: u64,
-    items_examined: u64,
-) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
+pub fn charge(work: &NativeCustody, bytes_copied: u64, items_examined: u64) -> Result<()> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(custody) = work {
         custody.work().charge(acyclic_fs::WorkCounters {
             bytes_copied,
@@ -217,7 +197,7 @@ pub(crate) fn replace(
     new_text: &str,
     replace_all: bool,
     maximum_bytes: u64,
-    work: &mut acyclic_fs::NativeCustody,
+    work: &mut NativeCustody,
 ) -> Result<String> {
     replace_sequence(
         source,
@@ -242,13 +222,13 @@ pub(crate) struct Replacement<'a> {
 /// Retires a synchronous planner's temporary buffers after they are destroyed.
 /// Earlier caller-owned claims and the one returned String remain untouched.
 pub(super) fn plan_output(
-    work: &mut acyclic_fs::NativeCustody,
-    plan: impl FnOnce(&mut acyclic_fs::NativeCustody) -> Result<String>,
+    work: &mut NativeCustody,
+    plan: impl FnOnce(&mut NativeCustody) -> Result<String>,
 ) -> Result<String> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let before = work.as_ref().map(|custody| custody.bytes());
     let result = plan(work);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let (Some(custody), Some(before)) = (work, before) {
         let retired = before
             .checked_add(result.as_ref().map_or(0, |output| output.capacity() as u64))
@@ -269,7 +249,7 @@ pub(crate) fn replace_sequence<'a>(
     source: &str,
     replacements: impl IntoIterator<Item = Replacement<'a>>,
     maximum_bytes: u64,
-    work: &mut acyclic_fs::NativeCustody,
+    work: &mut NativeCustody,
 ) -> Result<String> {
     plan_output(work, |work| {
         let mut replacements = replacements.into_iter();
@@ -295,7 +275,7 @@ fn replace_into(
         replace_all,
     }: Replacement<'_>,
     maximum_bytes: u64,
-    work: &mut acyclic_fs::NativeCustody,
+    work: &mut NativeCustody,
     output: &mut String,
 ) -> Result<()> {
     if maximum_bytes == 0 || maximum_bytes == u64::MAX {
@@ -382,7 +362,7 @@ fn replace_into(
 mod tests {
     use super::*;
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn edit_sequences_retain_only_their_output_and_refuse_invalid_later_edits() -> Result<()> {
         for length in [1, 2, 33] {

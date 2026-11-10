@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
+use acyclic_harness_core::NativeFutureBundle;
 use futures::StreamExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -23,9 +24,7 @@ impl HttpTransport for NativeServer {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<
-        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-    > {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(wait, work)
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -39,9 +38,9 @@ impl HttpTransport for NativeServer {
         &'a self,
         request: HttpRequest,
         work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+    ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
         assert!(work.shares_allocation_context(&self.work));
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+        NativeFutureBundle::new(work, || async move {
             self.sent.fetch_add(1, Ordering::SeqCst);
             assert!(
                 work.receipt().source_bytes_read > 0,

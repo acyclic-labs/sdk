@@ -23,7 +23,7 @@ path = "examples/embedded.rs"
 test-support = ["acyclic-harness/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 
 [dependencies]
-acyclic-harness = { path = "../../.." }
+acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "serve", "terminal", "tui", "search-http"] }
 acyclic-harness-providers = { path = "../../../../harness-providers", features = ["local"] }
 acyclic-native-runtime = { path = "../../../../native-runtime" }
 acyclic-observability = { path = "../../../../observability" }

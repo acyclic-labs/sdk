@@ -1,7 +1,7 @@
 //! The authority, content bindings and tool context of one agent turn.
 
 use crate::{
-    Capabilities, Error, OperationId, Result, TaskId,
+    Capabilities, Error, NativeCustody, OperationId, Result, TaskId,
     conversation::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
         PrivateDirectoryPage, VolumeRef, verified_content_bytes,

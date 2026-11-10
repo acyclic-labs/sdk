@@ -1,5 +1,5 @@
 //! Composed-screen parity: layout, prompt routing, persistence and resize.
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(feature = "tui")]
 use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, layout::Rect, text::Line};
 use acyclic_harness_tui::{Editor, PromptBox, PromptInput, Screen, Viewport};
 use proptest::prelude::*;

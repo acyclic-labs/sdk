@@ -18,7 +18,7 @@ bytes and completed allocation count with the original accounting delta:
 Run these controls with:
 
 ```sh
-cargo nextest run --locked -p acyclic-fs --no-default-features --lib -E 'test(=cancellation::tests::measured_waiter_credit_follows_the_last_node_alias_after_detach) | test(=cancellation::tests::native_waiter_replacement_is_reentrant_and_releases_its_original_owner) | test(=cancellation::tests::linked_children_preserve_local_stop_parent_propagation_and_release_their_owner) | test(=cancellation::native_tests::cancellation_notification_ends_with_its_registration)' --no-tests=fail
+cargo nextest run --locked -p acyclic-fs --no-default-features --features local,memory --lib -E 'test(=cancellation::tests::measured_waiter_credit_follows_the_last_node_alias_after_detach) | test(=cancellation::tests::native_waiter_replacement_is_reentrant_and_releases_its_original_owner) | test(=cancellation::tests::linked_children_preserve_local_stop_parent_propagation_and_release_their_owner) | test(=cancellation::native_tests::cancellation_notification_ends_with_its_registration)' --no-tests=fail
 ```
 
 The oracle observes real production allocations. It contains no parallel Arc

@@ -197,6 +197,7 @@ fn encode<T: Serialize>(
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     match io {
+        #[cfg(feature = "filesystem")]
         Some(io) => io.encode(value, io.remaining()?.bytes_encoded, true),
         _ => Ok(crate::contract::canonical_json_bytes(value)?.into()),
     }
@@ -213,7 +214,7 @@ fn hash(digest: &mut blake3::Hasher, bytes: &[u8], io: Option<&PreparationIo>) -
 }
 
 fn storage_error(error: std::io::Error, io: Option<&PreparationIo>) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
         return work.runtime_error(error).into();
     }
@@ -238,6 +239,7 @@ fn envelope(
 
 fn fresh(request: &ModelRequest, io: Option<&PreparationIo>) -> Result<Encoded> {
     let bytes = encode(request, io)?;
+    #[cfg(feature = "filesystem")]
     if let Some(hold) = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten() {
         hold.into_retained()?;
     }
@@ -247,6 +249,7 @@ fn fresh(request: &ModelRequest, io: Option<&PreparationIo>) -> Result<Encoded> 
 
 enum Buffer {
     Unique(acyclic_stream::UniqueOwnedBytes),
+    #[cfg(feature = "filesystem")]
     Finite(Vec<u8>),
 }
 
@@ -255,6 +258,7 @@ impl Buffer {
         bytes: acyclic_stream::OwnedBytes,
         io: Option<&PreparationIo>,
     ) -> std::result::Result<Self, acyclic_stream::OwnedBytes> {
+        #[cfg(feature = "filesystem")]
         if io.is_some_and(|io| {
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -275,6 +279,7 @@ impl Buffer {
     fn capacity(&self) -> usize {
         match self {
             Self::Unique(bytes) => bytes.capacity(),
+            #[cfg(feature = "filesystem")]
             Self::Finite(bytes) => bytes.capacity(),
         }
     }
@@ -284,6 +289,7 @@ impl Buffer {
             Self::Unique(bytes) => bytes
                 .reserve_capacity(capacity)
                 .map_err(|error| storage_error(error, io)),
+            #[cfg(feature = "filesystem")]
             Self::Finite(bytes) => crate::executor::stock_vec_reserve(bytes, capacity, io),
         }
     }
@@ -293,6 +299,7 @@ impl Buffer {
             Self::Unique(bytes) => bytes
                 .replace_suffix(prefix, suffix)
                 .map_err(|error| storage_error(error, io)),
+            #[cfg(feature = "filesystem")]
             Self::Finite(bytes) => with_history_io(io, |work| {
                 if let Some(work) = work.as_deref_mut() {
                     work.admit_copy(suffix.len() as u64)?;
@@ -310,6 +317,7 @@ impl Buffer {
     fn freeze(self) -> acyclic_stream::OwnedBytes {
         match self {
             Self::Unique(bytes) => bytes.freeze(),
+            #[cfg(feature = "filesystem")]
             Self::Finite(bytes) => bytes.into(),
         }
     }
@@ -327,6 +335,7 @@ impl EncodingPrefix {
         projection_nodes: &mut usize,
     ) -> Result<Encoded> {
         let (envelope, open) = envelope(request, io)?;
+        #[cfg(feature = "filesystem")]
         let _envelope_hold = io
             .map(|io| io.guard_bytes(&envelope))
             .transpose()?
@@ -353,6 +362,7 @@ impl EncodingPrefix {
         }
         prefix.previous = Some((old_count, prefix.messages_digest(io)?));
         let encoded = encode(&suffix, io)?;
+        #[cfg(feature = "filesystem")]
         let _encoded_hold = io.map(|io| io.guard_bytes(&encoded)).transpose()?.flatten();
         let appended = encoded
             .get(1..encoded.len().saturating_sub(1))

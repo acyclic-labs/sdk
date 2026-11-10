@@ -124,7 +124,7 @@ fn token_count_invalid(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
     reason: &'static str,
 ) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work
         .as_deref()
         .is_some_and(|io| io.original_native_work().is_some())

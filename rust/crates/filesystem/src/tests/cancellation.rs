@@ -285,7 +285,7 @@ fn linked_children_preserve_local_stop_parent_propagation_and_release_their_owne
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 #[test]
 fn stopped_parent_prevents_commit_through_either_linked_child() {
     let parent = CancellationToken::new();

@@ -1,7 +1,7 @@
 //! Credential-free local storage baseline, including forced snapshot recovery.
 //! Linux: cargo run --locked -p acyclic-stream --all-features
 //! --example local-storage-cost -- 1000 128
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod benchmark {
     use acyclic_stream::{
         AppendOutcome, AppendRequest, LocalStream, LocalStreamLimits, OwnedBytes, StreamPath,
@@ -100,13 +100,13 @@ mod benchmark {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     benchmark::run().await
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(all(feature = "local", not(target_arch = "wasm32"))))]
 fn main() {
     eprintln!("local-storage-cost requires the native local feature");
 }

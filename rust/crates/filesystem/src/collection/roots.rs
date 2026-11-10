@@ -121,7 +121,7 @@ impl CheckoutRoots {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) fn set_file_table(&mut self, table: ObjectId) -> Result<(), crate::FsError> {
         if let Some(hold) = &self.hold {
             let mut holds = hold.collection.holds();

@@ -11,7 +11,7 @@ impl From<DemandError> for MountSourceError {
             DemandError::Absent => MountSourceError::NotFound,
             DemandError::NotDirectory => MountSourceError::Filesystem(crate::FsError::NotDirectory),
             DemandError::NativeMetadata(error) => MountSourceError::Metadata(error),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "native-watch")]
             DemandError::Observation(error) => match *error {
                 crate::watch::NativeWatchError::Work(error) => MountSourceError::Work(error),
                 crate::watch::NativeWatchError::Cancelled(_) => MountSourceError::Cancelled,

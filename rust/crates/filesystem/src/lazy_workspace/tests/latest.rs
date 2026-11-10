@@ -156,7 +156,7 @@ async fn latest_read_uses_original_native_work_and_rejects_wrong_kinds() {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn latest_native_read_sees_edit_and_deletion_without_a_watch() {
     let directory = tempfile::tempdir().unwrap();
@@ -195,7 +195,7 @@ async fn latest_native_read_sees_edit_and_deletion_without_a_watch() {
     assert_eq!(root.snapshot(accounting!()).await.unwrap(), cut);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn latest_native_read_preserves_authored_alias_after_native_unlink() {
     for remove_authored_alias in [false, true] {

@@ -8,6 +8,7 @@ use std::{future::Future, sync::Arc};
 pub(crate) mod imports;
 pub(crate) use imports::Document;
 mod budget;
+#[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub mod effects;
 #[cfg(test)]
@@ -27,10 +28,11 @@ pub mod codec_fuzz;
 mod input;
 mod request;
 pub use input::HookInput;
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
 #[doc(hidden)]
 pub use request::check_native_patch_paths;
 
+#[cfg(feature = "filesystem")]
 pub(crate) struct BoundHooks {
     pub(crate) rules: Hooks,
     pub(crate) manifest: [u8; 32],

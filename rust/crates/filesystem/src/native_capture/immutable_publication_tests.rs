@@ -50,7 +50,7 @@ fn immutable_bytes_survive_each_publication_kill_and_reject_changed_content()
     Ok(())
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "test-support", feature = "native-mount"))]
 #[test]
 fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Result<(), DemandError>
 {

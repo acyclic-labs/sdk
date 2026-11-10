@@ -152,7 +152,7 @@ pub(super) fn encode(
 
 /// Exercises the original patch decoder, native adapter and file-hook boundary.
 /// Inputs are operator-authored V4A bytes, including malformed documents.
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
 pub fn check_native_patch_paths(input: &[u8]) {
     let Ok(patch) = std::str::from_utf8(input) else {
         return;
@@ -220,6 +220,7 @@ pub fn check_native_patch_paths(input: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "filesystem")]
     #[tokio::test]
     async fn atomic_edit_guards_cover_every_path_and_rewritten_move_destination() -> Result<()> {
         let root = tempfile::tempdir().map_err(Error::process_io)?;
@@ -432,6 +433,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "filesystem")]
     #[test]
     fn native_file_guards_match_the_executed_path_after_each_rewrite() -> Result<()> {
         let mut registry = crate::tools::defaults()?;

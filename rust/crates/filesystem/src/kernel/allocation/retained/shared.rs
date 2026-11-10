@@ -13,13 +13,13 @@ pub(crate) struct RetainedArc<T: ?Sized> {
 /// holds this, so proving the holder `Send`/`Sync` stops at the trait object
 /// instead of walking the owner's whole graph, and every cycle back through
 /// it, in every downstream crate.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) type ErasedRetainedArc = RetainedArc<dyn std::any::Any + Send + Sync>;
 /// The weak form of [`ErasedRetainedArc`].
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) type ErasedRetainedWeak = RetainedWeak<dyn std::any::Any + Send + Sync>;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 impl<T: Send + Sync + 'static> RetainedArc<T> {
     pub(crate) fn erase(self) -> ErasedRetainedArc {
         RetainedArc {
@@ -29,7 +29,7 @@ impl<T: Send + Sync + 'static> RetainedArc<T> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 impl ErasedRetainedArc {
     /// The original owner, or `None` when it has another type.
     pub(crate) fn downcast<T: Send + Sync + 'static>(self) -> Option<RetainedArc<T>> {

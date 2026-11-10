@@ -4,7 +4,7 @@ use crate::executor::content::validate_model_content_scope;
 use crate::resources::ProviderRef;
 use proptest::prelude::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
@@ -121,7 +121,11 @@ proptest! {
     }
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 #[test]
 fn completed_summary_moves_original_text_and_retires_consumed_backing() -> Result<()> {
     fn generated_event(source: ModelEvent, io: &PreparationIo) -> Result<ModelEvent> {

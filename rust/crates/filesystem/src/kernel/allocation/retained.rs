@@ -6,7 +6,7 @@ mod native;
 mod shared;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::NativeAccounting;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub(crate) use shared::{ErasedRetainedArc, ErasedRetainedWeak};
 pub(crate) use shared::{RetainedArc, RetainedWeak};
 

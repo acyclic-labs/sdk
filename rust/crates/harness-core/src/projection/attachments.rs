@@ -6,6 +6,7 @@ use crate::model::{ImageDetail, NativeMediaIntent, NativeMediaPolicy};
 use std::borrow::Cow;
 
 fn allocate(bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
@@ -30,7 +31,7 @@ pub(super) fn native_image(
 }
 
 pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<String> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io
         && let Some(work) = io.original_native_work()
     {
@@ -40,6 +41,7 @@ pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<
         io.absorb_native_custody(custody)?;
         return Ok(text);
     }
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         use std::fmt::Write;
         let digits = if count == 0 {
@@ -76,6 +78,7 @@ pub(super) async fn resolve<'a>(
     maximum: usize,
     io: Option<&'a PreparationIo>,
 ) -> Result<(Cow<'a, [Attachment]>, Option<ContentHold<'a>>)> {
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         io.check_cancellation()?;
     }
@@ -139,7 +142,7 @@ pub(super) fn append(
         }
         Cow::Owned(items) => items,
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let move_files = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let missing_hold = || {
             stock_boundary(
@@ -172,7 +175,7 @@ pub(super) fn append(
         _hold = source_hold;
         io.is_none()
     };
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let move_files = {
         _hold = source_hold;
         io.is_none()

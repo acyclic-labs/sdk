@@ -1153,5 +1153,6 @@ fn clone_stage_error(error: FsError, stage: CloneStage) -> FsError {
 }
 
 #[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/regular_mutation/mod.rs"]
 mod tests;

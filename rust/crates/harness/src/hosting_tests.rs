@@ -230,7 +230,11 @@ fn binding_with(
     )?)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
+#[cfg(all(
+    feature = "machines",
+    feature = "native-execution",
+    feature = "test-support"
+))]
 #[path = "hosting_tests/machine_results.rs"]
 mod machine_results;
 

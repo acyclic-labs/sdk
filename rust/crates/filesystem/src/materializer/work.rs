@@ -10,7 +10,7 @@ pub struct NativeMaterializationWork {
     pub(crate) capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
     pub(crate) invocation: Option<Arc<NativeInvocationView>>,
     pub(crate) window: Option<Arc<NativeWorkWindow>>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) execution: Option<Arc<NativeSourceExecutionView>>,
     recheck_items: bool,
 }
@@ -92,7 +92,7 @@ impl NativeMaterializationWork {
         // Every constructor crosses this boundary before publishing original
         // custody. Loading a process framework from an already original leaf is
         // deliberately forbidden, so callers must not create such a cold leaf.
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "native-watch")]
         crate::watch::initialize_native_watch_services().map_err(|error| {
             (
                 NativeTreeMaterializationError::Io(std::io::Error::other(error)),
@@ -118,7 +118,7 @@ impl NativeMaterializationWork {
             capture_origin: None,
             invocation: None,
             window: None,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "native-mount")]
             execution: None,
         })
     }
@@ -130,7 +130,7 @@ impl NativeMaterializationWork {
             capture_origin: None,
             invocation: None,
             window: None,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "native-mount")]
             execution: None,
         }
     }
@@ -214,7 +214,7 @@ impl NativeMaterializationWork {
     pub(crate) fn allocation_work(&self) -> Self {
         Self {
             recheck_items: false,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "native-mount")]
             execution: None,
             ..self.clone()
         }
@@ -240,7 +240,7 @@ impl NativeMaterializationWork {
     }
     /// The meter of the innermost view on this context, which a window binds.
     pub(super) fn view_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "native-mount")]
         if let Some(execution) = &self.execution {
             return execution.clone();
         }
@@ -254,7 +254,7 @@ impl NativeMaterializationWork {
     }
     /// The invocation view whose read credit meters this context's native reads.
     pub(super) fn metering_invocation(&self) -> Option<&Arc<NativeInvocationView>> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "native-mount")]
         if self.execution.is_some() {
             return None;
         }

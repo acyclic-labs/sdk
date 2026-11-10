@@ -8,7 +8,7 @@ use acyclic_stream::OwnedBytes;
 
 use std::error::Error;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 use std::path::Path;
 
 use std::sync::Arc;

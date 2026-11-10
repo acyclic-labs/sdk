@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(feature = "filesystem")]
 use crate::conversation::BoundedContentFuture;
 use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
@@ -42,6 +43,7 @@ impl<'a> ReadGrants<'a> {
 // Journals fence the entire command and authenticate each referenced input against
 // its admission. Reuse the issued context for content reads, including its grants,
 // immutable descriptor verification and original native accounting.
+#[cfg(feature = "filesystem")]
 impl ContentResidencyVerifier for TaskContext {
     fn supports_read(&self, volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
         self.content_binding(Some(volume))
@@ -309,10 +311,17 @@ impl TaskContext {
             }
             file.descriptor().verify(&bytes, history)
         })?;
+        #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
+        #[cfg(not(feature = "filesystem"))]
+        let retained = {
+            let _ = hold;
+            0
+        };
         Ok((file, bytes, retained))
     }
 
@@ -369,9 +378,12 @@ impl TaskContext {
             io,
         )
         .await?;
+        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
+        #[cfg(not(feature = "filesystem"))]
+        let _ = hold;
         Ok(bytes)
     }
 
@@ -412,7 +424,13 @@ impl TaskContext {
                 },
             )?
             .await?;
+        #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(not(feature = "filesystem"))]
+        let retained = 0;
+        #[cfg(not(feature = "filesystem"))]
+        let _ = hold;
+        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }

@@ -12,9 +12,9 @@ pub struct CommitPause {
 }
 mod append;
 mod commit;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use native::NativeFaultRecordCursor;
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -104,6 +104,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 }
             }
         }
+        #[cfg(feature = "filesystem")]
         if let Some(cancellation) = self
             .history_cancel_after_tail
             .lock()
@@ -328,7 +329,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
 impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvider
     for LostSessionAck<P>
 {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_inspect_idempotency(
         &self,
         key: acyclic_stream::IdempotencyKey,
@@ -356,7 +357,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
             Ok(result)
         })
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_tail(
         &self,
         path: acyclic_stream::StreamPath,
@@ -392,7 +393,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
             result
         })
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_read(
         &self,
         request: acyclic_stream::ReadRequest,
@@ -472,7 +473,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
             )))
         })
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_write(
         &self,
         request: acyclic_stream::WriteRequest,

@@ -4,6 +4,7 @@ use proptest::prelude::*;
 mod binding;
 mod lookup;
 
+#[cfg(feature = "filesystem")]
 mod scaling;
 
 proptest! {
@@ -113,6 +114,7 @@ fn denied_ambiguous_tools_are_filtered_before_resolution_or_copying() -> Result<
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
 #[test]
 fn native_registry_storage_and_copy_remain_funded() -> Result<()> {
     use crate::filesystem::UploadRecord as _;
@@ -243,7 +245,8 @@ proptest::proptest! {
             }
             proptest::prop_assert!(indexed_names(&registry));
         }
-                {
+        #[cfg(feature = "filesystem")]
+        {
             use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
             let token = CancellationToken::new();
             let work = checked(NativeMaterializationWork::new(WorkBudget {

@@ -428,8 +428,8 @@ impl<'a> Names<'a> {
 
     pub(crate) fn funded(
         request: &'a ModelRequest,
-        work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<(Self, acyclic_fs::NativeCustody)> {
+        work: acyclic_harness_core::NativeWork<'_>,
+    ) -> Result<(Self, acyclic_harness_core::NativeCustody)> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             let count = names(request).count() as u64;

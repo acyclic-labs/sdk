@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 pub(crate) const MAX_NATIVE_EXACT_CAPTURE_PATHS: usize = 65_536;
 
 /// A native view may have host-generated timestamps that are not SDK metadata.
@@ -14,7 +14,7 @@ pub(crate) struct NativeViewBaseline {
 
 impl NativeViewBaseline {
     /// Records the identity and access mode of the materialized view.
-    #[cfg(any(not(target_arch = "wasm32"), test))]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) const fn new(root_identity: NativeRootIdentity, read_only: bool) -> Self {
         Self {
             root_identity,

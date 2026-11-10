@@ -128,7 +128,8 @@ proptest! {
 
     // Property: the manifest round-trips its immutable sources, and
     // configuration files obey the same bounds as instructions.
-        #[test]
+    #[cfg(feature = "filesystem")]
+    #[test]
     fn configuration_sources_round_trip(path in "[a-zé猫]{1,40}", text in ".{0,80}", bound in 1usize..256) {
         use crate::conversation::{FileDescriptor, FileRef};
         let reference = FileRef::new(

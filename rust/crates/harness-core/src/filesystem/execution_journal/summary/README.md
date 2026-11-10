@@ -7,10 +7,10 @@ the same summary-map insertion method, isolating index copies from encoding
 and pending-batch work. Insertion must copy zero prior backing.
 
 ```sh
-cargo test --locked -p acyclic-harness-core --features test-support --lib filesystem::execution_journal::summary::tests::refused_tools_fund_their_summary_entries -- --exact
+cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib filesystem::execution_journal::summary::tests::refused_tools_fund_their_summary_entries -- --exact
 git apply rust/crates/harness-core/src/model/instruction_radix.patch
 git apply rust/crates/harness-core/src/filesystem/execution_journal/summary/summary_relocating.patch
-cargo test --locked -p acyclic-harness-core --features test-support --lib filesystem::execution_journal::summary::tests::refused_tools_fund_their_summary_entries -- --exact
+cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib filesystem::execution_journal::summary::tests::refused_tools_fund_their_summary_entries -- --exact
 git apply -R rust/crates/harness-core/src/filesystem/execution_journal/summary/summary_relocating.patch
 git apply -R rust/crates/harness-core/src/model/instruction_radix.patch
 ```

@@ -1,6 +1,6 @@
 //! Exact V4A transformations under the original file and work admission.
 use super::edit::{charge, conflict, invalid, plan_output, reserve_string, reserve_vec, retain};
-
+use crate::NativeCustody;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -48,7 +48,7 @@ fn line_text(line: &str) -> &str {
 fn parse<'a>(
     diff: &'a str,
     maximum_hunks: Option<u32>,
-    meter: &mut acyclic_fs::NativeCustody,
+    meter: &mut NativeCustody,
 ) -> Result<Vec<Hunk<'a>>> {
     let mut hunks: Vec<Hunk<'_>> = Vec::new();
     for raw in diff.split_inclusive('\n') {
@@ -122,7 +122,7 @@ fn same(
     left: &str,
     right: &str,
     remaining: &mut Option<u64>,
-    meter: &acyclic_fs::NativeCustody,
+    meter: &NativeCustody,
 ) -> Result<bool> {
     let cost = left.len().max(right.len()).max(1) as u64;
     if let Some(remaining) = remaining {
@@ -139,7 +139,7 @@ fn unique_anchor(
     cursor: usize,
     anchor: &str,
     work: &mut Option<u64>,
-    meter: &acyclic_fs::NativeCustody,
+    meter: &NativeCustody,
 ) -> Result<usize> {
     let mut found = None;
     for (index, line) in source.iter().enumerate().skip(cursor) {
@@ -160,7 +160,7 @@ fn locate(
     cursor: usize,
     hunk: &Hunk<'_>,
     work: &mut Option<u64>,
-    meter: &acyclic_fs::NativeCustody,
+    meter: &NativeCustody,
 ) -> Result<usize> {
     let start = match hunk.anchor {
         Some(anchor) => unique_anchor(source, cursor, anchor, work, meter)?,
@@ -213,12 +213,7 @@ fn locate(
     found.ok_or_else(|| conflict(meter, "patch context is missing"))
 }
 
-fn append(
-    output: &mut String,
-    text: &str,
-    maximum: u64,
-    meter: &mut acyclic_fs::NativeCustody,
-) -> Result<()> {
+fn append(output: &mut String, text: &str, maximum: u64, meter: &mut NativeCustody) -> Result<()> {
     let length = output
         .len()
         .checked_add(text.len())
@@ -235,7 +230,7 @@ pub(crate) fn apply_update(
     source: &str,
     diff: &str,
     limits: PatchLimits,
-    meter: &mut acyclic_fs::NativeCustody,
+    meter: &mut NativeCustody,
 ) -> Result<String> {
     if limits.maximum_bytes == 0
         || limits.maximum_bytes == u64::MAX
@@ -262,7 +257,7 @@ pub(crate) fn apply_update_admitted(
     source: &str,
     diff: &str,
     maximum_bytes: u64,
-    meter: &mut acyclic_fs::NativeCustody,
+    meter: &mut NativeCustody,
 ) -> Result<String> {
     apply_update_core(source, diff, maximum_bytes, None, None, meter)
 }
@@ -273,7 +268,7 @@ fn apply_update_core(
     maximum_bytes: u64,
     maximum_work: Option<u64>,
     maximum_hunks: Option<u32>,
-    meter: &mut acyclic_fs::NativeCustody,
+    meter: &mut NativeCustody,
 ) -> Result<String> {
     plan_output(meter, |meter| {
         if source.len() as u64 > maximum_bytes || diff.len() as u64 > maximum_bytes {
@@ -354,7 +349,7 @@ mod tests {
         maximum_hunks: 8,
     };
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn repeated_file_planning_retains_only_live_outputs_on_the_original_ledger() -> Result<()> {
         for count in [1, 2, 33] {

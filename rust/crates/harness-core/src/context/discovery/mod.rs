@@ -21,7 +21,7 @@ pub use declaration::{
 mod skills;
 #[doc(hidden)]
 pub use skills::discover_skills;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "filesystem-local")]
 #[doc(hidden)]
 pub use skills::discover_skills_at;
 pub use skills::{SkillCallFields, SkillMetadata, parse_skill_metadata};
@@ -29,20 +29,20 @@ mod frontmatter;
 #[doc(hidden)]
 pub use frontmatter::{frontmatter_end, parse_frontmatter, parse_frontmatter_with_body};
 mod capture;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use super::reserve_context_vec_native;
 use super::validate_source_messages;
 pub use capture::DiscoveredContext;
 #[doc(hidden)]
 pub use capture::{DiscoveryWork, child, validate_skill_catalog};
 use skills::discovery_error;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use skills::skill_text_native;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod publication;
 mod source;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use publication::{
     SkillPublicationChange, SkillPublicationCut, SkillPublicationMember, SkillPublicationSource,
     SourceCursor,
@@ -54,5 +54,5 @@ pub use source::{
     capture_instructions, discover_layered_skills, discover_skills_from,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use publication::SkillSourceCheckpoint;

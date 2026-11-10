@@ -114,6 +114,7 @@ pub(crate) fn deduplicate_reads(
                 let Some(version) = result.get("version").and_then(Value::as_str) else {
                     continue;
                 };
+                #[cfg(feature = "filesystem")]
                 let decoded = if let Some(io) = io {
                     io.decode::<FileRef>(
                         std::marker::PhantomData,
@@ -126,10 +127,14 @@ pub(crate) fn deduplicate_reads(
                         .map(|file| (file, None))
                         .map_err(|error| Error::Invalid(error.to_string()))
                 };
+                #[cfg(not(feature = "filesystem"))]
+                let decoded = serde_json::from_str::<FileRef>(version)
+                    .map(|file| (file, ()))
+                    .map_err(|error| Error::Invalid(error.to_string()));
                 let (read_file, _hold) = match decoded {
                     Ok(source) => source,
                     Err(Error::Invalid(_)) => continue,
-                    #[cfg(not(target_arch = "wasm32"))]
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Err(Error::NativeJson {
                         code: crate::wire::ErrorCode::Invalid,
                         ref source,
@@ -191,7 +196,7 @@ pub(crate) fn deduplicate_reads(
 }
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn owned_read_identity_reserves_before_decoding_with_unfunded_negative_control() {
     let file = super::instruction_tests::file("AGENTS.md", "rules", "rules");

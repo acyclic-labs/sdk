@@ -3,7 +3,7 @@ use super::*;
 /// One decoded or provider-selected source, kept with its original funding.
 pub(super) struct ReadSource {
     pub source: Option<FileReadSource>,
-    pub custody: acyclic_fs::NativeCustody,
+    pub custody: crate::NativeCustody,
 }
 
 impl ReadSource {
@@ -11,7 +11,7 @@ impl ReadSource {
         context: &ToolContext,
         path: &str,
         version: Option<&str>,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Self> {
         let (source, custody) = match version {
             // An effective alias names no volume until its layer is selected;
@@ -85,6 +85,7 @@ impl FileReadSource {
         }
     }
 
+    #[cfg(feature = "filesystem")]
     pub(super) fn logical_owned_bytes(&self) -> Result<u64> {
         match self {
             Self::Content(file) => file.logical_owned_bytes(),

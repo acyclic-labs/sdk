@@ -90,7 +90,7 @@ async fn checked_registration_never_waits_for_a_missing_or_reused_anchor()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiting()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -532,7 +532,7 @@ fn a_window_never_widens_a_native_work_handle() {
     // Every native allocation and error custody carries a work handle by value: the
     // window replaces a per-handle copy of the ledger's cancellation, which the shared
     // ledger now holds once, so the handle keeps its size without a window.
-    let words = 7;
+    let words = if cfg!(feature = "native-mount") { 7 } else { 6 };
     assert_eq!(
         std::mem::size_of::<NativeMaterializationWork>(),
         words * std::mem::size_of::<usize>()

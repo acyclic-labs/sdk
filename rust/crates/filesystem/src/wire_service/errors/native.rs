@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-watch")]
 pub(super) fn startup_code(error: &crate::source_watch::SourceWatchStartupFailure) -> Code {
     match std::error::Error::source(error)
         .and_then(|error| error.downcast_ref::<crate::DemandError>())
@@ -10,7 +10,7 @@ pub(super) fn startup_code(error: &crate::source_watch::SourceWatchStartupFailur
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-watch")]
 pub(super) fn watch_code(error: &crate::watch::NativeWatchError) -> Code {
     use crate::watch::NativeWatchError as E;
     match error {
@@ -44,17 +44,17 @@ pub(super) fn watch_code(error: &crate::watch::NativeWatchError) -> Code {
         E::StatePoisoned => Code::Internal,
         E::SequenceExhausted | E::Work(_) => Code::ResourceExhausted,
         E::Cancelled(_) => Code::Cancelled,
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "native-mount")]
         E::Mount(error) => mount_code(error),
         #[cfg(all(
             any(target_os = "linux", target_os = "macos", windows),
-            any(not(target_arch = "wasm32"), test)
+            any(feature = "native-mount", test)
         ))]
         E::Metadata(_) => Code::InvalidArgument,
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 pub(super) fn mount_code(error: &crate::native_mount::MountSourceError) -> Code {
     use crate::native_mount::MountSourceError as E;
     match error {
@@ -88,14 +88,14 @@ pub(super) fn mount_code(error: &crate::native_mount::MountSourceError) -> Code 
         },
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         E::Metadata(_) => Code::InvalidArgument,
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "native-watch")]
         E::NativeWatchOriginalIo(error) => io_code(error),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "native-watch")]
         E::NativeWatchOriginalBackend(_) => Code::Unavailable,
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-watch")]
 fn capture_code(error: &crate::CaptureError) -> Code {
     use crate::CaptureError as E;
     match error {

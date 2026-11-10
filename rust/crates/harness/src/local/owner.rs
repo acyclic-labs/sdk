@@ -2,7 +2,7 @@ pub(super) use super::owner_record::{Owner, RootWitness};
 use super::*;
 use acyclic_native_runtime::signing_key::SigningCustody;
 use std::fs;
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "native-execution"))]
 pub(in crate::local) mod exclusion;
 
 /// Root of every project's default harness state: the per-user local data directory. This is the only place the
@@ -135,7 +135,7 @@ pub(super) struct Checkout {
     /// Evidence validated separately from the token-based state selection.
     pub(super) identity: RootWitness,
     pub(super) incarnation: [u8; 16],
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-execution"))]
     pub(super) root: acyclic_fs::HeldRoot,
 }
 
@@ -149,7 +149,7 @@ impl Checkout {
     pub(super) fn capture(path: &Path) -> Result<Self> {
         #[cfg(test)]
         CAPTURES.with(|captures| captures.set(captures.get() + 1));
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         {
             let path = fs::canonicalize(path).map_err(storage)?;
             let root = acyclic_fs::hold_root(&path).map_err(storage)?;
@@ -169,7 +169,7 @@ impl Checkout {
                 root,
             })
         }
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+        #[cfg(not(any(test, feature = "native-execution")))]
         {
             let _ = path;
             Err(Error::Unsupported(
@@ -180,13 +180,13 @@ impl Checkout {
 }
 
 /// Ignores every entry of the incarnation directory, itself included.
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "native-execution"))]
 const INCARNATION_IGNORE: &[u8; 2] = b"*\n";
 
 /// The checkout's incarnation token: 128 random bits published once in the
 /// held root, exclusively and atomically. A checkout cloned again, even at a
 /// recycled object id, has no token and publishes a new one.
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "native-execution"))]
 fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
     // Capture Git metadata before publishing the SDK-owned token. Publication
     // retains those directory handles even if the checkout's name is replaced.
@@ -236,7 +236,7 @@ fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
 
 /// The token locates state across capability changes. Physical root evidence is
 /// retained in the owner record and checked before that state is attached.
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "native-execution"))]
 pub(super) fn incarnation_of(token: [u8; 16]) -> [u8; 16] {
     #[cfg(test)]
     let token = if UNTOKENED.get() { [0; 16] } else { token };
@@ -249,7 +249,7 @@ pub(super) fn incarnation_of(token: [u8; 16]) -> [u8; 16] {
 }
 
 impl RootWitness {
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-execution"))]
     pub(super) fn capture(object: [u8; 16], generation: acyclic_fs::NativeRootGeneration) -> Self {
         use acyclic_fs::NativeRootGeneration;
         #[cfg(test)]

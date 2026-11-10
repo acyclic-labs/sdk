@@ -123,7 +123,7 @@ async fn qualify_resume(
 async fn memory_filtered_progress_orders_skips_matches_and_checked_resume() -> TestResult {
     qualify_progress(&MemoryStream::default()).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_filtered_progress_orders_skips_matches_and_checked_resume() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -260,7 +260,7 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
 async fn memory_filters_before_waking_and_resumes_across_skipped_records() -> TestResult {
     qualify(&MemoryStream::default(), false).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_filters_before_waking_and_resumes_across_skipped_records() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -347,7 +347,7 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
 async fn memory_retry_identity_authenticates_headers_in_every_write_family() -> TestResult {
     retry_headers(&MemoryStream::default()).await
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 #[tokio::test]
 async fn local_retry_identity_authenticates_headers_in_every_write_family() -> TestResult {
     let directory = tempfile::tempdir()?;

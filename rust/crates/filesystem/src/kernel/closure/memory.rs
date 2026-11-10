@@ -665,6 +665,6 @@ pub(super) fn set_insert(
 }
 
 #[cfg(test)]
-#[cfg(not(loom))]
+#[cfg(all(feature = "memory", not(loom)))]
 #[path = "memory/tests.rs"]
 mod tests;

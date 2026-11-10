@@ -25,6 +25,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 
+#[cfg(any(test, feature = "distributed"))]
 pub(crate) mod lease_path;
 
 const STATE_VERSION: u32 = 1;
@@ -250,9 +251,11 @@ pub trait OperationWindowStore: acyclic_stream::ProviderPlatform {
     ) -> impl Future<Output = Result<bool, Self::Error>> + acyclic_stream::ProviderTask;
 }
 
+#[cfg(any(test, feature = "distributed"))]
 mod streams;
 #[cfg(test)]
 pub(crate) use streams::stream_lease_path;
+#[cfg(any(test, feature = "distributed"))]
 pub use streams::{StreamOperationWindowStore, StreamOperationWindowStoreError};
 
 /// Operation-window failure.
@@ -353,7 +356,7 @@ impl OperationWindowStore for MemoryOperationWindowStore {
 }
 
 mod coordinator;
-#[cfg(all(feature = "fuzzing", not(loom)))]
+#[cfg(all(feature = "fuzzing", feature = "memory", not(loom)))]
 #[doc(hidden)]
 pub use streams::fuzzing::check_persisted_window;
 #[cfg(test)]

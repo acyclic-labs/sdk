@@ -80,10 +80,13 @@ impl CanonicalContextCheckpoint {
         if let Some(previous) = &self.selection.checkpoint {
             crate::executor::with_history_io(io, |work| limits.validate_file(previous, work))?;
         }
+        #[cfg(feature = "filesystem")]
         let mut history = io.map(crate::executor::PreparationIo::history_io);
+        #[cfg(feature = "filesystem")]
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = history
             .as_mut()
             .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        #[cfg(feature = "filesystem")]
         let _unique_guard = {
             // Logical borrowed entry slots only, never opaque allocator nodes.
             let bytes = self
@@ -102,6 +105,7 @@ impl CanonicalContextCheckpoint {
         };
         let mut unique = std::collections::BTreeSet::new();
         for id in &self.selection.message_ids {
+            #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 io.charge(acyclic_fs::WorkCounters {
                     items_examined: 1,

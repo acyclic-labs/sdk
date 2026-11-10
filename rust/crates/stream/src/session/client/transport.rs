@@ -33,6 +33,7 @@ pub type Requests = BoxProviderStream<'static, wire::SessionFrame>;
 
 /// Retain one registered source event across the physical connection's waits.
 /// A ready change/refusal wins over transport data; no task or timer is added.
+#[cfg(any(feature = "grpc", feature = "wasm"))]
 pub(crate) async fn credential_event<T>(
     changed: &mut Option<acyclic_auth::credential::CredentialWatch>,
     operation: impl std::future::Future<Output = T>,

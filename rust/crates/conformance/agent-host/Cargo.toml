@@ -11,20 +11,20 @@ description = "Portable black-box AgentHost conformance vectors"
 [features]
 # Either real backend opts the shared test executable in; neither is required by the other.
 backend-tests = []
-local = ["backend-tests", "dep:tempfile"]
+local = ["backend-tests", "acyclic-stream/local", "acyclic-harness-core/oidc-http", "dep:tempfile"]
 browser = ["backend-tests", "acyclic-stream/wasm", "acyclic-harness/wasm"]
 
 [dependencies]
 acyclic-actors = { path = "../../actors" }
-acyclic-harness-core = { path = "../../harness-core" }
+acyclic-harness-core = { path = "../../harness-core", features = ["filesystem", "oidc"] }
 acyclic-harness = { path = "../../harness", features = ["conformance"] }
-acyclic-stream = { path = "../../stream", default-features = false, features = ["test-support"] }
+acyclic-stream = { path = "../../stream", default-features = false, features = ["session", "test-support"] }
 serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-fs = { path = "../../filesystem", default-features = false }
+acyclic-fs = { path = "../../filesystem", default-features = false, features = ["local"] }
 tempfile = { version = "3.27.0", optional = true }
 acyclic-native-runtime = { path = "../../native-runtime" }
 
@@ -46,7 +46,6 @@ required-features = ["local"]
 
 # Neither backend is enabled by default. Either backend admits this target;
 # module gates retain its actual architecture and original provider.
-
 [[test]]
 name = "main"
 path = "tests/main.rs"

@@ -28,7 +28,7 @@ struct Document {
 
 impl Document {
     const BYTES: usize = 40;
-    fn decode(bytes: &[u8], length: u64, work: acyclic_fs::NativeWork<'_>) -> Result<Self> {
+    fn decode(bytes: &[u8], length: u64, work: crate::NativeWork<'_>) -> Result<Self> {
         let invalid = || executor::rejection(work, "notebook index differs from its source");
         if bytes.len() != Self::BYTES || &bytes[..8] != b"nbcells1" {
             return Err(invalid());
@@ -122,7 +122,7 @@ impl Selection {
         }
     }
 
-    fn supply(&mut self, bytes: &[u8], key: Label, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
+    fn supply(&mut self, bytes: &[u8], key: Label, work: crate::NativeWork<'_>) -> Result<()> {
         if let Label::Output(level) = key {
             return self.outputs.supply(bytes, level, work);
         }
@@ -166,7 +166,7 @@ impl Selection {
             .map(|(start, end)| (start, end, Label::Format))
     }
 
-    fn event(&mut self, event: SpanEvent, work: acyclic_fs::NativeWork<'_>) -> Result<bool> {
+    fn event(&mut self, event: SpanEvent, work: crate::NativeWork<'_>) -> Result<bool> {
         let invalid = || executor::rejection(work, "invalid nbformat v4 cell document");
         if self.cells
             && self.outputs.event(
@@ -289,9 +289,9 @@ pub(super) async fn read(
     source: super::source::ReadSource,
     offset: u64,
     limit: Option<u64>,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+) -> Result<(ToolResult, crate::NativeCustody)> {
     let maximum = context.effective_scope().limits().render_bytes;
     let quantum = context
         .effective_scope()

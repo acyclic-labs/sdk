@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+#[cfg(all(target_os = "linux", feature = "native-watch"))]
 #[test]
 fn cleanup_retry_observes_the_retired_source_watch_failure()
 -> Result<(), Box<dyn std::error::Error>> {

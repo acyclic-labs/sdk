@@ -225,6 +225,7 @@ pub(crate) use codec::decode_publication_evidence_with_accounting;
 pub use codec::decode_published_generation;
 use codec::*;
 mod combiner;
+#[cfg(any(test, feature = "distributed"))]
 pub(crate) use combiner::Volume as AuthorityActor;
 pub(crate) use combiner::authority_actor;
 mod construction;
@@ -246,5 +247,6 @@ pub(crate) use api::publish_generation_async_guarded;
 pub(crate) use api::publish_generation_async_guarded_with_native_work;
 
 #[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "../tests/publication/mod.rs"]
 mod tests;

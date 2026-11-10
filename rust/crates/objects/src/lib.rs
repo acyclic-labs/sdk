@@ -11,8 +11,10 @@ pub mod authorization {
     include!(concat!(env!("OUT_DIR"), "/authorization.rs"));
 }
 pub use authorization::{AUTHORIZATION, ObjectsMethod};
+
 mod availability;
 pub mod batch;
+#[cfg(feature = "binary")]
 pub mod binary;
 mod blob;
 mod error;
@@ -20,16 +22,18 @@ mod error;
 #[doc(hidden)]
 pub use blob::codec_fuzz;
 pub mod conformance;
+#[cfg(any(objects_client, objects_server))]
 mod convert;
 #[cfg(feature = "conformance")]
 mod counted;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
 mod identity;
+#[cfg(feature = "json")]
 pub mod json;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub mod local;
 mod medium;
 #[cfg(not(target_arch = "wasm32"))]
@@ -37,12 +41,13 @@ mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_error;
 mod observation;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 mod operation;
 mod ownership;
 mod provider;
+#[cfg(objects_server)]
 pub mod route;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
 pub mod s3;
 mod store;
 #[cfg(test)]
@@ -69,11 +74,11 @@ pub use provider::{
 };
 pub use store::{Account, MemoryObjects, Store};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub use grpc::{ConnectError, GrpcObjects};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub use http::HttpObjects;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use local::{LocalClose, LocalCloseError, LocalMedium, LocalObjects};
 
 /// Largest blob stored inline in a retained stream record instead of as a blob.
@@ -123,7 +128,7 @@ pub const HTTP_STREAM_ROUTES: &[(&str, &str, &str)] = &[(
 )];
 
 /// Largest caller-supplied PEM CA, client certificate, or private key.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 const MAX_PEM_BYTES: usize = 64 * 1024;
 /// Largest bearer credential, in bytes, that an SDK client accepts.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;

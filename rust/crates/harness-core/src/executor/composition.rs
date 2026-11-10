@@ -1,7 +1,7 @@
 use super::*;
 
 impl StockExecutor {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
         self
@@ -24,9 +24,9 @@ impl StockExecutor {
             provider,
             context,
             tools,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             hooks: None,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             prompt_block: None,
             limits: Limits::default(),
             tool_scope: RuntimeScope::default(),
@@ -119,6 +119,7 @@ impl StockExecutor {
     /// Offers the selected capabilities as `native`'s declarations. Called
     /// after any context manifest pins the selection, which a bound registry
     /// refuses, so each declaration runs the revision the manifest pins.
+    #[cfg(feature = "filesystem")]
     pub(crate) fn with_native_tools(
         mut self,
         native: &crate::tools::native::NativeTools,
@@ -140,6 +141,7 @@ impl StockExecutor {
 impl StockExecutor {
     /// Retains this exact composition while refusing every fresh effect intent.
     #[cfg(test)]
+    #[cfg(feature = "filesystem")]
     pub(crate) fn into_reconciliation(mut self) -> Self {
         self.reconciliation_only = true;
         self
@@ -221,7 +223,7 @@ impl Executor for StockExecutor {
         Box::pin(StockExecutor::execute_progress(self, input, journal))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,

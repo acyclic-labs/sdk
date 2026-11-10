@@ -22,7 +22,11 @@ where
                 .await
                 .map(|receipt| receipt.value)
                 .map_err(|failure| Error::from(failure.error).into()),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             GitTreeRef::Lazy(snapshot) => {
                 let workspace = self.workspace(snapshot.workspace_id).await?;
                 let View::Checkout(current) = self.lazy_current else {
@@ -72,7 +76,11 @@ where
                     .await
                     .map_err(Error::from)
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(not(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            )))]
             GitTreeRef::Lazy(_) => Err(Error::Unsupported(
                 "native source snapshots require a native checkout".into(),
             )),

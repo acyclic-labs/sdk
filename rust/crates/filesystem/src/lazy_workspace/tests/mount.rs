@@ -88,7 +88,7 @@ async fn materialization_phase_denial_preserves_the_callers_owned_namespace() {
         assert_eq!(*ctx.standalone_parts().unwrap().1, prefix);
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 fn allow_publication(_: WorkBudget) -> std::future::Ready<crate::FsResult<()>> {
     std::future::ready(Ok(OperationReceipt {
         value: (),
@@ -96,7 +96,7 @@ fn allow_publication(_: WorkBudget) -> std::future::Ready<crate::FsResult<()>> {
     }))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 #[tokio::test]
 async fn promotion_cancellation_does_not_install_a_partial_candidate() {
     let fs = Fs::memory();
@@ -150,7 +150,7 @@ async fn promotion_cancellation_does_not_install_a_partial_candidate() {
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 #[tokio::test]
 async fn dirty_candidate_keeps_unpublished_files_and_shared_aliases_until_publication() {
     let fs = Fs::memory();
@@ -238,7 +238,7 @@ async fn dirty_candidate_keeps_unpublished_files_and_shared_aliases_until_public
     assert_ne!(root.head(accounting!()).await.unwrap().id(), head);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 #[tokio::test]
 async fn mounted_listing_includes_dirty_authored_bindings() {
     let fs = Fs::memory();
@@ -296,7 +296,11 @@ async fn mounted_listing_includes_dirty_authored_bindings() {
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "native-mount",
+    feature = "native-watch",
+    not(target_arch = "wasm32")
+))]
 #[tokio::test]
 async fn replacement_directory_hides_old_source_children() {
     let directory = tempfile::tempdir().unwrap();
@@ -337,7 +341,7 @@ async fn replacement_directory_hides_old_source_children() {
     assert!(page.entries.is_empty());
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 #[tokio::test]
 async fn mounted_whiteouts_follow_the_original_publication_decision() {
     let root = attach(
@@ -389,7 +393,7 @@ async fn mounted_whiteouts_follow_the_original_publication_decision() {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(feature = "native-mount", feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
     let directory = tempfile::tempdir().unwrap();
@@ -525,7 +529,7 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
     assert_eq!(read.bytes, content);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 #[tokio::test]
 async fn source_directory_identity_cannot_be_promoted_twice() {
     let mut source = CountingSource::new(Bytes::new());
@@ -574,7 +578,7 @@ async fn source_directory_identity_cannot_be_promoted_twice() {
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 #[derive(Clone, Copy, PartialEq)]
 enum ParentRead {
     Record,
@@ -585,7 +589,7 @@ enum ParentRead {
 
 // Each measurement opens its own filesystem so both paths start with the same
 // cache history. Repeated measurements warm only their own original lookup.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 async fn parent_read_work(published: bool, read: ParentRead, repeat: bool) -> WorkCounters {
     let root = attach(
         &Fs::memory(),
@@ -658,7 +662,7 @@ async fn parent_read_work(published: bool, read: ParentRead, repeat: bool) -> Wo
     spent
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 #[tokio::test]
 async fn source_parent_promotion_reads_only_the_record() {
     for (published, repeat) in [(false, false), (true, false), (true, true)] {

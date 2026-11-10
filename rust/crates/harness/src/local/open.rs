@@ -11,15 +11,15 @@ struct Opening {
     compaction_choice: Option<crate::context::CompactionPolicy>,
     /// Resolves a model `agent.ts` selects; without one the host's binding
     /// is fixed.
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     models: Option<Arc<config::ModelResolver>>,
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     settings: Option<Arc<crate::native_settings::SettingsConfig>>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     capabilities: Capabilities,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     diagnostics: Vec<crate::mcp::McpServerFailure>,
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-execution"))]
     native_execution: bool,
 }
 
@@ -27,13 +27,13 @@ struct Storage {
     issuer: AuthorityRoot,
     owner: owner::Owner,
     files: Arc<LocalFilesystem>,
-    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+    #[cfg(all(target_os = "linux", feature = "native-execution"))]
     volume_filesystem: acyclic_fs::LocalFs,
     /// The Stream provider holding the filesystem's volume authority.
     volume_stream: Arc<LocalStream>,
     scratch: VolumeRef,
     journal: VolumeRef,
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-execution"))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
@@ -61,10 +61,10 @@ pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
 impl Opening {
     fn configure(config: LocalHarnessConfig) -> Result<Self> {
         validate_configuration(&config)?;
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let models = config.models.as_ref().map(|(models, _)| Arc::clone(models));
         // Settings resolve once, before the model and approvers they select.
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let (config, settings_configuration) = {
             let mut config = config;
             if config.without_user_settings {
@@ -117,7 +117,7 @@ impl Opening {
         } else {
             crate::context::CompactionPolicy::Disabled
         };
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         // Coordination uses the existing checkout. Only our own native shell
         // needs its auxiliary volumes projected before a command can run.
         let native_execution = tools
@@ -130,22 +130,22 @@ impl Opening {
             tools,
             compaction_choice,
             compaction,
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             models,
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             settings: settings_configuration,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             capabilities: Capabilities::default(),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             diagnostics: Vec::new(),
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             native_execution,
         })
     }
 
     /// Activation belongs exclusively to opening, after the read-only checks.
     async fn activate(self) -> Result<Self> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
         {
             let mut opening = self;
             let installation = match &opening.settings {
@@ -174,7 +174,7 @@ impl Opening {
             opening.diagnostics = installation.diagnostics;
             Ok(opening)
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(any(feature = "mcp-stdio", feature = "mcp-http")))]
         Ok(self)
     }
 
@@ -210,9 +210,9 @@ impl Opening {
     /// The host's own refusals, before any state is touched: each names what
     /// is missing and its recovery. Opening stops at the first.
     fn host_refusals(&self) -> Vec<Error> {
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         let native = self.native_execution;
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+        #[cfg(not(any(test, feature = "native-execution")))]
         let native = true;
         let mut refusals = self.config.native_refusals(native);
         refusals.extend(self.config.state_refusals());
@@ -220,7 +220,7 @@ impl Opening {
     }
 
     // Physical commands use the same native shell preflight, but project no volume.
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-execution"))]
     fn native_mounts(&self) -> bool {
         self.native_execution && self.config.workspace_mounting == WorkspaceMounting::Native
     }
@@ -231,9 +231,9 @@ impl Opening {
 
     async fn initialize_storage(&self) -> Result<Storage> {
         acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         if self.native_mounts() {
             acyclic_fs::initialize_native_mount_services_async()
                 .await
@@ -282,11 +282,11 @@ impl Opening {
             },
         )?;
         let PrivateVolumes { scratch, journal } = PrivateVolumes::open(&files, &owner).await?;
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         let workspace = self
             .workspace(&filesystem, &directory, &owner, &issuer, &scratch, checkout)
             .await?;
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         let files = match &workspace {
             Some(workspace) => files
                 .with_project_family(workspace.view().workspace().id(), workspace.store.clone())?,
@@ -302,7 +302,7 @@ impl Opening {
                 None,
             )
             .await?;
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         let files = retain_skills(
             files,
             directory.join("skill-sources"),
@@ -314,17 +314,17 @@ impl Opening {
             issuer,
             owner,
             files,
-            #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+            #[cfg(all(target_os = "linux", feature = "native-execution"))]
             volume_filesystem: filesystem,
             volume_stream,
             scratch,
             journal,
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace,
         })
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-execution"))]
     async fn workspace(
         &self,
         filesystem: &acyclic_fs::LocalFs,
@@ -375,15 +375,15 @@ impl Opening {
         Ok(workspace.map(Arc::new))
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-execution"))]
     fn user_roots(&self) -> Vec<PathBuf> {
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         {
             self.settings
                 .as_ref()
                 .map_or_else(Vec::new, |settings| settings.skill_roots().to_vec())
         }
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+        #[cfg(not(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")))]
         {
             Vec::new()
         }
@@ -401,12 +401,12 @@ impl Opening {
             issuer,
             owner,
             files,
-            #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+            #[cfg(all(target_os = "linux", feature = "native-execution"))]
             volume_filesystem,
             volume_stream,
             scratch,
             journal,
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace,
         } = opened;
         let verifier = issuer.verifier(&mut None)?;
@@ -433,7 +433,7 @@ impl Opening {
         )?;
         // A checkout's commands and file tools both write through its
         // checkout tools; a configured volume takes ordinary content writes.
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "native-execution"))]
         let (workspace_tools, checkout_writer) = match &workspace {
             Some(workspace) => {
                 let (tools, writer) = workspace
@@ -449,7 +449,7 @@ impl Opening {
             }
             None => (None, None),
         };
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+        #[cfg(not(any(test, feature = "native-execution")))]
         let (workspace_tools, checkout_writer) = (None, None);
         let writer: Option<Arc<dyn crate::conversation::ContentPublisher>> =
             match self.config.project {
@@ -487,28 +487,33 @@ impl Opening {
             journal: &journal,
             maximum_bytes: self.config.limits.file_bytes,
         };
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "hooks"))]
         let settings_tree = agent_settings::Tree::new(&volumes).await?;
         // `plugins.ts` selects the plugin hooks as the session starts.
-        #[cfg(any(test, not(target_arch = "wasm32")))]
+        #[cfg(any(test, feature = "hooks"))]
         let plugin_hooks =
             agent_settings::plugins(&settings_tree, owner.agent, self.config.clock.as_ref())
                 .await?;
         // `agent.ts` selects the model and its sampling as the session starts.
         let (agent, sampling, compaction) = match self.config.model.clone() {
             Some(started) => {
-                #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+                #[cfg(not(any(test, feature = "hooks")))]
                 let settings_tree = agent_settings::Tree::new(&volumes).await?;
-                #[cfg(any(test, not(target_arch = "wasm32")))]
+                #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
                 let resolver = self
                     .models
                     .as_deref()
                     .map(|models| move |selection: &str| models.resolve(selection));
-                #[cfg(any(test, not(target_arch = "wasm32")))]
+                #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
                 let resolve = resolver.as_ref().map(|resolve| {
                     resolve as &(dyn Fn(&str) -> Result<(Model, Arc<dyn ModelProvider>)> + Sync)
                 });
-                #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+                #[cfg(not(any(
+                    test,
+                    feature = "hooks",
+                    feature = "mcp-stdio",
+                    feature = "mcp-http"
+                )))]
                 let resolve = None;
                 let settings = agent_settings::admit(
                     &settings_tree,
@@ -525,7 +530,7 @@ impl Opening {
         };
         Ok(LocalHarness {
             files,
-            #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+            #[cfg(all(target_os = "linux", feature = "native-execution"))]
             volume_filesystem,
             harness,
             tools: self.tools,
@@ -554,23 +559,23 @@ impl Opening {
             skill_cache: context::skills::cache(),
             #[cfg(test)]
             context_read_observer: None,
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             checkout_context: matches!(self.config.project, LocalProject::Workspace(_)),
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "hooks"))]
             settings: self.settings,
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "hooks"))]
             plugin_hooks,
             limits: self.config.limits,
             compaction,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             mcp_diagnostics: self.diagnostics,
             goal_continuations: self.config.goal_continuations,
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             workspace,
             #[cfg(test)]
             environment_reads: std::sync::atomic::AtomicUsize::new(0),
             clock: self.config.clock,
-            #[cfg(any(test, not(target_arch = "wasm32")))]
+            #[cfg(any(test, feature = "native-execution"))]
             environment_platform: self.config.environment_platform,
         })
     }
@@ -620,7 +625,7 @@ fn scopes(
         &opening.tools,
         opening.config.default_tools.iter().map(String::as_str),
     )?);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     grants.extend(
         opening
             .capabilities
@@ -651,7 +656,7 @@ fn validate_configuration(config: &LocalHarnessConfig) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "native-execution"))]
 pub(super) fn retain_skills(
     files: Arc<LocalFilesystem>,
     directory: PathBuf,
@@ -702,16 +707,16 @@ impl PrivateVolumes {
 fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
     let tools = crate::tools::registry(
         &config.default_tools,
-        |_| true,
+        |_| cfg!(any(test, feature = "native-execution")),
         std::mem::take(&mut config.tools),
     )?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "search-http")]
     if config.model.is_none() && config.web_tools {
         return Err(Error::Invalid(
             "native host coordination cannot register web tools".into(),
         ));
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "search-http")]
     let tools = if config.web_tools {
         let mut tools = tools;
         web::WebExecutor::bind(&mut tools, config.search_provider.take())?;
@@ -725,7 +730,7 @@ fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
 /// This owner's process custody. The first owner of the directory in this
 /// process kills every tool tree a dead previous owner left, awaiting each
 /// tree's exit; a later owner in the same process shares the live custody.
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "native-execution"))]
 async fn fence_stale_processes(
     path: std::path::PathBuf,
 ) -> Result<Arc<acyclic_native_runtime::ProcessCustody>> {

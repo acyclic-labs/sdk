@@ -3,7 +3,7 @@
 use acyclic_stream::OperationClaims;
 
 #[cfg(test)]
-#[cfg(not(loom))]
+#[cfg(all(feature = "memory", not(loom)))]
 mod tests {
     use super::*;
     use std::cell::Cell;

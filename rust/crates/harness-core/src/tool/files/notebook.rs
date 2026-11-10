@@ -9,7 +9,7 @@ use std::{borrow::Cow, fmt};
 /// The value is destroyed before the admission that owns its allocations.
 pub(super) struct Decoded<T> {
     value: T,
-    _hold: acyclic_fs::NativeCustody,
+    _hold: crate::NativeCustody,
 }
 impl<T> std::ops::Deref for Decoded<T> {
     type Target = T;
@@ -21,12 +21,12 @@ impl<T> std::ops::Deref for Decoded<T> {
 pub(super) fn decode<'de, S: DeserializeSeed<'de>>(
     seed: S,
     source: &'de str,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
 ) -> Result<Decoded<S::Value>>
 where
     S::Value: crate::HeapLayout,
 {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let decoded = io.decode_seed(
@@ -95,7 +95,7 @@ struct KernelSpec<'a> {
 
 fn language<'a>(
     notebook: &Notebook<'a>,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
 ) -> Result<Option<Decoded<Cow<'a, str>>>> {
     let Some(raw) = notebook.metadata else {
         return Ok(None);
@@ -193,10 +193,7 @@ impl<'de, F: FnMut(u64, &'de RawValue)> Visitor<'de> for EachCell<F> {
     }
 }
 
-fn notebook<'a>(
-    source: &'a str,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<Decoded<Notebook<'a>>> {
+fn notebook<'a>(source: &'a str, work: crate::NativeWork<'_>) -> Result<Decoded<Notebook<'a>>> {
     let notebook = decode(
         JsonObject(std::marker::PhantomData::<Notebook<'a>>),
         source,
@@ -214,7 +211,7 @@ fn notebook<'a>(
 fn each<'a>(
     notebook: &Notebook<'a>,
     callback: impl FnMut(u64, &'a RawValue),
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
 ) -> Result<u64> {
     Ok(decode(EachCell(callback), notebook.cells.get(), work)?
         .value
@@ -229,9 +226,9 @@ fn span(source: &str, raw: &RawValue) -> (usize, usize) {
 /// Encode borrowed fields on the original ledger, without a temporary Value graph.
 fn encoded<T: Serialize>(
     value: &T,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(String, acyclic_fs::NativeCustody)> {
-    #[cfg(not(target_arch = "wasm32"))]
+    work: crate::NativeWork<'_>,
+) -> Result<(String, crate::NativeCustody)> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let hold;
@@ -275,7 +272,7 @@ fn convert_cell(
     cell: &Cell<'_>,
     kind: &str,
     substitutions: &mut Substitutions<'_>,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
 ) -> Result<()> {
     use crate::executor::json::{JsonBounds, JsonCodecCharge, JsonSpans, SpanEvent};
     let encoded_kind = match kind {
@@ -291,13 +288,13 @@ fn convert_cell(
         work,
         std::mem::size_of::<JsonSpans>() + std::mem::size_of::<[Option<CellField>; 4]>(),
     )?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let owned_io = work
         .map(crate::executor::PreparationIo::from_native_work)
         .transpose()?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let io = owned_io.as_ref();
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let io = None;
     let origin = span(source, raw).0;
     let mut fields: [Option<CellField>; 4] = [None; 4];
@@ -432,8 +429,8 @@ fn convert_cell(
 pub(super) fn edit<'a>(
     source: &'a str,
     operation: &NotebookEdit,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(String, acyclic_fs::NativeCustody, EditFacts<'a>)> {
+    work: crate::NativeWork<'_>,
+) -> Result<(String, crate::NativeCustody, EditFacts<'a>)> {
     let notebook = notebook(source, work)?;
     let (target, after) = match operation {
         NotebookEdit::Replace { cell, .. } | NotebookEdit::Delete { cell } => (cell, false),

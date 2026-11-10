@@ -1,4 +1,4 @@
-#![cfg(all(not(target_arch = "wasm32"), not(loom)))]
+#![cfg(all(feature = "local", not(loom)))]
 use futures::TryFutureExt as _;
 
 use crate::*;

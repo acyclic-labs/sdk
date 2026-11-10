@@ -74,6 +74,7 @@ impl<'a, 'b> Quota<'a, 'b> {
         self.bytes = 0;
     }
     /// Transfers this construction only when the observer supplies an output owner.
+    #[cfg(feature = "filesystem")]
     pub(crate) fn take_owned_custody(
         &mut self,
     ) -> Result<Option<crate::filesystem::PreparationCustody>> {
@@ -87,7 +88,8 @@ impl<'a, 'b> Quota<'a, 'b> {
         Ok(custody)
     }
     /// Move this construction's exact storage into its native output owner.
-    pub(crate) fn into_custody(mut self) -> Result<acyclic_fs::NativeCustody> {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn into_custody(mut self) -> Result<NativeCustody> {
         #[cfg(not(target_arch = "wasm32"))]
         let custody = match self.work.as_deref_mut() {
             Some(io) if io.original_native_work().is_some() => {
@@ -101,9 +103,9 @@ impl<'a, 'b> Quota<'a, 'b> {
         Ok(custody)
     }
     pub(crate) fn json_error(&mut self, error: Error) -> Error {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut error = error;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Error::NativeJson { custody, .. } = &mut error
             && custody.is_none()
         {

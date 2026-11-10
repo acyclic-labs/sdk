@@ -240,7 +240,7 @@ fn stop_denial_and_cancellation_retain_the_same_native_owner() -> TestResult {
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 mod original {
     use super::{
         Arc, CancellationToken, Delivery, DemandError, DemandWork, HANDLE, INITIAL_BUFFER_BYTES,

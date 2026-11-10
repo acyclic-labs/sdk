@@ -130,6 +130,7 @@ impl ReasoningBlock {
     }
 }
 
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for super::ModelEvent {
     fn diagnostic_label_bytes() -> u64 {
         super::preparation::MODEL_DIAGNOSTIC_LABEL_BYTES

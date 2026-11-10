@@ -1,5 +1,5 @@
 //! Continuing projection publication through real Stream and private content.
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(feature = "filesystem-local")]
 
 use acyclic_harness::context::{
     CompactionPolicy, CompactionReference, Context, ContextPipeline, ContextPlacement,

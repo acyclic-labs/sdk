@@ -1,11 +1,7 @@
-diff --git a/rust/crates/harness-core/src/model/recorded.rs b/rust/crates/harness-core/src/model/recorded.rs
-index 4713eb10eda..9742ca8a31b 100644
 --- a/rust/crates/harness-core/src/model/recorded.rs
 +++ b/rust/crates/harness-core/src/model/recorded.rs
-@@ -1776,14 +1776,6 @@ impl ModelProvider for RecordedModel {
-     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
-         self.live.model_profile(model)
-     }
+@@ -1463,9 +1463,0 @@
+-    #[cfg(feature = "filesystem")]
 -    fn admit_profile(
 -        &self,
 -        model: &Model,
@@ -14,6 +10,3 @@ index 4713eb10eda..9742ca8a31b 100644
 -        let (model, live) = self.live.admit_profile(model, profile)?;
 -        Ok((model, Arc::new(self.with_live(live))))
 -    }
-     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
-         self.live.native_tool_profile(model)
-     }

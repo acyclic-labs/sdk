@@ -20,7 +20,7 @@ pub(super) struct FsInner<A, O> {
     pub(super) policy_cache: super::policy_cache::PolicyCache,
     pub(super) publication_proof: crate::kernel::PublicationCache,
     // This field must remain last: Rust drops fields in declaration order, so every durable
-    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     pub(super) _local_root_lifecycle: Option<OwnershipAnchor>,
 }
 
@@ -181,13 +181,14 @@ impl<A, O> Fs<A, O> {
                 workspace_namespace,
                 policy_cache: super::policy_cache::PolicyCache::default(),
                 publication_proof: Default::default(),
-                #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+                #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
                 _local_root_lifecycle: None,
             }),
         }
     }
 }
 
+#[cfg(any(test, feature = "distributed"))]
 impl<P: ?Sized, O> Fs<crate::StreamAuthorityStore<P>, O> {
     /// Returns the existing durable history behind a volume snapshot/follow.
     /// This does not publish a second copy of file contents.
@@ -212,35 +213,38 @@ impl<P: ?Sized, O> Fs<crate::StreamAuthorityStore<P>, O> {
 }
 
 /// Durable local authority backend with nonblocking native storage dispatch.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub type LocalAuthorityBackend =
     crate::distributed::StreamAuthorityStore<acyclic_stream::LocalStream>;
 
 /// Durable local immutable-object backend with nonblocking native storage dispatch.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub type LocalObjectBackend = crate::staged_objects::StagedObjects<
     crate::cache::CachedObjectStore<crate::LogicalObjectStore<acyclic_objects::LocalObjects>>,
 >;
 
 /// Durable local filesystem composition with nonblocking native storage dispatch.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub type LocalFs = Fs<LocalAuthorityBackend, LocalObjectBackend>;
 
 /// Durable operation-window store sharing the local filesystem's authority
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub type LocalOperationWindowStore = crate::StreamOperationWindowStore<acyclic_stream::LocalStream>;
 
 /// Durable local volume handle with nonblocking native storage dispatch.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub type LocalVolume = Volume<LocalAuthorityBackend, LocalObjectBackend>;
 
 /// Deterministic in-process composition over the exact public Stream and Objects providers.
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 pub type MemoryFs = Fs<MemoryAuthorityBackend, MemoryObjectBackend>;
 
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 /// Filesystem authority adapter backed by the public in-memory Stream provider.
 pub type MemoryAuthorityBackend =
     crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>;
 
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 /// Filesystem object adapter backed by the public in-memory Objects provider.
 pub type MemoryObjectBackend = crate::LogicalObjectStore<acyclic_objects::MemoryObjects>;
 
@@ -259,7 +263,7 @@ impl<A, S> Fs<A, crate::cache::CachedObjectStore<S>> {
     }
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     /// Observes the disposable local immutable-object cache.
     pub fn object_cache_stats(&self) -> Result<crate::cache::ObjectCacheStats, ObjectStoreError> {
@@ -272,6 +276,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     }
 }
 
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 impl
     Fs<
         crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,

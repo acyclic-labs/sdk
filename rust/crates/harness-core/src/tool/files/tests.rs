@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Capabilities, OperationId, conversation::Limits};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod effective;
 
 #[test]

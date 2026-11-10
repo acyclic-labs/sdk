@@ -1,11 +1,21 @@
 use super::*;
 pub(crate) mod media_type;
-#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+#[cfg(all(
+    test,
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32"),
+    not(loom)
+))]
 mod skills_tests;
 #[cfg(all(test, not(loom)))]
 mod tests;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 struct SkillRead<'a> {
     volume: &'a VolumeRef,
     grant: &'a ContentGrant,
@@ -301,7 +311,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
         self.require_private_directory(volume, grant, path, io)?;
         super::super::access::require_directory_ceiling(ceiling, volume, path, io)?;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(
+            feature = "filesystem-local",
+            feature = "native-execution",
+            not(target_arch = "wasm32")
+        ))]
         if let Some(sources) = self.skill_sources(volume)?
             && let Some(source_generation) = expected_generation
             && sources.matches(volume, source_generation, path)
@@ -618,7 +632,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<acyclic_fs::GenerationId> {
         bounded_io::generation_version(reference.version(), io)
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     async fn materialize_skill(
         &self,
         sources: &crate::context::native_skills::NativeSkills,

@@ -34,7 +34,7 @@ pub trait DeviceLink: Send {
     fn next(&mut self) -> BoxProviderFuture<'_, Result<Option<bytes::Bytes>>>;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "filesystem-local")]
 impl DeviceLink for acyclic_stream::session::ActorSocket {
     fn send(&self, frame: bytes::Bytes) -> BoxProviderFuture<'static, Result<()>> {
         let sender = self.sender();
@@ -61,6 +61,7 @@ pub trait DeviceShell: ProviderPlatform {
     ) -> BoxProviderFuture<'_, Result<acyclic_machines::ExecStream>>;
 }
 
+#[cfg(feature = "machines")]
 impl DeviceShell for crate::machines::MachinesWorkspace {
     fn selected_volume(&self) -> &crate::conversation::VolumeRef {
         Self::selected_volume(self)

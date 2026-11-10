@@ -1,5 +1,5 @@
 use super::{MAXIMUM_RESPONSE_BYTES, copy_text, transport_error};
-use crate::Result;
+use crate::{NativeCustody, NativeWork, Result};
 use http_body_util::{BodyExt as _, Empty};
 use hyper_util::rt::TokioIo;
 use reqwest::Url;
@@ -7,10 +7,10 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub(super) enum Response {
-    Redirect(String, acyclic_fs::NativeCustody),
+    Redirect(String, NativeCustody),
     Content {
         bytes: Vec<u8>,
-        held: acyclic_fs::NativeCustody,
+        held: NativeCustody,
         status: u16,
         content_type: Option<String>,
     },
@@ -20,7 +20,7 @@ pub(super) async fn send(
     endpoint: &Url,
     tls: &Arc<rustls::ClientConfig>,
     require_public_address: bool,
-    work: acyclic_fs::NativeWork<'_>,
+    work: NativeWork<'_>,
     failure: &mut Option<crate::Error>,
 ) -> Result<Response> {
     let host = endpoint
@@ -72,7 +72,7 @@ pub(super) async fn send(
 async fn validated_connect(
     addresses: impl Iterator<Item = std::net::SocketAddr>,
     require_public_address: bool,
-    work: acyclic_fs::NativeWork<'_>,
+    work: NativeWork<'_>,
 ) -> Result<tokio::net::TcpStream> {
     let (validated, _held) = validated_addresses(addresses, require_public_address, work)?;
     // Retain ordinary address fallback without a second hostname resolution.
@@ -84,13 +84,13 @@ async fn validated_connect(
 fn validated_addresses(
     addresses: impl Iterator<Item = std::net::SocketAddr>,
     require_public_address: bool,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(Vec<std::net::SocketAddr>, acyclic_fs::NativeCustody)> {
+    work: NativeWork<'_>,
+) -> Result<(Vec<std::net::SocketAddr>, NativeCustody)> {
     let mut held =
         crate::tool::edit::allocation(work, std::mem::size_of::<Vec<std::net::SocketAddr>>())?;
     let mut validated = Vec::new();
     for address in addresses {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             work.charge(acyclic_fs::WorkCounters {
                 items_examined: 1,
@@ -117,7 +117,7 @@ fn validated_addresses(
 async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
     socket: I,
     request: http::Request<Empty<bytes::Bytes>>,
-    work: acyclic_fs::NativeWork<'_>,
+    work: NativeWork<'_>,
 ) -> Result<Response> {
     let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
         .max_buf_size(crate::http::transport::HTTP_BUFFER_BYTES)

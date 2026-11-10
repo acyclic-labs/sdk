@@ -10,7 +10,7 @@ use std::{
 };
 use tokio::sync::watch;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, feature = "filesystem-local"))]
 #[path = "transcripts_tests.rs"]
 mod tests;
 

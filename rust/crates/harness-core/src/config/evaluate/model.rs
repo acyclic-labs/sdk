@@ -4,7 +4,7 @@ use serde_json::json;
 use std::borrow::Cow;
 use std::cell::Cell;
 mod composition;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "hooks")]
 mod plugins;
 mod prepared;
 
@@ -242,7 +242,7 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
 pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     prepared::check(bytes).await?;
     composition::check(bytes).await?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "hooks")]
     plugins::check(bytes).await?;
     raw_source(bytes).await?;
     let cache = Cache::default();

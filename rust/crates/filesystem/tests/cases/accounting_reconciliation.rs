@@ -1,5 +1,5 @@
 //! Original-ledger charge and concurrent retirement regression coverage.
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(feature = "memory", not(target_arch = "wasm32")))]
 
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::performance::BOUNDARY_BUDGET;

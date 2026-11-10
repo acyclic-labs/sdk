@@ -297,14 +297,14 @@ mod client;
 pub use client::*;
 mod capture;
 pub use capture::{CapturedExec, capture_exec};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) mod admitted;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(any(feature = "local", feature = "grpc"), not(target_arch = "wasm32")))]
 pub(crate) mod deadline;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) mod journal;
 #[cfg(all(
-    any(not(target_arch = "wasm32"), feature = "test-support"),
+    any(feature = "local", feature = "test-support"),
     not(target_arch = "wasm32")
 ))]
 pub(crate) mod journal_codec;

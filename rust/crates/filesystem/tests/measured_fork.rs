@@ -1,6 +1,10 @@
 //! Public measured fork limits, cancellation, recovery and facade observability.
 
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(
+    feature = "memory",
+    feature = "distributed",
+    not(target_arch = "wasm32")
+))]
 
 #[macro_use]
 #[path = "support/unbounded.rs"]

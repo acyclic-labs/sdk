@@ -4,12 +4,13 @@ use crate::{
     mcp::{McpTransport, config::Dialect},
 };
 use futures::TryStreamExt;
+#[cfg(feature = "mcp-stdio")]
 use std::collections::BTreeSet;
 
 enum Connection {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "mcp-stdio")]
     Stdio(super::super::stdio::StdioMcpTransport),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "mcp-http")]
     Http(super::super::http::HttpMcpTransport),
 }
 
@@ -20,7 +21,7 @@ pub(super) async fn connect(
     secrets: &dyn crate::secrets::SecretSource,
 ) -> Result<Connected> {
     let (connection, binding) = match &server.transport {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "mcp-stdio")]
         McpTransport::Stdio { env_vars, .. } => {
             let credentials = credentials_for(env_vars.iter(), secrets).await?;
             let child = command_for(
@@ -43,7 +44,7 @@ pub(super) async fn connect(
                 binding,
             )
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "mcp-http")]
         McpTransport::Http {
             url,
             headers,
@@ -90,7 +91,7 @@ pub(super) async fn connect(
             }
             (Connection::Http(transport), binding)
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(all(feature = "mcp-stdio", feature = "mcp-http")))]
         _ => {
             return Err(Error::Unsupported(
                 "configured MCP transport feature is disabled".into(),
@@ -106,12 +107,12 @@ pub(super) async fn connect(
         })
         .await?;
     let transport = match connection {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "mcp-stdio")]
         Connection::Stdio(transport) => {
             Arc::new(transport.with_tool_limits(limits.tool_bytes, server.tool_timeout_ms)?)
                 as Arc<dyn McpToolTransport>
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "mcp-http")]
         Connection::Http(transport) => {
             Arc::new(transport.with_tool_limits(limits.tool_bytes, server.tool_timeout_ms)?)
                 as Arc<dyn McpToolTransport>
@@ -136,7 +137,7 @@ fn hash_part(hasher: &mut blake3::Hasher, value: &[u8]) {
     hasher.update(value);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "mcp-stdio")]
 pub(super) fn command_binding(
     command: &acyclic_native_runtime::ProcessCommand,
     server: &McpServer,
@@ -185,7 +186,7 @@ pub(super) fn command_binding(
     *hasher.finalize().as_bytes()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "mcp-http")]
 pub(super) fn http_binding(url: &str, headers: &reqwest::header::HeaderMap) -> [u8; 32] {
     let mut hasher = binding_hasher(b"http");
     hash_part(&mut hasher, url.as_bytes());
@@ -201,9 +202,9 @@ pub(super) fn http_binding(url: &str, headers: &reqwest::header::HeaderMap) -> [
 impl Connection {
     async fn list(&self, cursor: Option<String>) -> Result<rmcp::model::ListToolsResult> {
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "mcp-stdio")]
             Self::Stdio(transport) => transport.list_tools(OperationId::new(), cursor).await,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "mcp-http")]
             Self::Http(transport) => transport.list_tools(OperationId::new(), cursor).await,
         }
     }
@@ -234,7 +235,7 @@ pub(super) async fn credentials_for<'a>(
     Ok(resolved)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "mcp-http")]
 pub(super) fn headers_for(
     headers: &std::collections::BTreeMap<String, String>,
     env_headers: &std::collections::BTreeMap<String, String>,
@@ -281,7 +282,7 @@ pub(super) fn headers_for(
     Ok(result)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "mcp-stdio")]
 pub(super) fn command_for(
     server: &McpServer,
     workspace: &Path,

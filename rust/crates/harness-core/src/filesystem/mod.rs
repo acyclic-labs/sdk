@@ -66,7 +66,7 @@ pub use agent_turns::{
 pub(crate) mod bounded_io;
 mod tool_resource;
 pub use tool_resource::TOOL_OUTPUT;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod tool_output;
 #[doc(hidden)]
 pub use bounded_io::PreparationRecord;
@@ -78,18 +78,18 @@ use bounded_io::decode_record;
 pub(crate) use bounded_io::native_decoded;
 pub(crate) use bounded_io::{DecodeReservation, retain_decoded};
 pub use bounded_io::{PreparationCustody, PreparationIo};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use tool_output::{AgentObservation, session_authority, session_trust};
 mod memory;
 pub use memory::MemoryHarnessStorage;
 mod text_tools;
 pub use text_tools::ExactTextReplacement;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_access;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod native_process;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_process::NativeProcessObserver;
 mod workspace_access;
 pub use workspace_access::{
@@ -97,11 +97,19 @@ pub use workspace_access::{
 };
 mod native_capture_bounds;
 mod native_contract;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 mod native_directory;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_access::NativeMountAuthority;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "native-execution",
+    feature = "filesystem-local",
+    not(target_arch = "wasm32")
+))]
 pub use native_access::{
     local_owner_mount_options, local_owner_workspace, local_owner_workspace_access,
 };
@@ -110,7 +118,11 @@ pub use native_contract::{
     NativeProcessStopKind, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
     NativeVolumeNamespace,
 };
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub(crate) use native_directory::NativeDirectory;
 mod config;
 use config::*;
@@ -827,22 +839,46 @@ use crate::executor::{stock_boundary, stock_string_copy};
 
 pub(crate) mod workspace_policy;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub(crate) mod workspace_publication;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub use workspace_publication::{
     CheckoutRoot, WorkspacePublicationCoordinator, WorkspacePublicationPublisher,
     WorkspaceRootMaterializer, workspace_publication_coordinator,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 mod agent_publication;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub use agent_publication::{plan_agent_merge, record_agent_publication};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 mod checkout_publication;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub use checkout_publication::{AuthorizedCheckout, CheckoutApproval, CheckoutPublication};
 
 pub use host::DirectoryOptions;

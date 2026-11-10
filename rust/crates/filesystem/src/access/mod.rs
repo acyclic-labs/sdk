@@ -10,13 +10,13 @@ mod clock;
 pub use clock::{ClockUnavailable, unix_seconds};
 mod compilation;
 mod decision;
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, all(feature = "native-mount", not(target_arch = "wasm32"))))]
 mod disclosure;
 mod policy_fence;
 pub use policy_fence::PolicyFence;
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, all(feature = "native-mount", not(target_arch = "wasm32"))))]
 mod retry;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub(crate) use retry::{RetryError, observe_policy};
 #[cfg(test)]
 pub(crate) mod fixtures;

@@ -6,16 +6,16 @@ pub(super) fn line(value: &Value) -> Result<Vec<u8>> {
 }
 
 pub(super) fn reserve_write(
-    write: &mut (Vec<u8>, acyclic_fs::NativeCustody),
+    write: &mut (Vec<u8>, NativeCustody),
     capacity: usize,
-    work: acyclic_fs::NativeWork<'_>,
+    work: NativeWork<'_>,
 ) -> Result<()> {
     if write.0.capacity() >= capacity {
         return charge(work, 0, 0, 0);
     }
     let old = write.0.capacity();
     let _ = old;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(guard) = write.1.as_mut() {
         // Reallocation temporarily retains BOTH old and replacement buffers.
         guard.grow(capacity as u64).map_err(Error::from)?;
@@ -30,7 +30,7 @@ pub(super) fn reserve_write(
                 "MCP stdio write allocation failed",
             )
         })?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(guard) = write.1.as_mut() {
         let retained = guard
             .bytes()
@@ -54,13 +54,13 @@ fn bounds(maximum: usize) -> crate::JsonBounds {
 pub(super) fn encode_line<T: Serialize + ?Sized>(
     value: &T,
     maximum: usize,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(Vec<u8>, acyclic_fs::NativeCustody)> {
-    #[cfg(not(target_arch = "wasm32"))]
+    work: NativeWork<'_>,
+) -> Result<(Vec<u8>, NativeCustody)> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let owned_io = work
         .map(crate::filesystem::PreparationIo::from_native_work)
         .transpose()?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let diagnostics = owned_io
         .as_ref()
         .map(|io| {
@@ -75,7 +75,7 @@ pub(super) fn encode_line<T: Serialize + ?Sized>(
         bounds(maximum.saturating_sub(1)),
         work.is_some().then_some(ErrorCode::Invalid),
         &mut |event| {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(io) = &owned_io {
                 return io.codec_charge(event, true);
             }
@@ -83,7 +83,7 @@ pub(super) fn encode_line<T: Serialize + ?Sized>(
             Ok(())
         },
     );
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Err(Error::NativeJson {
         code,
         source,
@@ -107,14 +107,14 @@ pub(super) fn encode_line<T: Serialize + ?Sized>(
         });
     }
     let bytes = encoded?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     drop(diagnostics);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let custody = owned_io
         .as_ref()
         .map(|io| io.take_native_custody(bytes.capacity() as u64))
         .transpose()?;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let custody = None;
     let mut write = (bytes, custody);
     let capacity = write
@@ -135,11 +135,8 @@ pub(super) fn encode_line<T: Serialize + ?Sized>(
     Ok(write)
 }
 
-pub(super) fn decode_value(
-    body: &[u8],
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(Value, acyclic_fs::NativeCustody)> {
-    #[cfg(not(target_arch = "wasm32"))]
+pub(super) fn decode_value(body: &[u8], work: NativeWork<'_>) -> Result<(Value, NativeCustody)> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let value: Value = io.decode_json(body).map_err(|error| match error {

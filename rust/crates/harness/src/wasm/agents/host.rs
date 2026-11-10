@@ -64,8 +64,8 @@ impl ToolProjection for HostTool {
         &self,
         invocation: &ToolInvocation,
         result: &ToolResult,
-        _work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
+        _work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
         let invocation = to_js(invocation)
             .map_err(|_| Error::Invalid("tool projection invocation encoding failed".into()))?;
         let result = to_js(result)

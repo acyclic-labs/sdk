@@ -4,18 +4,18 @@ mod code_mode;
 mod pre_dispatch;
 mod saved_admission;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod policy_identity;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod phase_claim_tests;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod publication_observation;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod original_preparation;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod preparation_differential;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -67,7 +67,7 @@ fn counted_model(
             output_tokens: Some(4_096),
         })
         .with_token_counter(move |request| {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             acyclic_test_support::differential::record((
                 "count tokens",
                 request.bytes().len() as u64,
@@ -351,8 +351,8 @@ impl crate::tool::ToolProjection for Projection {
         &self,
         _: &ToolInvocation,
         result: &ToolResult,
-        work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
+        work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
         self.supports_native_projection(work)?;
         Ok((
             serde_json::json!({"kind":"json","value":result.value}),
@@ -600,7 +600,7 @@ impl ExecutionJournal for Journal {
         event: &'a ExecutionEvent,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         acyclic_test_support::differential::record(("journal append", expected_tail));
         if io.is_some() {
             return Err(crate::Error::Unsupported(
@@ -636,6 +636,7 @@ impl ExecutionJournal for Journal {
         media_type: &'static str,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        #[cfg(feature = "filesystem")]
         acyclic_test_support::differential::record(("journal stage", bytes.len() as u64));
         if io.is_some() {
             return Err(crate::Error::Unsupported(
@@ -658,7 +659,7 @@ impl ExecutionJournal for Journal {
         reference: &'a FileRef,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         acyclic_test_support::differential::record((
             "journal load",
             reference.descriptor().byte_length(),
@@ -770,7 +771,7 @@ impl crate::context::ContextStage for OnceStage {
 }
 
 mod compaction;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod compaction_resolution;
 mod content;
 #[cfg(not(target_arch = "wasm32"))]
@@ -778,15 +779,18 @@ mod context_input_reuse;
 mod final_message;
 mod invocation_bounds;
 mod live_execution;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_tools;
 mod output_bounds;
+#[cfg(feature = "filesystem")]
 mod reconciliation_scan;
 mod recovery;
 mod replay;
+#[cfg(feature = "filesystem")]
 mod request_continuation;
 #[cfg(not(target_arch = "wasm32"))]
 mod request_ownership;
+#[cfg(feature = "filesystem")]
 mod summary_authorization;
 mod target_replay;
 #[cfg(not(target_arch = "wasm32"))]
@@ -797,6 +801,7 @@ mod transcript_delta;
 mod turn_cost;
 #[cfg(not(target_arch = "wasm32"))]
 mod working_context;
+#[cfg(feature = "filesystem")]
 mod working_tail;
 fn echo_tools(
     executor: Arc<dyn crate::tool::ToolExecutor>,

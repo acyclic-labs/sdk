@@ -1,7 +1,7 @@
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     /// Materializes selected paths with shared parent and hard-link state.
     pub async fn materialize<'a>(

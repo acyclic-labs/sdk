@@ -2,7 +2,7 @@
 use crate::{Adapter, ResolvedModel, dispatch, sse, stream};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use acyclic_harness_core::{
-    Error, Result,
+    Error, NativeFutureBundle, Result,
     model::{ModelDispatch, ModelEvent, ModelProvider, NativeModelStream, PreparedModelRequest},
     wire::ErrorCode,
 };
@@ -165,8 +165,7 @@ pub(crate) fn generate<'a>(
     request: &'a PreparedModelRequest,
     dispatch_id: ModelDispatch,
     work: &'a NativeMaterializationWork,
-) -> Result<acyclic_fs::NativeFutureBundle<'a, NativeModelStream<'a>, acyclic_harness_core::Error>>
-{
+) -> Result<NativeFutureBundle<'a, NativeModelStream<'a>>> {
     work.remaining()?;
     provider.context_capacity_with_native_work(&request.request().model, work)?;
     if request.request_digest() != dispatch_id.request_digest {
@@ -175,7 +174,7 @@ pub(crate) fn generate<'a>(
         ));
     }
     let cancelled = work.cancellation_wait()?;
-    acyclic_fs::NativeFutureBundle::new(work, || async move {
+    NativeFutureBundle::new(work, || async move {
         let exchange = async move {
             let (names, name_custody) =
                 crate::tool_names::Names::funded(request.request(), Some(work))?;

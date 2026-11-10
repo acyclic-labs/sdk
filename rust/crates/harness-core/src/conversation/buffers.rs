@@ -13,12 +13,14 @@ pub(super) fn reserve_conversation_buffer<T>(
     values: &mut Vec<T>,
     target: usize,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    #[cfg(not(target_arch = "wasm32"))] owner: &mut Option<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] owner: &mut Option<
+        acyclic_fs::NativeAllocation,
+    >,
 ) -> Result<u64> {
     if target <= values.capacity() {
         return Ok(0);
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = work
         .as_deref_mut()
         .filter(|io| io.original_native_work().is_some())
@@ -69,7 +71,9 @@ pub(super) fn reserve_conversation_buffer<T>(
 pub(super) fn grow_conversation_buffer<T>(
     values: &mut Vec<T>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    #[cfg(not(target_arch = "wasm32"))] owner: &mut Option<acyclic_fs::NativeAllocation>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] owner: &mut Option<
+        acyclic_fs::NativeAllocation,
+    >,
 ) -> Result<u64> {
     if values.len() < values.capacity() {
         return Ok(0);
@@ -89,12 +93,12 @@ pub(super) fn grow_conversation_buffer<T>(
         values,
         target,
         work,
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         owner,
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn adopt_existing_buffer<T>(
     owner: &mut Option<acyclic_fs::NativeAllocation>,
     capacity: usize,
@@ -116,7 +120,7 @@ impl NativeConversationCustody {
         &mut self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<u64> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = work
             .as_deref_mut()
             .filter(|io| io.original_native_work().is_some())

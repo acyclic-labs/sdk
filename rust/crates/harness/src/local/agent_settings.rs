@@ -211,7 +211,7 @@ async fn record(
 /// The before-hook rules of the plugins `plugins.ts` enables, read as the
 /// session starts, recording the home module's admission. Invalid enforcement
 /// manifests refuse the session rather than remove its guards.
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "hooks"))]
 pub(super) async fn plugins(
     tree: &Tree<'_>,
     agent: AgentId,
@@ -498,7 +498,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "hooks")]
     #[tokio::test]
     async fn a_settings_tree_keeps_one_generation_across_concurrent_home_edits() -> Result<()> {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;

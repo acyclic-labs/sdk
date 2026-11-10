@@ -1,8 +1,8 @@
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use super::*;
 
 /// Bounded reclamation result for the canonical local Stream/Objects composition.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LocalGarbageCollection {
     /// Immutable filesystem object versions examined.
@@ -12,7 +12,7 @@ pub struct LocalGarbageCollection {
 }
 
 /// Limits that admit every page either admits.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) fn widest_limits(left: DecodeLimits, right: DecodeLimits) -> DecodeLimits {
     DecodeLimits {
         maximum_object_bytes: left.maximum_object_bytes.max(right.maximum_object_bytes),
@@ -25,7 +25,7 @@ pub(super) fn widest_limits(left: DecodeLimits, right: DecodeLimits) -> DecodeLi
 }
 
 /// Stops a collection after `step`, as a crash there would.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 fn crash(_epoch: &crate::logical_objects::Epoch, _step: Step) -> Result<(), FsError> {
     #[cfg(test)]
     if _epoch.hooks.crashes(_step) {
@@ -36,10 +36,10 @@ fn crash(_epoch: &crate::logical_objects::Epoch, _step: Step) -> Result<(), FsEr
     Ok(())
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use crate::logical_objects::epoch::Step;
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) fn mark_error(error: crate::kernel::MarkError) -> FsError {
     match error {
         crate::kernel::MarkError::Storage(error) => FsError::Object(error),
@@ -49,7 +49,7 @@ pub(super) fn mark_error(error: crate::kernel::MarkError) -> FsError {
     }
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     /// Reclaims every stored object nothing live reaches, while the root
     /// stays open for publications.
@@ -126,7 +126,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let shadow_limits = self
                 .mark_local_authorities(&mut marker, cancellation)
                 .await?;
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "s3-http")]
             {
                 let multipart = crate::active_s3_multipart_objects(
                     self.inner.authority.provider().as_ref(),
@@ -420,7 +420,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .await?;
             return Ok(());
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
         if let Ok(source_volume) = decode_source_volume(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)
         {
             if source_authority_id(source_volume) != authority_id {

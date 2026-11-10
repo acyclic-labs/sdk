@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn publication_rebases_authored_records_but_rejects_overlapping_callbacks()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -78,7 +78,7 @@ async fn publication_rebases_authored_records_but_rejects_overlapping_callbacks(
 /// Git's `index.lock` -> `index` -> `index.lock` inside a source directory:
 /// the name renamed away is created again under the operation its promotion
 /// bound, and the new file never takes the renamed file's identity.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_name_renamed_away_in_a_source_directory_is_created_again()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -112,7 +112,7 @@ async fn a_name_renamed_away_in_a_source_directory_is_created_again()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn rebound_does_not_publish_a_stale_removed_identity()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -154,7 +154,7 @@ async fn rebound_does_not_publish_a_stale_removed_identity()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn an_advance_records_only_a_moved_head_or_source() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -181,7 +181,7 @@ async fn an_advance_records_only_a_moved_head_or_source() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn removing_a_source_only_file_supersedes_its_cached_lookups()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -211,7 +211,7 @@ async fn removing_a_source_only_file_supersedes_its_cached_lookups()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn manual_fsync_publishes_nothing_until_sync() -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
@@ -247,7 +247,7 @@ async fn manual_fsync_publishes_nothing_until_sync() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn replaced_source_identity_keeps_open_handle_and_surviving_alias()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -365,7 +365,7 @@ async fn replaced_source_identity_keeps_open_handle_and_surviving_alias()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn conflicting_mount_removal_releases_publication_intent()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -417,7 +417,7 @@ async fn conflicting_mount_removal_releases_publication_intent()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn remembered_resolutions_follow_every_change_to_the_view()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -484,7 +484,7 @@ async fn remembered_resolutions_follow_every_change_to_the_view()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn promotion_and_attribute_reads_leave_cached_lookups_current()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -535,7 +535,7 @@ async fn promotion_and_attribute_reads_leave_cached_lookups_current()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn source_hard_link_open_unlink_write_preserves_surviving_alias()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -661,7 +661,12 @@ async fn source_hard_link_open_unlink_write_preserves_surviving_alias()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(
+    feature = "native-watch",
+    feature = "local",
+    feature = "memory",
+    any(unix, windows)
+))]
 async fn mounted_native_view_of<A, O, D, S>(
     lazy: Arc<LazyWorkspace<A, O, D, S>>,
     work: &crate::NativeMaterializationWork,
@@ -730,7 +735,7 @@ where
     )?)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
 async fn mounted_read_selection_rejects_other_pending_kinds_and_prepared_forks()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -873,7 +878,12 @@ async fn mounted_read_selection_rejects_other_pending_kinds_and_prepared_forks()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[cfg(all(
+    feature = "native-watch",
+    feature = "local",
+    feature = "memory",
+    any(unix, windows)
+))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -10,7 +10,7 @@ pub struct StagedContent {
 }
 
 impl StagedContent {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "s3-http")]
     pub(crate) const fn from_canonical_parts(root: ObjectId, logical_bytes: u64) -> Self {
         Self {
             root,

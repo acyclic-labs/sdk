@@ -10,7 +10,7 @@ No result cache, persisted format or separate consumer loop is introduced.
 Run the real parent/child control:
 
 ```sh
-cargo test --locked --offline -p acyclic-harness-core --features test-support --test main agent_model::wired::a_child_inherits_context_but_retains_its_own_observed_answer_across_turns -- --exact
+cargo test --locked --offline -p acyclic-harness-core --features filesystem,test-support --test main agent_model::wired::a_child_inherits_context_but_retains_its_own_observed_answer_across_turns -- --exact
 ```
 
 It extends the stock-executor spawn, inherited-context and reopen journey with

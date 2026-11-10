@@ -26,7 +26,7 @@ fn executor() -> Result<StockExecutor> {
     ))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn content_admission_rechecks_only_new_text_and_keeps_scope_binding() -> Result<()> {
     for native in [false, true] {

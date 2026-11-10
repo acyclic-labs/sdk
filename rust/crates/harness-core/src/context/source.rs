@@ -11,7 +11,7 @@ pub trait ContextSource: acyclic_stream::ProviderPlatform {
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>>;
     /// Reports original-ledger support before a stage invokes the source.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool {
         false
     }
@@ -54,7 +54,7 @@ impl SourceStage {
     }
 
     /// Copies native identities before construction; the caller retains the source provider's custody.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new_with_native_work(
         name: &str,
         revision: &str,
@@ -127,7 +127,7 @@ impl ContextStage for SourceStage {
                 "context source identity is invalid",
             ));
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if io
             .and_then(crate::executor::PreparationIo::original_native_work)
             .is_some()
@@ -169,7 +169,7 @@ impl ContextStage for SourceStage {
         limits: Limits,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if io
             .and_then(crate::executor::PreparationIo::original_native_work)
             .is_some()
@@ -181,7 +181,7 @@ impl ContextStage for SourceStage {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool {
         self.source.supports_native()
     }

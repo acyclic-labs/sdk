@@ -122,6 +122,7 @@ pub struct AuthorityWork<'a> {
     pub(crate) scratch_floor: u64,
     pub(crate) read_observation: Option<&'a crate::kernel::ProofDataCustody>,
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) request_allocation: Option<crate::NativeAllocation>,
 }
 
@@ -160,6 +161,7 @@ impl<'a> AuthorityWork<'a> {
             scratch_floor: 0,
             read_observation: None,
             #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(any(test, feature = "distributed"))]
             request_allocation: None,
             #[cfg(not(target_arch = "wasm32"))]
             original: None,
@@ -310,6 +312,7 @@ impl<'a> AuthorityWork<'a> {
         )
     }
 
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
         self.record_completed(delta)
     }

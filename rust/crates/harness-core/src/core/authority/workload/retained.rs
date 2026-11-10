@@ -7,10 +7,11 @@ pub(super) struct RetainedAuthentication<T> {
     // lifetime as Scope, including failed/replaced cache entries.
     wire: zeroize::Zeroizing<Vec<u8>>,
     proof: Arc<T>,
+    #[cfg(feature = "filesystem")]
     _custody: Option<crate::filesystem::PreparationCustody>,
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
@@ -65,13 +66,22 @@ impl<T> RetainedAuthentication<T> {
         let measured = work.is_some();
         let mut quota = CodecQuota::new(work, 0)?;
         let wire = zeroize::Zeroizing::new(copying::copy_copy_vector(encoded, &mut quota)?);
+        #[cfg(feature = "filesystem")]
         let _custody = quota.take_owned_custody()?;
+        #[cfg(feature = "filesystem")]
         if measured && _custody.is_none() {
             return Ok(None);
         }
+        #[cfg(not(feature = "filesystem"))]
+        if measured {
+            return Ok(None);
+        }
+        #[cfg(not(feature = "filesystem"))]
+        quota.transfer();
         Ok(Some(Self {
             wire,
             proof,
+            #[cfg(feature = "filesystem")]
             _custody,
         }))
     }

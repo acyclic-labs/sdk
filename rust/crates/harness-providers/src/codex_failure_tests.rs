@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
-use acyclic_harness_core::{Error, ModelTransportFailure, wire::ErrorCode};
+use acyclic_harness_core::{Error, ModelTransportFailure, NativeFutureBundle, wire::ErrorCode};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn work() -> NativeMaterializationWork {
@@ -32,8 +32,8 @@ impl HttpTransport for FailingTransport {
         &'a self,
         _: HttpRequest,
         work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+    ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
+        NativeFutureBundle::new(work, || async move {
             self.requests.fetch_add(1, Ordering::SeqCst);
             self.entered
                 .lock()

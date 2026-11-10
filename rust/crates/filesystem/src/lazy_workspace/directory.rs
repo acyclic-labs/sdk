@@ -165,7 +165,7 @@ impl<
         result
     }
     /// Lists a mounted unpublished checkout.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(crate) async fn list_directory_in_checkout(
         &self,
         checkout: &mut crate::Checkout<A, O>,

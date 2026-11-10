@@ -1,10 +1,10 @@
-#[cfg(any(not(target_arch = "wasm32"), test))]
+#[cfg(any(feature = "native-mount", test))]
 use super::metadata::{unix_metadata_nanos, unix_metadata_timespec};
 use super::*;
 
 #[cfg(all(
     any(target_os = "linux", target_os = "macos"),
-    not(target_arch = "wasm32")
+    feature = "native-mount"
 ))]
 pub(crate) fn set_extended_attributes<W: NativeHostWork<Error = DemandError>>(
     file: &File,
@@ -99,7 +99,7 @@ pub(crate) fn set_extended_attributes<W: NativeHostWork<Error = DemandError>>(
     Ok(())
 }
 
-#[cfg(any(not(target_arch = "wasm32"), test))]
+#[cfg(any(feature = "native-mount", test))]
 pub(crate) fn apply_metadata<W: NativeHostWork<Error = DemandError>>(
     file: &File,
     metadata: crate::kernel::FileMetadata,
@@ -204,19 +204,19 @@ pub(crate) fn apply_metadata<W: NativeHostWork<Error = DemandError>>(
 #[cfg(all(
     target_os = "linux",
     target_arch = "aarch64",
-    any(not(target_arch = "wasm32"), test)
+    any(feature = "native-mount", test)
 ))]
 pub(super) const LINUX_FCHMODAT2_SYSCALL: libc::c_long = 452;
 #[cfg(all(
     target_os = "linux",
     not(target_arch = "aarch64"),
-    any(not(target_arch = "wasm32"), test)
+    any(feature = "native-mount", test)
 ))]
 pub(super) const LINUX_FCHMODAT2_SYSCALL: libc::c_long = libc::SYS_fchmodat2;
 
 #[cfg(all(
     any(target_os = "linux", target_os = "macos"),
-    not(target_arch = "wasm32")
+    feature = "native-mount"
 ))]
 fn verify_extended_attribute<W: NativeHostWork<Error = DemandError>>(
     #[cfg(target_os = "linux")] pinned: &std::ffi::CStr,
@@ -282,7 +282,7 @@ fn verify_extended_attribute<W: NativeHostWork<Error = DemandError>>(
     result
 }
 
-#[cfg(any(not(target_arch = "wasm32"), test))]
+#[cfg(any(feature = "native-mount", test))]
 fn validate_mode<W: NativeHostWork<Error = DemandError>>(
     mode: Option<libc::mode_t>,
     observed: &libc::stat,
@@ -327,7 +327,7 @@ fn validate_mode<W: NativeHostWork<Error = DemandError>>(
     Ok(())
 }
 
-#[cfg(any(not(target_arch = "wasm32"), test))]
+#[cfg(any(feature = "native-mount", test))]
 fn apply_times<W: NativeHostWork<Error = DemandError>>(
     fd: std::os::fd::RawFd,
     metadata: crate::kernel::FileMetadata,
@@ -384,7 +384,7 @@ fn apply_times<W: NativeHostWork<Error = DemandError>>(
     Ok(())
 }
 
-#[cfg(any(not(target_arch = "wasm32"), test))]
+#[cfg(any(feature = "native-mount", test))]
 fn verify_metadata(
     metadata: crate::kernel::FileMetadata,
     mode: Option<libc::mode_t>,

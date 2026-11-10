@@ -20,8 +20,8 @@ use std::{fmt, sync::Arc};
 
 use acyclic_collections::{FixedIndex, IndexReadWork, binary_key};
 
-type NamePositions = FixedIndex<usize, acyclic_fs::NativeCustody, { MAX_TARGET_NAME_BYTES + 8 }>;
-type OwnerPositions = FixedIndex<usize, acyclic_fs::NativeCustody, { MAX_OWNER_BYTES + 8 }>;
+type NamePositions = FixedIndex<usize, crate::NativeCustody, { MAX_TARGET_NAME_BYTES + 8 }>;
+type OwnerPositions = FixedIndex<usize, crate::NativeCustody, { MAX_OWNER_BYTES + 8 }>;
 
 struct RosterPositions {
     names: NamePositions,
@@ -31,7 +31,7 @@ struct RosterPositions {
 impl RosterPositions {
     fn find<W: IndexReadWork>(&self, named: &str, work: &mut W) -> Result<Option<usize>, W::Error> {
         fn exact<W: IndexReadWork, const N: usize>(
-            index: &FixedIndex<usize, acyclic_fs::NativeCustody, N>,
+            index: &FixedIndex<usize, crate::NativeCustody, N>,
             text: &str,
             work: &mut W,
         ) -> Result<Option<usize>, W::Error> {

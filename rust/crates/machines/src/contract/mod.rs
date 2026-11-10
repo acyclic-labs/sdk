@@ -1,5 +1,6 @@
 use super::*;
 mod identity;
+#[cfg(feature = "grpc")]
 pub(crate) use identity::admit_uuid;
 pub use identity::*;
 mod image;

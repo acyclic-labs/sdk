@@ -486,7 +486,7 @@ fn borrowed_encoding_has_no_history_sized_allocations() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
 #[tokio::test]
 async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_calls() -> Result<()> {
     use crate::{

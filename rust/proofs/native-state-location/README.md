@@ -15,7 +15,7 @@ that expectation from the directory dependency.
 Run the restored property from the repository root:
 
 ```sh
-cargo test --locked -p acyclic-harness-core --lib --no-default-features native_environment::tests::native_state_honors_literal_data_override -- --exact --test-threads=1
+cargo test --locked -p acyclic-harness-core --lib --no-default-features --features filesystem-local native_environment::tests::native_state_honors_literal_data_override -- --exact --test-threads=1
 ```
 
 Each mutation changes the actual production resolver, leaving that property
@@ -35,7 +35,7 @@ For example:
 ```sh
 git apply rust/proofs/native-state-location/relative-home.patch
 # Require the runtime property failure described above.
-cargo test --locked -p acyclic-harness-core --lib --no-default-features native_environment::tests::native_state_honors_literal_data_override -- --exact --test-threads=1
+cargo test --locked -p acyclic-harness-core --lib --no-default-features --features filesystem-local native_environment::tests::native_state_honors_literal_data_override -- --exact --test-threads=1
 git apply -R rust/proofs/native-state-location/relative-home.patch
 ```
 

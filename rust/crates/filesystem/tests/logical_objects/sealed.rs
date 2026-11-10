@@ -575,6 +575,7 @@ fn blob(id: ObjectId) -> acyclic_objects::Digest {
     )
 }
 
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
 -> Result<(), Box<dyn std::error::Error>> {

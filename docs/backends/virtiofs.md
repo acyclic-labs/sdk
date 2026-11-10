@@ -40,7 +40,7 @@ The standalone command uses the SDK's existing protected local-owner enrollment
 and the same `Bound`, with no model, shell tool or provider credentials:
 
 ```sh
-cargo build --locked -p acyclic-harness \
+cargo build --locked -p acyclic-harness --features filesystem-local,native-execution \
   --bin acyclic-virtiofsd
 acyclic-virtiofsd --socket /tmp/acyclic-fs.sock --config /srv/acyclic/guest.json
 ```

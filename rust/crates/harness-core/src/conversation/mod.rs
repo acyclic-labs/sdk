@@ -265,6 +265,7 @@ pub use directory::{
 pub use file_source::FilePathSelection;
 pub(crate) use file_source::names_generation;
 pub use files::{FileDescriptor, FileRef};
+#[cfg(feature = "filesystem")]
 pub(crate) use files::{PublicationDomain, PublicationWitness};
 pub use message::{ConversationMessage, MessageKind};
 pub use outcome::TaskOutcomeRecord;
@@ -319,16 +320,16 @@ pub(crate) struct ConversationStateWire {
 
 #[derive(Debug, Default)]
 struct NativeConversationCustody {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     messages: Option<acyclic_fs::NativeAllocation>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     digests: Option<acyclic_fs::NativeAllocation>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     archive: Option<acyclic_fs::NativeAllocation>,
     // The index drops before these tickets; their vector drops before its buffer owner.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     indexes: Vec<acyclic_fs::NativeAllocation>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     index_buffer: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -563,6 +564,7 @@ pub(crate) use identity::derived_operation_id;
 pub mod wire;
 
 /// Versioned items encoded through the original bounded journal boundary.
+#[cfg(feature = "filesystem")]
 pub mod envelope;
 
 crate::core::ownership::owned_struct!(Limits {

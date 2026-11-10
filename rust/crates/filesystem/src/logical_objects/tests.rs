@@ -215,7 +215,7 @@ async fn authenticated_batch_denials_precede_publication() -> Result<(), Box<dyn
 
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
 async fn native_local_presence_admits_each_physical_read() -> Result<(), Box<dyn std::error::Error>>
 {
     crate::initialize_test_native_io();
@@ -374,7 +374,7 @@ async fn native_object_io_attributes_canonical_bytes_once() -> Result<(), Box<dy
 
     // An unbounded request does not reserve its maximum a second time: the
     // actual local producer admits only the returned backing on this ledger.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "local")]
     {
         let original = crate::NativeMaterializationWork::new(
             WorkBudget {

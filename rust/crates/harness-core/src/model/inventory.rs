@@ -1,19 +1,21 @@
 use super::*;
+#[cfg(feature = "filesystem")]
 use std::mem::size_of;
 
 pub(super) fn overflow() -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     {
         Error::NativeBoundary {
             code: Invalid,
             reason: "closed model payload ownership overflow",
         }
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     {
         Error::Invalid("closed model payload ownership overflow".into())
     }
 }
+#[cfg(feature = "filesystem")]
 pub(super) fn add(left: u64, right: u64) -> Result<u64> {
     left.checked_add(right).ok_or_else(overflow)
 }
@@ -23,6 +25,7 @@ pub(super) fn slots(capacity: usize, size: usize) -> Result<u64> {
         .ok_or_else(overflow)
 }
 
+#[cfg(feature = "filesystem")]
 impl FileProjectionPolicy {
     fn payload_bytes(&self) -> Result<u64> {
         if let Self::ProjectInstructions(source) = self {
@@ -46,6 +49,7 @@ impl FileProjectionPolicy {
         Ok(bytes)
     }
 }
+#[cfg(feature = "filesystem")]
 impl ModelContentPart {
     fn payload_bytes(&self) -> Result<u64> {
         match self {
@@ -88,6 +92,7 @@ impl ModelContentPart {
         }
     }
 }
+#[cfg(feature = "filesystem")]
 impl ToolResultContent {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
         match self {
@@ -111,6 +116,7 @@ impl ToolResultContent {
         add(size_of::<Self>() as u64, self.retained_payload_bytes()?)
     }
 }
+#[cfg(feature = "filesystem")]
 impl ModelContent {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
         match self {
@@ -123,6 +129,7 @@ impl ModelContent {
         }
     }
 }
+#[cfg(feature = "filesystem")]
 impl ModelRequest {
     pub(super) fn payload_bytes(&self) -> Result<u64> {
         let mut bytes = 0;
@@ -167,7 +174,7 @@ impl ModelRequest {
         Ok(bytes)
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl PreparedModelRequest {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         add(

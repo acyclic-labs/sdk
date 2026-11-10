@@ -695,5 +695,6 @@ fn failed(error: ExtentReadError, work: WorkCounters) -> ExtentReadFailure {
 }
 
 #[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/range.rs"]
 mod tests;

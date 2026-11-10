@@ -2,7 +2,7 @@
 use crate::executor::json::JsonCodecCharge;
 use crate::executor::json::{JsonBounds, JsonValueSchema, admit_value_layout};
 use crate::store::history::HistoryIo;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::wire::ErrorCode;
 use crate::wire_codec::CodecQuota;
 use crate::{Error, Result};
@@ -85,7 +85,7 @@ pub fn check_json_schema_value(
         format_args!("{label} failed validation"),
         &mut scope,
     ) {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         violation @ Error::NativeSchema { .. } => Ok(Err(violation)),
         violation @ Error::Invalid(_) => Ok(Err(violation)),
         failure => Err(failure),
@@ -140,7 +140,7 @@ fn schema_error(
     context: std::fmt::Arguments<'_>,
     scope: &mut CodecQuota<'_, '_>,
 ) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if scope
         .work()
         .as_deref()
@@ -176,7 +176,7 @@ pub fn preparation_format(
     let Some(work) = work.as_deref_mut() else {
         return Ok(message.to_string());
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(native) = work.original_native_work() {
         let (text, custody) = native.display(&message)?;
         work.absorb_native_custody(custody)?;

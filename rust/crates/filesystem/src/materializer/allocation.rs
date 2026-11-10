@@ -159,7 +159,7 @@ impl NativeAllocation {
     }
     /// Retires a capture's remaining physical storage without re-entering its leaf.
     /// Temporary upgrades may make the last capture owner die inside that leaf.
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn retire_captured_capacity(
         &mut self,
         captured: u64,

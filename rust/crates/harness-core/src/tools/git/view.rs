@@ -4,7 +4,11 @@ use super::*;
 /// The task-selected filesystem view, borrowed for one facade operation.
 pub enum View<'a, P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultObjects> {
     /// A normal checkout whose unchanged files remain demand-backed.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     Checkout(&'a ManagedLazyWorkspace<P, O>),
     /// An SDK volume, including a child's copy-on-write fork.
     Volume(&'a ManagedWorkspace<P, O>),
@@ -13,7 +17,11 @@ pub enum View<'a, P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultObj
 /// A branch selected by the facade and retained by its task binding.
 pub enum OwnedView<P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultObjects> {
     /// A branch retaining its original native source capability.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     Checkout(ManagedLazyWorkspace<P, O>),
     /// A branch of an SDK volume.
     Volume(ManagedWorkspace<P, O>),
@@ -21,10 +29,18 @@ pub enum OwnedView<P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultOb
 
 impl<P: ?Sized + 'static, O: 'static> OwnedView<P, O> {
     /// Retains a source-backed branch for an ordinary checkout binding.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     pub fn into_checkout(self) -> crate::Result<ManagedLazyWorkspace<P, O>> {
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::Checkout(view) => Ok(view),
             Self::Volume(_) => Err(Error::Unauthorized(
                 "expected a source-backed checkout branch".into(),
@@ -35,7 +51,11 @@ impl<P: ?Sized + 'static, O: 'static> OwnedView<P, O> {
     /// Borrows the selected view without copying its source or contents.
     pub const fn view(&self) -> View<'_, P, O> {
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::Checkout(view) => View::Checkout(view),
             Self::Volume(view) => View::Volume(view),
         }
@@ -60,7 +80,11 @@ impl<
     /// The authored workspace supplying this view's generations.
     pub const fn workspace(self) -> &'a ManagedWorkspace<P, O> {
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::Checkout(view) => view.workspace(),
             Self::Volume(view) => view,
         }
@@ -86,7 +110,11 @@ impl<
     ) -> crate::Result<acyclic_stream::OwnedBytes> {
         let cancellation = CancellationToken::new();
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::Checkout(view) => view
                 .read(
                     path,
@@ -118,7 +146,11 @@ impl<
     ) -> crate::Result<GitTreeRef> {
         let cancellation = CancellationToken::new();
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::Checkout(view) if _exact => {
                 let generation = view
                     .exactify(
@@ -129,7 +161,11 @@ impl<
                     .await?;
                 Ok(GitTreeRef::exact(view.workspace().id(), generation.id()))
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::Checkout(view) => view
                 .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation))
                 .await
@@ -155,7 +191,11 @@ impl<
         let cancellation = CancellationToken::new();
         let key = IdempotencyKey::from_bytes(operation.into_bytes());
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::Checkout(view) => view
                 .fork(
                     destination,
@@ -194,7 +234,11 @@ impl<
         workspace: ManagedWorkspace<P, O>,
     ) -> crate::Result<OwnedView<P, O>> {
         match self {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::Checkout(view) => view
                 .open_related(
                     workspace,
@@ -232,7 +276,11 @@ impl<
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 impl<'a, P: ?Sized + 'static, O: 'static> From<&'a ManagedLazyWorkspace<P, O>> for View<'a, P, O> {
     fn from(value: &'a ManagedLazyWorkspace<P, O>) -> Self {
         Self::Checkout(value)
@@ -246,5 +294,9 @@ impl<'a, P: ?Sized + 'static, O: 'static> From<&'a ManagedWorkspace<P, O>> for V
 }
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 mod tests;

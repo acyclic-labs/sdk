@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
 #[tokio::test]
 async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<(), Box<dyn Error>> {
     use acyclic_harness::conversation::{ContentAccess, ContentPublisher};

@@ -230,7 +230,7 @@ fn stop_denial_and_precancellation_preserve_the_original_stream_custody() -> Tes
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 impl crate::fsevents::StreamTerminal for (std::sync::Arc<Shared>, CancellationToken) {
     fn stream_stopped(&self) {
         crate::fsevents::StreamTerminal::stream_stopped(self.0.as_ref());
@@ -240,7 +240,7 @@ impl crate::fsevents::StreamTerminal for (std::sync::Arc<Shared>, CancellationTo
 
 /// Cancels from the real native terminal, after serial callback drain and
 /// stream release. The returned demand adapter is the production adapter.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 pub(crate) fn terminal_cancellation_watch(
     root: &Path,
     work: &mut crate::NativeMaterializationWork,
@@ -258,7 +258,7 @@ pub(crate) fn terminal_cancellation_watch(
     Ok(crate::demand::native::native_watch_fixture(watch, work)?)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 #[test]
 fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> TestResult {
     use crate::demand::{DemandWork, NativeDemandReadMeter};
@@ -409,7 +409,7 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
         release: Mutex<Option<Receiver<()>>>,
         observed: Sender<Observed>,
         watch: OnceLock<Weak<NativeSourceWatch>>,
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "native-mount")]
         original: OnceLock<Arc<crate::demand::NativeDemandReadMeter>>,
     }
     impl HostChangeSink for Gate {
@@ -431,12 +431,12 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
                 .get()
                 .and_then(Weak::upgrade)
                 .ok_or(DemandError::WorkerUnavailable)?;
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "native-mount")]
             let unlocked = self
                 .original
                 .get()
                 .is_some_and(|work| work.0.try_lock().is_ok());
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(not(feature = "native-mount"))]
             let unlocked = true;
             let mut stop = DemandWork::new(stop_budget(), &CancellationToken::new());
             let bytes = watch.platform_owned_bytes();
@@ -470,7 +470,7 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
         release: Mutex::new(Some(receiver)),
         observed,
         watch: OnceLock::new(),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(feature = "native-mount")]
         original: OnceLock::new(),
     });
     let watch = Arc::new(NativeSourceWatch::start(
@@ -482,12 +482,12 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
     gate.watch
         .set(Arc::downgrade(&watch))
         .map_err(|_| "watch already installed")?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
         stop_budget(),
         &CancellationToken::new(),
     )));
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     gate.original
         .set(original.clone())
         .map_err(|_| "stop work already installed")?;
@@ -504,11 +504,11 @@ fn stop_allows_callback_payload_reads_and_rejects_callback_self_stop() -> TestRe
                     entering.send(()).expect("live serial drain observer");
                 }));
             });
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "native-mount")]
             let result = watch.stop_with_work(&mut crate::NativeMaterializationWork::from_meter(
                 original.clone(),
             ));
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(not(feature = "native-mount"))]
             let result = watch.stop_with_work(&mut DemandWork::new(
                 stop_budget(),
                 &CancellationToken::new(),

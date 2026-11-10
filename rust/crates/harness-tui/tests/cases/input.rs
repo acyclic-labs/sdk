@@ -1,5 +1,5 @@
 //! Typed prompt events, persistence and presentation checks.
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(feature = "tui")]
 
 #[path = "../input/args.rs"]
 mod args;

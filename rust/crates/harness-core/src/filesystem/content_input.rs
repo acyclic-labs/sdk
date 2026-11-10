@@ -154,7 +154,7 @@ impl acyclic_fs::kernel::AsyncBlobSource for HashedSource<'_> {
 }
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

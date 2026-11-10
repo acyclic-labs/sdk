@@ -13,7 +13,7 @@ pub(crate) mod budget;
 #[cfg(not(target_arch = "wasm32"))]
 use budget::Budget;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod read_admission;
 
 #[tokio::test]
@@ -173,7 +173,7 @@ async fn stores_sharing_a_medium_serve_each_others_revisions()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn a_reopened_store_serves_tokens_from_before_the_restart()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -227,7 +227,7 @@ async fn a_reopened_store_serves_tokens_from_before_the_restart()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn local_store_passes_the_shared_suite_and_reopens() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -271,7 +271,7 @@ async fn local_store_passes_the_shared_suite_and_reopens() -> Result<(), Box<dyn
 /// forked by a concurrent spawn until that child execs. The control: the
 /// reopened root still excludes a second owner, so the lock was released and
 /// retaken, not lost.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn a_dropped_root_reopens_while_a_forked_copy_of_its_lock_lives()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1167,7 +1167,7 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
     assert_eq!(replacement.references, [children[1]]);
     // Negative control: looking up the digest again observes another envelope.
     assert_ne!(deleted.references, replacement.references);
-
+    #[cfg(objects_server)]
     {
         use prost::Message as _;
         let encoded = crate::convert::wire_delete(deleted.clone()).encode_to_vec();
@@ -1487,7 +1487,7 @@ async fn a_stalled_deleter_never_removes_a_reput_retained_blob()
         stalled_delete_then_reput(MemoryMedium::default(), true).await?,
         (Ok(Delete::Deleted), false)
     );
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     for forgetful in [false, true] {
         let root = tempfile::tempdir()?;
         let local = crate::LocalMedium::open(root.path(), Default::default(), None).await?;
@@ -1647,7 +1647,7 @@ async fn a_put_stalled_past_its_grace_never_commits_a_lost_blob()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn a_local_put_stalled_past_its_grace_never_commits_a_lost_blob()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -2096,7 +2096,7 @@ async fn a_fresh_put_writes_twice_reads_nothing_and_flushes_nothing_at_any_size(
     }
 
     verify(Counting::default(), Counting::default()).await?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     {
         let small = tempfile::tempdir()?;
         let large = tempfile::tempdir()?;
@@ -2141,7 +2141,7 @@ async fn a_commit_flushes_only_its_unflushed_closure_in_one_batch()
 }
 
 /// One remote put member: the digest it claims, its body and references.
-
+#[cfg(objects_server)]
 fn wire_member(claimed: &[u8], body: &[u8], references: &[Digest]) -> crate::wire::PutBlobRequest {
     crate::wire::PutBlobRequest {
         digest: Some(Digest::of(claimed).into()),
@@ -2150,6 +2150,7 @@ fn wire_member(claimed: &[u8], body: &[u8], references: &[Digest]) -> crate::wir
     }
 }
 
+#[cfg(objects_server)]
 #[tokio::test]
 async fn a_remote_put_excludes_collection_until_its_flush_finishes()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -2188,6 +2189,7 @@ async fn a_remote_put_excludes_collection_until_its_flush_finishes()
     Ok(())
 }
 
+#[cfg(objects_server)]
 #[tokio::test]
 async fn a_remote_put_batch_waits_for_durability_once_and_fails_members_alone()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -3010,7 +3012,11 @@ async fn a_recovered_parent_commits_only_with_its_closure_whole_and_indexed()
 }
 
 /// The durable syncs `work` issues, by operation.
-#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
+#[cfg(all(
+    feature = "local",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 async fn syncs<T>(work: impl Future<Output = T>) -> (T, std::collections::BTreeMap<String, usize>) {
     use acyclic_native_runtime::testing::Schedule;
     let (schedule, mut events) = Schedule::new();
@@ -3032,7 +3038,11 @@ async fn syncs<T>(work: impl Future<Output = T>) -> (T, std::collections::BTreeM
     (value, syncs)
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
+#[cfg(all(
+    feature = "local",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 #[tokio::test]
 async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -3073,7 +3083,11 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
     Ok(())
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
+#[cfg(all(
+    feature = "local",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 #[tokio::test]
 async fn a_dropped_root_stays_owned_until_its_last_accepted_write()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -3765,7 +3779,7 @@ async fn a_put_hashes_its_body_once() -> Result<(), Box<dyn std::error::Error>> 
     let (put, bytes) = hashed(blobs.put_sealed(sealed, Vec::new())).await;
     put?;
     once(bytes, 0);
-
+    #[cfg(objects_server)]
     {
         // A received body is hashed once, where it crosses the trust boundary.
         let served = body(8);

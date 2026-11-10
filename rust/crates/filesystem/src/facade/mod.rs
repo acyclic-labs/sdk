@@ -40,7 +40,7 @@ use crate::foundation::usize_to_u64;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError};
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use crate::kernel::decode_retention_created;
 
 use crate::kernel::{
@@ -68,7 +68,11 @@ use crate::kernel::{
 
 pub use crate::kernel::{LiveMutationOutcome, LivePublicationObservation, MergeConflict};
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(
+    any(test, feature = "local"),
+    feature = "native-watch",
+    not(target_arch = "wasm32")
+))]
 use crate::kernel::{decode_source_volume, source_authority_id};
 
 use crate::model::{
@@ -85,10 +89,10 @@ use crate::storage::{
     ObjectKind, ObjectReadRequest, ObjectStoreError, PublicationPermit, ReplayLimit, object_digest,
 };
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use acyclic_native_runtime::OwnershipAnchor;
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use acyclic_objects::Blobs as _;
 
 use futures::{StreamExt as _, stream};
@@ -99,12 +103,12 @@ use std::collections::BTreeMap;
 
 use std::mem::size_of;
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use std::path::{Path, PathBuf};
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use std::sync::{OnceLock, Weak};
 
 use thiserror::Error;
@@ -120,7 +124,7 @@ mod attributes;
 mod authored_compile;
 mod authored_model;
 mod authored_records;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 mod candidate_rebase;
 mod candidates;
 mod checkout;
@@ -135,12 +139,14 @@ use crate::kernel::diff_generation_file_tables;
 mod directory;
 mod error;
 mod extents;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 mod merged_names;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 mod rename_bindings;
 pub(crate) use extents::seek_record_extent_with_accounting;
+#[cfg(any(test, feature = "distributed"))]
 mod composition;
+#[cfg(any(test, feature = "distributed"))]
 pub use composition::{CreateSpec, ForkSpec, ForkedGeneration, RestoreSpec};
 mod fork;
 mod fs;
@@ -158,9 +164,9 @@ mod metadata;
 mod mutation_regions;
 mod mutations;
 mod names;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 mod names_unique;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 pub(crate) use names_unique::ambiguous_folded_name;
 mod namespace;
 mod proof;
@@ -185,16 +191,16 @@ pub use crate::kernel::{DirectoryBindingChange, FileRecordChange, GenerationDiff
 pub(crate) use access_policy::policy_head_is_current;
 pub use attributes::NamedAttributeWriteMode;
 use authored_compile::clone_authored_path;
-#[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-watch")))]
 use authored_compile::clone_borrowed_authored_descriptor;
 use authored_compile::push_authored_operation;
 pub use authored_model::AuthoredMutation;
 use candidates::PreparedCheckoutRoots;
 use candidates::root_parent_bytes;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "native-mount")]
 pub(crate) use candidates::{NativeCandidateRebasePlan, PreparedCandidateAdoption};
 pub use checkout::Checkout;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use collection::LocalGarbageCollection;
 pub use content_model::ContentChange;
 pub use content_model::ContentTimes;
@@ -216,22 +222,25 @@ use error::validate_volume_capabilities;
 use extents::regular_range_regions;
 pub use fs::EmbeddedCapabilities;
 pub use fs::Fs;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use fs::FsInner;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use fs::LocalAuthorityBackend;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use fs::LocalFs;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use fs::LocalObjectBackend;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use fs::LocalOperationWindowStore;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use fs::LocalVolume;
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 pub use fs::MemoryAuthorityBackend;
 #[cfg(test)]
 pub(crate) use fs::MemoryCheckout;
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 pub use fs::MemoryFs;
+#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 pub use fs::MemoryObjectBackend;
 use generation::MAXIMUM_VOLUME_EVENT_BYTES;
 pub use generation::Volume;
@@ -251,9 +260,9 @@ use join_witness::hash_merge_resolution;
 use lineage::RebaseLineage;
 pub(crate) use lineage::WorkspaceCommonAncestor;
 pub(crate) use lineage::WorkspaceRebaseRequest;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use local::LocalOptions;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 #[cfg(test)]
 use local::run_local_initialization;
 use metadata::AuthoredMetadataCache;

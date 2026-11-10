@@ -47,7 +47,7 @@ fn file(agent: AgentId, path: &str, media_type: &str, bytes: &[u8]) -> Result<Fi
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Result<()> {
     const RECORD: &[u8] = br#"{"invocation":{"operation_id":"00000000-0000-0000-0000-000000000001","call_id":"call","name":"echo","arguments":{"value":1}},"metadata":{"signature":"opaque","blocks":[{"thinking":"plan"}]}}"#;
@@ -366,19 +366,19 @@ async fn json_projection_checks_resolved_bytes_before_parsing() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn native_manifest_resolution_never_calls_the_ordinary_resolver() -> Result<()> {
     native_manifest_resolution(false).await
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn native_manifest_resolution_rejects_foreign_bytes() -> Result<()> {
     native_manifest_resolution(true).await
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
     struct NativeResolver {
         bytes: acyclic_stream::OwnedBytes,

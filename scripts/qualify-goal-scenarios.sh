@@ -16,7 +16,7 @@ case "$phase" in
   authority)
     # Main's atomic locators replace the former rejected-slot retry model.
     artifacts=$(mktemp)
- cargo test --locked -p acyclic-fs --lib --no-run --message-format=json > "$artifacts"
+    cargo test --locked -p acyclic-fs --lib --no-run --message-format=json > "$artifacts"
     python3 scripts/qualify-graphcoder-artifact.py \
       distributed::tests::operation_tests:: < "$artifacts"
     ;;

@@ -50,9 +50,9 @@ pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
 mod client_files;
 mod journal;
 
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+#[cfg(all(target_os = "linux", feature = "native-execution"))]
 mod guest;
-#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
+#[cfg(all(target_os = "linux", feature = "native-execution"))]
 pub use guest::{GuestAuthority, GuestMappingSource, LocalGuestEnrollment};
 
 /// The caller a host's platform verified for one request, before any of the
@@ -465,7 +465,7 @@ where
     ///
     /// # Errors
     /// When `root` is absent or its scope does not cover its observation.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub async fn client_credential(
         &self,
         root: &AgentPath,

@@ -1,5 +1,5 @@
 //! Completion parsing, file folds and popup snapshots.
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(feature = "tui")]
 
 use acyclic_harness_tui::InputKeymap;
 use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};

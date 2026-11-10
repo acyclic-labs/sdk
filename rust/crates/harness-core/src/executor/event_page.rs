@@ -118,6 +118,7 @@ pub struct ExecutionEventPage {
     pub next: Option<u64>,
 }
 
+#[cfg(feature = "filesystem")]
 impl ExecutionEventPage {
     pub(crate) fn empty(after: u64) -> Self {
         Self {

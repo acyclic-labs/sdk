@@ -51,7 +51,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         self.limits = limits;
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "s3-http")]
     pub(crate) fn keep(&mut self, objects: impl IntoIterator<Item = ObjectId>) {
         self.marked.extend(objects);
     }

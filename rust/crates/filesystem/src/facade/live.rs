@@ -157,7 +157,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
 
     /// Publishes once or resolves the exact retained durable operation.
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) async fn resume_live_with_native_work<'a, E, F, Fut>(
         &mut self,
         operation_id: OperationId,

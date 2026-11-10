@@ -1,6 +1,6 @@
 //! Host-bound web tools. The stock execution journal owns result replay.
 use crate::{
-    Error, Result, SearchProvider, SearchRequest,
+    Error, NativeCustody, NativeWork, Result, SearchProvider, SearchRequest,
     runtime::{RuntimeScope, ToolContext},
     tool::{ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
     url_fetch::{FetchProvider, FetchRequest, HttpFetch},
@@ -50,8 +50,8 @@ impl WebExecutor {
         &self,
         invocation: &ToolInvocation,
         maximum: u64,
-        work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+        work: NativeWork<'_>,
+    ) -> Result<(ToolResult, NativeCustody)> {
         if invocation.name == "url_fetch" {
             let (request, _input) = decode::<FetchRequest>(&invocation.arguments, work)?;
             request.validate_with_work(work)?;
@@ -120,8 +120,8 @@ impl WebExecutor {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+        work: NativeWork<'_>,
+    ) -> Result<(ToolResult, NativeCustody)> {
         self.authorize(None, Some(context), invocation, work)?;
         let maximum = context.effective_scope().limits().file_bytes;
         match self.dispatch(invocation, maximum, work).await {
@@ -133,8 +133,8 @@ impl WebExecutor {
 
 fn decode<T: crate::filesystem::UploadRecord>(
     value: &serde_json::Value,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(T, acyclic_fs::NativeCustody)> {
+    work: NativeWork<'_>,
+) -> Result<(T, NativeCustody)> {
     crate::tool::decode(value, work).map_err(|error| match error {
         Error::NativeJsonAdmission { .. } | Error::NativeJson { .. } | Error::Invalid(_) => {
             crate::url_fetch::rejection(work, "invalid web request")
@@ -146,8 +146,8 @@ fn decode<T: crate::filesystem::UploadRecord>(
 fn output(
     value: &impl Serialize,
     maximum: u64,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+    work: NativeWork<'_>,
+) -> Result<(ToolResult, NativeCustody)> {
     let (value, held) = crate::tool::value(value, maximum, work)?;
     Ok((ToolResult { value }, held))
 }
@@ -155,8 +155,8 @@ fn output(
 fn rejection(
     error: Error,
     maximum: u64,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
+    work: NativeWork<'_>,
+) -> Result<(ToolResult, NativeCustody)> {
     use crate::web::WebRejectionCode;
     #[derive(Serialize)]
     struct Rejection<'a> {
@@ -198,7 +198,7 @@ impl ToolExecutor for WebExecutor {
         _: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        _: acyclic_fs::NativeWork<'_>,
+        _: NativeWork<'_>,
     ) -> Result<()> {
         let denied = || Error::NativeBoundary {
             code: ErrorCode::Unauthorized,
@@ -255,15 +255,9 @@ impl ToolExecutor for WebExecutor {
         context: &'a ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (ToolResult, acyclic_fs::NativeAllocation),
-            crate::Error,
-        >,
-    > {
+    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
         self.authorize(None, Some(context), invocation, Some(work))?;
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+        crate::NativeFutureBundle::new(work, || async move {
             let (result, held) = self.run(context, invocation, Some(work)).await?;
             Ok((
                 result,
@@ -280,15 +274,10 @@ impl ToolExecutor for WebExecutor {
         context: &'a ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (Option<ToolResult>, acyclic_fs::NativeAllocation),
-            crate::Error,
-        >,
-    > {
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
+    {
         self.authorize(None, Some(context), invocation, Some(work))?;
-        acyclic_fs::NativeFutureBundle::new(work, || async move {
+        crate::NativeFutureBundle::new(work, || async move {
             let held =
                 crate::tool::edit::allocation(Some(work), 0)?.ok_or(Error::NativeBoundary {
                     code: ErrorCode::Storage,

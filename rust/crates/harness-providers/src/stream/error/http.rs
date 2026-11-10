@@ -1,5 +1,5 @@
 //! A fixed-size projection through the original JSON parser, with funded escape scratch.
-use acyclic_harness_core::Result;
+use acyclic_harness_core::{NativeWork, Result};
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 /// No remote string or container survives the classification.
@@ -192,10 +192,7 @@ impl acyclic_harness_core::filesystem::UploadRecord for Refusal {
     }
 }
 
-pub(crate) fn context_overflow_bytes(
-    bytes: &[u8],
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<bool> {
+pub(crate) fn context_overflow_bytes(bytes: &[u8], work: NativeWork<'_>) -> Result<bool> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         use acyclic_harness_core::{Error, filesystem::PreparationIo};

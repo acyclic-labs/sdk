@@ -2,7 +2,7 @@ diff --git a/rust/crates/harness-core/src/executor/record_index.rs b/rust/crates
 index 469f04197a..dd752157f3 100644
 --- a/rust/crates/harness-core/src/executor/record_index.rs
 +++ b/rust/crates/harness-core/src/executor/record_index.rs
-@@ -1,9 +1,6 @@
+@@ -1,10 +1,7 @@
  //! A driver validates the immutable journal prefix once and indexes new records.
  //! This cache belongs to one stock execution, never to an authority or process.
  use super::*;
@@ -12,8 +12,9 @@ index 469f04197a..dd752157f3 100644
 -type Records = FixedIndex<ExecutionRecord, OwnedIndexAllocation, 8>;
 +use crate::model::DigestIndex;
  
+ #[cfg(feature = "filesystem")]
  fn release_page_scratch(
-@@ -40,7 +37,7 @@ fn release_page_scratch(
+@@ -40,8 +37,8 @@ fn release_page_scratch(
  pub(super) struct RecordIndex<'a> {
      binding: Option<(OperationId, ExecutionJournalCacheId)>,
      tail: u64,
@@ -22,6 +23,7 @@ index 469f04197a..dd752157f3 100644
 +    keys: DigestIndex<usize>,
 +    steps: Vec<Vec<ExecutionRecord>>,
      // Values are dropped before the custody that funds them.
+     #[cfg(feature = "filesystem")]
      quota: Option<crate::conversation::ContentHold<'a>>,
 @@ -179,6 +176,19 @@ impl ExecutionEvent {
  }
@@ -52,7 +54,7 @@ index 469f04197a..dd752157f3 100644
                  || keys.get(..index).is_none_or(|prior| prior.contains(&key))
              {
                  return Err(stock_boundary(
-@@ -272,13 +282,25 @@ impl<'a> RecordIndex<'a> {
+@@ -272,14 +282,26 @@ impl<'a> RecordIndex<'a> {
          let advanced = !page.is_empty();
          for (record, key) in page.into_iter().zip(keys) {
              let step = record_bucket_key(&record.event, io)?;
@@ -85,6 +87,7 @@ index 469f04197a..dd752157f3 100644
 +            self.keys.set(0, key, Some(0), io)?;
              self.tail = sequence;
          }
+         #[cfg(feature = "filesystem")]
 @@ -298,30 +320,12 @@ impl<'a> RecordIndex<'a> {
          io: Option<&PreparationIo>,
      ) -> Result<(u64, Vec<ExecutionRecord>)> {

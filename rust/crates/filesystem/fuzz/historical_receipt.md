@@ -26,7 +26,7 @@ Apply both mutations for the negative control, then reverse only the replay
 projection for the positive control. Run the same exact property each time:
 
 ```sh
-cargo test --locked -p acyclic-fs --no-default-features --lib distributed::accounting::tests::historical_reads_preserve_the_complete_original_receipt -- --exact --nocapture
+cargo test --locked -p acyclic-fs --no-default-features --features local,memory,distributed --lib distributed::accounting::tests::historical_reads_preserve_the_complete_original_receipt -- --exact --nocapture
 ```
 
 The negative must fail at `historical replay lost original completed work`;

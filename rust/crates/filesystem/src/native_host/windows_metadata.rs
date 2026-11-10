@@ -1,12 +1,12 @@
 #[cfg(all(
     any(target_os = "linux", target_os = "macos", windows),
-    any(not(target_arch = "wasm32"), test)
+    any(feature = "native-mount", test)
 ))]
 use super::NativeMetadataError;
 use super::{
     DemandError, NativeHostWork, WRITE, windows_set_information, windows_stat_information,
 };
-#[cfg(all(windows, any(not(target_arch = "wasm32"), test)))]
+#[cfg(all(windows, any(feature = "native-mount", test)))]
 use super::{FILE_BASIC_INFO, unix_nanoseconds_to_filetime};
 use crate::kernel::{FileMetadata, MetadataField};
 use windows::Wdk::Storage::FileSystem::FileBasicInformation;

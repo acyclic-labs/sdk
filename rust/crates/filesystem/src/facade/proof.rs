@@ -121,7 +121,7 @@ impl DependencyLedger {
         });
         Ok((freeze, preconditions))
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "native-mount")]
     pub(super) fn observing_with_custody(&self, data_custody: Arc<ProofDataCustody>) -> Self {
         Self {
             proof: Arc::clone(&self.proof),

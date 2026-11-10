@@ -2,6 +2,7 @@
 
 #![doc = include_str!("../../docs/client/README.md")]
 
+#[cfg(any(feature = "hosting", feature = "wasm"))]
 pub use acyclic_harness_client::{
     AgentCommand, AgentPageRequest, AgentReply, EventCursor, ExecutionPosition, MAX_READ_BYTES,
 };
@@ -16,7 +17,7 @@ mod diff;
 pub use diff::*;
 mod task_list;
 #[cfg(any(
-    not(target_arch = "wasm32"),
+    all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub use acyclic_harness_client::{

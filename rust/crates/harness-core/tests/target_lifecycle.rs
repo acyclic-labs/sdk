@@ -408,6 +408,6 @@ fn adopted(agent: AgentId) -> ForkAdopted {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
 #[path = "target_lifecycle_native.rs"]
 mod native;

@@ -4,14 +4,16 @@ use crate::{Error, Result, core::Authority};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "filesystem")]
 mod measured;
 
+#[cfg(feature = "filesystem")]
 pub use measured::HistoryWork;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native::{adopt_native_sdk_output, native_sdk_result};
 
 /// The native branch owns its original pre-funded frame outside the boxed future.
@@ -23,9 +25,9 @@ pub enum HistoryContentFuture<'a, T> {
         /// Retained frame size.
         frame_bytes: u64,
     },
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// An originally funded native callback.
-    Native(acyclic_fs::NativeFutureBundle<'a, T, crate::Error>),
+    Native(crate::NativeFutureBundle<'a, T>),
 }
 
 impl<T> Future for HistoryContentFuture<'_, T> {
@@ -37,7 +39,7 @@ impl<T> Future for HistoryContentFuture<'_, T> {
     ) -> std::task::Poll<Self::Output> {
         match self.get_mut() {
             Self::Ordinary { future, .. } => future.as_mut().poll(cx),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Native(future) => std::pin::Pin::new(future).poll(cx),
         }
     }
@@ -55,7 +57,7 @@ pub trait HistoryIo: Send {
     /// Receive record.
     fn receive_record(&mut self, bytes: u64) -> Result<()>;
     /// Records the SDK-returned authority prefix when the genuine native SDK already owns raw buffers and accounts its source IO and item visits.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn receive_native_record(&mut self, bytes: u64) -> Result<()> {
         let Some(original) = self.original_native_work() else {
             return self.receive_record(bytes);
@@ -136,17 +138,17 @@ pub trait HistoryIo: Send {
             "this history observer has no guarded JSON value decoder".into(),
         ))
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Original native work.
     fn original_native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
         None
     }
     /// Identity alone cannot dispatch another native call for an accepted completion; its caller must supply the sealed pre-action SDK token.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn requires_prepared_native_dispatch(&self) -> bool {
         false
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Absorb native custody.
     fn absorb_native_custody(&mut self, incoming: acyclic_fs::NativeAllocation) -> Result<()> {
         Err(Error::NativeWork {
@@ -154,7 +156,7 @@ pub trait HistoryIo: Send {
             custody: Some(incoming),
         })
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Take native custody.
     fn take_native_custody(&mut self, _bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
         Err(Error::NativeWork {
@@ -163,6 +165,7 @@ pub trait HistoryIo: Send {
         })
     }
     /// Transfers retained output ownership, or declines retention on this observer.
+    #[cfg(feature = "filesystem")]
     fn take_owned_custody(
         &mut self,
         bytes: u64,
@@ -222,7 +225,7 @@ pub(crate) fn reserve<T>(
         .checked_mul(std::mem::size_of::<T>())
         .ok_or_else(|| Error::Invalid("history vector storage overflows".into()))?
         as u64;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if observer.requires_prepared_native_dispatch() {
         return observer.allocation_attempt(extra);
     }

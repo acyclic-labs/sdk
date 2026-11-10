@@ -120,7 +120,7 @@ Run the shared lifecycle and protocol checks with:
 ```sh
 cargo test --locked -p acyclic-machines --features conformance --lib
 cargo check --locked -p acyclic-machines --no-default-features --features javascript --target wasm32-unknown-unknown
-cargo test --locked -p acyclic-harness-core --lib --no-run
+cargo test --locked -p acyclic-harness-core --features machines --lib --no-run
 ```
 
 The protocol tests use internal HTTP/2 service vectors, not captured provider

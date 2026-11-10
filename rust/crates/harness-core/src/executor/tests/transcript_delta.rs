@@ -25,6 +25,7 @@ fn message(index: usize) -> ModelMessage {
 }
 
 #[test]
+#[cfg(feature = "filesystem")]
 fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

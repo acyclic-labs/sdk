@@ -32,7 +32,9 @@ mod registry;
 pub(crate) use authority::VerifiedScope;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use authority::check_filesystem_refinement;
+#[cfg(feature = "filesystem")]
 pub(crate) use authority::until_turn_stopped;
+#[cfg(feature = "filesystem")]
 pub(crate) use copying::copy_resource;
 pub(crate) use copying::{
     copy, copy_boxed, copy_boxed_text, copy_copy_vector, copy_provider, copy_text, copy_vector,

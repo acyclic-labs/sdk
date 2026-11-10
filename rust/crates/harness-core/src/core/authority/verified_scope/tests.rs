@@ -147,6 +147,7 @@ fn authenticated_scope_keeps_the_half_open_live_validity_interval() -> Result<()
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
 #[test]
 fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Result<()> {
     let (issuer, verifier, scope, volume) = fixture()?;
@@ -196,6 +197,7 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
 #[test]
 fn compact_evidence_funds_every_allocation_before_conversion() -> Result<()> {
     let (_issuer, verifier, scope, _volume) = fixture()?;
@@ -235,6 +237,7 @@ fn compact_evidence_funds_every_allocation_before_conversion() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
 #[test]
 fn authority_metadata_copies_release_every_partial_allocation() -> Result<()> {
     let (issuer, verifier, _scope, _volume) = fixture()?;
@@ -288,6 +291,7 @@ fn authority_metadata_copies_release_every_partial_allocation() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
 #[test]
 fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<()> {
     let (issuer, verifier, scope, volume) = fixture()?;

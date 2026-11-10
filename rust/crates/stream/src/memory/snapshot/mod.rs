@@ -42,7 +42,7 @@ fn invalid() -> StreamError {
     StreamError::InvalidArgument
 }
 
-#[cfg(any(feature = "test-support", all(test, not(target_arch = "wasm32"))))]
+#[cfg(any(feature = "test-support", all(test, feature = "local")))]
 pub(crate) fn check_codec(bytes: &[u8]) -> bool {
     if let Ok(state) = decode(bytes) {
         let canonical = encode(&state);
@@ -98,7 +98,7 @@ impl MemoryStream {
             return Err(StreamError::Capacity);
         }
         let _publication = self.publication.lock().await;
-        #[cfg(all(loom, not(target_arch = "wasm32")))]
+        #[cfg(all(loom, feature = "local"))]
         if crate::verification::fault_is(crate::verification::Fault::RetainReplacedState) {
             let previous = std::mem::replace(&mut *self.state.write().await, decoded);
             std::mem::forget(previous);

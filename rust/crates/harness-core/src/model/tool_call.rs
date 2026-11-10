@@ -53,6 +53,7 @@ impl ToolCall {
         self
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn payload_bytes(&self) -> crate::Result<u64> {
         use super::inventory::add;
         use crate::executor::json::json_value_logical_owned_bytes;
@@ -66,6 +67,7 @@ impl ToolCall {
         .and_then(|bytes| add(bytes, native_bytes(self.native.as_ref())?))
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn retained_payload_bytes(&self) -> crate::Result<u64> {
         use super::inventory::add;
         use crate::executor::json::json_value_retained_owned_bytes;
@@ -80,6 +82,7 @@ impl ToolCall {
     }
 }
 
+#[cfg(feature = "filesystem")]
 pub(crate) fn native_bytes(native: Option<&super::NativePart>) -> crate::Result<u64> {
     native.map_or(Ok(0), super::NativePart::payload_bytes)
 }

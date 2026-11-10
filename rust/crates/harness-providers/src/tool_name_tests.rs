@@ -328,9 +328,7 @@ impl HttpTransport for AliasFixture {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<
-        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
-    > {
+    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
         crate::fixtures::native_delay(wait, work)
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -350,7 +348,7 @@ impl HttpTransport for AliasFixture {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
         self.0.send_with_native_work(request, work)
     }
 }

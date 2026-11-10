@@ -4,7 +4,11 @@ use super::{Error, JsonCodecCharge, Result, Value, boundary, serialization::Scop
 // In particular, admission errors never pass through serde_json::Error::custom.
 // Strings are unescaped in that output buffer, without a second scratch buffer.
 pub(super) fn value(bytes: &mut [u8], table: &[u8], scope: &mut Scope<'_>) -> Result<Value> {
-    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+    #[cfg(all(
+        any(test, feature = "test-support"),
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
     {
         acyclic_differential::record(super::CodecOperation::DecodeBytes);
         acyclic_differential::record(("decode document", bytes.len() as u64));

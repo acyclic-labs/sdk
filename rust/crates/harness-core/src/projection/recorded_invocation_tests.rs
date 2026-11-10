@@ -1,4 +1,4 @@
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 
 #[path = "../../../harness-fuzz/fuzz_targets/recorded_invocation_input.rs"]
 mod input;

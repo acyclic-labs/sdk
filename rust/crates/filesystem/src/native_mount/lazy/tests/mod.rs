@@ -1,5 +1,5 @@
 use super::*;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[derive(Default)]
 struct Recorded(Mutex<Vec<ViewStamp>>);
 

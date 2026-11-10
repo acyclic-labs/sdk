@@ -31,7 +31,7 @@ impl Workspace {
 fn target(
     context: &ToolContext,
     invocation: &ToolInvocation,
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
 ) -> Result<Workspace> {
     if let Some(target) = &context.execution_target {
         return Ok(Workspace::Target(Arc::clone(target)));
@@ -77,7 +77,7 @@ fn echo(name: &str, target: &Workspace, mut result: ToolResult) -> Result<(ToolR
 }
 
 /// [`echo`] on a native result, its growth charged to `allocation`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn echo_charged(
     name: &str,
     target: &Workspace,
@@ -100,7 +100,7 @@ impl ToolExecutor for WorkspaceExecutor {
         invocation: &'a ToolInvocation,
         context: &'a ToolContext,
         grant: &'a acyclic_native_runtime::execution::ExecutionGrant,
-        work: acyclic_fs::NativeWork<'a>,
+        work: crate::NativeWork<'a>,
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
             target(context, invocation, work)?
@@ -114,7 +114,7 @@ impl ToolExecutor for WorkspaceExecutor {
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
-        work: acyclic_fs::NativeWork<'a>,
+        work: crate::NativeWork<'a>,
     ) -> Option<BoxProviderFuture<'a, Result<()>>> {
         let context = context?;
         if let Some(target) = &context.execution_target {
@@ -138,7 +138,7 @@ impl ToolExecutor for WorkspaceExecutor {
         scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
         let context = context.ok_or_else(|| {
             boundary(
@@ -172,7 +172,7 @@ impl ToolExecutor for WorkspaceExecutor {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Option<crate::tool::Dispatch>> {
         let Some(context) = context else {
             return Ok(None);
@@ -197,7 +197,7 @@ impl ToolExecutor for WorkspaceExecutor {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Option<BoxProviderFuture<'static, Result<()>>>> {
         let Some(context) = context else {
             return Ok(None);
@@ -277,7 +277,7 @@ impl ToolExecutor for WorkspaceExecutor {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -286,23 +286,17 @@ impl ToolExecutor for WorkspaceExecutor {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn execute_with_native_context<'a>(
         &'a self,
         context: &'a ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (ToolResult, acyclic_fs::NativeAllocation),
-            crate::Error,
-        >,
-    > {
+    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
         self.authorize(None, Some(context), invocation, Some(work))?;
         let target = target(context, invocation, Some(work))?;
         let name = self.name;
-        acyclic_fs::NativeFutureBundle::new(work, move || async move {
+        crate::NativeFutureBundle::new(work, move || async move {
             let (result, mut allocation) = target
                 .executor()
                 .execute_with_native_context(context, invocation, work)?
@@ -312,19 +306,14 @@ impl ToolExecutor for WorkspaceExecutor {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_context<'a>(
         &'a self,
         context: &'a ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (Option<ToolResult>, acyclic_fs::NativeAllocation),
-            crate::Error,
-        >,
-    > {
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
+    {
         if context.execution_target.is_none()
             && !(invocation.name == "fs" && context.task().harness.filesystem.is_some())
         {
@@ -333,7 +322,7 @@ impl ToolExecutor for WorkspaceExecutor {
         self.authorize(None, Some(context), invocation, Some(work))?;
         let target = target(context, invocation, Some(work))?;
         let name = self.name;
-        acyclic_fs::NativeFutureBundle::new(work, move || async move {
+        crate::NativeFutureBundle::new(work, move || async move {
             let (result, mut allocation) = target
                 .executor()
                 .reconcile_with_native_context(context, invocation, work)?
@@ -347,11 +336,11 @@ impl ToolExecutor for WorkspaceExecutor {
 }
 
 fn boundary(
-    work: acyclic_fs::NativeWork<'_>,
+    work: crate::NativeWork<'_>,
     code: crate::wire::ErrorCode,
     reason: &'static str,
 ) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
         return Error::NativeBoundary { code, reason };
     }

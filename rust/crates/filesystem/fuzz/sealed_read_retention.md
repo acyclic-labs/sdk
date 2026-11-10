@@ -10,6 +10,6 @@ opening the seal, recompute custody from the shorter plaintext view. The ordinar
 read must reject that result because the complete physical seal remains live.
 
 Run the observation with `cargo test -p acyclic-fs --no-default-features
- --test main
+--features local,memory,distributed --test main
 logical_objects::sealed::sealing_preserves_the_epoch_roots_retention -- --exact`.
 A successful positive run alone does not qualify the production mutation.

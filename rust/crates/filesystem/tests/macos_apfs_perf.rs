@@ -1,6 +1,6 @@
 //! Local-only APFS native working-set preparation and capture benchmark.
 
-#![cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+#![cfg(all(target_os = "macos", feature = "native-mount"))]
 
 #[path = "support/native_access.rs"]
 mod native_access;

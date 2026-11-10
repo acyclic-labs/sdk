@@ -19,5 +19,7 @@ pub fn changes_path<A: crate::AsyncAuthorityStore, O: 'static>(
         .to_owned(),
     )
 }
+#[cfg(feature = "session")]
 mod resources;
+#[cfg(feature = "session")]
 pub use resources::ChangeProvider;

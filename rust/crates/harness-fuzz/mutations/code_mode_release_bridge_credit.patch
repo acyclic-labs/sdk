@@ -12,4 +12,4 @@ diff --git a/rust/crates/harness-core/src/executor/code_mode/allocator.rs b/rust
 +            },
          })
      }
-     pub(super) fn new(work: acyclic_fs::NativeWork<'_>) -> Self {
+     pub(super) fn new(work: crate::NativeWork<'_>) -> Self {

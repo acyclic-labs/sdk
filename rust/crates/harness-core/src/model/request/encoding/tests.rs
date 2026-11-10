@@ -331,7 +331,11 @@ fn shape_work<T>(run: impl FnOnce() -> T) -> (T, u64) {
     (result, shape)
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 #[test]
 fn every_encoding_ledger_keeps_original_custody_through_growth_and_retirement() -> Result<()> {
     for native in [false, true] {
@@ -351,7 +355,11 @@ fn every_encoding_ledger_keeps_original_custody_through_growth_and_retirement() 
     Ok(())
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 #[test]
 fn native_prepared_inventory_tracks_request_and_cached_hash_storage() -> Result<()> {
     let measured = crate::test_support::accounted::accounted(
@@ -397,10 +405,18 @@ fn native_prepared_inventory_tracks_request_and_cached_hash_storage() -> Result<
     Ok(())
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 type SuffixWork = (u64, u64, u64, u64);
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 fn measure_suffix(count: usize, io: &PreparationIo) -> Result<(SuffixWork, u64)> {
     let prepared = PreparedModelRequest::prepare(
         crate::model::clone_request(&request(count)?, Some(io))?,
@@ -442,7 +458,11 @@ fn measure_suffix(count: usize, io: &PreparationIo) -> Result<(SuffixWork, u64)>
     Ok((suffix, full_bytes))
 }
 
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 #[test]
 fn admitted_suffix_encoding_and_hashing_do_not_revisit_historical_messages() -> Result<()> {
     for native in [false, true] {

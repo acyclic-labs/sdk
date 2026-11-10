@@ -1,4 +1,5 @@
 //! Immutable filesystem composition over the canonical Objects v1 provider.
+#![cfg(feature = "distributed")]
 
 #[macro_use]
 #[path = "support/provider_receipt.rs"]

@@ -179,7 +179,7 @@ pub(crate) fn short_path(path: &std::path::Path) -> io::Result<std::path::PathBu
 }
 
 #[cfg(unix)]
-#[cfg(any(test, not(target_arch = "wasm32")))]
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn normalize_root_path<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
     path: &Path,
     work: &mut W,

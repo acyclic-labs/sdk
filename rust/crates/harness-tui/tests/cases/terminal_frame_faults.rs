@@ -1,7 +1,7 @@
 //! Frame presentation under faults: a write error, timeout or panic at any
 //! byte of any frame leaves no synchronized update open and no hidden cursor
 //! once the session is torn down, and an error closes the update at once.
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(feature = "tui")]
 
 use std::cell::{Cell, RefCell};
 use std::io::{self, Write};

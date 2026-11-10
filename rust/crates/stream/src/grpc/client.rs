@@ -36,7 +36,7 @@ impl Client {
     }
     /// This causal context's tracker, shared by its routes across credential
     /// changes. The physical Session cache owns no revision tracker.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
     pub(crate) fn revisions(
         &self,
     ) -> Result<crate::query_sync::Arc<crate::RevisionTracker>, StreamError> {

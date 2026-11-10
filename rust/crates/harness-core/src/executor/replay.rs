@@ -55,6 +55,7 @@ impl ExecutionReplay {
             .ok_or_else(|| Error::Conflict("execution journal sequence overflows".into()))?;
         let mut keys = [[0; 32]; EXECUTION_REPLAY_PAGE_RECORDS as usize];
         for (index, record) in page.clone().enumerate() {
+            #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 io.preflight(acyclic_fs::WorkCounters {
                     bytes_hashed: record.idempotency_key.len() as u64,
@@ -63,6 +64,7 @@ impl ExecutionReplay {
                 })?;
             }
             let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
+            #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 io.charge(acyclic_fs::WorkCounters {
                     bytes_hashed: record.idempotency_key.len() as u64,
@@ -109,24 +111,29 @@ pub(crate) async fn replay_execution<'a>(
     Option<crate::conversation::ContentHold<'a>>,
 )> {
     validate_journal(journal, io)?;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let output_before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         io.retain_owned(std::mem::size_of::<Vec<ExecutionRecord>>() as u64)?;
     }
     let mut replay = ExecutionReplay::new(operation_id);
     let mut selected = Vec::new();
     loop {
+        #[cfg(feature = "filesystem")]
         let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+        #[cfg(feature = "filesystem")]
         let key_capacity_before = replay.keys.capacity();
         let Some(page) = replay.next_page(journal, io).await? else {
             break;
         };
+        #[cfg(feature = "filesystem")]
         let held = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0) - before;
+        #[cfg(feature = "filesystem")]
         let key_growth = (replay.keys.capacity() - key_capacity_before) as u64 * 32;
+        #[cfg(feature = "filesystem")]
         let selected_before = selected.len();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let page_bytes = page.capacity() as u64 * std::mem::size_of::<ExecutionRecord>() as u64;
         for record in page {
             if select(&record.event) {
@@ -138,12 +145,13 @@ pub(crate) async fn replay_execution<'a>(
                 stock_vec_push(&mut selected, record, io)?;
             }
         }
+        #[cfg(feature = "filesystem")]
         if selected.len() == selected_before
             && let Some(io) = io
         {
             io.release(held.saturating_sub(key_growth))?;
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if selected.len() != selected_before
             && let Some(io) = io
             && io.original_native_work().is_some()
@@ -152,12 +160,13 @@ pub(crate) async fn replay_execution<'a>(
         }
     }
     let tail = replay.tail();
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let key_bytes = replay.keys.capacity() as u64 * 32;
         drop(replay);
         io.release(key_bytes)?;
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let hold = if stock_is_native(io) {
         let bytes = native_size_add(
             std::mem::size_of::<Vec<ExecutionRecord>>() as u64,
@@ -170,11 +179,12 @@ pub(crate) async fn replay_execution<'a>(
     } else {
         None
     };
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let hold = None;
     Ok((tail, selected, hold))
 }
 
+#[cfg(feature = "filesystem")]
 impl ExecutionRecord {
     pub(crate) fn payload_bytes(&self, io: Option<&PreparationIo>) -> Result<u64> {
         (self.idempotency_key.capacity() as u64)
@@ -189,6 +199,7 @@ impl ExecutionRecord {
     }
 }
 
+#[cfg(feature = "filesystem")]
 impl ExecutionEvent {
     pub(crate) fn payload_bytes(&self, io: Option<&PreparationIo>) -> Result<u64> {
         use ExecutionEvent::*;

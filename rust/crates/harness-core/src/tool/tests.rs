@@ -256,7 +256,7 @@ async fn scoped_install_requires_capability_and_exact_approval_operation() -> Re
 
 /// A projection outside its pinned schema is the tool's mistake on both paths: it comes back as
 /// the inner error for the model, never as the outer failure that stops a native turn.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn projection_schema_violation_is_the_tools_mistake_on_the_native_path() -> Result<()> {
     let definition = ToolDefinition {

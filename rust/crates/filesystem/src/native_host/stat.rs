@@ -263,12 +263,12 @@ pub(super) fn unix_time(seconds: i64, nanos: i64) -> io::Result<cap_std::time::S
 #[cfg(windows)]
 pub(crate) const UNIX_EPOCH_FILETIME: i64 = 116_444_736_000_000_000;
 
-#[cfg(all(windows, any(not(target_arch = "wasm32"), test)))]
+#[cfg(all(windows, any(feature = "native-mount", test)))]
 pub(crate) fn filetime_to_unix_nanoseconds(ticks: i64) -> Option<i64> {
     ticks.checked_sub(UNIX_EPOCH_FILETIME)?.checked_mul(100)
 }
 
-#[cfg(all(windows, any(not(target_arch = "wasm32"), test)))]
+#[cfg(all(windows, any(feature = "native-mount", test)))]
 pub(crate) fn unix_nanoseconds_to_filetime(nanoseconds: i64) -> i64 {
     nanoseconds.div_euclid(100) + UNIX_EPOCH_FILETIME
 }

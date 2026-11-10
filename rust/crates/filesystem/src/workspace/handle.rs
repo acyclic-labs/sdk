@@ -6,7 +6,7 @@ pub struct Workspace<A: 'static, O: 'static> {
     pub(crate) id: WorkspaceId,
     pub(crate) volume: Volume<A, O>,
     pub(crate) access: Option<(Arc<crate::access::PathTrie>, u16)>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     pub(crate) source: Option<crate::Source<A, O>>,
 }
 
@@ -17,7 +17,7 @@ impl<A: 'static, O: 'static> Clone for Workspace<A, O> {
             id: self.id,
             volume: self.volume.clone(),
             access: self.access.clone(),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
             source: self.source.clone(),
         }
     }
@@ -65,13 +65,13 @@ impl<A, O> Workspace<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     /// Returns the attached native source.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     pub fn source(&self) -> Option<&crate::Source<A, O>> {
         self.source.as_ref()
     }
 
     /// Captures the attached source and returns its exact generation.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     pub async fn seal(&self) -> Result<Generation<A, O>, crate::SourceError> {
         match &self.source {
             Some(source) => source.seal().await,

@@ -307,7 +307,11 @@ where
     /// of either
     /// side's fork counts, so a parent merging its child and a child merging
     /// its parent agree.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    )))]
     async fn exact_base(
         &self,
         _: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,
@@ -318,7 +322,11 @@ where
         Ok(None)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     async fn exact_base(
         &self,
         plan: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,

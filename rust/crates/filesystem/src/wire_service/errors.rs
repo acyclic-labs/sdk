@@ -5,7 +5,7 @@ use crate::{AuthorityStoreError, FsError, ObjectStoreError, WorkspaceError};
 use tonic::{Code, Status};
 mod kernel;
 use kernel::kernel_code;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(feature = "native-watch", feature = "native-mount"))]
 mod native;
 
 pub(super) fn status(error: &WorkspaceError) -> Status {
@@ -134,18 +134,18 @@ fn filesystem_code(error: &FsError) -> Code {
         E::NativeKernel(error) => native_code(error),
         #[cfg(not(target_arch = "wasm32"))]
         E::NativeLiveConflict { .. } => Code::Aborted,
-        #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+        #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         E::LocalStream(error) => local_stream_code(error),
-        #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+        #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         E::LocalObjects(error) => local_objects_code(error),
-        #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
-        #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+        #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+        #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         E::LocalRoot(error) => io_code(error),
-        #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+        #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         E::LocalOptionsConflict => Code::FailedPrecondition,
-        #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+        #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         E::LocalInitializationWorker => Code::Unavailable,
-        #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+        #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         E::ObjectCacheConfig(_) => Code::InvalidArgument,
     }
 }
@@ -213,8 +213,9 @@ fn object_code(error: &ObjectStoreError) -> Code {
         E::NativeUnavailable => Code::Unimplemented,
         #[cfg(not(target_arch = "wasm32"))]
         E::Native(error) => native_code(error),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(any(test, feature = "distributed"), not(target_arch = "wasm32")))]
         E::NativeObjects(error) => native_objects_code(error),
+        #[cfg(any(test, feature = "distributed"))]
         E::LogicalObjects(error) => objects_service_code(error),
         E::Decode(error) => kernel_code(error),
         E::Filesystem(error) => filesystem_code(error),
@@ -388,6 +389,7 @@ fn native_code(error: &crate::NativeTreeMaterializationError) -> Code {
     }
 }
 
+#[cfg(any(test, feature = "distributed", feature = "local"))]
 fn objects_service_code(error: &acyclic_objects::Error) -> Code {
     use acyclic_objects::wire::ErrorCode as E;
     match error.code {
@@ -405,7 +407,7 @@ fn objects_service_code(error: &acyclic_objects::Error) -> Code {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(any(test, feature = "distributed"), not(target_arch = "wasm32")))]
 fn native_objects_code(error: &acyclic_objects::NativeObjectsError) -> Code {
     use acyclic_objects::NativeObjectsCause as E;
     match &error.cause {
@@ -415,7 +417,7 @@ fn native_objects_code(error: &acyclic_objects::NativeObjectsError) -> Code {
     }
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 fn local_stream_code(error: &acyclic_stream::LocalStreamError) -> Code {
     use acyclic_stream::LocalStreamError as E;
     match error {
@@ -428,7 +430,7 @@ fn local_stream_code(error: &acyclic_stream::LocalStreamError) -> Code {
     }
 }
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 fn local_objects_code(error: &acyclic_objects::local::LocalOpenError) -> Code {
     use acyclic_objects::local::LocalOpenError as E;
     match error {

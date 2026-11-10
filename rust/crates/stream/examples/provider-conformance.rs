@@ -1,9 +1,13 @@
 //! Runs the public provider suite against an authority with a fresh conformance prefix.
+#[cfg(feature = "http")]
 use acyclic_stream::{conformance, http::HttpStream};
+#[cfg(feature = "http")]
 #[path = "provider_conformance/http_fixture.rs"]
 mod http_fixture;
+#[cfg(feature = "postgres")]
 #[path = "postgres_conformance/checks.rs"]
 mod postgres_checks;
+#[cfg(feature = "postgres")]
 #[path = "postgres_conformance/scale.rs"]
 mod postgres_scale;
 
@@ -31,6 +35,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+#[cfg(feature = "postgres")]
 async fn postgres(scale: bool) -> Result<(), Box<dyn std::error::Error>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
     if scale {
@@ -40,6 +45,17 @@ async fn postgres(scale: bool) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+#[cfg(not(feature = "postgres"))]
+async fn postgres(_: bool) -> Result<(), Box<dyn std::error::Error>> {
+    Err("Postgres mode requires --features postgres,conformance; run bash scripts/backends/storage-conformance.sh".into())
+}
+
+#[cfg(not(feature = "http"))]
+async fn http(_: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    Err("HTTP mode requires --features http,conformance".into())
+}
+
+#[cfg(feature = "http")]
 async fn http(arguments: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let (endpoint, token, fixture) = match arguments {
         [] => (

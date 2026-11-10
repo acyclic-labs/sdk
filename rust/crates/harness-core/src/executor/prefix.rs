@@ -81,9 +81,9 @@ impl StockExecution<'_> {
             let call = RecordedCall::classify(&call_records).map_err(|reason| {
                 stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason)
             })?;
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             let mut invocation = invocation;
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             let guard = self
                 .tool_hook_output(
                     input.operation_id,
@@ -93,7 +93,7 @@ impl StockExecution<'_> {
                     true,
                 )
                 .await?;
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             let mut guard = match guard {
                 Some(output) => output,
                 None if matches!(call, RecordedCall::Failed { started: None, .. }) => {
@@ -101,9 +101,9 @@ impl StockExecution<'_> {
                 }
                 None => return Err(Error::Indeterminate(input.operation_id)),
             };
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             let denied = guard.blocks();
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             let original_arguments = if denied {
                 None
             } else {
@@ -124,9 +124,9 @@ impl StockExecution<'_> {
                     ));
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             let completed = matches!(call, RecordedCall::Completed { .. });
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             {
                 let _ = guard.take_block_reason();
                 self.append_hook_context(&mut hook_context, guard)?;
@@ -161,7 +161,7 @@ impl StockExecution<'_> {
                 let result = load_json::<ToolResult>(journal, result, self.io).await?;
                 self.restore_js_context(&result.0.value, &mut hook_context)?;
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             let feedback = if !completed {
                 crate::hooks::HookOutput::default()
             } else {
@@ -174,7 +174,7 @@ impl StockExecution<'_> {
                 )
                 .await?
             };
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(original) = original_arguments {
                 invocation.arguments = original;
             }
@@ -206,7 +206,7 @@ impl StockExecution<'_> {
                 },
                 self.io,
             )?;
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             {
                 self.append_hook_context(&mut hook_context, feedback)?;
             }

@@ -2,9 +2,11 @@
 use crate::Error;
 use acyclic_auth::operation::Context;
 use std::future::Future;
+#[cfg(feature = "grpc")]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The largest timeout the gRPC wire format can carry: eight digits of hours.
+#[cfg(feature = "grpc")]
 pub(super) const MAX_DEADLINE: Duration = Duration::from_secs(99_999_999 * 3600);
 
 pub(crate) async fn run<T>(
@@ -35,6 +37,7 @@ pub(crate) async fn admit<T>(
 
 /// Project the original absolute deadline once; resolution consumes this same
 /// budget. The host's Context event remains the local authority for stopping.
+#[cfg(feature = "grpc")]
 pub(crate) fn deadline(
     context: Option<&Context>,
     fallback: Option<Duration>,

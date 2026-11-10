@@ -21,9 +21,11 @@ pub const PARENT: &str = "parent";
 /// independent of the number of agents, files or generations in their volumes.
 pub const ORDER: [&str; 6] = [SEED, USER_ORG, SCOPE, TEMPLATE, PARENT, HOME];
 
+#[cfg(feature = "filesystem")]
 mod manifest;
+#[cfg(feature = "filesystem")]
 pub use manifest::Manifest;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use manifest::ManifestTree;
 
 /// Tool path of the agent's home volume.

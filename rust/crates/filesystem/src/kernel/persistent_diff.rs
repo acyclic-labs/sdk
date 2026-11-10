@@ -160,5 +160,6 @@ pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
 }
 
 #[cfg(test)]
+#[cfg(feature = "memory")]
 #[path = "tests/persistent_diff.rs"]
 mod tests;

@@ -6,12 +6,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(loom)");
     let mut prost = compiler.config();
     prost.bytes([".acyclic.stream.v1"]);
-
+    let grpc = std::env::var_os("CARGO_FEATURE_GRPC").is_some();
     compiler.compile(
         prost,
-        acyclic_proto_build::services(true)
+        acyclic_proto_build::services(grpc)
             .build_transport(std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32"))
-            .build_client(true),
+            .build_client(grpc || std::env::var_os("CARGO_FEATURE_WASM").is_some()),
         &[
             "proto/stream/v1/stream.proto",
             "proto/stream/v1/session.proto",

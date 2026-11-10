@@ -128,8 +128,8 @@ pub(crate) fn json_envelope_bytes() -> Result<usize> {
 
 pub(crate) fn project_json<T: Serialize>(
     value: &T,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(Value, acyclic_fs::NativeCustody)> {
+    work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
     super::value(&JsonProjection::Json { value }, u64::MAX, work)
 }
 
@@ -151,8 +151,8 @@ pub(crate) fn text_projection_schema() -> Result<Value> {
 
 pub(crate) fn project_text(
     text: &str,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(Value, acyclic_fs::NativeCustody)> {
+    work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
     super::value(
         &TextProjection::Parts {
             parts: [TextPart::Text { text }],
@@ -212,8 +212,8 @@ pub(crate) enum ReferenceProjection<'a> {
 pub(crate) fn project_reference(
     file: &crate::conversation::FileRef,
     text: &str,
-    _work: acyclic_fs::NativeWork<'_>,
-) -> Result<(Value, acyclic_fs::NativeCustody)> {
+    _work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
     let projection = ReferenceProjection::Parts {
         parts: [
             ReferencePart::Text { text },
@@ -230,15 +230,15 @@ pub(crate) fn summary_reference(
     file: &crate::conversation::FileRef,
     maximum: usize,
     arguments: std::fmt::Arguments<'_>,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(Value, acyclic_fs::NativeCustody)> {
+    work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
     use std::fmt::Write as _;
     let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
     let mut text = String::new();
     reserve_string(&mut allocation, &mut text, maximum)?;
     struct FixedText<'a> {
         text: &'a mut String,
-        work: &'a acyclic_fs::NativeCustody,
+        work: &'a crate::NativeCustody,
         denial: Option<Error>,
     }
     impl std::fmt::Write for FixedText<'_> {

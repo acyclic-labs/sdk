@@ -1,5 +1,5 @@
 //! Production input/reply classification and key-codec verification.
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(feature = "tui")]
 
 use acyclic_harness_tui::key_event::{
     InputEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,

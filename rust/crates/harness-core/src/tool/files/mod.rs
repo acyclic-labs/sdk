@@ -73,9 +73,9 @@ pub use projection::FileProjection;
 mod tests;
 use super::value;
 use super::{edit, patch, schema, text};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) mod native;
 
 #[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod rejection_tests;

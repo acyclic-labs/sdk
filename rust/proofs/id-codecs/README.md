@@ -93,7 +93,7 @@ runs remain required before claiming their results.
 The multipart record header has one in-crate bounded harness:
 
 ```sh
-cargo kani -p acyclic-fs --no-default-features --harness multipart_header_refuses_versions_before_record_fields
+cargo kani -p acyclic-fs --no-default-features --features s3-http --harness multipart_header_refuses_versions_before_record_fields
 ```
 
 It calls the production cursor on every zero-, one- and two-byte input. Missing,

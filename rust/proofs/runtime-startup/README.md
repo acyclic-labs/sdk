@@ -11,7 +11,7 @@ covers funded execution and refusal with no engine-byte credit.
 Run from the repository root:
 
 ```sh
-cargo test --locked -p acyclic-harness-core --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture
+cargo test --locked -p acyclic-harness-core --features filesystem --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture
 ```
 
 The retained `mutation.patch` removes `JS_FreeRuntime` from the allocator-backed
@@ -43,7 +43,7 @@ so a failed check still restores the source:
     exit 1
   }
   applied=true
-  if cargo test --locked -p acyclic-harness-core --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture >"$log" 2>&1; then
+  if cargo test --locked -p acyclic-harness-core --features filesystem --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture >"$log" 2>&1; then
     status=0
   else
     status=$?
@@ -51,17 +51,17 @@ so a failed check still restores the source:
   cat "$log"
   restore
   if [ "$status" -ne 101 ] || ! grep -F 'runtime allocation prefix' "$log" || ! grep -F 'test result: FAILED. 0 passed; 1 failed;' "$log"; then
-    printf 'STEP_FAILED startup negative control; recovery: cargo test --locked -p acyclic-harness-core --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture\n' >&2
+    printf 'STEP_FAILED startup negative control; recovery: cargo test --locked -p acyclic-harness-core --features filesystem --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture\n' >&2
     exit 1
   fi
-  if cargo test --locked -p acyclic-harness-core --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture >"$log" 2>&1; then
+  if cargo test --locked -p acyclic-harness-core --features filesystem --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture >"$log" 2>&1; then
     status=0
   else
     status=$?
   fi
   cat "$log"
   if [ "$status" -ne 0 ] || ! grep -F 'test result: ok. 1 passed; 0 failed;' "$log"; then
-    printf 'STEP_FAILED restored property; recovery: cargo test --locked -p acyclic-harness-core --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture\n' >&2
+    printf 'STEP_FAILED restored property; recovery: cargo test --locked -p acyclic-harness-core --features filesystem --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture\n' >&2
     exit 1
   fi
 )

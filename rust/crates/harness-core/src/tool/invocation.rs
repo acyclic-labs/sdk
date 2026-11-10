@@ -5,15 +5,15 @@ use super::*;
 #[derive(Debug)]
 pub struct CanonicalInvocation {
     pub(crate) invocation: ToolInvocation,
-    pub(crate) custody: [acyclic_fs::NativeCustody; 2],
+    pub(crate) custody: [crate::NativeCustody; 2],
 }
 
 impl CanonicalInvocation {
     /// Retains the adapted arguments and identity fields on their original ledger.
     pub fn new(
         invocation: ToolInvocation,
-        arguments_custody: acyclic_fs::NativeCustody,
-        identity_custody: acyclic_fs::NativeCustody,
+        arguments_custody: crate::NativeCustody,
+        identity_custody: crate::NativeCustody,
     ) -> Self {
         Self {
             invocation,
@@ -47,6 +47,7 @@ pub struct ToolInvocation {
 }
 
 impl ToolInvocation {
+    #[cfg(feature = "filesystem")]
     pub(crate) fn retained_payload_bytes(&self) -> Result<u64> {
         crate::core::owned_sum([
             self.call_id.capacity() as u64,
@@ -62,7 +63,7 @@ impl ToolInvocation {
         call_id: String,
         name: String,
         arguments: Value,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Self> {
         let operation_id = Self::model_call_operation(parent, step, &call_id, work)?;
         Ok(Self {
@@ -83,9 +84,9 @@ impl ToolInvocation {
         parent: OperationId,
         step: u32,
         call_id: &str,
-        work: acyclic_fs::NativeWork<'_>,
+        work: crate::NativeWork<'_>,
     ) -> Result<OperationId> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             let hashed = (b"harness:tool-call:v2".len() as u64)
                 .checked_add(16 + 4)
@@ -168,7 +169,7 @@ pub struct ToolResult {
     pub value: Value,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for ToolInvocation {
     fn diagnostic_label_bytes() -> u64 {
         TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
@@ -185,13 +186,14 @@ impl crate::filesystem::UploadRecord for ToolInvocation {
     }
 }
 
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolInvocation {
     fn diagnostic_label_bytes() -> u64 {
         TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl crate::filesystem::UploadRecord for ToolResult {
     fn diagnostic_label_bytes() -> u64 {
         TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
@@ -201,6 +203,7 @@ impl crate::filesystem::UploadRecord for ToolResult {
     }
 }
 
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ToolResult {
     fn diagnostic_label_bytes() -> u64 {
         TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES

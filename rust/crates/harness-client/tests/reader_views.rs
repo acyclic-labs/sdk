@@ -1,4 +1,5 @@
 //! Views driven by the original provider's cuts and wake events.
+#![cfg(feature = "agents")]
 
 use acyclic_harness_client::explorer::{Explorer, Row};
 use acyclic_harness_client::reader::{Driver, Op, Outcome, Priority, Reader, ReaderPolicy, Want};

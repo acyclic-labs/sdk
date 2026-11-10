@@ -1,7 +1,7 @@
 use super::*;
 
 impl ToolRegistry {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     /// Creates an empty registry with funded metadata.
     pub fn new(
         work: &acyclic_fs::NativeMaterializationWork,
@@ -17,36 +17,36 @@ impl ToolRegistry {
     /// Registers a tool using its original payload and registry custody.
     pub fn register(
         &mut self,
-        tool: (Tool, acyclic_fs::NativeCustody),
-        custody: &mut acyclic_fs::NativeCustody,
-        work: acyclic_fs::NativeWork<'_>,
+        tool: (Tool, crate::NativeCustody),
+        custody: &mut crate::NativeCustody,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
         self.register_checked(tool, custody, work, &|| Ok(()))
     }
 
     pub(crate) fn register_checked(
         &mut self,
-        tool: (Tool, acyclic_fs::NativeCustody),
-        custody: &mut acyclic_fs::NativeCustody,
-        work: acyclic_fs::NativeWork<'_>,
+        tool: (Tool, crate::NativeCustody),
+        custody: &mut crate::NativeCustody,
+        work: crate::NativeWork<'_>,
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
         check()?;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut tool = tool;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let (original, definition_bytes, original_quota) =
             self.admit_registration(&mut tool, custody, work)?;
         let mut published = false;
         let result = (|| {
             let tool = tool.0;
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let owned_io = work
                 .map(crate::filesystem::PreparationIo::from_native_work)
                 .transpose()?;
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let io = owned_io.as_ref();
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let io: Option<&crate::executor::PreparationIo> = None;
             crate::executor::with_history_io(io, |work| {
                 tool.definition.validate_checked(work, check)
@@ -58,7 +58,7 @@ impl ToolRegistry {
                 crate::executor::stock_string_copy(&tool.definition.revision, io)?,
             );
             if self.data.versions.contains_key(&key) {
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if work.is_some() {
                     return Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Conflict,
@@ -74,6 +74,7 @@ impl ToolRegistry {
             let selection = if previous {
                 None
             } else {
+                #[cfg(feature = "filesystem")]
                 if let Some(io) = io {
                     io.retain_owned(std::mem::size_of::<(String, ModelSelection)>() as u64)?;
                 }
@@ -85,7 +86,7 @@ impl ToolRegistry {
                 };
                 Some((name, selection))
             };
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let retained = if let Some(owned_io) = owned_io {
                 let (extra, retained) = self.registration_bytes(
                     &key,
@@ -116,14 +117,14 @@ impl ToolRegistry {
             }
             data.versions.insert(key, Arc::new(tool));
             published = true;
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.is_some() {
                 // Replaced selection storage is gone before its refund.
                 reconcile_registry_custody(custody, retained)?;
             }
             Ok(())
         })();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if result.is_err() && !published && work.is_some() {
             // The closure's input and prepared buffers have dropped before refund.
             reconcile_registry_custody(custody, original_quota)?;
@@ -132,14 +133,14 @@ impl ToolRegistry {
         result
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn admit_registration(
         &mut self,
-        tool: &mut (Tool, acyclic_fs::NativeCustody),
-        custody: &mut acyclic_fs::NativeCustody,
-        work: acyclic_fs::NativeWork<'_>,
+        tool: &mut (Tool, crate::NativeCustody),
+        custody: &mut crate::NativeCustody,
+        work: crate::NativeWork<'_>,
     ) -> Result<(u64, u64, u64)> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let (original, definition_bytes, original_quota) = if let Some(work) = work {
             use crate::filesystem::UploadRecord as _;
             work.remaining()?;
@@ -182,7 +183,7 @@ impl ToolRegistry {
         Ok((original, definition_bytes, original_quota))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn registration_bytes(
         &self,
         key: &(String, String),
@@ -228,6 +229,7 @@ impl ToolRegistry {
     }
 
     fn admit_version_slot(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned(VERSION_SLOT_BYTES as u64)?;
             let counters = acyclic_fs::WorkCounters {
@@ -242,11 +244,8 @@ impl ToolRegistry {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn reconcile_registry_custody(
-    custody: &mut acyclic_fs::NativeCustody,
-    retained: u64,
-) -> Result<()> {
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn reconcile_registry_custody(custody: &mut crate::NativeCustody, retained: u64) -> Result<()> {
     let custody = custody.as_mut().ok_or(Error::NativeBoundary {
         code: crate::wire::ErrorCode::Storage,
         reason: "tool registry custody is missing",
