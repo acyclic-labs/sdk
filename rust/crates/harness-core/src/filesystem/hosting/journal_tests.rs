@@ -117,7 +117,7 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
         // Resume the actual query after both the new input and its actor step.
         // The archive case must re-read the tail after observing closure.
         let (input, tail, _, closed, _) = bound
-            .journal_from_input::<Usage>(&observed, cut, cut, 0, 0, true, Some(0))
+            .journal_from_input::<Usage>(&observed, cut, cut, 0, 0, (true, Some(0)))
             .await?;
         assert_eq!(input, cut);
         assert!(
