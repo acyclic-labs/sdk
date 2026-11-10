@@ -199,7 +199,7 @@ test("observed producer frame asserts captured content with one screen projectio
         owner.child.stderr.once("data", () => {
           const notify = () => {
             requested = true;
-            request();
+            request({ case: "observed-frame", path: "redraw", step: 1 });
             owner.child.stdin.write("request observed\n");
           };
           if (requestAfterFrame && observed < 2) pendingRequest = notify;
