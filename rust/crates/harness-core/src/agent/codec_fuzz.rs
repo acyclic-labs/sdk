@@ -407,7 +407,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                     by: Sender::Host {
                         host: "native".into(),
                     },
-                    id: IntentId::try_from("a".repeat(255))?,
+                    id: IntentId::try_from("a".repeat(records::MAX_INTENT_BYTES))?,
                 })?,
             ),
             (
