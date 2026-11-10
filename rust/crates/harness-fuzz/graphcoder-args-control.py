@@ -156,14 +156,14 @@ additional_controls = {
     ],
     "native_input": [
         (
-            "rust/crates/harness-core/src/native_host.rs",
-            b'#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]\npub enum HostAction {',
-            b'#[serde(tag = "kind", rename_all = "snake_case")]\npub enum HostAction {',
+            "rust/crates/harness/src/local/host_owner.rs",
+            b'#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]',
+            b'#[serde(tag = "kind", rename_all = "snake_case")]',
             "null",
             b"native action unknown fields must be refused",
         ),
         (
-            "rust/crates/harness-core/src/native_host.rs",
+            "rust/crates/harness/src/local/host_owner/sessions.rs",
             b"    Next {},",
             b"    Next,",
             "null",
@@ -205,7 +205,7 @@ additional_controls = {
             b"catalog argument-shape-",
         ),
         (
-            "rust/crates/harness-core/src/native_host.rs",
+            "rust/crates/harness/src/local/host_owner/sessions.rs",
             b"    Recover {},",
             b"    Recover,",
             "null",
