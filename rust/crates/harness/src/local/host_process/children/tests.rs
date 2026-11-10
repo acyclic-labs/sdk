@@ -155,6 +155,21 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
                 [reference],
                 "actual output must schedule exactly its next bounded pass"
             );
+            // Exit already selected both capture boundaries. Detached writers
+            // can retain the pipes but cannot extend this original observation.
+            writer.write_all(captured)?;
+            diagnostic_writer.write_all(diagnostic.as_bytes())?;
+            assert_eq!(
+                sessions
+                    .children
+                    .get_mut(reference)
+                    .ok_or("original child absent")?
+                    .process
+                    .drain_stderr()?
+                    .read_bytes,
+                0,
+                "terminal capture must exclude later detached stderr writes"
+            );
             sessions.pump_output(&mut page)?;
             assert!(!sessions.children.contains_key(reference));
             assert!(sessions.ready.queue().keys.is_empty());
@@ -424,6 +439,7 @@ fn wait_exit(running: &mut Running) -> Result {
         running.process.pump_stdin()?;
         output(running, &mut page)?;
         if running.process.try_wait()?.is_some() {
+            running.process.drain_stderr()?;
             running.process.take_output_progress();
             return Ok(());
         }
