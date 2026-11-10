@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".acyclic.objects.v1.GetBlobResponse.body",
     ]);
     compiler.compile(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
         config,
         acyclic_proto_build::services(grpc),
         &["proto/objects/v1/objects.proto"],
