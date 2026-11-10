@@ -11,6 +11,24 @@ fn directory() -> (tempfile::TempDir, OwnedFd) {
     (root, file)
 }
 
+#[test]
+fn dead_mount_identity_survives_enotconn_with_cached_stat_negative_control() {
+    let (_root, file) = directory();
+    let disconnected = || -> std::io::Result<(FileType, Option<u64>)> {
+        Err(std::io::Error::from_raw_os_error(libc::ENOTCONN))
+    };
+    assert!(
+        disconnected().is_err(),
+        "old cached-stat control must reject the dead mount"
+    );
+    let identity = pinned_identity(&file, disconnected()).unwrap();
+    let expected = stat(&file, AtFlags::STATX_DONT_SYNC).unwrap();
+    assert_eq!(identity, expected);
+    let error =
+        pinned_identity(&file, Err(std::io::Error::from_raw_os_error(libc::EACCES))).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]

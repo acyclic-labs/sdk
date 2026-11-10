@@ -31,7 +31,6 @@ pub(super) struct Mount {
     helper: Option<Child>,
     program: Option<&'static CStr>,
     phase: MountPhase,
-    connection: Option<super::host_io::Connection>,
     exit_action: Option<acyclic_native_runtime::ProcessExitAction>,
     #[cfg(test)]
     detachment_poll: Option<Box<dyn FnMut(i32) -> io::Result<bool> + Send>>,
@@ -47,33 +46,32 @@ impl Mount {
         fence: &File,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), super::NativeMountError> {
-        let program = program()?;
-        self.program = Some(program);
-        let mut cleanup = acyclic_native_runtime::ProcessCommand::new(std::ffi::OsStr::from_bytes(
-            program.to_bytes(),
-        ));
-        cleanup
-            .env_clear()
-            .args(["-u", "-q", "-z", "--"])
-            .arg(path)
-            // Retain the original lock through cleanup's exec and exit. A
-            // successor cannot publish a mount that this action could detach.
-            .stdin(fence.try_clone()?)
-            .stdout(acyclic_native_runtime::ProcessStdio::null())
-            .stderr(acyclic_native_runtime::ProcessStdio::null());
-        self.exit_action = Some(acyclic_native_runtime::ProcessExitAction::spawn(
-            &cleanup,
-            &work.runtime_meter(),
-        )?);
-        // Ownership is armed before any mount effect, including the helper.
-        // An absent mount is an idempotent namespace retirement, not a reason
-        // to release this action while a producer could still mount it.
+        // A privileged mount and its crash cleanup use the kernel directly.
+        // In particular, do not ask fusermount to interpret a Sysbox mount.
+        self.arm_exit_action(c"/bin/umount", &["-i", "-l", "--"], path, fence, work)
+            .map_err(|error| error.during("arm kernel unmount owner-exit action", path))?;
         self.phase = MountPhase::Mounted;
-        let mode = File::open(path)?.metadata()?.permissions().mode();
+        let directory = File::open(path).map_err(|error| {
+            super::NativeMountError::host_operation("open mountpoint before mount", path, error)
+        })?;
+        let mode = directory
+            .metadata()
+            .map_err(|error| {
+                super::NativeMountError::host_operation(
+                    "fstat mountpoint before mount",
+                    path,
+                    error,
+                )
+            })?
+            .permissions()
+            .mode();
         let file = OpenOptions::new()
             .read(true)
             .write(true)
-            .open("/dev/fuse")?;
+            .open("/dev/fuse")
+            .map_err(|error| {
+                super::NativeMountError::host_operation("open /dev/fuse", path, error)
+            })?;
         let options = format!(
             "fd={},rootmode={mode:o},user_id={},group_id={},default_permissions",
             file.as_raw_fd(),
@@ -93,20 +91,69 @@ impl Mount {
         ) {
             Ok(()) => {
                 *device = Some(file.into());
-                self.phase = MountPhase::Mounted;
-                self.connection = Some(super::host_io::Connection::of(path)?);
                 return Ok(());
             }
             Err(nix::errno::Errno::EPERM) => {}
             Err(error) => {
-                return Err(io::Error::other(format!(
-                    "Error calling mount() at {:?} with {options:?} and flags={flags:?}: {error}",
-                    path.as_os_str()
-                ))
-                .into());
+                return Err(super::NativeMountError::host_operation(
+                    "mount(2) FUSE",
+                    path,
+                    error.into(),
+                ));
             }
         }
         drop(file);
+        // Only kernel permission refusal requires the unprivileged helper.
+        // Replace the still-unused direct cleanup before admitting its mount.
+        self.cancel_exit_action().map_err(|error| {
+            super::NativeMountError::host_operation(
+                "retire unused kernel unmount action",
+                path,
+                error,
+            )
+        })?;
+        let program = program()?;
+        self.program = Some(program);
+        self.arm_exit_action(program, &["-u", "-q", "-z", "--"], path, fence, work)
+            .map_err(|error| error.during("arm unprivileged FUSE owner-exit action", path))?;
+        self.open_helper(program, path, writable, device)
+            .map_err(|error| error.during("mount FUSE via unprivileged helper", path))
+    }
+
+    fn arm_exit_action(
+        &mut self,
+        program: &'static CStr,
+        arguments: &[&str],
+        path: &Path,
+        fence: &File,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), super::NativeMountError> {
+        let mut cleanup = acyclic_native_runtime::ProcessCommand::new(std::ffi::OsStr::from_bytes(
+            program.to_bytes(),
+        ));
+        cleanup
+            .env_clear()
+            .args(arguments.iter().copied())
+            .arg(path)
+            // Retain the original lock through cleanup's exec and exit. A
+            // successor cannot publish a mount that this action could detach.
+            .stdin(fence.try_clone()?)
+            .stdout(acyclic_native_runtime::ProcessStdio::null())
+            .stderr(acyclic_native_runtime::ProcessStdio::null());
+        self.exit_action = Some(acyclic_native_runtime::ProcessExitAction::spawn(
+            &cleanup,
+            &work.runtime_meter(),
+        )?);
+        Ok(())
+    }
+
+    fn open_helper(
+        &mut self,
+        program: &'static CStr,
+        path: &Path,
+        writable: bool,
+        device: &mut Option<OwnedFd>,
+    ) -> Result<(), super::NativeMountError> {
         let (receive, child) = UnixStream::pair()?;
         let mut diagnostic = File::from(
             rustix::fs::memfd_create(c"acyclic-fusermount", rustix::fs::MemfdFlags::CLOEXEC)
@@ -134,7 +181,6 @@ impl Mount {
         if let Ok(fd) = received {
             *device = Some(fd);
             self.phase = MountPhase::Mounted;
-            self.connection = Some(super::host_io::Connection::of(path)?);
         }
         self.helper
             .as_mut()
@@ -314,11 +360,6 @@ impl Mount {
         }
         Ok(detached)
     }
-    /// Transfer the acquired abort control to the session that owns its readers.
-    pub(super) fn take_connection(&mut self) -> Option<super::host_io::Connection> {
-        self.connection.take()
-    }
-
     pub(super) fn pending(&self) -> bool {
         !matches!(self.phase, MountPhase::Detached)
             || self.helper.is_some()

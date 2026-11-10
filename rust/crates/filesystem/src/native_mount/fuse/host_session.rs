@@ -19,10 +19,6 @@ pub(super) struct HostSession {
     // through every worker's exit, then recover the typed cause from work.
     _cancellation: crate::Cancelled<'static>,
     io: Arc<HostIo>,
-    // Readers live only inside this session. Its drop aborts the connection,
-    // so no call can wait on a connection that nothing reads, whoever still
-    // holds the device.
-    connection: Option<Connection>,
     work: NativeMaterializationWork,
     owner_uid: u32,
     buffers: PacketBufferPool<(PacketBuffers, PacketReader)>,
@@ -31,10 +27,46 @@ pub(super) struct HostSession {
 }
 
 impl HostSession {
+    /// The device's INIT reply is the readiness event. No access to the
+    /// mounted namespace is allowed before this event has completed.
+    pub(super) fn start_mount(
+        self,
+        path: &Path,
+        builder: std::thread::Builder,
+        worker: &mut Option<std::thread::JoinHandle<Result<(), NativeMountError>>>,
+        operation: &std::cell::Cell<&'static str>,
+    ) -> Result<(), NativeMountError> {
+        operation.set("read and reply FUSE INIT");
+        self.after_init(path, || Ok(()))?;
+        let io = self.transport();
+        // Publish worker custody before any post-INIT namespace access.
+        // Even an adapter that performs GETATTR for statx can now be served.
+        operation.set("start FUSE callback workers");
+        *worker = Some(
+            self.start(builder)
+                .map_err(|error| error.during("start FUSE callback workers", path))?,
+        );
+        operation.set("acquire initialized FUSE abort control");
+        let connection = Connection::of(path)?;
+        io.connection
+            .set(connection)
+            .map_err(|_| NativeMountError::ControlPending)?;
+        Ok(())
+    }
+
+    pub(super) fn after_init<T>(
+        &self,
+        path: &Path,
+        acquire: impl FnOnce() -> Result<T, NativeMountError>,
+    ) -> Result<T, NativeMountError> {
+        self.initialize()
+            .map_err(|error| error.during("read/reply FUSE INIT", path))?;
+        acquire()
+    }
+
     pub(super) fn new(
         router: PacketRouter,
         io: Arc<HostIo>,
-        connection: Option<Connection>,
         work: &NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
         let workers =
@@ -57,7 +89,6 @@ impl HostSession {
             worker_lifetime: Arc::new(()),
             _cancellation: cancellation,
             io,
-            connection,
             work: work.clone(),
             owner_uid: nix::unistd::geteuid().as_raw(),
             buffers,
@@ -144,7 +175,7 @@ impl HostSession {
         };
         let packet = input.get(..length).ok_or(libc::EPROTO)?;
         let request = PacketRequest::parse(packet)?;
-        let mut pending = PendingReply::new(&self.io, self.connection.as_ref(), &request);
+        let mut pending = PendingReply::new(&self.io, self.io.connection.get(), &request);
         #[cfg(test)]
         let sequence = self.capture.as_ref().map(|capture| capture.begin());
         let publish = |reply: PacketResponse<'_>| {
@@ -198,7 +229,7 @@ impl Drop for HostSession {
         self.io.stop();
         self.protocol.close();
         // Every reader has exited: `run` joins them before the session drops.
-        if let Some(connection) = self.connection.as_ref()
+        if let Some(connection) = self.io.connection.get()
             && let Err(error) = connection.abort()
         {
             tracing::error!(%error, "aborting an unserved FUSE connection failed");

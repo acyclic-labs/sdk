@@ -6,28 +6,41 @@ use acyclic_native_runtime::ProcessWake;
 use std::fs::File;
 use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::AsFd;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 /// An acquired abort control for one kernel FUSE connection.
 #[derive(Debug)]
 pub(super) struct Connection(File);
 
 impl Connection {
-    /// Reads the mount's device from cached attributes only: no reader runs
-    /// yet, so a synchronous getattr would wait on this very connection.
-    pub(super) fn of(mountpoint: &std::path::Path) -> io::Result<Self> {
+    /// Acquires abort authority after INIT has been answered. DONT_SYNC alone
+    /// does not make a pre-INIT lookup safe in container mount adapters.
+    pub(super) fn of(mountpoint: &std::path::Path) -> Result<Self, super::NativeMountError> {
         let metadata = rustix::fs::statx(
             rustix::fs::CWD,
             mountpoint,
             rustix::fs::AtFlags::STATX_DONT_SYNC,
             rustix::fs::StatxFlags::empty(),
-        )?;
+        )
+        .map_err(|error| {
+            super::NativeMountError::host_operation(
+                "statx mountpoint after FUSE INIT",
+                mountpoint,
+                error.into(),
+            )
+        })?;
         // Acquire teardown authority before accepting the mount. Retaining the
         // control also survives fusectl becoming inaccessible during service.
         let device = (u64::from(metadata.stx_dev_major) << 20) | u64::from(metadata.stx_dev_minor);
-        Ok(Self(std::fs::OpenOptions::new().write(true).open(
-            format!("/sys/fs/fuse/connections/{device}/abort"),
-        )?))
+        let path = std::path::PathBuf::from(format!("/sys/fs/fuse/connections/{device}/abort"));
+        Ok(Self(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .map_err(|error| {
+                    super::NativeMountError::host_operation("open FUSE abort control", &path, error)
+                })?,
+        ))
     }
 
     /// Fails every pending and later request on the connection. Calls into a
@@ -41,6 +54,7 @@ impl Connection {
 }
 
 pub(super) struct HostIo {
+    pub(super) connection: OnceLock<Connection>,
     // The session is the sole descriptor owner. Retained notification sinks
     // retain this control, never a live device after its server has stopped.
     device: RwLock<Option<File>>,
@@ -71,6 +85,7 @@ impl HostIo {
         )?;
         super::transport_io::nonblocking(&device)?;
         Ok(Self {
+            connection: OnceLock::new(),
             device: RwLock::new(Some(device)),
             wake: ProcessWake::new()?,
             #[cfg(test)]

@@ -17,6 +17,69 @@ struct Refresh {
     panic: bool,
 }
 
+#[test]
+fn mountpoint_access_waits_for_published_init_with_early_access_negative_control()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (source, _) = shared_sources(posix_config())?;
+    let work = fuse_fixture_work();
+    let core = projection_core(
+        Arc::new(source),
+        crate::WorkBudget::UNBOUNDED,
+        work.cancellation(),
+    )?;
+    let (device, kernel) = UnixDatagram::pair()?;
+    kernel.set_nonblocking(true)?;
+    let descriptor: OwnedFd = device.into();
+    let io = Arc::new(super::super::host_io::HostIo::new(
+        File::from(descriptor),
+        &work,
+    )?);
+    let session = HostSession::new(PacketRouter::Single(FuseProjection { core }), io, &work)?;
+    let capture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../fixtures/fuse/linux-kernel-packets.json"
+    ))?;
+    let init = capture["packets"]
+        .as_array()
+        .ok_or("missing packets")?
+        .iter()
+        .find_map(|packet| {
+            let bytes: Vec<u8> = serde_json::from_value(packet["request"].clone()).ok()?;
+            PacketRequest::parse(&bytes)
+                .is_ok_and(|request| request.opcode == 26)
+                .then_some(bytes)
+        })
+        .ok_or("missing INIT")?;
+    // No timing assumption: the real transport has not received INIT yet.
+    // A container's pre-INIT namespace probe can return ENOTCONN here.
+    let access = || {
+        let mut reply = [0; 256];
+        match kernel.recv(&mut reply) {
+            Ok(length) => {
+                assert!(length >= 16);
+                assert_eq!(&reply[4..8], &0i32.to_ne_bytes());
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(NativeMountError::host_operation(
+                    "statx mountpoint",
+                    Path::new("/synthetic/mount"),
+                    std::io::Error::from_raw_os_error(libc::ENOTCONN),
+                ))
+            }
+            Err(error) => Err(error.into()),
+        }
+    };
+    assert!(
+        matches!(access(), Err(NativeMountError::HostOperation { source, .. }) if source.raw_os_error() == Some(libc::ENOTCONN)),
+        "early-access negative control escaped"
+    );
+    kernel.send(&init)?;
+    // Exercise the same barrier used by both ordinary and shared mounts,
+    // including the real INIT decode and physical reply publication.
+    session.after_init(Path::new("/synthetic/mount"), access)?;
+    Ok(())
+}
+
 impl NativeAccessOwner for Refresh {
     fn check<'a>(
         &'a self,
@@ -73,12 +136,7 @@ fn lookup_replies_when_policy_refresh_notifies_or_fails() -> Result<(), Box<dyn 
             &work,
         )?);
         let reader = io.reader()?;
-        let session = HostSession::new(
-            PacketRouter::Single(FuseProjection { core }),
-            io,
-            None,
-            &work,
-        )?;
+        let session = HostSession::new(PacketRouter::Single(FuseProjection { core }), io, &work)?;
         let capture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../fixtures/fuse/linux-kernel-packets.json"
         ))?;

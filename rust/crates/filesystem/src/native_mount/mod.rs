@@ -236,6 +236,7 @@ fn start_driver_into<F>(
     work: &NativeMaterializationWork,
     out: &mut Option<DriverSession>,
     retirement: &mut Option<NativeMountRetirement>,
+    operation: &std::cell::Cell<&'static str>,
     prepare: F,
 ) -> Result<(), NativeMountError>
 where
@@ -245,19 +246,30 @@ where
     if request.shared {
         return Err(NativeMountError::UnsupportedTarget);
     }
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[cfg(target_os = "linux")]
     {
-        #[cfg(target_os = "linux")]
-        let start = fuse::FuseSession::start_into;
+        fuse::FuseSession::start_into(request, source, work, out, retirement, operation, prepare)
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    {
         #[cfg(target_os = "macos")]
         let start = darwin_mount::DarwinMountSession::start_into;
         #[cfg(windows)]
         let start = projfs::ProjFsSession::start;
+        operation.set("start native platform projection");
         start(request, source, work, out, retirement, prepare)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        let _ = (&request, &source, &work, &out, &retirement, &prepare);
+        let _ = (
+            &request,
+            &source,
+            &work,
+            &out,
+            &retirement,
+            &prepare,
+            operation,
+        );
         Err(NativeMountError::UnsupportedTarget.into())
     }
 }

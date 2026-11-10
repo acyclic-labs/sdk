@@ -97,10 +97,14 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("views");
     std::fs::create_dir(&root)?;
+    let home = temporary.path().join("home");
+    std::os::unix::fs::symlink(&root, &home)?;
     let mut sources = tracking_views(2)?.into_iter();
     let (first, second) = (sources.next().ok_or("one")?, sources.next().ok_or("two")?);
     let mut a = view(first, &root.join("a"))?;
-    let mut b = view(second, &root.join("b"))?;
+    // The first child may reach the shared mount through an absolute volume
+    // symlink, as container-hosted GraphCoder does for .volumes/home.
+    let mut b = view(second, &home.join("b"))?;
     assert_eq!(mounts_at(&root)?, 1, "both views share one mount");
     assert_eq!(listing(&root)?, ["a", "b"]);
     // Each view's witness is the kernel's own report for its root, although

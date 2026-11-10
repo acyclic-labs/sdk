@@ -175,6 +175,7 @@ pub(super) fn mount_native_ordinary(
             Ok(work) => work,
             Err((error, _work)) => {
                 return Err(NativeMountError::StartupAdmissionFailed {
+                    destination: request.destination,
                     cause: error.into(),
                     source,
                 });
@@ -184,15 +185,23 @@ pub(super) fn mount_native_ordinary(
     // genuine failure custody if that bootstrap cannot complete.
     let storage = match PreparedNativeMountStart::new(&work) {
         Ok(storage) => storage,
-        Err(cause) => return Err(NativeMountError::StartupAdmissionFailed { cause, source }),
+        Err(cause) => {
+            return Err(NativeMountError::StartupAdmissionFailed {
+                destination: request.destination,
+                cause,
+                source,
+            });
+        }
     };
     let initialized = initialize_native_mount_services()
         .and_then(|()| acyclic_native_runtime::initialize_native_io_services().map_err(Into::into));
     if let Err(error) = initialized {
         let owner = NativeMountSession::new(request, Some(source), None);
-        return Err(NativeMountError::StartupFailed(
-            storage.failed(error, owner),
-        ));
+        return Err(NativeMountError::StartupFailed(storage.failed(
+            error,
+            owner,
+            "initialize native mount services",
+        )));
     }
     start_native_mount_prepared_with_meter(request, source, allow_nonempty, &work, storage, None)
 }
@@ -225,13 +234,16 @@ pub(super) fn start_native_mount_prepared_with_meter(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .namespace_bound = true;
     }
+    let operation = std::cell::Cell::new("start native mount driver");
     let result = start_driver_into(
         &request,
         source,
         work,
         &mut driver,
         &mut retirement,
+        &operation,
         |packet| {
+            operation.set("acquire native destination fence");
             let _services = adapter::CallbackRuntime::existing()?;
             work.state.lock().check()?;
             MountDestinationGuard::acquire_with_work(
@@ -241,6 +253,7 @@ pub(super) fn start_native_mount_prepared_with_meter(
                 &mut packet.destination_guard,
                 false,
             )?;
+            operation.set("prepare native destination cleanup");
             storage.prepare_view_destination(
                 packet
                     .destination_guard
@@ -250,6 +263,8 @@ pub(super) fn start_native_mount_prepared_with_meter(
             )
         },
     );
+    let result =
+        result.map_err(|error| error.during("prepare native projection", &request.destination));
     // A prebirth rejection leaves its packet here. An accepted loop owns it
     // even on failure; the retained driver signals that same owner to retire.
     let (destination_guard, retained_source) = match retirement {
@@ -265,9 +280,11 @@ pub(super) fn start_native_mount_prepared_with_meter(
             drop(storage);
             Ok(owner)
         }
-        Err(error) => Err(NativeMountError::StartupFailed(
-            storage.failed(error, owner),
-        )),
+        Err(error) => Err(NativeMountError::StartupFailed(storage.failed(
+            error,
+            owner,
+            operation.get(),
+        ))),
     }
 }
 
