@@ -10,6 +10,7 @@ use crate::{
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 struct Remote {
+    change_schema: bool,
     changed: AtomicU64,
     lists: AtomicUsize,
     fail: AtomicBool,
@@ -33,9 +34,11 @@ impl McpToolTransport for Remote {
             if self.fail.load(Ordering::Acquire) {
                 return Err(Error::Storage("transient list failure".into()));
             }
-            serde_json::from_value(
-                json!({"tools":[{"name":"new","inputSchema":{"type":"object"}}]}),
-            )
+            serde_json::from_value(if self.change_schema {
+                json!({"tools":[{"name":"old","inputSchema":{"type":"object"},"outputSchema":{"type":"object","required":["new_field"]}}]})
+            } else {
+                json!({"tools":[{"name":"new","inputSchema":{"type":"object"}}]})
+            })
             .map_err(|error| Error::Invalid(error.to_string()))
         })
     }
@@ -95,6 +98,7 @@ impl crate::tool::ToolSource for Nested {
 
 async fn live_mcp_case(compose: bool) -> Result<()> {
     let remote = Arc::new(Remote {
+        change_schema: false,
         changed: AtomicU64::new(0),
         lists: AtomicUsize::new(0),
         fail: AtomicBool::new(false),
@@ -371,10 +375,95 @@ async fn live_mcp_case(compose: bool) -> Result<()> {
 }
 
 #[tokio::test(start_paused = true)]
+async fn changed_mcp_schema_is_refused_before_dispatch_and_replays() -> Result<()> {
+    let remote = Arc::new(Remote {
+        change_schema: true,
+        changed: AtomicU64::new(0),
+        lists: AtomicUsize::new(0),
+        fail: AtomicBool::new(false),
+        stall: AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+        reconciles: AtomicUsize::new(0),
+    });
+    let (tools, _) = live::LiveCatalog::new(
+        "watched".into(),
+        server(
+            json!({"command":"fake"}),
+            super::super::config::Dialect::Codex,
+        )?,
+        Connected {
+            transport: remote.clone(),
+            tools: advertised(&["old"]),
+            binding: [1; 32],
+            generation: 0,
+        },
+        McpClientLimits::default(),
+    )?;
+    let changed = remote.clone();
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                    "changed".into(),
+                    "mcp.watched.old".into(),
+                    json!({}),
+                ))),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: serde_json::Value::Null,
+                }),
+            ]),
+            ScriptedTurn::Text("done".into()),
+        ])
+        .with_dispatch_observer(move |_| {
+            changed.changed.store(1, Ordering::Release);
+            Box::pin(async { Ok(()) })
+        }),
+    );
+    let executor = StockExecutor::new(
+        Model::new("test".into(), "model".into(), "1".into())?,
+        model.clone(),
+        ContextPipeline::default(),
+        tools,
+    )
+    .with_compaction_policy(CompactionPolicy::Disabled)
+    .with_tool_authority(
+        RuntimeScope::new(
+            crate::Capabilities::new(["mcp:call:watched"]),
+            Default::default(),
+        )?,
+        Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
+    )?;
+    let journal = crate::executor::tests::Journal::default();
+    let input = TurnInput {
+        max_steps: None,
+        operation_id: crate::OperationId::new(),
+        input: ModelContent::Text("go".into()),
+        selected_context: None,
+    };
+    let output = executor.execute(input.clone(), &journal).await?;
+    assert!(
+        model.requests()[1]
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .any(|part| {
+                matches!(part, ModelContentPart::ToolResult {
+            content: crate::model::ToolResultContent::Error { message, .. }, ..
+        } if message.contains("tool definition changed after the model request"))
+            })
+    );
+    assert_eq!(executor.execute(input, &journal).await?, output);
+    assert_eq!(remote.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(remote.reconciles.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
 async fn live_refresh_deadline_retains_optional_catalog_and_releases_the_refresh_lock() -> Result<()>
 {
     for required in [false, true] {
         let remote = Arc::new(Remote {
+            change_schema: false,
             changed: AtomicU64::new(0),
             lists: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
