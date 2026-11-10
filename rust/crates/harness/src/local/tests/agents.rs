@@ -942,17 +942,20 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     // out-of-range follows: an absent stream intentionally waits for creation.
     let mut warmup_events = client.observe(None).await?;
     let warmup = client.send("warmup", "hello").await?;
+    eprintln!("lost-producer: warmup submitted");
     assert!(matches!(
         client.settle("warmup", warmup, &mut warmup_events).await?,
         crate::local::agent_conversation::Settlement::Reply(crate::agent::Reply::Answered { .. })
     ));
     let mut events = client.observe(Some(0)).await?;
+    eprintln!("lost-producer: warmup settled");
     let inbox = client.send("lost-producer", "hello").await?;
     model_dispatch_before_settlement(&harness, connection.root(), async {
         entering.await.map_err(agent)
     })
     .await?;
     // Same canonical agent, different original authenticated Session. Refusal
+    eprintln!("lost-producer: original dispatch entered");
     // must precede even the reply query, without consuming the other follow.
     let other = conversation(&harness).await?;
     let mut unrelated = other.observe(Some(0)).await?;
@@ -969,6 +972,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     // its other follows. Those remaining sources cannot settle for the lost one.
     // Exercise both required sources through the public persisted-cursor API.
     for (source, role) in events.sources()[..2].iter().zip(["status", "conversation"]) {
+        eprintln!("lost-producer: retiring {role}");
         let mut projection = acyclic_harness_client::EventProjection::new("retired-source".into());
         projection.accepted(
             source,
@@ -996,6 +1000,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         let invalid = client.settle("lost-producer", inbox, &mut retired);
         tokio::pin!(invalid);
         let observed = futures::poll!(&mut invalid);
+        eprintln!("lost-producer: retired {role}");
         assert!(
             matches!(&observed, std::task::Poll::Ready(Err(Error::Invalid(_)))),
             "settlement retained a retired {role} source or performed I/O before refusal: {observed:?}"
@@ -1009,10 +1014,12 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         "live runtime must retain settlement"
     );
     let mut usage = client.usage_query();
+    eprintln!("lost-producer: opening usage");
     while !usage.synchronized() {
         usage.advance().await?;
     }
     assert_eq!(usage.totals().calls, 2);
+    eprintln!("lost-producer: usage synchronized");
     assert_eq!(usage.totals().completed, 1);
     let before = usage.totals().clone();
     let waiting = client.settle("lost-producer", inbox, &mut events);
@@ -1036,6 +1043,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
             "quiet live usage must wait at its retained frontier"
         );
         drop(producer);
+        eprintln!("lost-producer: producer dropped");
         advancing.await
     };
     assert!(

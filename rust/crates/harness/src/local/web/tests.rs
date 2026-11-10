@@ -23,6 +23,17 @@ fn model(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProv
     )
 }
 
+// These scripts contain web responses, not turns for a summarization model.
+async fn config(
+    directory: &std::path::Path,
+    provider: Arc<ScriptedModelProvider>,
+) -> Result<crate::LocalHarnessConfig> {
+    Ok(
+        volume_config(directory, volume(directory).await?, provider)?
+            .compaction(crate::context::CompactionPolicy::Disabled)
+            .without_default_tools(),
+    )
+}
 /// Settles one prompt on the root agent and returns its text.
 async fn run(local: &Arc<LocalHarness>, prompt: &str) -> Result<String> {
     match crate::test_support::prompt_settled(local, &uuid::Uuid::new_v4().to_string(), prompt)
@@ -207,13 +218,9 @@ async fn model_consumer_receives_real_search_result_not_a_tool_name_or_echo() ->
         ]),
         ScriptedTurn::Text("complete".into()),
     ]);
-    let config = volume_config(
-        directory.path(),
-        volume(directory.path()).await?,
-        provider.clone(),
-    )?
-    .without_default_tools()
-    .search_provider(search.clone());
+    let config = config(directory.path(), provider.clone())
+        .await?
+        .search_provider(search.clone());
     let local = Arc::new(LocalHarness::open(config).await?);
     assert_eq!(
         run(&local, "consult the configured source").await?,
@@ -304,13 +311,9 @@ async fn expected_fetch_refusals_continue_the_model_turn() -> Result<()> {
             ScriptedTurn::Text("adapted after the refusal".into()),
         ]
     }));
-    let config = volume_config(
-        directory.path(),
-        volume(directory.path()).await?,
-        provider.clone(),
-    )?
-    .without_default_tools()
-    .web_tools();
+    let config = config(directory.path(), provider.clone())
+        .await?
+        .web_tools();
     let local = Arc::new(LocalHarness::open(config).await?);
     for (index, (_, reason, server)) in cases.iter_mut().enumerate() {
         assert_eq!(
@@ -388,13 +391,9 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
             ScriptedTurn::Text("source read".into()),
         ]
     }));
-    let config = volume_config(
-        directory.path(),
-        volume(directory.path()).await?,
-        provider.clone(),
-    )?
-    .without_default_tools()
-    .web_tools();
+    let config = config(directory.path(), provider.clone())
+        .await?
+        .web_tools();
     let local = Arc::new(LocalHarness::open(config).await?);
     for (index, (url, final_url, server)) in cases.iter_mut().enumerate() {
         assert_eq!(run(&local, "read the exact source").await?, "source read");
@@ -448,13 +447,9 @@ async fn search_provider_http_failure_is_a_schema_valid_refusal_for_the_next_mod
         ]),
         ScriptedTurn::Text("adapted after search refusal".into()),
     ]);
-    let config = volume_config(
-        directory.path(),
-        volume(directory.path()).await?,
-        provider.clone(),
-    )?
-    .without_default_tools()
-    .search_provider(search);
+    let config = config(directory.path(), provider.clone())
+        .await?
+        .search_provider(search);
     let local = Arc::new(LocalHarness::open(config).await?);
     assert_eq!(
         run(&local, "consult the configured search provider").await?,
