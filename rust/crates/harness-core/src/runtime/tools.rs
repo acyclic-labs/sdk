@@ -1272,20 +1272,14 @@ impl ToolContext {
                     )
                     .await
                 {
-                    Ok((selected, _, retained)) => {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-                        #[cfg(target_arch = "wasm32")]
-                        let _ = retained;
-                        Some(selected.generation)
-                    }
+                    Ok((selected, _, _custody)) => Some(selected.generation),
                     Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
                     Err(error) => return Err(error),
                 };
                 let resolved: Result<()> = async {
                     let (selected, authored) = self.effective_tool_path(path, None, io).await?;
                     if authored.is_none() {
-                        let (_, _, retained) = self
+                        let (_, _, _custody) = self
                             .read_tool_path_range(
                                 &selected,
                                 None,
@@ -1296,10 +1290,6 @@ impl ToolContext {
                                 io,
                             )
                             .await?;
-                        #[cfg(not(target_arch = "wasm32"))]
-                        let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
-                        #[cfg(target_arch = "wasm32")]
-                        let _ = retained;
                     }
                     Ok(())
                 }
