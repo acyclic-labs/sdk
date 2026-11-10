@@ -428,6 +428,7 @@ async fn deadlines(
         first.phase,
         Phase::Waiting {
             deadline_unix_ms: Some(110),
+            input: false,
         },
         "first wait lost its original deadline"
     );
@@ -438,6 +439,7 @@ async fn deadlines(
         host.state(parent).await?.phase,
         Phase::Waiting {
             deadline_unix_ms: Some(130),
+            input: false,
         },
         "second wait reused the first deadline release"
     );

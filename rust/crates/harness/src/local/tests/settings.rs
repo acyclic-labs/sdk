@@ -8,7 +8,6 @@ use crate::{
     conversation::{ContentAccess, ContentGrant, VolumeOperation},
 };
 
-#[cfg(feature = "hooks")]
 async fn open(
     directory: &std::path::Path,
     project: &crate::conversation::VolumeRef,

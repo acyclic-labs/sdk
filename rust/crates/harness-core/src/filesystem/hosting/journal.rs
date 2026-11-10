@@ -325,6 +325,7 @@ where
                     return Err(Error::Record("journal adoption differs"));
                 }
                 adoption.brief.map(|brief| crate::agent::Queued {
+                    steering: false,
                     inbox: input,
                     input: crate::agent::TurnInput::Brief {
                         brief: Box::new(brief),

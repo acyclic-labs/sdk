@@ -379,3 +379,53 @@ proptest::proptest! {
         }).unwrap();
     }
 }
+
+#[tokio::test]
+async fn explanation_template_restricts_definitions_and_executable_authority() -> Result {
+    let root = AgentPath::root(&id(81));
+    let (agents, stream, _, model) = fixture(
+        vec![
+            call(
+                "spawn",
+                json!({"name":"why", "task":"Explain the current trace", "role":"explanation"}),
+            ),
+            ScriptedTurn::Text("explanation spawned".into()),
+            // A provider can emit a call absent from its definitions. Execution
+            // must independently reject it, rather than trusting model behaviour.
+            call("archive", json!({"agent":root.as_str()})),
+            ScriptedTurn::Text("explanation complete".into()),
+        ],
+        0,
+    )
+    .await?;
+    deliver(&agents, &root, requested("explain", &root)).await?;
+    let explanation = named(&agents, &root, "why").await?;
+    agents.drain(&explanation).await?;
+    assert!(
+        !agents.state(&root).await?.released(),
+        "explanation executed archive"
+    );
+    let requests = model.requests();
+    assert!(requests[0].tools.iter().any(|tool| tool.name == "archive"));
+    for request in requests.iter().skip(2) {
+        assert!(
+            request
+                .tools
+                .iter()
+                .all(|tool| matches!(tool.name.as_str(), "send" | "wait"))
+        );
+        assert!(request.tools.iter().any(|tool| tool.name == "send"));
+    }
+    let entries = super::super::values(&*stream, explanation.conversation()?).await?;
+    assert!(!entries.is_empty());
+    assert!(
+        requests
+            .iter()
+            .skip(3)
+            .flat_map(|request| &request.messages)
+            .flat_map(|message| message.content.parts())
+            .any(|part| matches!(part,
+            ModelContentPart::ToolResult { name, content: ToolResultContent::Error { .. }, .. } if name == "archive"))
+    );
+    Ok(())
+}

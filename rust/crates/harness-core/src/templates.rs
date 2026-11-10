@@ -175,10 +175,15 @@ pub(crate) async fn select(
 /// Projects the immutable directive, under the turn's existing reader. The
 /// creation record contains a reference, so prose is never copied into actor
 /// checkpoints and later template edits cannot reinterpret an existing child.
+pub(crate) struct Directive {
+    pub context: Arc<Context>,
+    pub allowed_tools: Option<Vec<String>>,
+}
+
 pub(crate) async fn directive(
     creation: &CreationConfig,
     reader: &dyn ContentResidencyVerifier,
-) -> Result<Arc<Context>> {
+) -> Result<Directive> {
     let bytes;
     let source = match &creation.template {
         Some(file) => {
@@ -189,18 +194,22 @@ pub(crate) async fn directive(
         }
         None => ROOT.as_bytes(),
     };
+    let capabilities = parse(source)?;
     let (_, _, body) = crate::context::frontmatter_end(source)?;
     let text = std::str::from_utf8(&source[body..])
         .map_err(|_| Error::Invalid("template directive is not UTF-8".into()))?
         .trim();
-    Ok(Arc::new(Context {
-        messages: (!text.is_empty())
-            .then(|| ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text(text.to_owned()),
-            })
-            .into_iter()
-            .collect(),
-        ..Context::default()
-    }))
+    Ok(Directive {
+        allowed_tools: capabilities.allowed_tools,
+        context: Arc::new(Context {
+            messages: (!text.is_empty())
+                .then(|| ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(text.to_owned()),
+                })
+                .into_iter()
+                .collect(),
+            ..Context::default()
+        }),
+    })
 }

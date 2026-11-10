@@ -322,6 +322,10 @@ impl TurnOutcome {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct ConversationEntry {
+    /// Monotonic exclusive prefix of admitted steerable inbox records. This
+    /// index also remains on intervening entries that keep their own turn, so
+    /// replies can find the first admitting entry without scanning history.
+    pub observed_through: u64,
     /// Inputs admitted at model boundaries during this turn, in source order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steering: Option<super::SteeringTranscript>,
@@ -364,6 +368,16 @@ pub struct ConversationEntry {
 }
 
 impl ConversationEntry {
+    /// Seal the reply-search frontier using only admitted model input and the
+    /// original turn's input. No later head or unadmitted selection is included.
+    pub fn with_observed_prefix(mut self, prefix: u64) -> Self {
+        self.observed_through = prefix.max(self.inbox.saturating_add(1)).max(
+            self.steering
+                .as_ref()
+                .map_or(0, |steering| steering.through),
+        );
+        self
+    }
     /// Whether this entry belongs to the authenticated self-continuation of
     /// this exact agent and original goal run.
     #[must_use]
@@ -468,7 +482,14 @@ fn starting(agent: &AgentState, input: Option<Queued>) -> Result<(Queued, u32), 
                 segment,
                 ..
             } = checkpoint(agent)?.ok_or(Error::Record("resume without a turn in progress"))?;
-            Ok((Queued { inbox, input }, segment))
+            Ok((
+                Queued {
+                    inbox,
+                    input,
+                    steering: false,
+                },
+                segment,
+            ))
         }
         (None, Some(input)) => Ok((input, 0)),
         (Some(_), Some(_)) => Err(Error::Record("new input while a turn is in progress")),
@@ -644,6 +665,7 @@ async fn stage_text(
 /// A successful rewind carries its checkpoint summary; other selections use
 /// an empty marker.
 async fn settle_selection(
+    agent: &AgentState,
     open: &OpenControl,
     turn: OperationId,
     inbox: u64,
@@ -676,6 +698,7 @@ async fn settle_selection(
         None => stage_text(&*open.outputs, output_turn, refusal.unwrap_or_default()).await?,
     };
     let entry = ConversationEntry {
+        observed_through: 0,
         inbox,
         input,
         output,
@@ -685,7 +708,8 @@ async fn settle_selection(
         tool_results: None,
         steering: None,
         notices: None,
-    };
+    }
+    .with_observed_prefix(agent.steered_through);
     Ok(TurnStep {
         reserved_children: 0,
         checkpoint: None,
@@ -748,6 +772,7 @@ async fn interrupted(
 ) -> Result<ConversationEntry, Error> {
     let partial = open.outputs.partial(turn).await.map_err(host_error)?;
     Ok(ConversationEntry {
+        observed_through: 0,
         inbox,
         goal: super::goal::continuing(&agent.path, &input),
         input,
@@ -770,7 +795,8 @@ async fn interrupted(
             None => None,
         },
         notices,
-    })
+    }
+    .with_observed_prefix(agent.steered_through))
 }
 
 /// A definitive model, executor, tool or preparation failure settles the
@@ -827,7 +853,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
         cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
-            let (Queued { inbox, input }, segment) = starting(agent, input)?;
+            let (Queued { inbox, input, .. }, segment) = starting(agent, input)?;
             if let Some(
                 action @ (ContextAction::Rewind
                 | ContextAction::Clear
@@ -845,7 +871,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     .open_control(agent, action, cancellation)
                     .await
                     .map_err(host_error)?;
-                return settle_selection(&open, turn, inbox, input, refusal).await;
+                return settle_selection(agent, &open, turn, inbox, input, refusal).await;
             }
             if agent.turn.is_none()
                 && let Some(notices) = super::NoticeSelection::pending(agent)
@@ -970,6 +996,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     let run = super::goal::continuing(&agent.path, &input)
                         .or_else(|| goal.continuation.as_ref().map(|_| turn));
                     let entry = ConversationEntry {
+                        observed_through: 0,
                         inbox,
                         input,
                         output,
@@ -984,7 +1011,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             None => None,
                         },
                         notices: notices.clone(),
-                    };
+                    }
+                    .with_observed_prefix(agent.steered_through);
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = if goal.continuation.is_some() {
                         appended(&entry, open.roster.as_ref())?
@@ -1060,6 +1088,17 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         }
                         None => 0,
                     };
+                    // ModelStarted, rather than turn settlement, establishes
+                    // which replies this request already read. Publish that
+                    // frontier with the park so a subsequent input wait cannot
+                    // release itself on the same retained reply.
+                    let outs = open
+                        .journal
+                        .steering_snapshot(turn)
+                        .await
+                        .map_err(host_error)?
+                        .map(|snapshot| vec![Out::Steered(snapshot.through)])
+                        .unwrap_or_default();
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
                             inbox,
@@ -1070,7 +1109,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             notices: notices.clone(),
                         })?),
                         reserved_children,
-                        outs: Vec::new(),
+                        outs,
                         wait: Wait::Until(until),
                         drops: None,
                     });
