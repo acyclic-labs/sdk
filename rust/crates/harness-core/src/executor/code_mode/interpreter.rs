@@ -352,11 +352,11 @@ mod tests {
             if (await read('remove.txt') !== null) throw new Error('unconditional removal did not remove current binding');
             await write('remove.txt', 'again'.repeat(400), 'any');
             const latest = await read('remove.txt');
-            if (!latest.version.startsWith('authored-path-v1:')) throw new Error('removal control needs original namespace version');
+            if (!latest.version.startsWith('authored-path-v2:')) throw new Error('removal control needs original namespace version');
             await remove('remove.txt', latest.version);
             if (await read('remove.txt') !== null || retained.text() !== 'old') throw new Error('versioned removal changed pinned content');
             const contentVersion = await write('content-remove.txt', 'again'.repeat(400), 'any');
-            if (contentVersion.startsWith('authored-path-v1:')) throw new Error('content removal control needs original immutable reference');
+            if (contentVersion.startsWith('authored-path-v2:')) throw new Error('content removal control needs original immutable reference');
             await remove('content-remove.txt', contentVersion);
             if (await read('content-remove.txt') !== null) throw new Error('content version removal kept current binding');
             await write('recovery.txt', 'original', 'any');
@@ -457,7 +457,7 @@ mod tests {
                     let namespace_removal = name == "remove"
                         && invocation.arguments["ifVersion"]
                             .as_str()
-                            .is_some_and(|version| version.starts_with("authored-path-v1:"));
+                            .is_some_and(|version| version.starts_with("authored-path-v2:"));
                     let bounded_removal = namespace_removal
                         || (name == "remove"
                             && invocation.arguments["path"] == "content-remove.txt");
