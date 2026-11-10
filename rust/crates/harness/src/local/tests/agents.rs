@@ -654,8 +654,12 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert!(!output.is_empty());
     // Give this scenario two visible files, independent of internal layout.
     let cancellation = acyclic_fs::CancellationToken::new();
-    let private = harness
-        .volume_filesystem
+    let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await
+    .map_err(agent)?;
+    let private = filesystem
         .open_workspace(
             entry.output.volume().storage_name(&mut None)?,
             acyclic_fs::WorkBudget::UNBOUNDED,
