@@ -4,6 +4,10 @@ import { fileURLToPath } from "node:url";
 import { releaseBuild } from "./release-build.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const product = process.argv[2] ?? "acyclic";
+if (!["acyclic", "graphcoder"].includes(product) || process.argv.length > 3) {
+  throw new Error("usage: node scripts/build-product.mjs [acyclic|graphcoder]");
+}
 const target = resolve(root, process.env.CARGO_TARGET_DIR ?? "target");
 const cargoHome = resolve(process.env.CARGO_HOME ?? join(homedir(), ".cargo"));
 const windows = process.env.CARGO_BUILD_TARGET
@@ -19,13 +23,13 @@ if (process.platform === "win32") flags.push("-C", "link-arg=/Brepro");
 // Configured flags join the repository's own target flags in
 // .cargo/config.toml, which RUSTFLAGS would replace.
 const cargoArguments = [
-  "build", "--locked", "--profile", "dist", "-p", "acyclic-plugin", "--timings",
+  "build", "--locked", "--profile", "dist", "-p", product === "acyclic" ? "acyclic-plugin" : "graphcoder", "--timings",
   "--config", `target.'cfg(all())'.rustflags = ${JSON.stringify(flags)}`,
 ];
 if (process.env.CARGO_BUILD_TARGET) cargoArguments.push("--target", process.env.CARGO_BUILD_TARGET);
 
 process.exitCode = await releaseBuild({
-  id: "product",
+  id: product === "acyclic" ? "product" : product,
   validate() {
     if (process.env.RUSTFLAGS || process.env.CARGO_ENCODED_RUSTFLAGS) {
       throw new Error("build-product owns Rust flags so its output stays reproducible");
@@ -38,5 +42,5 @@ process.exitCode = await releaseBuild({
     ...process.env,
     CARGO_TARGET_DIR: target,
   },
-  output: join(target, process.env.CARGO_BUILD_TARGET ?? "", "dist", windows ? "acyclic.exe" : "acyclic"),
+  output: join(target, process.env.CARGO_BUILD_TARGET ?? "", "dist", product + (windows ? ".exe" : "")),
 });

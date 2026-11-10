@@ -33,6 +33,7 @@ bun test
 ```
 
 - [What works in this release candidate](docs/release-candidate.md)
+- [Install GraphCoder](docs/graphcoder-install.md)
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
 [provenance/README.md](provenance/README.md) before importing source.

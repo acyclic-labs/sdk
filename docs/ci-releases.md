@@ -59,6 +59,14 @@ Registry version conflicts and mismatching artifact bytes
 fail instead of replacing a version. Existing registry integrity and installation
 checks remain part of the release.
 
+The same platform builds also produce standalone GraphCoder executables through
+`node scripts/build-product.mjs graphcoder`. Assembly admits the complete target
+inventory using the shared native-image verifier. The binaries and version-pinned
+shell/PowerShell installers join the existing attested `SHA256SUMS` and GitHub
+publisher; the SBOM includes GraphCoder's dependency closure. Native Linux, macOS
+and Windows release jobs exercise the offline installer with their built binary,
+including replacement and refusal controls. See [Install GraphCoder](graphcoder-install.md).
+
 ## Interrupted publication
 
 npm, Cargo, and GitHub cannot commit a release atomically. The run summary reports

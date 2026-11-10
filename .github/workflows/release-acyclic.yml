@@ -1,4 +1,4 @@
-name: Release Acyclic plugin
+name: Release Acyclic and GraphCoder
 
 on:
   workflow_call:
@@ -167,6 +167,7 @@ jobs:
           # Report every concurrent build even when the product build fails.
           status=0
           node scripts/build-product.mjs || status=$?
+          node scripts/build-product.mjs graphcoder || status=$?
           for index in "${!pids[@]}"; do
             if ! wait "${pids[$index]}"; then
               status=1
@@ -199,12 +200,15 @@ jobs:
           if-no-files-found: ignore
       - name: Verify release architecture and runtime ABI
         shell: bash
-        run: node scripts/verify-release-binary.mjs '${{ matrix.target }}' 'target/${{ matrix.rust_target }}/dist/${{ matrix.executable }}'
+        run: |
+          node scripts/verify-release-binary.mjs '${{ matrix.target }}' 'target/${{ matrix.rust_target }}/dist/${{ matrix.executable }}'
+          node scripts/verify-release-binary.mjs '${{ matrix.target }}' 'target/${{ matrix.rust_target }}/dist/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}'
       - name: Stage normalized executable
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/release/${{ matrix.target }}"
           cp "target/${{ matrix.rust_target }}/dist/${{ matrix.executable }}" "$RUNNER_TEMP/release/${{ matrix.target }}/${{ matrix.executable }}"
+          cp 'target/${{ matrix.rust_target }}/dist/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}' "$RUNNER_TEMP/release/${{ matrix.target }}/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}"
           case "${{ matrix.target }}" in
             linux-x64-gnu|darwin-arm64) cp "$RUNNER_TEMP/target-qualifier/${{ matrix.rust_target }}/release/native-mount-qualify" "$RUNNER_TEMP/release/${{ matrix.target }}/native-mount-qualify" ;;
             win32-x64) cp "$RUNNER_TEMP/target-qualifier/${{ matrix.rust_target }}/release/native-mount-qualify.exe" "$RUNNER_TEMP/release/${{ matrix.target }}/native-mount-qualify.exe" ;;
@@ -260,6 +264,13 @@ jobs:
           # target/name pair rather than guessing artifact flattening rules.
           path: ${{ runner.temp }}/release
           if-no-files-found: error
+
+      - name: Exercise GraphCoder release installer
+        if: matrix.backend
+        shell: bash
+        env:
+          GRAPHCODER_TEST_BINARY: ${{ runner.temp }}/release/${{ matrix.target }}/graphcoder${{ endsWith(matrix.executable, '.exe') && '.exe' || '' }}
+        run: node scripts/test-install-release-asset.mjs
 
       - name: Decide native compiler cache save
         id: compiler-cache
@@ -411,6 +422,16 @@ jobs:
           node scripts/plugin-qualification.mjs create \
             release/acyclic-plugin-npm.tgz release/plugin-qualification.json \
             "$(git rev-parse HEAD)"
+          node scripts/assemble-graphcoder-release.mjs \
+            --binary linux-x64-gnu=release/binaries/acyclic-linux-x64-gnu/linux-x64-gnu/graphcoder \
+            --binary linux-x64-musl=release/binaries/acyclic-linux-x64-musl/linux-x64-musl/graphcoder \
+            --binary linux-arm64-gnu=release/binaries/acyclic-linux-arm64-gnu/linux-arm64-gnu/graphcoder \
+            --binary linux-arm64-musl=release/binaries/acyclic-linux-arm64-musl/linux-arm64-musl/graphcoder \
+            --binary darwin-x64=release/binaries/acyclic-darwin-x64/darwin-x64/graphcoder \
+            --binary darwin-arm64=release/binaries/acyclic-darwin-arm64/darwin-arm64/graphcoder \
+            --binary win32-x64=release/binaries/acyclic-win32-x64/win32-x64/graphcoder.exe \
+            --binary win32-arm64=release/binaries/acyclic-win32-arm64/win32-arm64/graphcoder.exe \
+            --out release --require-universal
       - name: Generate and verify release evidence
         run: |
           version=$(node -p "require('./plugin/package.json').version")
@@ -433,7 +454,10 @@ jobs:
             release/native-mount/linux-fuse.json \
             release/native-mount/macos-nfs.json \
             release/native-mount/windows-projfs.json \
-            release/acyclic.spdx.json
+            release/acyclic.spdx.json \
+            release/graphcoder-* \
+            release/install-graphcoder.sh \
+            release/install-graphcoder.ps1
           node scripts/release-evidence.mjs verify release/SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -455,6 +479,9 @@ jobs:
             release/acyclic-darwin-arm64
             release/acyclic-win32-x64.exe
             release/acyclic-win32-arm64.exe
+            release/graphcoder-*
+            release/install-graphcoder.sh
+            release/install-graphcoder.ps1
             release/native-mount/linux-fuse.json
             release/native-mount/macos-nfs.json
             release/native-mount/windows-projfs.json
