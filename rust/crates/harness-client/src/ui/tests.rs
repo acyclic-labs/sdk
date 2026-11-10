@@ -342,12 +342,16 @@ fn ui_reply_roundtrip_with_unknown_kind_and_approval() -> TestResult {
     let blocks =
         blocks::parse("```input choose id=approval approval=approval-1\n- allow\n- deny\n```\n")?;
     let block = blocks.first().ok_or("approval block")?;
-    for approved in [true, false] {
-        let command = approval_reply(agent(1), &pending, block, approved, Some("human".into()))?;
+    for verdict in [
+        acyclic_harness_core::interaction::ApprovalVerdict::Approve,
+        acyclic_harness_core::interaction::ApprovalVerdict::ApproveRule,
+        acyclic_harness_core::interaction::ApprovalVerdict::Deny,
+    ] {
+        let command = approval_reply(agent(1), &pending, block, verdict, Some("human".into()))?;
         let AgentCommand::Decide {
             id,
             binding,
-            approved: decision,
+            verdict: decision,
             ..
         } = command
         else {
@@ -355,7 +359,7 @@ fn ui_reply_roundtrip_with_unknown_kind_and_approval() -> TestResult {
         };
         assert_eq!(id, pending.id);
         assert_eq!(binding, pending.binding);
-        assert_eq!(decision, approved);
+        assert_eq!(decision, verdict);
     }
     assert!(
         Reply {
@@ -371,7 +375,7 @@ fn ui_reply_roundtrip_with_unknown_kind_and_approval() -> TestResult {
         id: IntentId::try_from("another")?,
         ..pending
     };
-    assert!(approval_reply(agent(1), &wrong, block, true, None).is_err());
+    assert!(approval_reply(agent(1), &wrong, block, true.into(), None).is_err());
     Ok(())
 }
 

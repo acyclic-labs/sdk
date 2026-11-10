@@ -447,8 +447,7 @@ impl<J: CommandJournal> Replicated<J> {
                 WriteRequest::Append(request) => vec![(request.path.clone(), false)],
                 WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
                 WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => request
-                    .mutations
-                    .iter()
+                    .mutations()
                     .map(|mutation| {
                         (
                             crate::CommitMutation::path(mutation).clone(),

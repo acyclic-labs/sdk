@@ -16,10 +16,10 @@ mod feedback;
 #[cfg(feature = "tui")]
 pub use feedback::Feedback;
 mod editor;
-#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "tui", not(target_arch = "wasm32"), not(loom)))]
 pub mod onboarding;
 #[cfg(feature = "tui")]
-pub use display_text::display_text;
+pub use display_text::{display_text, display_text_prefix};
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod editor_args;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
@@ -39,6 +39,8 @@ mod keymap;
 mod layout;
 #[cfg(feature = "tui")]
 mod markdown;
+#[cfg(feature = "tui")]
+pub use markdown::CodeRow;
 mod settings;
 pub use settings::{DEFAULT_SETTINGS, NotificationPolicy, UiSettings};
 #[cfg(feature = "tui")]
@@ -54,11 +56,15 @@ pub use query_controller::QueryController;
 #[cfg(feature = "tui")]
 pub use query_page::QueryPage;
 #[cfg(feature = "tui")]
+mod hyperlink;
+#[cfg(feature = "tui")]
 mod screen;
 #[cfg(feature = "tui")]
 mod scrollbar;
 #[cfg(feature = "tui")]
 mod styled_cells;
+#[cfg(feature = "tui")]
+pub use hyperlink::{Hyperlinks, RowLink};
 #[cfg(feature = "tui")]
 mod thinking;
 #[cfg(feature = "tui")]

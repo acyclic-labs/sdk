@@ -1,0 +1,25 @@
+80x24
+«Named(Foreground)/Named(Background)/Flags(DIM)/»○ GraphCoder · project · main
+«Named(Foreground)/Named(Background)/Flags(0x0)/»┌approval──────────────────────────────────────────────────────────────────────┐
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│shell  cargo test -p tui                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│principal: user · device: local                                               │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│workspace: /project                                                           │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│y: allow once · a: allow rule · n: deny · e: edit                             │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»└──────────────────────────────────────────────────────────────────────────────┘
+«Named(Foreground)/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»●«Named(Foreground)/Named(Background)/Flags(BOLD)/»# Review«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/»────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» Follow up
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                   model · 24% (2400/10000) · $0.12 · 2 children
+«Named(Foreground)/Named(Background)/Flags(DIM)/»                                         Enter: send · Tab: queue · Ctrl-D: quit

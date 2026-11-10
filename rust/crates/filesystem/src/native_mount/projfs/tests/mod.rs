@@ -28,7 +28,6 @@ use common::*;
 mod command_retirement;
 mod crash_recovery;
 mod empty_callbacks;
-mod metadata;
 mod metadata_errors;
 mod mutations;
 mod names;
@@ -38,3 +37,6 @@ mod projection;
 pub(super) mod read_bindings;
 mod recovery;
 mod shared;
+
+#[path = "../../../../tests/cases/projfs_metadata/metadata/client.rs"]
+mod metadata_client;

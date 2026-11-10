@@ -290,6 +290,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     adapter,
                     authentication,
                     base_url: base_url.into(),
+                    allow_http_host: None,
                     headers: BTreeMap::new(),
                     models,
                     token_counter: counters.get(&adapter).cloned().flatten(),

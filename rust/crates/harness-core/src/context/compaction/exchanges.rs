@@ -13,18 +13,45 @@ impl Message for ModelMessage {
     }
 
     fn parts(&self) -> impl Iterator<Item = Part<'_>> {
-        self.content.parts().iter().map(|part| match part {
-            ModelContentPart::Reasoning { block } if !block.continuity.is_empty() => Part::Native,
-            ModelContentPart::Text {
-                native: Some(_), ..
-            } => Part::Native,
-            ModelContentPart::ToolCall(call) => Part::Call {
-                id: &call.call_id,
-                native: call.native.is_some(),
-            },
-            ModelContentPart::ToolResult { call_id, .. } => Part::Result { id: call_id },
-            _ => Part::Other,
-        })
+        self.content
+            .parts()
+            .iter()
+            .map(|part| match part {
+                ModelContentPart::Reasoning { block } if !block.continuity.is_empty() => {
+                    Part::Native
+                }
+                ModelContentPart::Text {
+                    native: Some(_), ..
+                } => Part::Native,
+                ModelContentPart::ToolCall(call) => Part::Call {
+                    id: &call.call_id,
+                    native: call.native.is_some(),
+                },
+                ModelContentPart::ToolResult { call_id, .. } => Part::Result { id: call_id },
+                _ => Part::Other,
+            })
+            .chain(
+                self.content
+                    .notice_parts()
+                    .into_iter()
+                    .flat_map(|(notices, _)| notices.iter())
+                    .filter_map(|notice| {
+                        (notice.source == "tools" && notice.kind == "tools.changed").then(|| {
+                            Part::Declarations {
+                                start: notice
+                                    .body
+                                    .get("offset")
+                                    .and_then(serde_json::Value::as_u64)
+                                    == Some(0),
+                                complete: notice
+                                    .body
+                                    .get("complete")
+                                    .and_then(serde_json::Value::as_bool)
+                                    == Some(true),
+                            }
+                        })
+                    }),
+            )
     }
 }
 

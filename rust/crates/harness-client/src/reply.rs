@@ -131,7 +131,11 @@ pub enum AgentReply {
     Usage {
         /// Exact original inbox sequence, at or after this agent's fork cut.
         input: u64,
+        /// Direct open children in the original actor observation, including
+        /// an idle inbox tail with no journal page.
+        open_children: u64,
         /// One fixed journal page; None marks the current committed inbox tail.
+        /// At that tail, `settled` means the agent has been archived.
         page: Option<acyclic_harness_core::executor::ModelUsagePage>,
         /// The original actor checkpoint consumed this input and retains no
         /// paused, queued or overflowed work at or before it. A short page or
@@ -146,6 +150,7 @@ pub enum AgentReply {
         /// A finite export freezes this cut; later inputs cannot extend it.
         inbox_tail: u64,
         /// One bounded source page. None marks the current committed inbox tail.
+        /// At that tail, `settled` means the agent has been archived.
         page: Option<acyclic_harness_core::executor::ExecutionEventPage>,
         /// Original consumed-input fence, with no retained work at or before it.
         settled: bool,
@@ -368,10 +373,20 @@ pub fn decode_agent_reply(
             if request.deadline_unix_millis.is_some() {
                 return Err(CommandError::Invalid);
             }
+            let conditions: usize = request
+                .effects
+                .iter()
+                .map(|effect| effect.conditions.len())
+                .sum();
+            let mutations: usize = request
+                .effects
+                .iter()
+                .map(|effect| effect.mutations.len())
+                .sum();
             if request.encoded_len() > acyclic_stream::MAX_COMMAND_BYTES
-                || request.conditions.len() > acyclic_stream::MAX_ITEMS
-                || request.mutations.is_empty()
-                || request.mutations.len() > acyclic_stream::MAX_ITEMS
+                || conditions > acyclic_stream::MAX_ITEMS
+                || mutations == 0
+                || mutations > acyclic_stream::MAX_ITEMS
             {
                 return Err(CommandError::Capacity);
             }
@@ -520,15 +535,20 @@ fn validate_reply(
                 page: None,
                 input,
                 settled,
+                open_children,
             },
             AgentCommand::Usage {
                 input: requested,
                 after,
                 wait,
+                observed_children,
                 ..
             },
         ) => {
-            return if input >= requested && *after == 0 && !wait && !settled {
+            return if input >= requested
+                && *after == 0
+                && (!wait || *settled || *observed_children != Some(*open_children))
+            {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
@@ -539,18 +559,31 @@ fn validate_reply(
                 page: Some(page),
                 input,
                 settled,
+                open_children,
             },
             AgentCommand::Usage {
                 agent,
                 after,
                 input: requested,
                 wait,
+                observed_children,
             },
         ) => {
             return if input >= requested
                 && (input == requested || *after == 0)
-                && (!wait || *settled || page.end > *after)
+                && (!wait
+                    || *settled
+                    || page.end > *after
+                    || *observed_children != Some(*open_children))
                 && page.items.len() <= 32
+                && (page.context.is_none() || page.end > *after)
+                && !matches!(
+                    page.context,
+                    Some(acyclic_harness_core::executor::ContextUsage::Counted {
+                        capacity_tokens: 0,
+                        ..
+                    })
+                )
                 && page.end.checked_sub(*after).is_some_and(|visited| {
                     visited <= 32
                         && page.items.len() as u64 <= visited
@@ -581,7 +614,10 @@ fn validate_reply(
                 ..
             },
         ) => {
-            return if input >= requested && input == inbox_tail && *after == 0 && !wait && !settled
+            return if input >= requested
+                && input == inbox_tail
+                && *after == 0
+                && (!wait || *settled)
             {
                 Ok(())
             } else {
@@ -825,14 +861,16 @@ mod tests {
         let path = StreamPath::new("agent/inbox")?;
         Ok(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Tail {
-                path: path.clone(),
-                expected: 7,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![AppendRecord::from("exact original payload")],
-            }],
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 7,
+                }],
+                vec![CommitMutation::Append {
+                    path,
+                    records: vec![AppendRecord::from("exact original payload")],
+                }],
+            )],
             idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"original-key"))?,
         })
     }
@@ -965,6 +1003,7 @@ mod tests {
                 input: 3,
                 after,
                 wait: false,
+                observed_children: Some(0),
             };
             for visited in [0, 1, 31, 32] {
                 let Some(end) = after.checked_add(visited) else {
@@ -973,8 +1012,10 @@ mod tests {
                 let reply = AgentReply::Usage {
                     input: 3,
                     settled: false,
+                    open_children: 0,
                     page: Some(ModelUsagePage {
                         items: vec![],
+                        context: None,
                         end,
                         next: (visited == 32).then_some(end),
                     }),
@@ -987,6 +1028,7 @@ mod tests {
                     input: 3,
                     after,
                     wait: true,
+                    observed_children: Some(0),
                 };
                 if visited == 0 {
                     assert!(
@@ -1007,6 +1049,18 @@ mod tests {
                 } else {
                     assert!(decode_agent_reply(&bytes, &live)?.is_ok());
                 }
+                let mut envelope = Envelope::decode(bytes.as_slice())?;
+                let Some(envelope::Value::Reply(body)) = &mut envelope.value else {
+                    return Err("usage envelope lost its reply".into());
+                };
+                let mut value: serde_json::Value = serde_json::from_slice(body)?;
+                value["page"]["context"] =
+                    serde_json::json!({"kind":"counted","input_tokens":1,"capacity_tokens":0});
+                *body = serde_json::to_vec(&value)?;
+                assert!(matches!(
+                    decode_agent_reply(&envelope.encode_to_vec(), &command),
+                    Err(CommandError::Invalid)
+                ));
                 // Mutate the actual reply envelope: a premature continuation,
                 // backward cursor or a skipped page must not advance the view.
                 for (bad_end, next) in [
@@ -1444,19 +1498,23 @@ mod tests {
             through: 3,
             file: settled.output.clone(),
         });
+        // Seal the admission index through the same rule as the real writer.
+        let settled = settled.with_observed_prefix(0);
         let conversation = agent.conversation()?;
         assert!(matches!(
             provider
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![CommitCondition::Tail {
-                        path: conversation.clone(),
-                        expected: 0
-                    }],
-                    mutations: vec![CommitMutation::Append {
-                        path: conversation,
-                        records: vec![settled.encode()?.into()]
-                    }],
+                    effects: vec![acyclic_stream::CommitEffect::hard(
+                        vec![CommitCondition::Tail {
+                            path: conversation.clone(),
+                            expected: 0
+                        }],
+                        vec![CommitMutation::Append {
+                            path: conversation,
+                            records: vec![settled.encode()?.into()]
+                        }]
+                    )],
                     idempotency_key: intent_key("settlement", &[])?,
                 })
                 .await?,
@@ -1514,7 +1572,7 @@ mod tests {
     fn failed_export_does_not_consume_uncertain_custody() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut original = request()?;
-        let CommitMutation::Append { records, .. } = &mut original.mutations[0] else {
+        let CommitMutation::Append { records, .. } = &mut original.effects[0].mutations[0] else {
             return Err("expected append".into());
         };
         *records = vec![AppendRecord::from(bytes::Bytes::from(vec![

@@ -33,18 +33,20 @@ export async function sharedProviderTree(port: OwnedStreamProviderPort): Promise
     })));
     const request = toBinary(CommitRequestSchema, create(CommitRequestSchema, {
       idempotencyKey: encode.encode("child-activation"),
-      conditions: [{ condition: { case: "absent", value: { path: "tree/child" } } }],
-      mutations: [
-        { mutation: { case: "fork", value: { source: "tree/root", destination: "tree/child", atTail: 1n } } },
-        { mutation: { case: "append", value: { path: "tree/activation", records: [record("child")] } } },
-      ],
+      effects: [{
+        conditions: [{ condition: { case: "absent", value: { path: "tree/child" } } }],
+        mutations: [
+          { mutation: { case: "fork", value: { source: "tree/root", destination: "tree/child", atTail: 1n } } },
+          { mutation: { case: "append", value: { path: "tree/activation", records: [record("child")] } } },
+        ],
+      }],
     }));
     const committed = await root.dispatch("commit", request);
     const receipt = fromBinary(CommitResponseSchema, committed);
     assert.equal(receipt.outcome.case, "committed");
     assert.deepEqual(await child.dispatch("commit", request), committed);
     const changed = fromBinary(CommitRequestSchema, request);
-    changed.mutations.push(create(CommitMutationSchema, { mutation: { case: "append", value: {
+    changed.effects[0]!.mutations.push(create(CommitMutationSchema, { mutation: { case: "append", value: {
       path: "tree/changed", records: [record("changed")],
     } } }));
     await assert.rejects(child.dispatch("commit", toBinary(CommitRequestSchema, changed)),

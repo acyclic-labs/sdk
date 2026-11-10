@@ -17,6 +17,7 @@ mod visibility;
 #[cfg(test)]
 mod work;
 
+pub use code::{CodeCache, CodeLine};
 use context::{container, context_event, context_prefix};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use references::{Key, References, Template, normalize};
@@ -158,6 +159,37 @@ impl Markdown {
             state: render::Renderer::with_width(width),
             ..Self::default()
         }
+    }
+
+    /// Parse layout immediately but defer code highlighting until a viewer
+    /// requests a visible line's `CodeLine::styles`. All viewers share the same
+    /// highlighter and per-line cache; ordinary `with_width` requests all rows.
+    pub fn with_deferred_code(width: u16) -> Self {
+        Self::with_deferred_code_in(width, CodeCache::default())
+    }
+
+    /// Share source-keyed syntax within a viewer, including the handoff from a
+    /// streaming tail to its identical committed block. Entries are weak; the
+    /// presentations, rather than this cache, own retained source and styles.
+    pub fn with_deferred_code_in(width: u16, cache: CodeCache) -> Self {
+        let mut markdown = Self::with_width(width);
+        markdown.state.deferred_code = true;
+        markdown.state.code_cache = Some(cache);
+        markdown
+    }
+
+    /// Reflow tables at a new viewport width, preserving source-keyed syntax
+    /// caches while the old presentation keeps their nodes alive. Themes do
+    /// not enter this cache and can recolor the same visible syntax freely.
+    pub fn set_width(&mut self, width: u16) {
+        if self.state.render_width() == width.max(1) {
+            return;
+        }
+        let mut replacement = Self::with_width(width);
+        replacement.state.deferred_code = self.state.deferred_code;
+        replacement.state.code_cache = self.state.code_cache.clone();
+        replacement.push(&self.source);
+        *self = replacement;
     }
 
     /// Append a UTF-8 text delta and return the first changed display line.
@@ -325,9 +357,20 @@ impl Markdown {
         self.source
     }
 
+    /// Original source retained by this incremental presentation. Consumers
+    /// receiving complete snapshots can append only their new suffix without
+    /// copying or reparsing the confirmed prefix.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
     /// Discard this presentation when a query resets or selects another turn.
     pub fn clear(&mut self) {
-        *self = Self::with_width(self.state.render_width());
+        *self = if self.state.deferred_code {
+            Self::with_deferred_code(self.state.render_width())
+        } else {
+            Self::with_width(self.state.render_width())
+        };
     }
 
     fn append(&mut self, delta: &str) {

@@ -47,6 +47,7 @@ impl ModelTokenUsage {
             ]),
             cached: counter(&[
                 &usage["cache_read_input_tokens"],
+                &usage["cached_input_tokens"],
                 &usage["input_tokens_details"]["cached_tokens"],
                 &usage["prompt_tokens_details"]["cached_tokens"],
                 &usage["cachedContentTokenCount"],
@@ -55,6 +56,7 @@ impl ModelTokenUsage {
                 &usage["cache_creation_input_tokens"],
                 &usage["input_tokens_details"]["cache_write_tokens"],
                 &usage["prompt_tokens_details"]["cache_write_tokens"],
+                &usage["cache_write_input_tokens"],
             ]),
             output: counter(&[
                 &usage["output_tokens"],
@@ -62,7 +64,9 @@ impl ModelTokenUsage {
                 &usage["candidatesTokenCount"],
             ]),
             reasoning: counter(&[
+                &usage["reasoning_output_tokens"],
                 &usage["output_tokens_details"]["reasoning_tokens"],
+                &usage["output_tokens_details"]["thinking_tokens"],
                 &usage["completion_tokens_details"]["reasoning_tokens"],
                 &usage["thoughtsTokenCount"],
             ]),
@@ -237,6 +241,25 @@ pub(crate) fn validate(
     Ok(())
 }
 
+/// Proven input occupancy bound of the original prepared context, independent of
+/// provider-reported billing counters. Unknown accounting is never zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum ContextUsage {
+    /// The original projection carries no verified accounting.
+    Unavailable,
+    /// Original request-bound count or upper bound and the verified capacity.
+    Counted {
+        /// Complete input count or proven upper bound, including framing and media.
+        input_tokens: u64,
+        /// Complete input plus output capacity.
+        capacity_tokens: u32,
+    },
+}
+
+mod context_usage;
+
 /// One bounded page of the original journal's model-call observations.
 /// A nonterminal row is replaced only by its exact completed dispatch.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -244,6 +267,8 @@ pub(crate) fn validate(
 pub struct ModelUsagePage {
     /// Admissions and completions in their original commit order.
     pub items: Vec<ModelUsageRecord>,
+    /// Last context preparation in this page; absence preserves the prior cut.
+    pub context: Option<ContextUsage>,
     /// Exclusive original journal position after every visited observation,
     /// including observations without usage. Resume here after a source event;
     /// an empty or short page does not establish that this turn has settled.
@@ -268,12 +293,23 @@ pub async fn usage_page(
     let records = journal.replay(operation, after, PAGE, None)?.await?;
     let (end, next) = super::event_page::page_continuation(after, records.len(), PAGE)?;
     let mut items = Vec::new();
+    let mut context = None;
     for record in records {
+        if let ExecutionEvent::ContextPrepared { projection, .. }
+        | ExecutionEvent::ContextCompacted { projection, .. } = &record.event
+        {
+            context = Some(context_usage::read(journal, projection).await?);
+        }
         if let Some(usage) = project_record(journal, operation, agent_path, &record).await? {
             items.push(usage);
         }
     }
-    Ok(ModelUsagePage { items, end, next })
+    Ok(ModelUsagePage {
+        items,
+        context,
+        end,
+        next,
+    })
 }
 
 pub(super) async fn project_record(
@@ -464,6 +500,12 @@ mod tests {
                     "output_tokens_details":{"reasoning_tokens":reasoning}}}),
                 serde_json::json!({"usage":{"promptTokenCount":input,"candidatesTokenCount":output,
                     "cachedContentTokenCount":cached,"thoughtsTokenCount":reasoning}}),
+                serde_json::json!({"usage":{"input_tokens":input,"output_tokens":output,
+                    "cached_input_tokens":cached,"cache_write_input_tokens":written,
+                    "reasoning_output_tokens":reasoning}}),
+                serde_json::json!({"usage":{"input_tokens":input,"output_tokens":output,
+                    "cache_read_input_tokens":cached,"cache_creation_input_tokens":written,
+                    "output_tokens_details":{"thinking_tokens":reasoning}}}),
             ];
             for (index, metadata) in dialects.iter().enumerate() {
                 codec_fuzz::check_metadata(metadata);
@@ -482,9 +524,27 @@ mod tests {
                 }
                 prop_assert_eq!(ModelTokenUsage::reported(metadata), ModelTokenUsage {
                     input: Some(input), output: Some(output), cached,
-                    cache_write: if index < 2 { written } else { None },
+                    cache_write: if matches!(index, 0 | 1 | 4 | 5) { written } else { None },
                     reasoning: if index == 0 { None } else { reasoning },
                 });
+            }
+            // Native aliases participate in the same malformed/conflicting
+            // consensus as the original HTTP names, without alias precedence.
+            for (pointer, canonical) in [
+                ("/usage/cached_input_tokens", "cache_read_input_tokens"),
+                ("/usage/cache_write_input_tokens", "cache_creation_input_tokens"),
+                ("/usage/reasoning_output_tokens", "thoughtsTokenCount"),
+                ("/usage/output_tokens_details/thinking_tokens", "thoughtsTokenCount"),
+            ] {
+                let mut metadata = serde_json::json!({"usage": {"output_tokens_details": {}}});
+                let (parent, leaf) = pointer.rsplit_once('/').unwrap();
+                metadata.pointer_mut(parent).unwrap()[leaf] = serde_json::json!(input);
+                metadata["usage"][canonical] = serde_json::json!(input ^ 1);
+                prop_assert_eq!(ModelTokenUsage::reported(&metadata), ModelTokenUsage::default());
+                for invalid in [serde_json::json!(-1), serde_json::json!(1.5), serde_json::json!("0")] {
+                    *metadata.pointer_mut(pointer).unwrap() = invalid;
+                    prop_assert_eq!(ModelTokenUsage::reported(&metadata), ModelTokenUsage::default());
+                }
             }
             let mut contradictory = dialects[2].clone();
             contradictory["usage"]["prompt_tokens"] = serde_json::json!(input ^ 1);

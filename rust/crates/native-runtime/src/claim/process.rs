@@ -98,7 +98,9 @@ pub(super) fn liveness(process: &Process, probes: &mut u64, probe: super::LockPr
                 match probe(lock) {
                     // Its owner holds it exclusively for life.
                     Ok(_) => Liveness::Dead,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => Liveness::Alive,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        held_lock(process, probes)
+                    }
                     Err(_) => Liveness::Unknown,
                 }
             }
@@ -108,6 +110,32 @@ pub(super) fn liveness(process: &Process, probes: &mut u64, probe: super::LockPr
         },
         Err(error) if error.kind() == io::ErrorKind::NotFound => without_lock(process, probes),
         Err(_) => Liveness::Unknown,
+    }
+}
+
+/// For a process lock that is still held. Windows releases a dead process's
+/// byte-range locks asynchronously after its exit, so there a held lock proves
+/// life only while the process it names has not exited.
+fn held_lock(process: &Process, probes: &mut u64) -> Liveness {
+    #[cfg(windows)]
+    {
+        if process.start.is_empty() {
+            return Liveness::Alive;
+        }
+        *probes += 1;
+        match start_identity(process.pid) {
+            Ok(start) if start == process.start => Liveness::Alive,
+            // Another process with a reused pid.
+            Ok(_) => Liveness::Dead,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Liveness::Dead,
+            Err(_) => Liveness::Unknown,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // Unix releases a process's locks before its exit is observable.
+        let _ = (process, probes);
+        Liveness::Alive
     }
 }
 
@@ -404,7 +432,19 @@ fn read_bounded<'a>(path: &Path, buffer: &'a mut [u8]) -> io::Result<&'a [u8]> {
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
 }
 
-#[cfg(not(target_os = "linux"))]
+/// A Windows process's identity across pid reuse: its creation time.
+/// `NotFound` only when the OS proves the pid absent or the process exited.
+#[cfg(windows)]
+fn start_identity(pid: u32) -> io::Result<Vec<u8>> {
+    let probe = crate::process_identity::ProcessProbe::open(pid)?
+        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    if probe.exited()? {
+        return Err(io::Error::from(io::ErrorKind::NotFound));
+    }
+    Ok(probe.started()?.to_le_bytes().to_vec())
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn start_identity(_: u32) -> io::Result<Vec<u8>> {
     Err(io::Error::from(io::ErrorKind::Unsupported))
 }

@@ -91,3 +91,37 @@ composition, project/skill catalog capture, remaining command dispatch,
 approvals, terminal effects and historical backfill remain open. These source changes
 do not claim that the complete migration, compilation or endpoint qualification
 is complete.
+
+Approval decisions use `ApprovalVerdict::{Approve, ApproveRule, Deny}` with the
+original `ApprovalBinding`. `ApproveRule` is available only to the active human
+stage for an ordinary tool action. It retains a version-one exact `ApprovalRule`
+in protected agent files, keyed by agent, immutable policy digest, principal,
+tool, all arguments and resolved execution target. Future matches use that same
+stage; earlier denials and approvers still apply. Explicit human guards and
+opaque preimages require an individual decision. A retained per-request decision
+always wins over a later standing rule. Replaying the same decision completes an
+interrupted rule publication before the normal inbox wake; changing its verdict
+or original action binding conflicts.
+
+The live usage page also carries the original prepared-context accounting and
+the direct open-child count from its settlement observation. Context accounting
+may be a proven upper bound rather than an exact tokenizer result. The terminal
+labels that bound and rounds its percentage upward; missing model, context and
+price observations remain unknown. None of these fields requires walking a child
+tree or retaining another session rollup.
+
+`graphcoder --prices FILE` selects the existing version-one price-record JSONL
+format. The shared `ModelPrices` admission rejects ambiguous provider/model
+bindings and mixed currencies. The file supplies a revision explicitly; no
+clock, provider account or model alias selects a rate. Missing rates and
+unfinished calls keep the total unknown. Headless `--usage-jsonl` retains the
+selected revision and currency on each original call, including after failure.
+
+The interactive client retains the selected original in its session's
+`prices.jsonl`. Reopen keeps it; the same session-file publication follow drives
+explicit price edits and a fresh usage projection. `Conversation::usage_totals`
+folds an explicitly selected agent or subtree through the existing paged usage
+visitor and estimator, without storing a second rollup or charging inherited
+context again. The live footer uses the same prices and constant-size totals.
+The file catalogue's `/cost` selection opens the existing layout/query panel for
+the subtree total; the footer explicitly labels its own selected-agent scope.

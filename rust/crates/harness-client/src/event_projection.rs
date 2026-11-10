@@ -73,7 +73,8 @@ pub struct ExecutionQuery {
     pub inbox_tail: u64,
     /// Original journal page, or the current inbox tail.
     pub page: Option<acyclic_harness_core::executor::ExecutionEventPage>,
-    /// The actor consumed this input and retains no earlier work.
+    /// The actor consumed this input and retains no earlier work. With no
+    /// page, the input is the archived producer's terminal inbox tail.
     pub settled: bool,
 }
 

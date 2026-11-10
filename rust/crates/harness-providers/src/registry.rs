@@ -3,16 +3,14 @@ use acyclic_harness_core::{Result, model::Model};
 use std::{collections::BTreeMap, sync::Arc};
 mod catalog_update;
 mod selection;
-mod snapshot;
+use crate::credentials::{Credential, CredentialInputs};
 use catalog_update::Changes;
-use selection::Credential;
 
 /// Registry of protocol endpoints addressed by `provider/model`.
 pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     default_model: Option<String>,
-    credentials: Credentials,
-    selection: snapshot::Snapshot<selection::Observations>,
+    inputs: Arc<CredentialInputs>,
     transport: Arc<dyn HttpTransport>,
     resolver: Option<Arc<dyn crate::CredentialResolver>>,
     files: crate::files::Files,
@@ -35,8 +33,7 @@ impl Registry {
         Self {
             providers,
             default_model: None,
-            credentials,
-            selection: snapshot::Snapshot::default(),
+            inputs: Arc::new(CredentialInputs::new(credentials)),
             transport,
             resolver: None,
             files: crate::files::Files::default(),
@@ -170,6 +167,7 @@ impl Registry {
             .map(|entry| (entry.capacity, entry.tool_profile, entry.thinking_levels))
             .ok_or_else(|| invalid("register the selected model context capacity"))?;
         let credential = self.selected_credential(provider, &config)?;
+        let credential_config = config.clone();
         let key = match &credential {
             Credential::Key(key) => Some(key.clone()),
             _ => None,
@@ -188,6 +186,7 @@ impl Registry {
             }
             Arc::new(ProviderSpec {
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
+                allow_http_host: None,
                 token_counter: None,
                 ..config.as_ref().clone()
             })
@@ -232,6 +231,12 @@ impl Registry {
         )?;
         let transport = crate::deadline::Bounded::new(transport, config.timeouts);
         Ok(ResolvedModel {
+            #[cfg(not(target_arch = "wasm32"))]
+            account_pin: codex_login
+                .as_ref()
+                .map_or_else(|| Arc::new(std::sync::OnceLock::new()), |login| login.pin()),
+            inputs: Some(self.inputs.clone()),
+            credential_config: Some(credential_config),
             files: self.files.clone(),
             accounting: crate::resolved::Accounting::new(config.adapter),
             model,
@@ -245,6 +250,8 @@ impl Registry {
             transport,
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
+            #[cfg(not(target_arch = "wasm32"))]
+            explicit_codex_login: self.codex_login.clone(),
         })
     }
 }
@@ -255,14 +262,15 @@ mod credential_tests;
 
 /// The built-in Responses route that a native Codex CLI login may replace.
 #[cfg(not(target_arch = "wasm32"))]
-fn codex_route(config: &ProviderSpec) -> bool {
+pub(crate) fn codex_route(config: &ProviderSpec) -> bool {
     config.adapter == crate::Adapter::Responses && config.base_url == "https://api.openai.com/v1"
 }
 
-pub(crate) fn validate_url(base: &str) -> Result<url::Url> {
+pub(crate) fn validate_url(base: &str, allow_http_host: Option<&str>) -> Result<url::Url> {
     let url = url::Url::parse(base).map_err(|_| invalid("invalid provider URL"))?;
     let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-    if !(url.scheme() == "https" || (url.scheme() == "http" && local))
+    let permitted = allow_http_host.is_some_and(|host| Some(host) == url.host_str());
+    if !(url.scheme() == "https" || (url.scheme() == "http" && (local || permitted)))
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
@@ -270,7 +278,7 @@ pub(crate) fn validate_url(base: &str) -> Result<url::Url> {
         || url.fragment().is_some()
     {
         return Err(invalid(
-            "provider URL requires HTTPS or loopback HTTP without userinfo, query or fragment",
+            "provider URL requires HTTPS or loopback HTTP without userinfo, query or fragment; to permit HTTP to one non-loopback host, set that provider's allow_http_host to its exact canonical host",
         ));
     }
     Ok(url)
@@ -280,7 +288,7 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
     if provider.trim().is_empty() || provider.contains('/') || config.max_event_bytes == Some(0) {
         return Err(invalid("invalid provider registration"));
     }
-    validate_url(&config.base_url)?;
+    validate_url(&config.base_url, config.allow_http_host.as_deref())?;
     for (name, value) in &config.headers {
         if name.is_empty()
             || !name
@@ -308,7 +316,23 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
                 "count endpoint must accept the provider input dialect",
             ));
         }
-        crate::counting::wire::endpoint(&config.base_url, "model", counter)?;
+        // A count projection deliberately omits generation/stream controls.
+        // Sending it to generation can run a billable, unaccounted model call.
+        for name in std::iter::once("model").chain(config.models.keys().map(String::as_str)) {
+            let count = validate_url(
+                &crate::counting::wire::endpoint(config, name, counter)?,
+                config.allow_http_host.as_deref(),
+            )?;
+            let generation = url::Url::parse(&crate::projection::endpoint_for(config, name)?)
+                .map_err(|_| invalid("invalid generation endpoint"))?;
+            if count.origin() == generation.origin()
+                && count.path().trim_end_matches('/') == generation.path().trim_end_matches('/')
+            {
+                return Err(invalid(
+                    "token counter must not use the generation endpoint",
+                ));
+            }
+        }
     }
     for (name, model) in &config.models {
         #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -330,4 +354,17 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
         }
     }
     Ok(())
+}
+
+impl Registry {
+    /// Retains one shared cached resolver for every agent in this composition.
+    pub fn into_model_resolver(self) -> acyclic_harness_core::model::ModelResolver {
+        acyclic_harness_core::model::ModelResolver::new(
+            self.default_model().to_owned(),
+            move |selection| {
+                let provider = Arc::new(self.resolve(selection)?);
+                Ok((provider.model().clone(), provider))
+            },
+        )
+    }
 }

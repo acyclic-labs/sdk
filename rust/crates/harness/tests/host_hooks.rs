@@ -116,8 +116,13 @@ fn installed_permission_selector_matches_only_the_registered_spawn() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
-    fn installed_commands_preserve_one_executable_argument(directory in r"[^\x00]{0,80}") {
-        let executable = format!("{directory}/acyclic");
+    fn installed_commands_preserve_one_executable_argument(
+        root in prop::sample::select(vec!["/owned", "C:/owned", "//server/share/owned"]),
+        directory in r"[^\x00]{0,80}",
+    ) {
+        // A complete root keeps opaque directory text from making the
+        // executable the share component of an incomplete UNC path.
+        let executable = format!("{root}/{directory}/acyclic");
         #[cfg(windows)]
         let expected = executable.replace('\\', "/");
         #[cfg(not(windows))]

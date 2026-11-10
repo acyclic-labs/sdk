@@ -48,7 +48,7 @@ impl StreamProvider for RefusesAppend {
     ) -> BoxProviderFuture<'_, std::result::Result<WriteOutcome, StreamError>> {
         let refused = match &request {
             WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
-                request.mutations.iter().any(|mutation| {
+                request.mutations().any(|mutation| {
                     matches!(mutation,
                     CommitMutation::Append { path, .. } if path == &self.path)
                 })

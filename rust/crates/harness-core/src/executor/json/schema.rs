@@ -70,7 +70,7 @@ schema!(RECURSIVE_MERGE_TOOL_PLAN => RecursiveMergeToolPlan, "", [], ["authorize
 schema!(MESSAGES, "", [], [], [MESSAGE]);
 schema!(MESSAGE, "", [], ["content" => MODEL_CONTENT : 0], []);
 schema!(MODEL, "", [], ["options" => ROOT : 0], []);
-schema!(TOOLS, "", [], [], [TOOL]);
+schema!(TOOLS => ToolDefinitions, "", [], [], [TOOL]);
 schema!(TOOL, "", [], ["input_schema" => ROOT : 0, "output_schema" => ROOT : 0, "projection_schema" => ROOT : 0], []);
 schema!(STATE_RECORD, "", [], ["state" => ROOT : 0], []);
 schema!(TRANSITION, "", [], ["state" => ROOT : 0, "status" => STATUS : 0], []);

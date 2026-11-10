@@ -19,7 +19,7 @@ fn request(count: usize) -> Result<ModelRequest> {
     })
 }
 
-fn push(request: &mut ModelRequest, index: usize, io: Option<&PreparationIo>) -> Result<()> {
+fn push(messages: &mut Vec<ModelMessage>, index: usize, io: Option<&PreparationIo>) -> Result<()> {
     let ModelContent::Text(text) = message(index).content else {
         unreachable!()
     };
@@ -27,7 +27,7 @@ fn push(request: &mut ModelRequest, index: usize, io: Option<&PreparationIo>) ->
         role: ModelRole::User,
         content: ModelContent::Text(crate::executor::stock_string_copy(&text, io)?),
     };
-    crate::executor::stock_vec_push(&mut request.messages, message, io)
+    crate::executor::stock_vec_push(messages, message, io)
 }
 
 fn exercise(io: Option<&PreparationIo>) -> Result<()> {
@@ -42,7 +42,7 @@ fn exercise(io: Option<&PreparationIo>) -> Result<()> {
         let mut state = Vec::new();
         for added in 0..5 {
             let previous = request.messages.len();
-            push(&mut request, previous, io)?;
+            push(&mut request.messages, previous, io)?;
             let (next, digest, next_state) =
                 EncodingPrefix::append(bytes, state, previous, &request, io, &mut 0)?;
             bytes = next;
@@ -159,7 +159,7 @@ fn a_shared_encoding_is_copied_without_changing_its_immutable_peer() -> Result<(
     let original = prepared.bytes.clone();
     let expected_original = original.to_vec();
     let mut request = prepared.request;
-    push(&mut request, 10, None)?;
+    push(&mut request.messages, 10, None)?;
     let (bytes, digest, state) =
         EncodingPrefix::append(prepared.bytes, Vec::new(), 10, &request, None, &mut 0)?;
     assert_eq!(original.as_slice(), expected_original);
@@ -207,6 +207,9 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
             let (delta, work) = input_work(|| prepared.input_since(anchor));
             assert_eq!(work, (0, 0), "retained input rebuilt its observed prefix");
             assert_eq!(delta?, Some(prepared.input_bytes()? - anchored_bytes));
+            let (files, work) = input_work(|| prepared.projected_file_bytes(0));
+            assert_eq!(files?, 0);
+            assert_eq!(work, (0, 0), "file admission revisited retained history");
             assert!(prepared.input_has_byte_bound()?);
             assert!(!prepared.input_has_native_media()?);
             assert_eq!(
@@ -417,32 +420,56 @@ type SuffixWork = (u64, u64, u64, u64);
     feature = "test-support",
     not(target_arch = "wasm32")
 ))]
-fn measure_suffix(count: usize, io: &PreparationIo) -> Result<(SuffixWork, u64)> {
-    let prepared = PreparedModelRequest::prepare(
-        crate::model::clone_request(&request(count)?, Some(io))?,
-        Limits::default(),
-        Some(io),
-    )?;
-    let mut request = prepared.request;
-    push(&mut request, 0, Some(io))?;
-    let (bytes, _, state) = EncodingPrefix::append(
-        prepared.bytes,
-        Vec::new(),
-        count,
-        &request,
-        Some(io),
-        &mut 0,
-    )?;
+fn measure_suffix(
+    count: usize,
+    schema_size: usize,
+    io: &PreparationIo,
+) -> Result<(SuffixWork, u64)> {
+    let mut original = request(count)?;
+    original.compose_tools = true;
+    original.sampling = crate::model::ModelSampling {
+        temperature: Some(0.25),
+        top_p: Some(0.75),
+        seed: Some(17),
+    };
+    original.tools = vec![crate::tool::ToolDefinition {
+        name: "echo".into(),
+        revision: "1".into(),
+        description: "Quoted \"messages\":[] and non-BMP 🦀".into(),
+        input_schema: serde_json::json!({"enum":
+            (0..schema_size).map(|index| format!("choice-{index}")).collect::<Vec<_>>()
+        }),
+        output_schema: serde_json::json!({"type":"string"}),
+        projection_schema: crate::tool::json_projection_schema(
+            serde_json::json!({"type":"string"}),
+        ),
+    }];
+    // Admit both appended message slots before preparation records their
+    // inventory; the measured warm suffix must not include vector relocation.
+    let mut original = crate::model::clone_request(&original, Some(io))?;
+    crate::executor::stock_vec_reserve(&mut original.messages, count + 2, Some(io))?;
+    let prepared = PreparedModelRequest::prepare(original, Limits::default(), Some(io))?;
+    let mut continuation = prepared.into_continuation();
+    push(continuation.messages(), 0, Some(io))?;
+    let mut prepared = continuation.finish(Limits::default(), Some(io))?;
     // Isolate suffix work from geometric capacity growth, which is separately
     // checked with real relocation admission by Streams.
-    let mut buffer = Buffer::new(bytes, Some(io)).unwrap_or_else(|_| unreachable!());
+    let mut buffer = Buffer::new(std::mem::take(&mut prepared.bytes), Some(io))
+        .unwrap_or_else(|_| unreachable!());
     buffer.reserve(buffer.capacity() + 4_096, Some(io))?;
-    let bytes = buffer.freeze();
-    let previous = request.messages.len();
-    push(&mut request, 0, Some(io))?;
+    prepared.bytes = buffer.freeze();
+    let mut continuation = prepared.into_continuation();
+    push(continuation.messages(), 0, Some(io))?;
+    // Compare against the same canonical codec's complete work, including its
+    // admission and ordered-output passes, rather than only its final length.
+    let suffix_encoding = {
+        let before = io.receipt().bytes_encoded;
+        let encoded = encode(&continuation.messages(), Some(io))?;
+        let _hold = io.guard_bytes(&encoded)?;
+        io.receipt().bytes_encoded - before
+    };
     let before = io.receipt();
-    let (bytes, _, state) =
-        EncodingPrefix::append(bytes, state, previous, &request, Some(io), &mut 0)?;
+    let prepared = continuation.finish(Limits::default(), Some(io))?;
     let after = io.receipt();
     let suffix = (
         after.bytes_encoded - before.bytes_encoded,
@@ -450,11 +477,21 @@ fn measure_suffix(count: usize, io: &PreparationIo) -> Result<(SuffixWork, u64)>
         after.bytes_copied - before.bytes_copied,
         after.items_examined - before.items_examined,
     );
+    assert_eq!(
+        suffix.0, suffix_encoding,
+        "warm continuation reserialized immutable request configuration"
+    );
+    let expected = crate::contract::canonical_json_bytes(prepared.request())?;
+    assert_eq!(prepared.bytes(), expected);
+    assert_eq!(
+        prepared.request_digest(),
+        *blake3::hash(&expected).as_bytes()
+    );
+    assert!(prepared.encoding[0].end < prepared.bytes().len());
     let before = io.receipt();
-    let full = PreparedModelRequest::prepare(request, Limits::default(), Some(io))?;
+    let full = PreparedModelRequest::prepare(prepared.request, Limits::default(), Some(io))?;
     let full_bytes = io.receipt().bytes_encoded - before.bytes_encoded;
-    assert_eq!(bytes.as_slice(), full.bytes());
-    assert!(state[0].end < bytes.len());
+    assert_eq!(expected, full.bytes());
     Ok((suffix, full_bytes))
 }
 
@@ -468,19 +505,27 @@ fn admitted_suffix_encoding_and_hashing_do_not_revisit_historical_messages() -> 
     for native in [false, true] {
         let mut expected = None;
         let mut full_encoding = Vec::new();
-        for count in [1, 10, 100, 1_000] {
+        for (count, schema_size) in [(1, 1), (10, 1), (100, 1), (1_000, 1), (1, 1_000)] {
             let measured =
                 crate::test_support::accounted::accounted(native, 4 * 1024 * 1024, false, |io| {
-                    measure_suffix(count, io)
+                    measure_suffix(count, schema_size, io)
                 })
                 .map_err(|(cause, _)| Error::Storage(cause))?;
             let (suffix, full_bytes) = measured.0?;
-            assert_eq!(
-                *expected.get_or_insert(suffix),
-                suffix,
-                "incremental encoding revisited {count} historical messages, native={native}"
-            );
-            full_encoding.push(full_bytes);
+            if schema_size == 1 {
+                assert_eq!(
+                    *expected.get_or_insert(suffix),
+                    suffix,
+                    "incremental encoding revisited {count} historical messages, native={native}"
+                );
+                full_encoding.push(full_bytes);
+            } else {
+                assert_eq!(expected.unwrap().0, suffix.0);
+                assert!(
+                    suffix.1 > expected.unwrap().1,
+                    "complete digest must include the larger configuration"
+                );
+            }
             if native {
                 assert_eq!(
                     measured.5,
@@ -488,7 +533,7 @@ fn admitted_suffix_encoding_and_hashing_do_not_revisit_historical_messages() -> 
                 );
             }
             eprintln!(
-                "CONTINUATION_ENCODING native={native} messages={count} suffix={suffix:?} full_bytes={full_bytes}"
+                "CONTINUATION_ENCODING native={native} messages={count} schema={schema_size} suffix={suffix:?} full_bytes={full_bytes}"
             );
         }
         assert!(

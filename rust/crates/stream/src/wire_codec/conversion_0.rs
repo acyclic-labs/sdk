@@ -71,15 +71,6 @@ pub(crate) fn mutation_wire(value: CommitMutation) -> wire::CommitMutation {
                 records: records.into_iter().map(append_record_wire).collect(),
             })
         }
-        CommitMutation::SoftAppend {
-            path,
-            records,
-            closed,
-        } => wire::commit_mutation::Mutation::SoftAppend(wire::SoftAppendMutation {
-            path: path.to_string(),
-            records: records.into_iter().map(append_record_wire).collect(),
-            closed: closed.map(|closed| closed.to_string()).unwrap_or_default(),
-        }),
         CommitMutation::Fork {
             source,
             destination,
@@ -110,17 +101,6 @@ pub(crate) fn mutation_from_wire(
                 .into_iter()
                 .map(append_record)
                 .collect::<Result<_, _>>()?,
-        }),
-        wire::commit_mutation::Mutation::SoftAppend(value) => Ok(CommitMutation::SoftAppend {
-            path: path(value.path)?,
-            records: value
-                .records
-                .into_iter()
-                .map(append_record)
-                .collect::<Result<_, _>>()?,
-            closed: (!value.closed.is_empty())
-                .then(|| path(value.closed))
-                .transpose()?,
         }),
         wire::commit_mutation::Mutation::Fork(value) => Ok(CommitMutation::Fork {
             exclude: value
@@ -288,12 +268,9 @@ pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, St
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-/// Decodes a read request from its generated wire representation.
+/// Decodes a read request from its generated wire representation. Like
+/// [`follow_from_wire`], it is transport-free: every host of the shared
+/// provider cursor compiles it, with or without a transport feature.
 pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
         key: read_key_from_wire(value.key)?,
@@ -304,24 +281,25 @@ pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, St
     })
 }
 
-/// Decodes the exact byte key and exclusive historical search bound.
+/// Decodes an indexed selector: exact key or key range, bound and order.
 pub fn read_key_from_wire(
     value: Option<wire::ReadKeySeek>,
 ) -> Result<Option<crate::ReadKeySeek>, StreamError> {
     value
         .map(|value| {
-            crate::ReadKeySeek::validate_key(&value.key)?;
-            Ok(crate::ReadKeySeek {
+            let key = crate::ReadKeySeek {
                 key: value.key.into(),
+                end: value.end.map(Into::into),
                 before: value.before,
-            })
+                order: crate::ReadOrder::from_wire(value.order)?,
+            };
+            key.validate()?;
+            Ok(key)
         })
         .transpose()
 }
 
-/// Transfers a bounded indexed lookup and its original key backing to the wire.
-/// Native backing retains its original custody and admits transport metadata;
-/// exhausted capacity refuses with `Capacity`, cancellation with `Unavailable`.
+/// Transfers indexed bounds with their original byte custody.
 pub fn read_key_to_wire(
     value: Option<crate::ReadKeySeek>,
 ) -> Result<Option<wire::ReadKeySeek>, StreamError> {
@@ -336,6 +314,18 @@ pub fn read_key_to_wire(
                     }
                 })?,
                 before: value.before,
+                end: value
+                    .end
+                    .map(|end| end.try_into_bytes())
+                    .transpose()
+                    .map_err(|error| {
+                        if error.kind() == std::io::ErrorKind::OutOfMemory {
+                            StreamError::Capacity
+                        } else {
+                            StreamError::Unavailable
+                        }
+                    })?,
+                order: value.order.to_wire(),
             })
         })
         .transpose()
@@ -444,16 +434,25 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
 pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitRequest, StreamError> {
     Ok(crate::CommitRequest {
         deadline_unix_millis: value.deadline_unix_millis,
-        conditions: value
-            .conditions
+        effects: value
+            .effects
             .into_iter()
-            .map(condition_from_wire)
-            .collect::<Result<_, _>>()?,
-        mutations: value
-            .mutations
-            .into_iter()
-            .map(mutation_from_wire)
-            .collect::<Result<_, _>>()?,
+            .map(|effect| {
+                Ok(crate::CommitEffect {
+                    conditions: effect
+                        .conditions
+                        .into_iter()
+                        .map(condition_from_wire)
+                        .collect::<Result<_, _>>()?,
+                    mutations: effect
+                        .mutations
+                        .into_iter()
+                        .map(mutation_from_wire)
+                        .collect::<Result<_, _>>()?,
+                    soft: effect.soft,
+                })
+            })
+            .collect::<Result<_, StreamError>>()?,
         idempotency_key: IdempotencyKey::new(value.idempotency_key)?,
     })
 }
@@ -461,13 +460,25 @@ pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitReque
 /// Converts a domain commit request, including its publication deadline.
 pub fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitRequest {
     wire::CommitRequest {
-        conditions: value
-            .conditions
+        effects: value
+            .effects
             .iter()
-            .cloned()
-            .map(condition_wire)
+            .map(|effect| wire::CommitEffect {
+                conditions: effect
+                    .conditions
+                    .iter()
+                    .cloned()
+                    .map(condition_wire)
+                    .collect(),
+                mutations: effect
+                    .mutations
+                    .iter()
+                    .cloned()
+                    .map(mutation_wire)
+                    .collect(),
+                soft: effect.soft,
+            })
             .collect(),
-        mutations: value.mutations.iter().cloned().map(mutation_wire).collect(),
         idempotency_key: bytes::Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
         deadline_unix_millis: value.deadline_unix_millis,
         include_envelope: false,

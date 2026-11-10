@@ -1,23 +1,9 @@
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
-import { Terminal, screenText, screenSnapshot } from "../graphcoder-pty/screen.mjs";
+import { Terminal, screenText, screenSnapshot, styledRun } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory, queryFailure, expectedTaskFailure } from "./frames.mjs";
 import { OutputWatch } from "./process.mjs";
 import { executionSucceeded } from "./assertions.mjs";
-
-function bold(terminal, text) {
-  const buffer = terminal.buffer.active;
-  for (let y = buffer.viewportY; y < buffer.viewportY + terminal.rows; y++) {
-    const line = buffer.getLine(y);
-    if (!line) continue;
-    for (let x = 0; x <= terminal.cols - text.length; x++) {
-      const cells = Array.from(text, (_, index) => line.getCell(x + index));
-      if (cells.map(cell => cell?.getChars() || " ").join("") === text
-          && cells.every((cell, index) => text[index] === " " || cell?.isBold())) return true;
-    }
-  }
-  return false;
-}
 
 export const SHOW_CURSOR = "\x1b[?25h", HIDE_CURSOR = "\x1b[?25l";
 const OVERFLOW = "has overflowed its stack";
@@ -27,7 +13,7 @@ const IDLE = "\u25cb GraphCoder";
 // The needles a PTY input watches in its raw output.
 export function rawNeedles(actions) {
   return [OVERFLOW, SHOW_CURSOR, HIDE_CURSOR,
-    ...actions.flatMap(action => [...(action.when?.raw ?? []), ...(action.assert?.raw ?? [])])];
+    ...actions.flatMap(action => [...(action.when?.raw ?? []), ...(action.assert?.raw ?? []), ...(action.reject?.raw ?? [])])];
 }
 
 // `raw` is the OutputWatch over the executable's raw terminal output.
@@ -40,7 +26,8 @@ export function matches(screen, raw, condition, visible, diagnostic = visible) {
     && (!condition.task_failure || expectedTaskFailure(diagnostic, condition))
     && (!condition.query_failure || queryFailure(diagnostic)?.startsWith(condition.query_failure))
     && (condition.absent ?? []).every(text => !visible.includes(text))
-    && (!condition.bold || bold(screen, condition.bold))
+    && (!condition.bold || styledRun(screen, { text: condition.bold, bold: true }))
+    && (condition.styles ?? []).every(style => styledRun(screen, style))
     && (condition.raw ?? []).every(text => raw.has(text))
     && (!condition.cursor || raw.later(SHOW_CURSOR, HIDE_CURSOR));
 }
@@ -49,6 +36,8 @@ export async function pty(processes, binary, fixture, input, capture) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const failures = new FailureHistory();
   let unsubscribe, frames;
+  let firstPaint;
+  const launchStarted = performance.now();
   try {
     frames = new TerminalFrames(screen, frame);
     const running = await processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
@@ -65,6 +54,10 @@ export async function pty(processes, binary, fixture, input, capture) {
       if (failure || !frames.ready()) return;
       try {
         const { visible, diagnostic } = screenSnapshot(screen, { completeLines: !settled });
+        if (firstPaint === undefined && frames.available() && visible.includes("GraphCoder")) {
+          firstPaint = performance.now() - launchStarted;
+          process.stderr.write(`pty-startup: ${JSON.stringify({ case: fixture.id, first_paint_ms: firstPaint })}\n`);
+        }
         const action = input.actions[index];
         const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(diagnostic, action?.when, action?.assert);
         if (refusal) {
@@ -73,6 +66,11 @@ export async function pty(processes, binary, fixture, input, capture) {
           throw error;
         }
         if (!action || settled || !frames.available()) return;
+        if (action.reject && matches(screen, raw, action.reject, visible, diagnostic)) {
+          const error = new Error(`step=await terminal action ${index}: rejected terminal state before the required observation\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+          error.code = "terminal_action_rejected";
+          throw error;
+        }
         const unavailable = command && `${command} is not available in this view`;
         if (unavailable && visible.includes(unavailable)
             && !(action.when.contains ?? []).some(text => text && unavailable.includes(text))) {
@@ -130,7 +128,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     }
     const visible = screenText(screen);
     if (result) {
-      try { capture({ ...result, snapshots, deltas, visible, actions: index }); }
+      try { capture({ ...result, snapshots, deltas, first_paint_ms: firstPaint, visible, actions: index }); }
       catch (error) { (errors ??= []).push(error); }
     }
     if (failure) {

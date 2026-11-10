@@ -7,6 +7,42 @@ pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureE
         .map_err(capture_demand_error)
 }
 
+#[cfg(test)]
+#[test]
+fn held_leaf_rename_uses_original_parents_and_never_replaces()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = tempfile::tempdir()?;
+    let source = fixture.path().join("source");
+    let moved = fixture.path().join("moved");
+    let destination = fixture.path().join("destination");
+    std::fs::create_dir(&source)?;
+    std::fs::create_dir(&destination)?;
+    std::fs::write(source.join("payload"), b"original")?;
+    let held = hold_root(&source)?;
+    let target = hold_root(&destination)?;
+    std::fs::rename(&source, &moved)?;
+    std::fs::create_dir(&source)?;
+    std::fs::write(source.join("payload"), b"replacement")?;
+    held.rename_leaf(Path::new("payload"), &target, Path::new("claimed"))?;
+    assert_eq!(std::fs::read(destination.join("claimed"))?, b"original");
+    assert_eq!(std::fs::read(source.join("payload"))?, b"replacement");
+    std::fs::write(moved.join("another"), b"retained")?;
+    assert!(
+        held.rename_leaf(Path::new("another"), &target, Path::new("claimed"))
+            .is_err()
+    );
+    assert_eq!(std::fs::read(moved.join("another"))?, b"retained");
+    assert!(
+        held.rename_leaf(
+            Path::new("../source/payload"),
+            &target,
+            Path::new("escaped")
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
 /// A root held open from its capture through its binding, so the root a
 /// caller validated is the root it binds, whatever replaces the path in
 /// between.
@@ -16,6 +52,47 @@ pub struct HeldRoot {
 }
 
 impl HeldRoot {
+    /// Moves one leaf between the original held directories without replacing
+    /// a destination or following either directory's current path. Both parent
+    /// namespaces are synced before success is returned.
+    pub fn rename_leaf(
+        &self,
+        from: &Path,
+        destination: &Self,
+        to: &Path,
+    ) -> Result<(), DemandError> {
+        for leaf in [from, to] {
+            if leaf.components().count() != 1
+                || !matches!(
+                    leaf.components().next(),
+                    Some(std::path::Component::Normal(_))
+                )
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "rename requires leaf names",
+                )
+                .into());
+            }
+        }
+        let mut work = crate::native_host::ordinary_work();
+        crate::native_host::host_path(from, &mut work, |from, work| {
+            crate::native_host::host_path(to, work, |to, work| {
+                crate::native_host::rename_held(
+                    &self.root.directory(),
+                    from,
+                    &destination.root.directory(),
+                    to,
+                    crate::RenameMode::NoReplace,
+                    None,
+                    work,
+                )
+            })
+        })?;
+        destination.sync_directory()?;
+        self.sync_directory()
+    }
+
     /// Removes one descendant tree relative to this original held directory,
     /// without following links or reopening the root's label. An absent leaf
     /// is already released. The shared removal engine checks entry identities
@@ -100,7 +177,7 @@ impl HeldRoot {
             root: self
                 .root
                 .open_directory(relative, &mut crate::native_host::ordinary_work())?,
-            path: self.path.join(relative),
+            path: descendant_path(&self.path, relative),
         })
     }
 
@@ -163,7 +240,7 @@ impl HeldRoot {
                 durability,
                 &mut crate::native_host::ordinary_work(),
             )?,
-            path: self.path.join(relative),
+            path: descendant_path(&self.path, relative),
         })
     }
 
@@ -253,7 +330,7 @@ impl SearchRoot {
             root: self
                 .root
                 .create_search_directories(relative, &mut crate::native_host::ordinary_work())?,
-            path: self.path.join(relative),
+            path: descendant_path(&self.path, relative),
         })
     }
 
@@ -264,7 +341,7 @@ impl SearchRoot {
             root: self
                 .root
                 .open_search_directory(relative, &mut crate::native_host::ordinary_work())?,
-            path: self.path.join(relative),
+            path: descendant_path(&self.path, relative),
         })
     }
 
@@ -276,7 +353,7 @@ impl SearchRoot {
             root: self
                 .root
                 .open_directory_searching(relative, &mut crate::native_host::ordinary_work())?,
-            path: self.path.join(relative),
+            path: descendant_path(&self.path, relative),
         })
     }
 
@@ -304,7 +381,7 @@ impl SearchRoot {
             let file = std::fs::OpenOptions::new()
                 .access_mode(FILE_READ_ATTRIBUTES.0)
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
-                .open(self.path.join(path))?;
+                .open(descendant_path(&self.path, path))?;
             return file_identity(&file);
         }
         self.root
@@ -365,6 +442,33 @@ pub fn hold_root(path: &Path) -> Result<HeldRoot, DemandError> {
         root: HostRoot::open(path, &mut crate::native_host::ordinary_work())?,
         path: path.to_path_buf(),
     })
+}
+
+/// The host path of `relative` below the held directory `base`. A held
+/// directory's path may be verbatim (`\\?\`) on Windows, where Win32 parses
+/// neither `/` nor `..`; joining a portable relative path there names one
+/// literal component instead of its descendants. Windows therefore resolves
+/// each component as Win32 would; elsewhere the kernel resolves the join.
+fn descendant_path(base: &Path, relative: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+        let mut path = base.to_path_buf();
+        for component in relative.components() {
+            match component {
+                Component::ParentDir => {
+                    path.pop();
+                }
+                Component::CurDir => {}
+                component => path.push(component),
+            }
+        }
+        path
+    }
+    #[cfg(not(windows))]
+    {
+        base.join(relative)
+    }
 }
 
 /// Reads a bounded set of final host states and applies one atomic checkout transaction.

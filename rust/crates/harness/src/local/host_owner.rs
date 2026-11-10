@@ -1,104 +1,25 @@
 //! Native-host workspace effects over the native agent runtime and git facade.
 use super::*;
 use crate::agent::AgentPath;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod agents;
 mod events;
+mod native_events;
 mod sessions;
+pub use crate::native_host::{Control, HostAction, SessionAction, TurnClaim};
 /// Exercises the production native session storage codecs.
 #[cfg(feature = "test-support")]
 pub use agents::validation::check_native_session_storage;
-pub use agents::{Control, TurnClaim};
-pub use sessions::SessionAction;
+/// Exercises resume selection on the production streamed event source.
+#[cfg(any(test, feature = "test-support"))]
+pub use native_events::check_native_event_resume;
 /// The production closed-log selector, exposed only for validation.
 #[cfg(feature = "test-support")]
 pub use sessions::logged_session_id;
 #[cfg(all(test, not(loom)))]
 mod tests;
-
-/// Workspace operations only. Native hosts retain every agent and tool process.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum HostAction {
-    /// This owner process's resident views and its current OS resource use,
-    /// read from the OS on demand: its memory, threads, descriptors and CPU,
-    /// and the mounts beneath its workspace. Native host processes are not
-    /// included.
-    Resources {
-        /// Agent authorizing the query.
-        task: AgentPath,
-    },
-    /// One page of the parent's open spawned children, by parent-local name.
-    Sessions {
-        /// Owning parent agent.
-        parent: AgentPath,
-        /// Exclusive identity seek within the current committed membership cut.
-        after: Option<crate::agent::AgentId>,
-        /// Page size; splits work without limiting total children. Must be positive.
-        limit: u32,
-    },
-    /// Native session lifecycle as the child agent's inbox records.
-    Session {
-        /// Owning parent agent.
-        parent: AgentPath,
-        /// Parent-local child name.
-        reference: String,
-        /// Session operation; never executes the host.
-        action: SessionAction,
-        /// Also claim the session's next input under the physical fence of
-        /// this same exchange, returned as `next`: null when the fence is
-        /// held or nothing is claimable. A claim the fence proves unrun is
-        /// handed out again under its exact identity.
-        #[serde(default)]
-        next: bool,
-    },
-    /// Translate a native lifecycle event into workspace coordination only.
-    Hook {
-        /// Native host name.
-        host: String,
-        /// Native lifecycle event.
-        event: String,
-        /// Native event payload, without transcripts or credentials.
-        input: Value,
-    },
-    /// Resolve an attached agent by its native working directory.
-    Locate {
-        /// Native tool working directory.
-        cwd: PathBuf,
-    },
-    /// Create or reopen the native root's stable agent.
-    Open {
-        /// Native host name.
-        host: String,
-        /// Native root session identity.
-        session: String,
-    },
-    /// Reattach an existing native agent's lazy view.
-    Reopen {
-        /// Existing native agent.
-        task: AgentPath,
-    },
-    /// Capture completed native writes.
-    Capture {
-        /// Quiesced native agent.
-        task: AgentPath,
-    },
-    /// Invoke the shared workspace git facade, including merge.
-    Fs {
-        /// Agent selecting the workspace and grants.
-        task: AgentPath,
-        /// Ordinary shared filesystem command.
-        command: String,
-    },
-    /// The agent's open children and their sessions.
-    Agents {
-        /// Parent agent.
-        task: AgentPath,
-    },
-}
 
 /// One agent's view, attached once however many requests await it.
 type AttachedView = Arc<tokio::sync::OnceCell<Arc<host_workspace::HostWorkspace>>>;
@@ -308,26 +229,13 @@ impl HostWorkspaceOwner {
 
     async fn agents(&self, task: &AgentPath) -> Result<Value> {
         let (state, _) = self.native.session(task).await?;
-        let mut agents = Vec::new();
-        let mut after = None;
-        loop {
-            let page = state
-                .open_children
-                .page(after.as_ref(), 256)
-                .await
-                .map_err(storage)?;
-            if page.is_empty() {
-                break;
-            }
-            for id in &page {
-                let child = task.child(id).map_err(storage)?;
-                let (child_state, session) = self.native.session(&child).await?;
-                agents.push(json!({"task":child,"reference":session.reference,
+        let mut agents = Vec::with_capacity(state.open_children.len());
+        for child in &state.open_children {
+            let (child_state, session) = self.native.session(child).await?;
+            agents.push(json!({"task":child,"reference":session.reference,
                 "control":session.control,"settled":session.settled,
                 "running":session.claimed().is_some(),
                 "pending":session.pending(&child_state)}));
-            }
-            after = page.last().cloned();
         }
         Ok(json!({ "agents": agents }))
     }

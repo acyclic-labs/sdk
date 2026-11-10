@@ -442,14 +442,18 @@ where
                 input,
                 after,
                 wait,
+                observed_children,
             } => {
                 let agent = self.within_tree(agent)?;
-                let (input, page, settled) =
-                    self.bound.usage_page(agent, *input, *after, *wait).await?;
+                let (input, page, settled, open_children) = self
+                    .bound
+                    .usage_page(agent, *input, *after, *wait, *observed_children)
+                    .await?;
                 Ok(AgentReply::Usage {
                     input,
                     page,
                     settled,
+                    open_children,
                 })
             }
             AgentCommand::Events {
@@ -1051,7 +1055,7 @@ where
                 agent,
                 id,
                 binding,
-                approved,
+                verdict,
                 reason,
             } => {
                 let agent = self.within_tree(agent)?;
@@ -1061,7 +1065,7 @@ where
                 Ok(AgentReply::Delivered {
                     delivery: self
                         .bound
-                        .decide(agent, id, binding, approver, *approved, reason.clone())
+                        .decide(agent, id, binding, approver, *verdict, reason.clone())
                         .await?,
                 })
             }
@@ -1329,9 +1333,7 @@ where
                             whole
                         }
                         Err(error) => {
-                            return call
-                                .reply(&Err(error))
-                                .map_err(|_| StreamError::LimitExceeded);
+                            return reply(&call, &Err(error));
                         }
                     }
                 }
@@ -1388,9 +1390,28 @@ where
                 let policy = server.platform.policy(&principal, call.command()).await?;
                 authorization.authorize(&server.resource, &[], &attributes, policy)?;
             }
-            call.reply(&result).map_err(|_| StreamError::LimitExceeded)
+            reply(&call, &result)
         })
     }
+}
+
+// The serving boundary must not turn an invalid reply into a capacity refusal.
+// Record only the command kind and stable codec failure, never command bodies.
+fn reply(
+    call: &acyclic_harness_client::AgentCall,
+    result: &Result<AgentReply, Error>,
+) -> Result<Bytes, StreamError> {
+    call.reply(result).map_err(|error| {
+        tracing::error!(
+            command = ?call.command().kind(),
+            code = error.code(),
+            "agent reply encoding refused"
+        );
+        match error {
+            acyclic_harness_client::CommandError::Invalid => StreamError::InvalidResponse,
+            acyclic_harness_client::CommandError::Capacity => StreamError::LimitExceeded,
+        }
+    })
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

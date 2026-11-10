@@ -8,6 +8,7 @@ mod dispatch;
 enum ToolCallRejection {
     /// The composition binds no granted tool by this name.
     Unavailable,
+    Removed,
     /// The arguments violate the tool's pinned input schema.
     InvalidInput(Error),
     /// The bound policy denied the call, or the tool refused it definitively (authorization,
@@ -18,6 +19,10 @@ enum ToolCallRejection {
 impl ToolCallRejection {
     fn into_failure(self, io: Option<&PreparationIo>) -> (ToolFailureKind, Error) {
         match self {
+            Self::Removed => (
+                ToolFailureKind::Removed,
+                stock_boundary(io, crate::wire::ErrorCode::NotFound, "tool was removed"),
+            ),
             Self::Unavailable => (
                 ToolFailureKind::Unavailable,
                 stock_boundary(
@@ -106,14 +111,148 @@ impl<'io> StockExecution<'io> {
         } else {
             Ok(None)
         };
-        let admitted = match self.stock.tools.get(&invocation.name, None, self.io)? {
+        // A settled refusal is a durable result, independent of today's catalog.
+        if matches!(recorded, RecordedCall::Failed { started: None, .. }) {
+            if let RecordedCall::Failed { reason, cause, .. } = recorded {
+                let content = tool_failure_content(reason, cause, self.io)?;
+                return self.push_tool_result(&invocation, content, None, prior_messages);
+            }
+        }
+        let fixed = if matches!(recorded, RecordedCall::Unstarted) {
+            None
+        } else {
+            self.stock.tools.fixed_for_grants(
+                &invocation.name,
+                self.stock.tool_scope.grants(),
+                self.io,
+            )?
+        };
+        let selected = if let Some(tool) = fixed {
+            Some(tool)
+        } else if !matches!(recorded, RecordedCall::Unstarted) {
+            let retained = self
+                .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
+                .await?;
+            let (name, revision) = invocation
+                .name
+                .rsplit_once('@')
+                .map_or((invocation.name.as_str(), None), |(name, revision)| {
+                    (name, Some(revision))
+                });
+            let definition = retained
+                .request
+                .as_ref()
+                .and_then(|request| {
+                    request.request().tools.iter().find(|tool| {
+                        tool.name == name
+                            && revision.is_none_or(|revision| tool.revision == revision)
+                    })
+                })
+                .ok_or(Error::Indeterminate(operation_id))?;
+            match self.stock.tools.recover(definition, self.io)? {
+                Some(tool) => Some(tool),
+                None if matches!(recorded, RecordedCall::Completed { .. }) => {
+                    // Retained results belong to the journal, even after their
+                    // source is uninstalled. Only an unresolved effect needs
+                    // a live handle to its original producer.
+                    let original = original
+                        .as_ref()
+                        .ok_or(Error::Indeterminate(operation_id))?;
+                    if original.0.invocation.call_id != invocation.call_id
+                        || original.0.invocation.name != invocation.name
+                        || original.0.invocation.operation_id != invocation.operation_id
+                        || &original.0.metadata != metadata
+                    {
+                        return Err(stock_boundary(
+                            self.io,
+                            Conflict,
+                            "tool call identity is bound to another invocation",
+                        ));
+                    }
+                    #[cfg(all(
+                        feature = "hooks",
+                        feature = "filesystem",
+                        not(target_arch = "wasm32")
+                    ))]
+                    {
+                        let output = self
+                            .tool_hook(
+                                operation_id,
+                                crate::hooks::HookSite::BeforeTool,
+                                &invocation,
+                                None,
+                                true,
+                            )
+                            .await?;
+                        if output.blocks()
+                            || output
+                                .updated_input
+                                .as_ref()
+                                .unwrap_or(&invocation.arguments)
+                                != &original.0.invocation.arguments
+                        {
+                            return Err(stock_boundary(
+                                self.io,
+                                Conflict,
+                                "tool call identity is bound to another invocation",
+                            ));
+                        }
+                        self.append_hook_context(_hook_context, output)?;
+                    }
+                    #[cfg(not(all(
+                        feature = "hooks",
+                        feature = "filesystem",
+                        not(target_arch = "wasm32")
+                    )))]
+                    if original.0.invocation != invocation {
+                        return Err(stock_boundary(
+                            self.io,
+                            Conflict,
+                            "tool call identity is bound to another invocation",
+                        ));
+                    }
+                    let RecordedCall::Completed {
+                        result, projection, ..
+                    } = recorded
+                    else {
+                        return Err(Error::Indeterminate(operation_id));
+                    };
+                    let (content, receipt) = self
+                        .replay_tool_output(
+                            journal,
+                            operation_id,
+                            &original.0.invocation,
+                            result,
+                            projection,
+                            (definition, false),
+                            _hook_context,
+                        )
+                        .await?;
+                    return self.push_tool_result(&invocation, content, receipt, prior_messages);
+                }
+                None => return Err(Error::Indeterminate(operation_id)),
+            }
+        } else {
+            self.stock.tools.refresh().await?;
+            self.stock.tools.resolve(&invocation.name, self.io)?
+        };
+        let admitted = match selected {
             Some(tool) => self
                 .authorize_tool_invocation(
-                    tool,
+                    &tool,
                     &invocation,
                     target.as_ref().ok().and_then(|target| target.clone()),
                 )?
                 .map(|(context, capability)| (tool, context, capability)),
+            None if self
+                .stock
+                .epoch_tools
+                .as_ref()
+                .is_some_and(|tools| tools.iter().any(|tool| tool.name == invocation.name))
+                || self.stock.tools.was_removed(&invocation.name)? =>
+            {
+                Err(ToolCallRejection::Removed)
+            }
             None => Err(ToolCallRejection::Unavailable),
         };
         let (tool, mut context, _capability) = match admitted {
@@ -125,6 +264,40 @@ impl<'io> StockExecution<'io> {
                 return self.push_tool_result(&invocation, content, None, prior_messages);
             }
         };
+        if matches!(recorded, RecordedCall::Unstarted)
+            && self
+                .stock
+                .tools
+                .fixed_for_grants(&invocation.name, self.stock.tool_scope.grants(), self.io)?
+                .is_none()
+        {
+            let retained = self
+                .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
+                .await?;
+            if !retained.request.as_ref().is_some_and(|request| {
+                request
+                    .request()
+                    .tools
+                    .iter()
+                    .any(|definition| definition == &tool.definition)
+            }) {
+                let content = self
+                    .settle_tool_refusal(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation,
+                        ToolCallRejection::Failed(stock_boundary(
+                            self.io,
+                            Conflict,
+                            "tool definition changed after the model request",
+                        )),
+                    )
+                    .await?;
+                return self.push_tool_result(&invocation, content, None, prior_messages);
+            }
+        }
+        let tool = tool.as_ref();
         if let Some(context) = &mut context {
             context.model_turn = (operation_id, step);
         }
@@ -201,21 +374,27 @@ impl<'io> StockExecution<'io> {
             }
         }
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(reason) = pre_hook.take_block_reason() {
-            let content = self
-                .settle_tool_refusal(
-                    journal,
-                    operation_id,
-                    step,
-                    &invocation,
-                    ToolCallRejection::Failed(Error::Unauthorized(reason)),
-                )
-                .await?;
-            self.append_hook_context(_hook_context, pre_hook)?;
-            return self.push_tool_result(&invocation, content, None, prior_messages);
-        }
+        let hook_decision = match pre_hook.take_tool_decision() {
+            Ok(decision) => decision,
+            Err(error) => {
+                let content = self
+                    .settle_tool_refusal(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation,
+                        ToolCallRejection::Failed(error),
+                    )
+                    .await?;
+                self.append_hook_context(_hook_context, pre_hook)?;
+                return self.push_tool_result(&invocation, content, None, prior_messages);
+            }
+        };
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-        let hook_approval = pre_hook.approval.take();
+        let hook_approval = match hook_decision {
+            crate::hooks::ToolHookDecision::Allow => None,
+            crate::hooks::ToolHookDecision::RequireApproval { prompt } => Some(prompt),
+        };
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         self.append_hook_context(_hook_context, pre_hook)?;
         // One match over every record state: a settlement replays whether or not it has a
@@ -246,7 +425,7 @@ impl<'io> StockExecution<'io> {
                     &invocation,
                     result,
                     projection,
-                    tool,
+                    (&tool.definition, tool.executor.is_code_mode()),
                     _hook_context,
                 )
                 .await?
@@ -488,7 +667,7 @@ impl<'io> StockExecution<'io> {
         // A native call runs where its capability's call would, and its start
         // records that target. A call its declaration refuses runs nowhere;
         // admission settles the refusal.
-        let canonical = match self.stock.tools.get(&invocation.name, None, None)? {
+        let canonical = match self.stock.tools.resolve(&invocation.name, None)? {
             Some(tool) => match tool.executor.canonical(invocation, self.native_work()) {
                 Ok(canonical) => canonical,
                 // A declaration refusal is settled by admission. Resource and
@@ -596,7 +775,12 @@ impl<'io> StockExecution<'io> {
         let capability = with_history_io(self.io, |work| {
             preparation_format(format_args!("tool:call:{}", granted.definition.name), work)
         })?;
-        if !self.stock.tool_scope.grants().contains(&capability) {
+        if !self.stock.tool_scope.grants().contains(&capability)
+            && !self
+                .stock
+                .tools
+                .source_granted(&granted.definition, self.stock.tool_scope.grants())?
+        {
             return Ok(Err(ToolCallRejection::Unavailable));
         }
         // Shape precedes resource authorization, so a tool authorizes only well-formed calls.

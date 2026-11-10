@@ -83,13 +83,16 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
         let Delivered::Committed { inbox } = host.send(&root, &user(), &record).await? else {
             return Err("input was refused".into());
         };
-        let (ready, cut) = host.input_progress(&root, inbox).await?;
-        assert!(!ready);
+        let progress = host.input_progress(&root, inbox).await?;
+        assert!(!progress.settled);
+        assert!(!progress.closed);
         assert!(!settled(&provider, &within, &root).await?.settled);
-        let mut changes = acyclic_stream::records_only(provider.follow(cut).await?);
+        let mut changes = acyclic_stream::records_only(provider.follow(progress.follow).await?);
         assert!(host.runtime().drain().await.is_empty());
         assert!(changes.try_next().await?.is_some());
-        assert!(host.input_progress(&root, inbox).await?.0);
+        let progress = host.input_progress(&root, inbox).await?;
+        assert!(progress.settled);
+        assert!(!progress.closed);
         assert_eq!(
             settled(&provider, &within, &root).await?,
             Settlement {
@@ -987,6 +990,8 @@ async fn spawn_and_archive() -> Result {
     assert_eq!(observed.path, child);
     assert_eq!(observed.parent.as_ref(), Some(&root));
 
+    assert_eq!(host.input_progress(&root, 0).await?.open_children, 1);
+
     let by = intent("archive");
     assert!(matches!(
         host.archive(&root, &user(), &by).await?,
@@ -1152,6 +1157,7 @@ async fn reply_waits_require_original_committed_requests() -> Result {
     }
     let request = InboxRecord::Spawn(SpawnRequest {
         profile: acyclic_harness_core::agent::CreationConfig {
+            model: None,
             continuation: None,
             context: acyclic_harness_core::agent::SpawnContext::Fork,
             template: None,
@@ -1242,6 +1248,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                model: None,
                 continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,

@@ -3,7 +3,11 @@ use super::*;
 impl ToolRegistry {
     pub(super) fn native_owned_bytes(&self) -> Result<u64> {
         use crate::filesystem::UploadRecord as _;
-        let mut bytes = REGISTRY_BYTES as u64;
+        let mut bytes = (REGISTRY_BYTES as u64)
+            .checked_add(
+                (self.sources.capacity() * std::mem::size_of::<Arc<dyn ToolSource>>()) as u64,
+            )
+            .ok_or(OWNERSHIP_OVERFLOW)?;
         for ((name, revision), tool) in &self.data.versions {
             let definition_deep = tool.definition.logical_owned_bytes()?;
             let row = ((VERSION_SLOT_BYTES + std::mem::size_of::<ToolDefinition>()) as u64)
@@ -39,7 +43,13 @@ impl ToolRegistry {
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         io.retain_owned(REGISTRY_BYTES as u64)?;
-        let mut copied = Self::default();
+        let mut copied = Self {
+            source_ceiling: self.source_ceiling.clone(),
+            ..Self::default()
+        };
+        for source in &self.sources {
+            crate::executor::stock_vec_push(&mut copied.sources, source.clone(), Some(&io))?;
+        }
         let data = Arc::make_mut(&mut copied.data);
         for ((name, revision), tool) in &self.data.versions {
             io.retain_owned((VERSION_SLOT_BYTES + std::mem::size_of::<ToolDefinition>()) as u64)?;

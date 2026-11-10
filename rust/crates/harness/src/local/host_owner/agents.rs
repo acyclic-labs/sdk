@@ -23,6 +23,7 @@ use crate::{
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_stream::{ReadRequest, StreamError, StreamProvider as _};
 use futures::TryStreamExt as _;
+use serde::{Deserialize, Serialize};
 
 mod steps;
 use steps::{apply, idle, reject, start, waiting};
@@ -45,21 +46,6 @@ pub(super) fn claim_id(request: &IntentId) -> OperationId {
     )
 }
 
-/// Requested lifecycle of a native session.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Control {
-    /// Run inputs as they arrive.
-    #[default]
-    Resume,
-    /// Stop the running input; later inputs may resume the session.
-    Interrupt,
-    /// Stop the running input and drop queued inputs.
-    Cancel,
-    /// Stop and close the session.
-    Archive,
-}
-
 /// The input a session's open turn runs: its brief or a message, held in the
 /// turn's checkpoint until the native process that claimed it settles it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,19 +57,6 @@ pub(super) struct Running {
     pub(super) input: TurnInput,
     /// The claim a native process runs it under.
     pub(super) claimed: Option<OperationId>,
-}
-
-/// The exact claim a native process executes under; returned by `Next` and
-/// presented again to settle it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TurnClaim {
-    /// The session's agent.
-    pub agent: AgentPath,
-    /// Claim operation.
-    pub operation: OperationId,
-    /// One-based turn number.
-    pub turn: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -374,28 +347,28 @@ impl HostDriver {
         &self,
         agent: &AgentState,
         claim: OperationId,
-        bytes: &[u8],
-    ) -> Result<FileRef> {
+        file: std::fs::File,
+    ) -> Result<(FileRef, Option<String>)> {
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.native-host.events.v1");
         hasher.update(&claim.into_bytes());
         let mut operation = [0; 16];
         hasher.finalize_xof().fill(&mut operation);
         let operation = OperationId::from_bytes(operation);
-        let content = self
-            .content(agent, crate::local::host_process::EVENT_LOG_BYTES, &[])
-            .await?;
-        Ok(content
+        let mut source = super::native_events::NativeEvents::new(file)?;
+        let content = self.content(agent, source.maximum_bytes(), &[]).await?;
+        let staged = content
             .writer
-            .stage_once(
+            .stage_stream_once(
                 operation,
                 &format!("native/{claim}.events.jsonl"),
-                bytes,
+                &mut source,
                 "application/x-ndjson",
                 "native",
                 ContentAccess::default(),
             )?
             .await?
-            .0)
+            .0;
+        Ok((staged, source.session()))
     }
 
     /// The session after the agent's last step: its open turn's checkpoint,
@@ -679,10 +652,24 @@ impl NativeAgents {
         &self,
         agent: &AgentPath,
         claim: OperationId,
-        bytes: &[u8],
-    ) -> Result<FileRef> {
+        file: std::fs::File,
+        custody: super::super::host_process::QuiescentHostProcess,
+    ) -> Result<(
+        FileRef,
+        Option<String>,
+        super::super::host_process::QuiescentHostProcess,
+    )> {
         let state = self.state(agent).await?;
-        self.driver.stage_events(&state, claim, bytes).await
+        let driver = Arc::clone(&self.driver);
+        // Polling this publication can read the regular file synchronously.
+        // The shared worker yields at each await; it retains the physical
+        // fence through an in-flight poll even when its caller is dropped.
+        acyclic_native_runtime::blocking_future(async move {
+            let (events, session) = driver.stage_events(&state, claim, file).await?;
+            Ok((events, session, custody))
+        })
+        .await
+        .map_err(storage)?
     }
 
     /// The brief of `parent`'s child session `reference`; see

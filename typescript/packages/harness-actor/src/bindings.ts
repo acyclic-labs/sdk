@@ -19,6 +19,10 @@ export const MACHINES_ENDPOINT = "machinesEndpoint";
  * declared as `entry.hostFetch[1].name`. */
 export const OBJECTS_ENDPOINT = "objectsEndpoint";
 
+/** The entry's host-only Stream v1 endpoint behind the `sharedStreams`
+ * binding, declared as `entry.hostFetch[2].name`. */
+export const STREAMS_ENDPOINT = "streamsEndpoint";
+
 /** The platform's account leaf: every host-only endpoint mints its bearers from
  * it. The host owns the leaf's version, so the credential names no reference. */
 export const ACCOUNT_LEAF = { scheme: "account-leaf" } as const;

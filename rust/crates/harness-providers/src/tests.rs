@@ -56,6 +56,9 @@ mod portable_projection_tests;
 pub(crate) mod tool_name_tests;
 #[path = "transport_tests.rs"]
 mod transport_tests;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "usage_lifecycle_tests.rs"]
+mod usage_lifecycle_tests;
 
 #[path = "ordered_parts_tests.rs"]
 mod ordered_parts_tests;
@@ -351,6 +354,10 @@ pub(super) fn provider_with(
     transport: Arc<dyn HttpTransport>,
 ) -> ResolvedModel {
     ResolvedModel {
+        #[cfg(not(target_arch = "wasm32"))]
+        account_pin: Arc::new(std::sync::OnceLock::new()),
+        inputs: None,
+        credential_config: None,
         credential_scope: None,
         files: crate::files::Files::default(),
         accounting: crate::resolved::Accounting::new(adapter),
@@ -364,6 +371,7 @@ pub(super) fn provider_with(
             adapter,
             authentication: Authentication::ApiKey,
             base_url: base_url.into(),
+            allow_http_host: None,
             headers: BTreeMap::new(),
             models: BTreeMap::new(),
             token_counter: Some(crate::TokenCounterSpec {
@@ -387,6 +395,8 @@ pub(super) fn provider_with(
         transport: crate::deadline::Bounded::new(transport, crate::TimeoutSpec::DEFAULT),
         #[cfg(not(target_arch = "wasm32"))]
         codex_login: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        explicit_codex_login: None,
     }
 }
 
@@ -442,6 +452,7 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
         let original = projection::body(&provider, &request)?;
         let mut late = code.clone();
         late.name = "late".into();
+        let table = serde_json::to_string(&vec![late.clone()]).unwrap();
         request.tools.push(late);
         request.messages.push(ModelMessage {
             role: ModelRole::User,
@@ -449,7 +460,7 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
                 notices: vec![acyclic_model_render::Notice {
                     source: "tools".into(),
                     kind: "tools.changed".into(),
-                    body: json!({"tools":[{"name":"late", "input_schema":{"type":"object"}}]}),
+                    body: json!({"offset":0,"json":table,"complete":true,"removed":[]}),
                     wake: false,
                     coalesce_key: None,
                 }],
@@ -669,6 +680,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "https://example.test/v1".into(),
+        allow_http_host: None,
         headers: BTreeMap::new(),
         models: BTreeMap::from([(
             "org/model".into(),

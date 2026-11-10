@@ -273,7 +273,7 @@ async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix()
     let mut context = crate::context::Context::default();
     assert!(
         StockExecution::ordinary(&executor)
-            .code_tools_notice(&mut context, &requests[0].tools)
+            .tools_notice(&mut context, &requests[0].tools, false)
             .is_err()
     );
     assert!(context.messages.is_empty());
@@ -348,7 +348,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         let (notice, codec) =
             acyclic_test_support::differential::observe::<_, _, json::CodecOperation>(
                 || (),
-                |()| execution.code_tools_notice(&mut context, &before[0].tools),
+                |()| execution.tools_notice(&mut context, &before[0].tools, false),
             );
         notice?;
         use json::CodecOperation::{DecodeBytes, Serialize};
@@ -369,7 +369,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         let (notice, larger_codec) =
             acyclic_test_support::differential::observe::<_, _, json::CodecOperation>(
                 || (),
-                |()| execution.code_tools_notice(&mut larger_context, &larger),
+                |()| execution.tools_notice(&mut larger_context, &larger, false),
             );
         notice?;
         assert_eq!(larger_codec, expected);
@@ -406,7 +406,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         cancellation.cancel();
         assert!(
             execution
-                .code_tools_notice(&mut context, &before[0].tools)
+                .tools_notice(&mut context, &before[0].tools, false)
                 .is_err()
         );
         assert_eq!(context.messages.len(), 1);
@@ -446,8 +446,11 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         content: ModelContent::Text("after revocation".into()),
     });
     context.current_input_index = Some(boundary as _);
-    StockExecution::ordinary(&revoked)
-        .code_tools_notice(&mut context, &revoked_model.requests()[0].tools)?;
+    StockExecution::ordinary(&revoked).tools_notice(
+        &mut context,
+        &revoked_model.requests()[0].tools,
+        false,
+    )?;
     assert_eq!(context.messages[..boundary], after[1].messages);
     assert_eq!(context.messages.len(), boundary + 2);
     let mut continued = revoked_model.requests()[0].clone();

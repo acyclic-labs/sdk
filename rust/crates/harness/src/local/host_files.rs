@@ -66,7 +66,7 @@ fn notification_failure(error: &notify::Error) -> String {
 }
 
 fn owner_failure(step: &str, error: &std::io::Error) -> String {
-    format!("step={step}: {error}; recovery=graphcoder --host-workspace")
+    format!("step={step}: {error}; recovery=acyclic run --host-workspace")
 }
 
 /// The leaves under `directory` a notification names, or `None` when it
@@ -117,7 +117,7 @@ impl Endpoint {
         let version: Version = serde_json::from_slice(bytes).map_err(storage)?;
         if version.version != 4 {
             return Err(Error::Unsupported(format!(
-                "step=admit native workspace protocol: version {}; requires 4; recovery=run graphcoder --host-workspace in a fresh workspace with its matching plugin",
+                "step=admit native workspace protocol: version {}; requires 4; recovery=run acyclic run --host-workspace in a fresh workspace with its matching plugin",
                 version.version
             )));
         }
@@ -178,7 +178,7 @@ pub fn workspace_root(cwd: &Path) -> Result<PathBuf> {
     discover(&cwd).map(|(_, endpoint)| endpoint.workspace)
 }
 
-const NO_OWNER: &str = "no running GraphCoder workspace owner; start graphcoder --host-workspace outside the host sandbox";
+const NO_OWNER: &str = "no running Acyclic workspace owner; start acyclic run --host-workspace outside the host sandbox";
 
 /// What a waiter receives: its reply, observation failure or its owner's exit.
 enum Delivery {
@@ -721,6 +721,9 @@ fn notified_operations(
 }
 
 fn discover(cwd: &Path) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
+    // The owner publishes its canonical workspace; compare ancestors in that
+    // one spelling, whatever form the caller's directory takes.
+    let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
     for ancestor in cwd.ancestors() {
         let candidate = (|| {
             let workspace = acyclic_fs::hold_root(ancestor).map_err(native_file_error)?;

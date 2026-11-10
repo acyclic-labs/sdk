@@ -367,7 +367,7 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
         &IdempotencyKey::new("seed-skill")?,
     )
     .await?;
-    let model = provider(2);
+    let model = provider(4);
     let harness =
         open(config(root.path(), home.path(), state.path(), model.clone())?.volume(volume)).await?;
     turn(&harness, "first inventory", true).await?;
@@ -390,12 +390,59 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
     )
     .await?;
     turn(&harness, "second inventory", true).await?;
-    let second = catalog(&model, 1)?;
-    let skill = second
-        .iter()
-        .find(|skill| skill.name == "greet2")
-        .ok_or("updated greet2 skill absent")?;
-    assert_eq!(skill.description, "Updated generation");
+    let updated = b"---\nname: greet2\ndescription: Updated generation\n---\nCHANGED-PRIVATE-BODY";
+    host.apply(
+        &workspace,
+        None,
+        &[WorkspaceMutation::PutFile {
+            path: "/.agents/skills/greet2/SKILL.md".into(),
+            bytes: updated.to_vec().into(),
+        }],
+        &IdempotencyKey::new("update-body-only")?,
+    )
+    .await?;
+    turn(&harness, "body-only change", true).await?;
+    turn(&harness, "unchanged inventory", true).await?;
+    let requests = model.requests();
+    let prefix = |request: &acyclic_harness::model::ModelRequest| {
+        serde_json::to_vec(&(
+            request
+                .messages
+                .iter()
+                .take_while(|message| message.role == acyclic_harness::model::ModelRole::System)
+                .collect::<Vec<_>>(),
+            &request.tools,
+        ))
+    };
+    let first_prefix = prefix(&requests[0])?;
+    let mut sources = Vec::new();
+    for (index, expected) in [(1, 1), (2, 2), (3, 2)] {
+        assert_eq!(prefix(&requests[index])?, first_prefix);
+        // The epoch catalog stays frozen. Fresh metadata belongs to the
+        // appended notice, including the exact source needed by lazy readers.
+        assert_eq!(catalog(&model, index)?, first);
+        let changed = requests[index]
+            .messages
+            .iter()
+            .filter_map(|message| message.content.notice_parts())
+            .flat_map(|(notices, _)| notices)
+            .filter(|notice| notice.kind == acyclic_harness::context::CONTEXT_CHANGED)
+            .filter_map(|notice| notice.body.get("skill"))
+            .filter(|skill| skill["name"] == "greet2")
+            .map(|skill| serde_json::from_value::<SkillMetadata>(skill.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(changed.len(), expected, "request {index}");
+        assert!(
+            changed
+                .iter()
+                .all(|skill| skill.description == "Updated generation")
+        );
+        sources = changed;
+    }
+    assert_ne!(sources[0].source.generation, sources[1].source.generation);
+    let reader = harness.client_reader()?;
+    let (_, bytes) = sources[1].source.read(reader.as_ref(), 4096).await?;
+    assert_eq!(bytes.as_ref(), updated);
     assert!(!serde_json::to_string(&model.requests())?.contains("PRIVATE-BODY"));
     Ok(())
 }

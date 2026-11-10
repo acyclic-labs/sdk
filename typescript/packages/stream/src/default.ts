@@ -114,13 +114,13 @@ export class DefaultStreamProvider implements StreamProvider {
   }
   head(path: string) { return this.provider().then(provider => provider.head(path)); }
   tail(path: string) { return this.provider().then(provider => provider.tail(path)); }
-  append(path: string, values: Parameters<StreamProvider["append"]>[1], options?: Parameters<StreamProvider["append"]>[2]) {
+  append(path: string, values: Parameters<StreamProvider["append"]>[1], options: Parameters<StreamProvider["append"]>[2]) {
     const copiedValues = values.map(value => value.slice());
-    const authored = options === undefined ? undefined : structuredClone(options);
+    const authored = structuredClone(options);
     return this.provider().then(provider => provider.append(path, copiedValues, authored));
   }
-  fork(source: string, destination: string, options?: Parameters<StreamProvider["fork"]>[2]) {
-    const authored = options === undefined ? undefined : structuredClone(options);
+  fork(source: string, destination: string, options: Parameters<StreamProvider["fork"]>[2]) {
+    const authored = structuredClone(options);
     return this.provider().then(provider => provider.fork(source, destination, authored));
   }
   read(path: string, options: Parameters<StreamProvider["read"]>[1]) {

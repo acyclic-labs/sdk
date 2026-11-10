@@ -52,6 +52,7 @@ mod composition;
 mod content;
 mod dispatch;
 mod live_reply;
+mod tool_changes;
 pub use live_reply::LiveReply;
 mod event_page;
 pub use event_page::{
@@ -65,8 +66,8 @@ pub use model_cache::{
 };
 mod model_observation;
 pub use model_cost::{
-    ModelCostEstimate, ModelPriceError, ModelPriceRecord, ModelUsageProjection, ModelUsageTotals,
-    TokenPrice, UsageTotal,
+    ModelCostEstimate, ModelPriceError, ModelPriceRecord, ModelPrices, ModelUsageProjection,
+    ModelUsageTotals, TokenPrice, UsageTotal,
 };
 #[cfg(feature = "metrics-export")]
 pub mod metrics;
@@ -78,7 +79,9 @@ pub use model_usage::codec_fuzz as model_usage_codec_fuzz;
 pub mod read_set;
 #[cfg(feature = "filesystem")]
 pub(crate) use model_usage::validate as validate_model_usage;
-pub use model_usage::{ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page};
+pub use model_usage::{
+    ContextUsage, ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page,
+};
 pub(crate) mod phase;
 #[cfg(test)]
 pub(crate) use model_observation::append as append_model_event;
@@ -439,6 +442,8 @@ pub enum ToolFailureKind {
     PublicationRejected,
     /// The composition binds no granted tool by the called name; recorded without a start.
     Unavailable,
+    /// A formerly declared tool was removed from its live source.
+    Removed,
     /// The arguments violated the tool's pinned input schema; recorded without a start.
     InvalidInput,
     /// The executing process ended before the outcome was recorded, and the
@@ -456,6 +461,7 @@ impl ToolFailureKind {
             Self::ProjectionRejected => "tool result projection was rejected",
             Self::PublicationRejected => "tool result artifact could not be published",
             Self::Unavailable => "tool is not available",
+            Self::Removed => "tool was removed",
             Self::InvalidInput => "tool arguments violated the input schema",
             Self::Interrupted => {
                 "tool was interrupted before its outcome was recorded; it may have run, partly or fully"
@@ -466,7 +472,7 @@ impl ToolFailureKind {
     /// Whether the call is settled before any dispatch, so no start precedes the failure.
     #[must_use]
     pub const fn precedes_dispatch(self) -> bool {
-        matches!(self, Self::Unavailable | Self::InvalidInput)
+        matches!(self, Self::Unavailable | Self::Removed | Self::InvalidInput)
     }
 }
 
@@ -642,6 +648,7 @@ pub struct StockExecutor {
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
     tools: ToolRegistry,
+    epoch_tools: Option<Arc<Vec<crate::tool::ToolDefinition>>>,
     #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
     /// A prompt hook's block: the turn fails with it before any model request.

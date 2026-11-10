@@ -81,7 +81,8 @@ pub(crate) fn events_named<'a>(
 ) -> impl futures::Stream<Item = Result<ModelEvent>> + acyclic_stream::ProviderTask + 'a {
     let maximum = maximum.into();
     async_stream::try_stream! {
-        let mut input = sse::decode(body, maximum);
+        let input = sse::frames(body, maximum, sse::decoder(adapter, sse::Decoder::default()));
+        let mut input = core::pin::pin!(input);
         let mut state = State::new(maximum);
         state.set_origin(origin)?;
         if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
@@ -89,7 +90,8 @@ pub(crate) fn events_named<'a>(
         }
         while let Some(data) = input.next().await {
             let data = data?;
-            let deltas = parse(&mut state, adapter, &data)?;
+            let data = data.data();
+            let deltas = parse(&mut state, adapter, data)?;
             for event in deltas { yield event; }
             if state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
         }
@@ -107,7 +109,17 @@ pub(crate) fn parse(state: &mut State, adapter: Adapter, data: &str) -> Result<V
         state.terminal = true;
         return Ok(Vec::new());
     }
-    let value = crate::json(data.as_bytes())?;
+    let value = crate::decode_json(data.as_bytes()).map_err(|error| {
+        if adapter == Adapter::Responses && error.is_eof() {
+            crate::transport_failure(
+                state.budget.is_native(),
+                acyclic_harness_core::ModelTransportFailure::Interrupted,
+                "truncated Responses JSON",
+            )
+        } else {
+            invalid(error.to_string())
+        }
+    })?;
     if !value.is_object() {
         return Err(invalid("model event must be an object"));
     }

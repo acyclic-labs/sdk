@@ -286,8 +286,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> W::Output<crate::Workspace<A, O>, WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
+            let name = name.as_ref();
             crate::heap_future::in_borrowed_frame!(&mut accounting, |accounting| async move {
-                let (name, id) = self.workspace_name(name.as_ref(), accounting)?;
+                let (name, id) = self.workspace_name(name, accounting)?;
                 let (creation, _) = self
                     .read_creation(id.volume_id(), accounting, cancellation)
                     .await

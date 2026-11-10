@@ -34,18 +34,21 @@ impl McpHttpProvider for NativeMcpHttpProvider {
             }
             let method = reqwest::Method::from_bytes(request.method.as_bytes())
                 .map_err(|e| Error::Invalid(e.to_string()))?;
-            let mut builder = self
-                .0
-                .request(method, &request.endpoint)
-                .timeout(Duration::from_millis(u64::from(request.timeout_ms)))
-                .body(request.body);
+            let streaming = request.method == "GET";
+            let mut builder = self.0.request(method, &request.endpoint).body(request.body);
+            if !streaming {
+                builder = builder.timeout(Duration::from_millis(u64::from(request.timeout_ms)));
+            }
             for (key, value) in request.headers {
                 builder = builder.header(key, value);
             }
-            let response = builder
-                .send()
-                .await
-                .map_err(|_| Error::Indeterminate(operation))?;
+            let response = tokio::time::timeout(
+                Duration::from_millis(u64::from(request.timeout_ms)),
+                builder.send(),
+            )
+            .await
+            .map_err(|_| Error::Indeterminate(operation))?
+            .map_err(|_| Error::Indeterminate(operation))?;
             let status = response.status().as_u16();
             let headers = response
                 .headers()
@@ -63,7 +66,11 @@ impl McpHttpProvider for NativeMcpHttpProvider {
             Ok(McpHttpResponse {
                 status,
                 headers,
-                body: Box::pin(bounded(body, request.maximum_response_bytes, operation)),
+                body: if streaming {
+                    Box::pin(body)
+                } else {
+                    Box::pin(bounded(body, request.maximum_response_bytes, operation))
+                },
             })
         })
     }
@@ -83,6 +90,88 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    #[tokio::test]
+    async fn notification_eof_reconnects_and_invalidates_the_disconnected_gap() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncBufReadExt as _, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(Error::process_io)?;
+        let address = listener.local_addr().map_err(Error::process_io)?;
+        let connections = Arc::new(AtomicUsize::new(0));
+        let accepted = connections.clone();
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (socket, _) = listener.accept().await.map_err(Error::process_io)?;
+                accepted.fetch_add(1, Ordering::SeqCst);
+                let mut socket = BufReader::new(socket);
+                let mut line = String::new();
+                socket
+                    .read_line(&mut line)
+                    .await
+                    .map_err(Error::process_io)?;
+                assert!(line.starts_with("GET "));
+                loop {
+                    line.clear();
+                    assert_ne!(
+                        socket
+                            .read_line(&mut line)
+                            .await
+                            .map_err(Error::process_io)?,
+                        0
+                    );
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let status = if index == 2 {
+                    "405 Method Not Allowed"
+                } else {
+                    "200 OK"
+                };
+                socket.get_mut().write_all(format!("HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.map_err(Error::process_io)?;
+                socket
+                    .get_mut()
+                    .shutdown()
+                    .await
+                    .map_err(Error::process_io)?;
+            }
+            Ok::<_, Error>(())
+        });
+        let provider = Arc::new(NativeMcpHttpProvider::new(
+            reqwest::header::HeaderMap::new(),
+        )?);
+        let mut transport = HttpMcpTransport::new(
+            provider,
+            format!("http://{address}/mcp"),
+            Some("session".into()),
+            8192,
+            1000,
+            None,
+        )?;
+        transport.watch_tools()?;
+        let mut watch = Arc::try_unwrap(transport.notifications.take().expect("watch armed"))
+            .ok()
+            .expect("one watch owner");
+        (&mut watch.0)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            3,
+            "EOF must reconnect until the server declines GET"
+        );
+        assert_eq!(
+            transport.tools_generation(),
+            4,
+            "both EOF and resubscription invalidate each disconnected interval"
+        );
+        server
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))??;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn real_local_http_json_sse_and_lost_response_never_repost() -> Result<()> {

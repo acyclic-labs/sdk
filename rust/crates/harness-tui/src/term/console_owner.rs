@@ -104,7 +104,7 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
     fn wait<'a>(
         &self,
         state: MutexGuard<'a, State<W>>,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) -> io::Result<MutexGuard<'a, State<W>>> {
         // Timer wakeups that leave the state unchanged are stutters. Model
         // acknowledgement notifications and explicit cancellation transitions;
@@ -118,10 +118,17 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
         }
         #[cfg(not(loom))]
         {
-            self.wake
-                .wait_timeout(state, timeout)
-                .map(|value| value.0)
-                .map_err(|_| io::ErrorKind::Other.into())
+            match timeout {
+                Some(timeout) => self
+                    .wake
+                    .wait_timeout(state, timeout)
+                    .map(|value| value.0)
+                    .map_err(|_| io::ErrorKind::Other.into()),
+                None => self
+                    .wake
+                    .wait(state)
+                    .map_err(|_| io::ErrorKind::Other.into()),
+            }
         }
     }
     pub(crate) fn notifying(
@@ -157,9 +164,10 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
         }
     }
 
+    /// None waits for completion; explicit probe deadlines retain cancellation.
     pub(crate) fn run<R: Send + 'static>(
         this: &Arc<Self>,
-        deadline: Instant,
+        deadline: Option<Instant>,
         action: impl FnOnce(&mut RestoreGuard<W>) -> io::Result<R> + Send + 'static,
     ) -> io::Result<R> {
         Self::execute(this, deadline, false, action)
@@ -167,7 +175,7 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
 
     fn execute<R: Send + 'static>(
         this: &Arc<Self>,
-        deadline: Instant,
+        deadline: Option<Instant>,
         restoring: bool,
         action: impl FnOnce(&mut RestoreGuard<W>) -> io::Result<R> + Send + 'static,
     ) -> io::Result<R> {
@@ -176,33 +184,41 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
         // owner. Cancellation calls also run outside this lock and the caller.
         let mut state = this.state.lock().map_err(|_| io::ErrorKind::Other)?;
         while !state.acknowledged {
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Err(io::ErrorKind::TimedOut.into());
             }
-            state = this.wait(state, deadline.saturating_duration_since(Instant::now()))?;
+            state = this.wait(
+                state,
+                deadline.map(|deadline| deadline.saturating_duration_since(Instant::now())),
+            )?;
         }
         if !restoring && state.closed {
             return Err(io::ErrorKind::NotConnected.into());
         }
-        if Instant::now() >= deadline {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(io::ErrorKind::TimedOut.into());
         }
         let result = Self::submit(this, &mut state, restoring, action)?;
         let generation = state.generation;
         while !state.acknowledged {
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 state.phase = Phase::Cancelled;
                 drop(state);
                 Self::cancel_background(this, generation);
                 return Err(io::ErrorKind::TimedOut.into());
             }
-            state = this.wait(state, deadline.saturating_duration_since(Instant::now()))?;
+            state = this.wait(
+                state,
+                deadline.map(|deadline| deadline.saturating_duration_since(Instant::now())),
+            )?;
         }
         let value = result.lock().map_err(|_| io::ErrorKind::Other)?.take();
         if state.closed && !restoring {
             return Err(io::ErrorKind::NotConnected.into());
         }
-        if Instant::now() >= deadline || state.phase == Phase::Cancelled {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            || state.phase == Phase::Cancelled
+        {
             return Err(io::ErrorKind::TimedOut.into());
         }
         value.ok_or_else(|| io::Error::from(io::ErrorKind::Interrupted))?
@@ -347,7 +363,7 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
             if state.acknowledged {
                 break;
             }
-            state = self.wait(state, Duration::from_millis(1))?;
+            state = self.wait(state, Some(Duration::from_millis(1)))?;
         }
         Ok(())
     }
@@ -371,7 +387,7 @@ impl<W: Write + Send + 'static, N: CloseWake + 'static> Owner<W, N> {
         let result = this.quiesce(true).and_then(|()| {
             let result = Self::execute(
                 this,
-                Instant::now() + super::PROBE_TIMEOUT,
+                Some(Instant::now() + super::PROBE_TIMEOUT),
                 true,
                 move |guard| {
                     // Cancellation can leave a partial query even with an empty undo
@@ -416,21 +432,17 @@ mod tests {
             assert!(owner.state.lock().unwrap().worker.is_none());
 
             let checking = Arc::clone(&owner);
-            let (free, profile, generation, empty) = Owner::run(
-                &owner,
-                Instant::now() + Duration::from_secs(10),
-                move |guard| {
-                    // The production worker owns the guard here. Observe the
-                    // original owner before the same worker returns it and
-                    // acknowledges completion; no borrowed state is seeded.
-                    let free = checking.state.try_lock().is_ok();
-                    let profile = checking.supports_scroll_regions();
-                    let generation = checking.outside_writes();
-                    let empty = checking.empty_if_current(Some(0))?;
-                    guard.writer().write_all(b"outside")?;
-                    Ok((free, profile, generation, empty))
-                },
-            )
+            let (free, profile, generation, empty) = Owner::run(&owner, None, move |guard| {
+                // The production worker owns the guard here. Observe the
+                // original owner before the same worker returns it and
+                // acknowledges completion; no borrowed state is seeded.
+                let free = checking.state.try_lock().is_ok();
+                let profile = checking.supports_scroll_regions();
+                let generation = checking.outside_writes();
+                let empty = checking.empty_if_current(Some(0))?;
+                guard.writer().write_all(b"outside")?;
+                Ok((free, profile, generation, empty))
+            })
             .expect("console I/O action must complete");
             assert!(free, "console I/O retained owner state");
             assert!(!profile, "borrowed profile must be unknown");

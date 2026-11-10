@@ -5,7 +5,7 @@ use super::{
 use crate::{
     Error, Result,
     agent::AgentId,
-    interaction::{ApprovalBinding, ApprovalDecisionFile},
+    interaction::{ApprovalBinding, ApprovalDecisionFile, ApprovalVerdict},
 };
 
 /// Active stage selected from the immutable request and retained review files.
@@ -21,6 +21,8 @@ pub enum NextStage<'a> {
         /// Original action identity from the request already decoded by this
         /// traversal. Waiting status publication retains it without another read.
         binding: ApprovalBinding,
+        /// Exact action eligible for a standing human decision; absent for guards.
+        standing_rule: Option<super::ApprovalRule>,
     },
     /// First decisive automatic review, or denial when escalation is exhausted.
     Decided(ApprovalReviewFile),
@@ -45,7 +47,7 @@ pub async fn next_stage<'a>(
     let interaction: crate::interaction::Interaction =
         crate::contract::json_from_slice(request.bytes())
             .map_err(|error| Error::Invalid(error.to_string()))?;
-    let (policy, binding) = match interaction {
+    let (policy, binding, rule) = match interaction {
         crate::interaction::Interaction::Approval {
             operation_id,
             action_digest,
@@ -53,7 +55,7 @@ pub async fn next_stage<'a>(
             ..
         } => (
             if matches!(
-                subject,
+                &subject,
                 crate::interaction::ApprovalSubject::Tool {
                     route: crate::interaction::ApprovalRoute::Human,
                     ..
@@ -67,6 +69,7 @@ pub async fn next_stage<'a>(
                 operation_id,
                 action_digest,
             },
+            super::grants::exact(subject),
         ),
         _ => return Err(Error::Invalid("not an approval request".into())),
     };
@@ -123,6 +126,11 @@ pub async fn next_stage<'a>(
             expected,
             retained,
             binding,
+            standing_rule: if matches!(approver, Approver::Human { .. }) {
+                rule
+            } else {
+                None
+            },
         });
     }
     Ok(NextStage::Decided(ApprovalReviewFile {
@@ -167,6 +175,13 @@ pub async fn validate_agent_decision(
     decision: &ApprovalDecisionFile,
 ) -> Result<()> {
     decision.validate()?;
+    if decision.verdict == ApprovalVerdict::ApproveRule
+        && !matches!(responder, ApprovalResponder::Human(_))
+    {
+        return Err(Error::Unauthorized(
+            "only a human may retain an approval rule".into(),
+        ));
+    }
     let principal = match responder {
         ApprovalResponder::Human(principal)
         | ApprovalResponder::Rules(principal)
@@ -186,8 +201,13 @@ pub async fn validate_agent_decision(
         NextStage::Review {
             approver: Approver::Human { .. },
             expected,
+            standing_rule,
             ..
-        } => matches!(responder, ApprovalResponder::Human(_)) && expected.principal == principal,
+        } => {
+            matches!(responder, ApprovalResponder::Human(_))
+                && expected.principal == principal
+                && (decision.verdict != ApprovalVerdict::ApproveRule || standing_rule.is_some())
+        }
         NextStage::Review {
             approver: Approver::Parent,
             expected,

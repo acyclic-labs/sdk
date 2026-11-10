@@ -16,6 +16,18 @@ Their presence does not establish an executed campaign. Replay a saved crash
 with `cargo +nightly fuzz run --fuzz-dir . TARGET artifacts/TARGET/crash-HASH` and fix its
 production decoder before considering the campaign complete.
 
+`catalog/benchmark-http-host.json` retains captured stdout from the historical Harbor
+catalogue generator; `corpus/SOURCES.tsv` records its command, source blob and
+digest. The catalog target independently checks that `allow_http_host` survives
+the production decoder. `mutations/http-host-decode.patch` removes that
+admission; `mutations/http-host-grant.patch` removes the grant from the shared
+URL policy. The `captured_container_catalog_keeps_exact_host_grants_on_every_route`
+control consumes that original captured document through the actual registry,
+count and generation routes, with exact-host and same-origin counter negatives.
+It does not require the historical generator to be installed or executed.
+Neither a captured catalogue nor fuzz target presence is an
+executed campaign result.
+
 For `provider_stream`, `corpus/SOURCES.tsv` records three real llama.cpp response captures, retained
 under `rust/crates/conformance/fixtures/inference/llamacpp/` at commit
 `07e830a629ec08e5533a7fc28daef0b2cf04a9e8`. Each seed is selector byte `02`

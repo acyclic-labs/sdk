@@ -176,7 +176,7 @@ impl LocalHarnessConfig {
                 .map(crate::native_settings::SettingsConfig::configured_model)
                 .transpose()?
                 .flatten()
-                .unwrap_or_else(|| models.default.clone()),
+                .unwrap_or_else(|| models.default_model().to_owned()),
         };
         self.model = Some(models.resolve(&selection)?);
         for model in self.approval_policy.models() {
@@ -531,47 +531,8 @@ std::thread_local! {
     pub(super) static TEMPORARY_STATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// A model selection's bound provider.
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-type ModelBinding = (Model, Arc<dyn ModelProvider>);
-
-/// Resolves model selections to providers once: every composition resolving through one
-/// resolver reuses the provider of a selection it already resolved; an unseen selection,
-/// or a new resolver over a changed catalog, resolves anew.
-#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-pub struct ModelResolver {
-    default: String,
-    resolve: Box<dyn Fn(&str) -> Result<ModelBinding> + Send + Sync>,
-    resolved: std::sync::Mutex<std::collections::BTreeMap<String, ModelBinding>>,
-}
-
-#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-impl ModelResolver {
-    /// Resolves through `resolve`, selecting `default` when nothing else selects a model.
-    pub fn new(
-        default: impl Into<String>,
-        resolve: impl Fn(&str) -> Result<ModelBinding> + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            default: default.into(),
-            resolve: Box::new(resolve),
-            resolved: Default::default(),
-        }
-    }
-
-    pub(super) fn resolve(&self, selection: &str) -> Result<ModelBinding> {
-        let mut resolved = self
-            .resolved
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(model) = resolved.get(selection) {
-            return Ok(model.clone());
-        }
-        let model = (self.resolve)(selection)?;
-        resolved.insert(selection.into(), model.clone());
-        Ok(model)
-    }
-}
+pub use crate::model::ModelResolver;
 
 #[cfg(all(test, not(loom)))]
 mod resolver_tests {

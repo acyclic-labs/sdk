@@ -9,32 +9,34 @@ fn retained_request_accounts_each_control_allocation_and_shares_payloads()
     let body = OwnedBytes::from(vec![19; 128 * 1024]);
     let request = CommitRequest {
         deadline_unix_millis: Some(42),
-        conditions: vec![CommitCondition::Tail {
-            path: path.clone(),
-            expected: 1,
-        }],
-        mutations: vec![
-            CommitMutation::Append {
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Tail {
                 path: path.clone(),
-                records: vec![AppendRecord {
-                    value: body.clone(),
-                    headers: RecordHeaders::new(
-                        vec![OwnedBytes::from_static(b"original")],
-                        vec![Attribute {
-                            name: "authority".into(),
-                            value: OwnedBytes::from_static(b"retained"),
-                        }],
-                    )?,
-                }],
-            },
-            CommitMutation::Fork {
-                exclude: vec![StreamPath::new("private")?],
-                source: path,
-                destination: StreamPath::new("retained/child")?,
-                at_tail: 1,
-                records: vec![body.clone().into()],
-            },
-        ],
+                expected: 1,
+            }],
+            vec![
+                CommitMutation::Append {
+                    path: path.clone(),
+                    records: vec![AppendRecord {
+                        value: body.clone(),
+                        headers: RecordHeaders::new(
+                            vec![OwnedBytes::from_static(b"original")],
+                            vec![Attribute {
+                                name: "authority".into(),
+                                value: OwnedBytes::from_static(b"retained"),
+                            }],
+                        )?,
+                    }],
+                },
+                CommitMutation::Fork {
+                    exclude: vec![StreamPath::new("private")?],
+                    source: path,
+                    destination: StreamPath::new("retained/child")?,
+                    at_tail: 1,
+                    records: vec![body.clone().into()],
+                },
+            ],
+        )],
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"original-intent"))?,
     };
     let meter = Arc::new(Meter::default());
@@ -54,13 +56,13 @@ fn retained_request_accounts_each_control_allocation_and_shares_payloads()
         meter.held.load(Ordering::SeqCst) as i64
     );
     assert!(physical.bytes_current < body.len() as i64);
-    let CommitMutation::Append { records, .. } = &retained.value().mutations[0] else {
+    let CommitMutation::Append { records, .. } = &retained.value().effects[0].mutations[0] else {
         unreachable!()
     };
     assert!(std::ptr::eq(records[0].value.as_ptr(), body.as_ptr()));
     assert!(std::ptr::eq(
         records[0].headers.keys().as_ptr(),
-        match &request.mutations[0] {
+        match &request.effects[0].mutations[0] {
             CommitMutation::Append { records, .. } => records[0].headers.keys().as_ptr(),
             _ => unreachable!(),
         }

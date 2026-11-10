@@ -23,7 +23,7 @@ impl<'a> StockExecution<'a> {
     pub(super) async fn begin_request_continuation(&self) {
         let mut cache = self.request_cache.lock().await;
         cache.retained = None;
-        cache.enabled = self.context_pipeline().is_empty();
+        cache.enabled = self.context_pipeline().is_empty() && !self.stock.tools.has_sources();
     }
 
     pub(super) async fn retain_response_request(

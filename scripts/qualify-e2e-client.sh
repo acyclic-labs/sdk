@@ -8,8 +8,6 @@ cargo test --locked -p acyclic-harness --features "$features" --lib --no-run --m
 cargo test --locked -p acyclic-harness --features "$features" --test main --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py file_query::diffs:: file_query::diff_tree:: client_diff::
 binary_features=acyclic-harness/filesystem-local,acyclic-harness/native-execution,acyclic-harness/terminal,acyclic-harness/tui,acyclic-harness/test-support,acyclic-harness/grpc,acyclic-harness/search-http
-cargo test --locked -p graphcoder --features "$binary_features" --bin graphcoder --no-run --message-format=json |
-  python3 scripts/qualify-graphcoder-artifact.py args::tests view::diff::tests::
-cargo test --locked -p graphcoder --features "$binary_features" --test tui --no-run --message-format=json |
-  python3 scripts/qualify-graphcoder-artifact.py settlement_ three_prompts_
+cargo test --locked -p acyclic-plugin --features "$binary_features" --lib --no-run --message-format=json |
+  python3 scripts/qualify-graphcoder-artifact.py runner::args::tests:: runner::view::diff::tests::
 node --test scripts/graphcoder-e2e/*.test.mjs

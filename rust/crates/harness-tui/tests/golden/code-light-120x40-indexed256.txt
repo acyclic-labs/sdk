@@ -1,0 +1,41 @@
+120x40
+«Indexed(243)/Named(Background)/Flags(0x0)/»○ GraphCoder · project · main
+«Indexed(26)/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(26)/Indexed(255)/Flags(0x0)/»●«Indexed(243)/Indexed(255)/Flags(0x0)/»┌─ rust«Named(Foreground)/Indexed(255)/Flags(0x0)/»
+«Indexed(243)/Indexed(255)/Flags(0x0)/» │ // Answer the question.«Named(Foreground)/Indexed(255)/Flags(0x0)/»
+«Indexed(243)/Indexed(255)/Flags(0x0)/» │ «Indexed(26)/Indexed(255)/Flags(0x0)/»fn«Named(Foreground)/Indexed(255)/Flags(0x0)/» answer() -> «Indexed(26)/Indexed(255)/Flags(0x0)/»u32«Named(Foreground)/Indexed(255)/Flags(0x0)/» {
+«Indexed(243)/Indexed(255)/Flags(0x0)/» │ «Named(Foreground)/Indexed(255)/Flags(0x0)/»    «Indexed(26)/Indexed(255)/Flags(0x0)/»let«Named(Foreground)/Indexed(255)/Flags(0x0)/» text = «Indexed(29)/Indexed(255)/Flags(0x0)/»"forty-two"«Named(Foreground)/Indexed(255)/Flags(0x0)/»;
+«Indexed(243)/Indexed(255)/Flags(0x0)/» │ «Named(Foreground)/Indexed(255)/Flags(0x0)/»    «Indexed(94)/Indexed(255)/Flags(0x0)/»42«Named(Foreground)/Indexed(255)/Flags(0x0)/»
+«Indexed(243)/Indexed(255)/Flags(0x0)/» │ «Named(Foreground)/Indexed(255)/Flags(0x0)/»}
+«Indexed(243)/Indexed(255)/Flags(0x0)/» └─«Named(Foreground)/Indexed(255)/Flags(0x0)/»
+«Indexed(243)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(243)/Indexed(255)/Flags(0x0)/» ┌─ sh«Named(Foreground)/Indexed(255)/Flags(0x0)/»
+«Indexed(243)/Indexed(255)/Flags(0x0)/» │ «Named(Foreground)/Indexed(255)/Flags(0x0)/»echo «Indexed(29)/Indexed(255)/Flags(0x0)/»"$HOME"«Named(Foreground)/Indexed(255)/Flags(0x0)/» «Indexed(243)/Indexed(255)/Flags(0x0)/»# where«Named(Foreground)/Indexed(255)/Flags(0x0)/»
+«Indexed(243)/Indexed(255)/Flags(0x0)/» └─«Named(Foreground)/Indexed(255)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(243)/Named(Background)/Flags(0x0)/»────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» Follow up
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                                                           model · 24% (2400/10000) · $0.12 · 2 children
+«Indexed(243)/Named(Background)/Flags(0x0)/»                                                                                 Enter: send · Tab: queue · Ctrl-D: quit

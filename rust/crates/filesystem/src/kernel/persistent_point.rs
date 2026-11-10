@@ -3,8 +3,8 @@
 use super::allocation::{KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::persistent_batch::Error;
 use super::persistent_btree::{Format, Page, children_within, leaf_within};
+use super::persistent_io::Source;
 use super::{DecodeLimits, persistent_io};
-use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
@@ -412,8 +412,8 @@ pub(crate) fn retire_allocation(
     }
 }
 
-pub(crate) async fn lookup_async<S, F>(
-    store: &S,
+pub(crate) async fn lookup_async<F>(
+    store: &dyn Source,
     root: ObjectId,
     key: &F::Key,
     limits: DecodeLimits,
@@ -422,11 +422,10 @@ pub(crate) async fn lookup_async<S, F>(
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<OperationReceipt<Option<F::Value>>, Failure>
 where
-    S: AsyncObjectStore,
     F: Format,
 {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = lookup_async_with_accounting::<S, F>(
+    let result = lookup_async_with_accounting::<F>(
         store,
         root,
         key,
@@ -442,8 +441,8 @@ where
         .map_err(|error| OperationFailure::new(project_failure(error), work))
 }
 
-pub(crate) async fn lookup_async_with_accounting<S, F>(
-    store: &S,
+pub(crate) async fn lookup_async_with_accounting<F>(
+    store: &dyn Source,
     root: ObjectId,
     key: &F::Key,
     limits: DecodeLimits,
@@ -452,10 +451,9 @@ pub(crate) async fn lookup_async_with_accounting<S, F>(
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(Option<F::Value>, KernelOwnedAllocation), crate::FsError>
 where
-    S: AsyncObjectStore,
     F: Format,
 {
-    let value = lookup_projected_with_accounting::<S, F, _, _, _>(
+    let value = lookup_projected_with_accounting::<F, _, _, _>(
         store,
         root,
         |candidate| candidate.cmp(key),
@@ -484,8 +482,8 @@ where
 
 /// Searches the same authenticated point path and projects only the selected
 /// value. Borrowed queries and inline projections need no copied output key.
-pub(super) async fn lookup_projected_with_accounting<S, F, T, C, P>(
-    store: &S,
+pub(super) async fn lookup_projected_with_accounting<F, T, C, P>(
+    store: &dyn Source,
     root: ObjectId,
     compare: C,
     mut project: P,
@@ -495,7 +493,6 @@ pub(super) async fn lookup_projected_with_accounting<S, F, T, C, P>(
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<Option<Owned<T>>, crate::FsError>
 where
-    S: AsyncObjectStore,
     F: Format,
     C: Fn(&F::Key) -> std::cmp::Ordering,
     P: FnMut(&F::Value, &mut KernelAccounting<'_>) -> Result<Owned<T>, crate::FsError>,
@@ -531,7 +528,7 @@ where
             if !inserted.inserted {
                 return Err(query_error(Error::CycleOrAlias));
             }
-            let (decoded, allocation) = persistent_io::read_page_with_accounting::<S, F>(
+            let (decoded, allocation) = persistent_io::read_page_with_accounting::<F>(
                 store,
                 page,
                 limits,

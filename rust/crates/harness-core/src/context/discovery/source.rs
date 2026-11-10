@@ -98,6 +98,13 @@ pub struct SkillPrefix {
 
 #[doc(hidden)]
 pub trait SkillReader: DiscoverySource {
+    /// Stable original identity before the body is pinned into retained storage.
+    fn skill_identity(&self, path: &str, pinned: &PinnedContextPath) -> Result<String> {
+        let _ = path;
+        serde_json::to_string(&(&pinned.root, &pinned.path))
+            .map_err(|error| Error::Invalid(error.to_string()))
+    }
+
     /// Preserves the provider's byte owner while metadata borrows its prefix.
     fn skill_prefix<'a>(
         &'a mut self,
@@ -448,7 +455,10 @@ async fn layer_skills<S: SkillReader>(
         let skill = if off {
             None
         } else {
-            Some(parse_skill_metadata(&prefix, pinned)?)
+            let identity = source.skill_identity(&child(&directory, name), &pinned)?;
+            let mut metadata = parse_skill_metadata(&prefix, pinned)?;
+            metadata.identity = identity;
+            Some(metadata)
         };
         result.push((entry.name, skill));
     }
@@ -484,7 +494,11 @@ async fn read_skill_metadata_parsed<S: SkillReader>(
         pinned,
         ..
     } = skill_prefix(source, path, revision, limits).await?;
-    Ok(parse_skill_metadata(&prefix, pinned))
+    let identity = source.skill_identity(path, &pinned)?;
+    Ok(parse_skill_metadata(&prefix, pinned).map(|mut metadata| {
+        metadata.identity = identity;
+        metadata
+    }))
 }
 
 impl ContextRoot {

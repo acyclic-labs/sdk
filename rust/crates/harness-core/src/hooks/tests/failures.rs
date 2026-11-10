@@ -27,6 +27,10 @@ proptest::proptest! {
         proptest::prop_assert_eq!(&decoded, &output);
         proptest::prop_assert_eq!(decoded.diagnostics[0].blocking, blocking && !stop);
         proptest::prop_assert_eq!(&decoded.diagnostics[0].cause, &cause);
+        // A reporting policy can retain context, but a failed guard cannot
+        // authorize a tool. Replay must retain that distinction as well.
+        let mut guarded: HookOutput = serde_json::from_slice(&bytes)?;
+        proptest::prop_assert!(guarded.take_tool_decision().is_err());
         match decoded.into_result() {
             Err(Error::Process(retained)) => {
                 proptest::prop_assert!(blocking && !stop);

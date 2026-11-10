@@ -134,7 +134,7 @@ impl Cut<'_> {
             *blake3::hash(&input).as_bytes()
         };
         let (key, held) = crate::distributed::digest_key(&digest, work)?;
-        let mut request = crate::distributed::commit_request(key, held, work);
+        let mut request = crate::distributed::commit_request(key, held, work)?;
         self.append_to(
             &mut request.0,
             &mut request.1,

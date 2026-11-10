@@ -1,0 +1,41 @@
+120x40
+«Named(Foreground)/Named(Background)/Flags(DIM)/»○ GraphCoder · project · main
+«Named(Foreground)/Named(Background)/Flags(0x0)/»┌history───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│Cut 12 · 1 project volume · context through 42                                                                        │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│Cut 8 · 1 project volume · context through 30                                                                         │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│PgDn: older · PgUp: newest · Esc: close                                                                               │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+«Named(Foreground)/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»●«Named(Foreground)/Named(Background)/Flags(BOLD)/»# Review«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» «Named(Foreground)/Named(Background)/Flags(BOLD)/»Bold«Named(Foreground)/Named(Background)/Flags(0x0)/», «Named(Foreground)/Named(Background)/Flags(ITALIC)/»emphasis«Named(Foreground)/Named(Background)/Flags(0x0)/», «Named(Foreground)/Named(Background)/Flags(DIM | STRIKEOUT)/»removed«Named(Foreground)/Named(Background)/Flags(0x0)/» and code.
+«Named(Foreground)/Named(Background)/Flags(DIM)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» 1. «Named(Foreground)/Named(Background)/Flags(0x0)/»first
+«Named(Foreground)/Named(Background)/Flags(DIM)/»────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» Follow up
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                                                           model · 24% (2400/10000) · $0.12 · 2 children
+«Named(Foreground)/Named(Background)/Flags(DIM)/»                                                                                 Enter: send · Tab: queue · Ctrl-D: quit

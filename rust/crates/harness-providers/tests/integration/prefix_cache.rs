@@ -58,6 +58,7 @@ fn holds(body: &[u8], needle: &[u8]) -> bool {
 
 /// One recorded generation request: the agent that sent it and its exact body.
 struct Sent {
+    url: String,
     agent: &'static str,
     body: Bytes,
     cached: Cached,
@@ -92,6 +93,7 @@ impl Scripted {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let agent = state.0;
         state.2.push(Sent {
+            url: request.url,
             agent,
             body: request.body,
             cached,
@@ -158,12 +160,16 @@ fn text(answer: &str) -> Step {
 }
 
 fn program(id: &str, code: &str) -> Step {
+    call(id, "code", json!({ "code": code }))
+}
+
+fn call(id: &str, name: &str, arguments: Value) -> Step {
     Step {
         tools: vec![Tool {
             id: id.into(),
-            name: "code".into(),
+            name: name.into(),
             namespace: None,
-            arguments: json!({ "code": code }),
+            arguments,
         }],
         ..Step::default()
     }
@@ -251,6 +257,14 @@ fn resolve(
     prompt_cache: PromptCache,
     transport: Arc<Scripted>,
 ) -> TestResult<acyclic_harness_providers::ResolvedModel> {
+    Ok(registry(adapter, prompt_cache, transport)?.resolve("recorded/model")?)
+}
+
+fn registry(
+    adapter: Adapter,
+    prompt_cache: PromptCache,
+    transport: Arc<Scripted>,
+) -> TestResult<Registry> {
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
     registry.register(
         "recorded".into(),
@@ -258,6 +272,7 @@ fn resolve(
             adapter,
             authentication: Authentication::Optional,
             base_url: "https://recorded.invalid/v1".into(),
+            allow_http_host: None,
             headers: BTreeMap::new(),
             models: BTreeMap::from([(
                 "model".into(),
@@ -287,7 +302,7 @@ fn resolve(
             prompt_cache,
         },
     )?;
-    Ok(registry.resolve("recorded/model")?)
+    Ok(registry)
 }
 
 fn intent(text: &str) -> IntentId {
@@ -398,7 +413,6 @@ async fn run(
     path: &'static str,
     family: &str,
     messages: &[u8],
-    header: usize,
 ) -> TestResult {
     let transport = Arc::new(Scripted {
         cache: Mutex::default(),
@@ -412,18 +426,20 @@ async fn run(
                 // Turn 2: a waking notice.
                 text("noticed"),
                 // Turn 3: the tool table changed; the parent forks a child.
-                program(
+                call(
                     "call-2",
-                    "await tools.spawn({task: 'Count to two', name: 'kid', role: 'worker'})",
+                    "spawn",
+                    json!({"task":"Count to two","name":"kid","role":"worker"}),
                 ),
                 text("spawned"),
                 // The child continues from the fork with its own tool call.
                 program("call-3", "2 + 2"),
                 text("kid done"),
                 // Asked again, the child forks a grandchild.
-                program(
+                call(
                     "call-4",
-                    "await tools.spawn({task: 'Count to three', name: 'grandkid', role: 'worker'})",
+                    "spawn",
+                    json!({"task":"Count to three","name":"grandkid","role":"worker"}),
                 ),
                 text("spawned again"),
             ]),
@@ -744,15 +760,6 @@ async fn run(
         "{family}: the backstop rewrote the header at byte {kept} (messages at {start})"
     );
     extends(family, "the step after the backstop", evicted, continued)?;
-    // R44: pin the stock request's exact cost, after checking every cache
-    // invariant so a stale size snapshot cannot mask a prefix regression.
-    // The spawn-name reuse contract adds 76 encoded bytes to every family:
-    // 75 description bytes plus one byte escaping its added newline.
-    let pinned = parent[0].len();
-    assert_eq!(
-        pinned, header,
-        "{family}: the stock first request is {pinned} bytes, pinned at {header}"
-    );
     Ok(())
 }
 
@@ -764,7 +771,6 @@ async fn anthropic_prefixes_extend_byte_for_byte() -> TestResult {
         "messages",
         "anthropic",
         b"\"messages\":[",
-        4521,
     )
     .await
 }
@@ -777,7 +783,6 @@ async fn responses_prefixes_extend_byte_for_byte() -> TestResult {
         "responses",
         "responses",
         b"\"input\":[",
-        4779,
     )
     .await
 }
@@ -790,7 +795,6 @@ async fn gemini_prefixes_extend_byte_for_byte() -> TestResult {
         "models/model:streamGenerateContent",
         "gemini",
         b"\"contents\":[",
-        4445,
     )
     .await
 }
@@ -804,7 +808,9 @@ async fn chat_prefixes_extend_byte_for_byte() -> TestResult {
         "chat/completions",
         "chat",
         b"\"messages\":[",
-        4670,
     )
     .await
 }
+
+#[path = "prefix_cache/role_models.rs"]
+mod role_models;

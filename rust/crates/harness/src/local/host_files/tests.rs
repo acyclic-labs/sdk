@@ -1544,10 +1544,11 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     })
     .await
     .map_err(storage)??;
+    // Hosts receive the workspace in their ordinary spelling, never verbatim.
+    let workspace = std::fs::canonicalize(checkout.path()).map_err(storage)?;
     assert_eq!(
         result.get("cwd").unwrap_or(&Value::Null),
-        std::fs::canonicalize(checkout.path())
-            .map_err(storage)?
+        acyclic_host_platform::paths::strip_verbatim(&workspace)
             .to_string_lossy()
             .as_ref()
     );
@@ -1681,7 +1682,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .expect("owner observation failure remains available");
     assert_eq!(request_storage_cause(&first, waiting.operation), failure);
     assert!(failure.contains("step=observe native workspace owner exit:"));
-    assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
+    assert!(failure.ends_with("recovery=acyclic run --host-workspace"));
     assert!(!lock(&observed.shared.waiters).gone);
     drop(waiting);
     observed

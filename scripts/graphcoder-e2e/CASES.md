@@ -1,5 +1,20 @@
 Cases launch the shipping GraphCoder binary with an ordinary provider catalog and isolated settings. Build GraphCoder and harness-mock-model and install scripts/graphcoder-pty dependencies before timing. Run `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [CASE ...]`.
 
+`pty-code-highlight` streams a Rust fence, checks real cell foregrounds and a
+code background band, retains the OSC 8 destination, and switches the same
+settled answer through light and dark with `/theme`. Styling is asserted at the
+settled frame, so lost highlighting fails directly. The shared cell oracle has
+negative controls for unchanged text without syntax colour or background.
+
+`tui-render-work` runs the native TUI library's input/delta paint pipeline at
+80×50 and 120×40 with 100 and 10,000 retained blocks. Row visits and wrapped
+text bytes must be equal for each history size. The same oracle rejects
+archive scanning and historical rewrapping. PTY cases also report
+`first_paint_ms`: elapsed time from the runner's terminal-launch request to the
+first completed frame containing GraphCoder, including transport, terminal
+negotiation and emulator decoding. This is an observation, never a latency
+assertion or a claim that executor construction alone measures product startup.
+
 `pty-conversation` submits its first prompt and terminal-query replies together on the first terminal output bytes, before admitting a rendered frame, then checks both conversational turns. `pty-cancel-preparation` holds the acknowledged token-count request, observes two distinct thinking highlights, then cancels before any model dispatch and requires the animation to stop. Resume cases use the public text/JSONL and explicit terminal-resume contracts.
 
 `topology-blackboard` selects the embedded role file through native `spawn`.

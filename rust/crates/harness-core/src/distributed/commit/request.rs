@@ -13,20 +13,25 @@ impl CodecQuota<'_, '_> {
     }
 }
 
+/// A request with its one hard effect, whose slot the quota funds and adopts
+/// alongside the retained key, as `admit` and `commit` account for it.
 pub(crate) fn commit_request<'a, 'b>(
     key: StreamIdempotencyKey,
     retained_key_bytes: u64,
     work: &'a mut Option<&'b mut dyn HistoryIo>,
-) -> (acyclic_stream::CommitRequest, CodecQuota<'a, 'b>) {
-    (
+) -> Result<(acyclic_stream::CommitRequest, CodecQuota<'a, 'b>)> {
+    let mut quota = CodecQuota::from_retained(work, retained_key_bytes);
+    let mut effects = Vec::new();
+    quota.reserve(1, &mut effects)?;
+    effects.push(acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new()));
+    Ok((
         acyclic_stream::CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: Vec::new(),
+            effects,
             idempotency_key: key,
         },
-        CodecQuota::from_retained(work, retained_key_bytes),
-    )
+        quota,
+    ))
 }
 
 pub(crate) fn add_condition(
@@ -34,7 +39,10 @@ pub(crate) fn add_condition(
     custody: &mut CodecQuota<'_, '_>,
     condition: acyclic_stream::CommitCondition,
 ) -> Result<()> {
-    custody.reserve(request.conditions.len() + 1, &mut request.conditions)?;
-    request.conditions.push(condition);
+    custody.reserve(
+        request.effects[0].conditions.len() + 1,
+        &mut request.effects[0].conditions,
+    )?;
+    request.effects[0].conditions.push(condition);
     Ok(())
 }

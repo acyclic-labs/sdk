@@ -5,13 +5,15 @@ use ratatui::text::Line;
 
 /// Presentation shared by paged file views. Retained work is proportional to
 /// one admitted page; resize only reflows that page and never reads its source.
-pub struct QueryPage<C> {
+pub struct QueryPage<C, M = ()> {
     /// Wrapped visible-page rows; no other source pages are retained.
     pub lines: Vec<Line<'static>>,
     /// Opaque continuation supplied by the source query owner.
     pub next: Option<C>,
     /// Whether this page was opened from a source continuation.
     pub continued: bool,
+    /// Source-owned selection metadata, retained with these exact rows.
+    pub context: M,
     source: Vec<Line<'static>>,
     columns: u16,
 }
@@ -26,6 +28,21 @@ impl<C> QueryPage<C> {
             columns: 0,
             next,
             continued,
+            context: (),
+        }
+    }
+}
+
+impl<C, M> QueryPage<C, M> {
+    /// Attach source metadata without copying rows or changing their cursor.
+    pub fn with_context<N>(self, context: N) -> QueryPage<C, N> {
+        QueryPage {
+            lines: self.lines,
+            next: self.next,
+            continued: self.continued,
+            source: self.source,
+            columns: self.columns,
+            context,
         }
     }
 
@@ -148,6 +165,7 @@ mod tests {
             columns: 0,
             next: Some("original-continuation".into()),
             continued: true,
+            context: (),
         };
         let original_source = panel.source.as_ptr();
         let input = PromptInput::default();
@@ -377,7 +395,10 @@ mod tests {
         .collect::<Vec<_>>();
         for width in [1, 2, 3, 7, 13, 20] {
             query.wrap(width);
-            for rows in [query.lines.as_slice(), transcript.rows(width)] {
+            for (rows, gutter) in [
+                (query.lines.as_slice(), None),
+                (transcript.rows(width), (width > 1).then_some(('●', false))),
+            ] {
                 let actual = rows
                     .iter()
                     .flat_map(|line| &line.spans)
@@ -389,6 +410,10 @@ mod tests {
                             ))
                         })
                     })
+                    .collect::<Vec<_>>();
+                let expected = gutter
+                    .into_iter()
+                    .chain(expected.iter().copied())
                     .collect::<Vec<_>>();
                 assert_eq!(actual, expected);
             }

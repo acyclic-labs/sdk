@@ -58,6 +58,12 @@ impl Clone for Span {
 /// One unwrapped display line. The renderer owns viewport layout.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Line {
+    /// A fenced or indented code row, including its language label. Renderers
+    /// paint a continuous background band without inventing a syntax palette.
+    pub code: bool,
+    /// Deferred syntax for the raw code suffix. A viewport requests its styles
+    /// only when painting this line; the printable spans remain usable alone.
+    pub syntax: Option<crate::CodeLine>,
     /// Ordered styled runs.
     pub spans: Vec<Span>,
 }

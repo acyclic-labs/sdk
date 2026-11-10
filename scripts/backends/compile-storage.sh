@@ -8,7 +8,7 @@ node scripts/qualify-rustfmt.mjs
 step=compile-storage-conformance
 cargo check --locked -p acyclic-conformance --features storage-backends,acyclic-objects/local --bin storage-conformance
 step=compile-default-server-consumer
-cargo check --locked -p graphcoder
+cargo check --locked -p acyclic-plugin
 step=compile-postgres-checks
 cargo check --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance
 step=compile-shared-stream-regressions

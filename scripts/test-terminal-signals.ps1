@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$Binary,
     [switch]$FrameRegions,
-    [ValidateSet('break','close','blocked','input-close')][string]$Scenario
+    [ValidateSet('break','close','blocked','input-close','output-completion')][string]$Scenario
 )
 $ErrorActionPreference = 'Stop'
 if ($FrameRegions -and $Scenario) {
@@ -137,7 +137,7 @@ public static class TerminalSignalConPty {
         ProcessInfo process=new ProcessInfo(); bool initialized=false; Thread drain=null,close=null;
         Exception drainFailure=null,failure=null;
         bool drained=false;
-        var draining=new ManualResetEvent(scenario!="blocked");
+        var draining=new ManualResetEvent(scenario!="blocked"&&scenario!="output-completion");
         bool frameCost=scenario=="frames";
         string recovery="; recovery: pwsh -File scripts/test-terminal-signals.ps1 -Binary \""+binary+"\" "+(frameCost?"-FrameRegions":"-Scenario "+scenario);
         try {
@@ -185,6 +185,21 @@ public static class TerminalSignalConPty {
             }
             using(var publications=new Publication(report,recovery)) {
             var timer=Stopwatch.StartNew();
+            if(scenario=="output-completion") {
+                publications.Await(Path.ChangeExtension(report,"output-ready"),process.process,timer,recovery);
+                // The original worker has entered ordinary output. Keep the
+                // real pipe backpressured beyond the old 100 ms probe deadline.
+                using(var elapsed=new ManualResetEvent(false))
+                using(var deadline=new Timer(_=>elapsed.Set(),null,200,Timeout.Infinite)) {
+                    elapsed.WaitOne();
+                }
+                draining.Set();
+                Require(WaitForSingleObject(process.process,1500)==0,"ordinary output child deadline"+recovery);
+                uint exit;Require(GetExitCodeProcess(process.process,out exit)&&exit==0,"ordinary output child exit"+recovery);
+                Require(File.Exists(report),"ordinary output completion before close"+recovery);
+                Console.WriteLine(File.ReadAllText(report));
+                return;
+            }
             string inputReady=Path.ChangeExtension(report,"input-ready");
             publications.Await(inputReady,process.process,timer,recovery);
             byte[] fixture=Encoding.ASCII.GetBytes(string.Concat(System.Linq.Enumerable.Repeat("0123456789",10)));
@@ -262,7 +277,7 @@ $previousReport = $env:ACYCLIC_TERMINAL_WINDOWS_REPORT
 $previousEvent = $env:ACYCLIC_TERMINAL_WINDOWS_EVENT
 $previousRegionReport = $env:ACYCLIC_TERMINAL_REGION_REPORT
 try {
-    $scenarios = if ($Scenario) { @($Scenario) } elseif ($FrameRegions) { @('frames') } else { @('break','close','blocked','input-close') }
+    $scenarios = if ($Scenario) { @($Scenario) } elseif ($FrameRegions) { @('frames') } else { @('break','close','blocked','input-close','output-completion') }
     foreach ($selectedScenario in $scenarios) {
         $report = Join-Path $artifactRoot ($selectedScenario + '.txt')
         $env:ACYCLIC_TERMINAL_WINDOWS_REPORT = $report

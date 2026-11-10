@@ -4,9 +4,9 @@ import { MemoryStreamProvider } from "./memory.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type {
   AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions,
-  CommitRequest, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions,
+  CommitCondition, CommitMutation, CommitRequest, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions,
   IdempotencyKey, IdempotencyObservation, ReadOptions, Sequence, StreamEnvironment,
-  StreamProvider, ProviderCommitRequest,
+  StreamProvider, ProviderCommitEffect, ProviderCommitRequest,
 } from "./types.js";
 import { StreamError, commitId, compareStreamPaths } from "./types.js";
 import { ensureStreamWasm, normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
@@ -108,7 +108,12 @@ export class StreamClient {
   /** Transfers one exact keyed commit to an owned, cancellation-independent handle. */
   submit(request: CommitRequest, options: CommitOptions): Pending {
     const authoredOptions = structuredClone(options);
-    const conditions = request.conditions.map(condition => {
+    const effects = request.effects.map(effect => ({ conditions: this.#conditions(effect.conditions), mutations: this.#mutations(effect.mutations), soft: effect.soft ?? false }));
+    return Pending.submit(this.provider, { effects }, authoredOptions);
+  }
+
+  #conditions(conditions: readonly CommitCondition[]): ProviderCommitEffect["conditions"] {
+    return conditions.map(condition => {
       if ("stream" in condition) {
         sameProvider(this.provider, condition.stream);
         return { path: condition.stream.path, ifTail: validateSequenceValue(condition.ifTail), ...(condition.ifCommitId === undefined ? {} : { ifCommitId: commitId(condition.ifCommitId) }) };
@@ -121,16 +126,13 @@ export class StreamClient {
       if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
       return { path: condition.path, ifAbsent: true as const };
     });
-    const mutations = request.mutations.map(mutation => {
+  }
+
+  #mutations(mutations: readonly CommitMutation[]): ProviderCommitEffect["mutations"] {
+    return mutations.map(mutation => {
       if ("append" in mutation) {
         sameProvider(this.provider, mutation.append.stream);
         return { append: { path: mutation.append.stream.path, values: mutation.append.values.map(value => mutation.append.stream.encode(value)) } };
-      }
-      if ("softAppend" in mutation) {
-        const { stream, values, closed } = mutation.softAppend;
-        sameProvider(this.provider, stream);
-        if (closed !== undefined) validatePathValue(closed);
-        return { softAppend: { path: stream.path, values: values.map(value => stream.encode(value)), ...(closed === undefined ? {} : { closed }) } };
       }
       if ("fork" in mutation) {
         sameProvider(this.provider, mutation.fork.source);
@@ -140,7 +142,6 @@ export class StreamClient {
       }
       throw new StreamError("invalid_argument", "commit mutation is invalid");
     });
-    return Pending.submit(this.provider, { conditions, mutations }, authoredOptions);
   }
   readCommit(commitId: CommitId): Promise<CommittedEnvelope> { return this.provider.readCommit(commitId.slice() as CommitId); }
 }
@@ -186,8 +187,8 @@ export class Stream<Value = Uint8Array> {
   encode(value: Value): Uint8Array { return this.codec.encode(value); }
   head(): Promise<import("./types.js").PathHead> { return this.provider.head(this.path); }
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
-  append(value: Value, options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> { return this.appendBatch([value], options); }
-  appendBatch(values: readonly Value[], options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> {
+  append(value: Value, options: AppendOptions): Promise<AppendResult> { return this.appendBatch([value], options); }
+  appendBatch(values: readonly Value[], options: AppendOptions): Promise<AppendResult> {
     if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) {
       return Promise.reject(new StreamError("limit_exceeded", `append requires 1..${StreamLimit.MAX_ITEMS} records`));
     }
@@ -196,7 +197,7 @@ export class Stream<Value = Uint8Array> {
     if (authored?.idempotencyKey === undefined) throw new StreamError("invalid_argument", "an explicit idempotency key is required");
     return this.provider.append(this.path, values.map(value => this.codec.encode(value).slice()), authored);
   }
-  async fork(destination: string, options: ForkOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
+  async fork(destination: string, options: ForkOptions): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
     validatePathValue(destination);
     if (options?.atTail !== undefined) validateSequenceValue(options.atTail);
     const authored = structuredClone(options);
@@ -233,7 +234,7 @@ function directParent(path: string): string { const at = path.lastIndexOf("/"); 
 function positiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > StreamLimit.MAX_ITEMS) throw new RangeError(`${name} must be between 1 and ${StreamLimit.MAX_ITEMS}`);
 }
-export async function validateAppend(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<Uint8Array> {
+export async function validateAppend(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<Uint8Array> {
   // Validate path before optional fields so the canonical path error wins.
   await ensureStreamWasm();
   validatePathValue(path);

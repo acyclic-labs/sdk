@@ -100,13 +100,7 @@ async fn call_hold_publication() -> TestResult {
         acyclic_stream::OwnedBytes::from("run"),
         held.ok_or("missing original hold")?,
     )?;
-    let mut conditions = Some(request.conditions);
-    for mutation in request.mutations {
-        prepared.join(Effect {
-            conditions: conditions.take().unwrap_or_default(),
-            mutation,
-        })?;
-    }
+    prepared.join(request.into())?;
     let snapshot = store
         .submit_retained(prepared)
         .await?
@@ -288,8 +282,7 @@ async fn publication_and_reopen() -> TestResult {
         let retained = prepared.journal.as_ref().ok_or("missing journal fence")?;
         let appended = prepared
             .request()
-            .mutations
-            .iter()
+            .mutations()
             .find_map(|mutation| match mutation {
                 CommitMutation::Append { path, .. } if path == retained => Some(path),
                 _ => None,
@@ -319,13 +312,13 @@ async fn publication_and_reopen() -> TestResult {
             shared.count_total, duplicated.count_total, duplicated.bytes_total
         );
         assert!(matches!(
-            prepared.join(Effect {
-                conditions: Vec::new(),
-                mutation: CommitMutation::Append {
+            prepared.join(acyclic_stream::CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
                     path: journal_path.clone(),
                     records: vec![Bytes::from_static(b"forged").into()],
-                },
-            }),
+                }]
+            )),
             Err(Error::Invalid("effect changes the host's actor journal"))
         ));
         let snapshot = store
@@ -636,13 +629,7 @@ async fn physical_loss(fail_at: usize) -> TestResult {
         )?;
         let call = crate::call::CallPath::new(&store.path(&address)?, "power-loss")?;
         let request = call.request(acyclic_stream::OwnedBytes::from("run"), hold)?;
-        let mut conditions = Some(request.conditions);
-        for mutation in request.mutations {
-            prepared.join(Effect {
-                conditions: conditions.take().unwrap_or_default(),
-                mutation,
-            })?;
-        }
+        prepared.join(request.into())?;
         assert!(matches!(
             store.submit(prepared).await,
             Err(Error::Unknown { .. })

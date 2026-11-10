@@ -36,7 +36,8 @@ struct RefreshRequest<'a> {
 /// the shared native I/O services before admitting their original work.
 pub struct CodexLogin {
     path: std::sync::Arc<Path>,
-    account: OnceLock<Option<blake3::Hash>>,
+    account: std::sync::Arc<OnceLock<Option<blake3::Hash>>>,
+    document: std::sync::Arc<crate::credentials::watched::Watched<Option<std::sync::Arc<Value>>>>,
     refresh: crate::sync::Arc<crate::refresh::Refresh<RefreshFailure>>,
     clock: std::sync::Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
 }
@@ -165,8 +166,12 @@ impl CodexLogin {
     /// Reuses this auth.json; never starts an interactive login flow.
     pub fn from_path(path: PathBuf) -> Self {
         Self {
+            document: std::sync::Arc::new(crate::credentials::watched::Watched::new(
+                vec![path.clone()],
+                None,
+            )),
             path: path.into(),
-            account: OnceLock::new(),
+            account: std::sync::Arc::new(OnceLock::new()),
             refresh: crate::sync::Arc::new(crate::refresh::Refresh::new()),
             clock: std::sync::Arc::new(OffsetDateTime::now_utc),
         }
@@ -184,7 +189,8 @@ impl CodexLogin {
     pub(crate) fn fresh(&self) -> Self {
         Self {
             path: self.path.clone(),
-            account: OnceLock::new(),
+            document: self.document.clone(),
+            account: std::sync::Arc::new(OnceLock::new()),
             refresh: self.refresh.clone(),
             clock: self.clock.clone(),
         }
@@ -192,13 +198,40 @@ impl CodexLogin {
 
     /// Finds `$CODEX_HOME/auth.json` or the current user's `~/.codex/auth.json`.
     pub fn discover() -> Option<Self> {
-        let root = std::env::var_os("CODEX_HOME")
+        let path = Self::discover_path()?;
+        path.is_file().then(|| Self::from_path(path))
+    }
+
+    pub(crate) fn discover_path() -> Option<PathBuf> {
+        std::env::var_os("CODEX_HOME")
             .map(PathBuf::from)
             .or_else(|| {
                 std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
                     .map(|home| PathBuf::from(home).join(".codex"))
-            })?;
-        Self::in_home(&root)
+            })
+            .map(|root| root.join("auth.json"))
+    }
+
+    pub(crate) fn watched(mut self, watch: crate::credentials::watched::Watch) -> Self {
+        self.document = std::sync::Arc::new(crate::credentials::watched::Watched::new(
+            vec![self.path.to_path_buf()],
+            Some(watch),
+        ));
+        self
+    }
+
+    pub(crate) fn pinned(&self, pin: std::sync::Arc<OnceLock<Option<blake3::Hash>>>) -> Self {
+        Self {
+            path: self.path.clone(),
+            document: self.document.clone(),
+            account: pin,
+            refresh: self.refresh.clone(),
+            clock: self.clock.clone(),
+        }
+    }
+
+    pub(crate) fn pin(&self) -> std::sync::Arc<OnceLock<Option<blake3::Hash>>> {
+        self.account.clone()
     }
 
     /// `root/auth.json` when it exists; the file is read only on first use.
@@ -243,7 +276,16 @@ impl CodexLogin {
         failure: &mut Option<RefreshFailure>,
     ) -> Result<(String, Option<String>)> {
         let path = self.path.clone();
-        let (_, mut auth) = io.blocking(permit, move |io| load(&path, io)).await?;
+        if rejected.is_some() {
+            // HTTP 401 is authoritative invalidation even before a pending
+            // file event. Recover from the current source, never cached tokens.
+            self.document.invalidate()?;
+        }
+        let (generation, cached) = self.document.read(|auth| Ok(auth.clone()))?;
+        let mut auth = match cached {
+            Some(auth) => auth,
+            None => std::sync::Arc::new(io.blocking(permit, move |io| load(&path, io)).await?.1),
+        };
         self.check_account(&auth)?;
         for attempt in 0..2 {
             let access = token(&auth, "access_token")?;
@@ -280,7 +322,7 @@ impl CodexLogin {
                     if token(&current, "refresh_token").ok() != Some(refresh)
                         || token(&current, "access_token").ok() != Some(access)
                     {
-                        auth = current;
+                        auth = std::sync::Arc::new(current);
                         continue;
                     }
                 }
@@ -307,15 +349,17 @@ impl CodexLogin {
                 last_refresh,
             };
             let path = self.path.clone();
-            auth = io
-                .blocking(permit, move |io| {
+            auth = std::sync::Arc::new(
+                io.blocking(permit, move |io| {
                     persist_if_unchanged(&path, &auth, updated, io)
                 })
                 .await?
-                .into_document();
+                .into_document(),
+            );
             self.check_account(&auth)?;
             break;
         }
+        self.document.publish(generation, Some(auth.clone()))?;
         let access = io.string(token(&auth, "access_token")?)?;
         let account = auth["tokens"]["account_id"]
             .as_str()

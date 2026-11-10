@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/owned_bytes/unique.rs b/rust/crates/stream/src/owned_bytes/unique.rs
+index 5fd766506f..ebccbb8732 100644
+--- a/rust/crates/stream/src/owned_bytes/unique.rs
++++ b/rust/crates/stream/src/owned_bytes/unique.rs
+@@ -153,7 +153,7 @@ impl UniqueOwnedBytes {
+                     };
+                 let meter = guard.metadata.meter();
+                 meter.check()?;
+-                meter.admit_codec(0, copied as u64, 0)?;
++                // Deliberately omit copy admission.
+                 replace(&mut guard.data, range, replacement, inserted);
+                 meter.record_codec(0, copied as u64, 0)
+             }
