@@ -1,11 +1,13 @@
+diff --git a/rust/crates/harness-core/src/tool/files/read.rs b/rust/crates/harness-core/src/tool/files/read.rs
+index 0f1c7ab04fd..5b269a26167 100644
 --- a/rust/crates/harness-core/src/tool/files/read.rs
 +++ b/rust/crates/harness-core/src/tool/files/read.rs
-@@ -30,7 +30,7 @@ impl FileTool {
-             input.0.version.as_deref(),
-             work,
-         )?;
--        if input.0.version.is_none()
-+        if false
-             && let Some((selected, custody)) = layer
-         {
-             source = super::source::ReadSource {
+@@ -32,7 +32,7 @@ impl FileTool {
+                 )
+                 .await?;
+             input.0.path = layer.into_owned();
+-            if let Some((selected, custody)) = selected {
++            if false && let Some((selected, custody)) = selected {
+                 source = super::source::ReadSource {
+                     source: Some(FileReadSource::Authored(selected)),
+                     custody,
