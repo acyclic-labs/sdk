@@ -123,7 +123,9 @@ impl Inner {
 /// is backpressure; an unknown acknowledgement retains its original publication.
 fn terminal(error: &Error) -> bool {
     match error {
-        Error::Stream(error) => !error.uncertain() && !matches!(error, StreamError::Capacity),
+        Error::Stream(error) => {
+            !error.uncertain() && !matches!(error.category(), StreamError::Capacity)
+        }
         Error::PreconditionUnchanged => true,
         _ => false,
     }

@@ -102,7 +102,7 @@ impl ToolProvider for Coordination {
             "cancel" => children.cancel(reference)?,
             "wait" => match children.wait(reference)? {
                 Some(answer) => answer,
-                None => return Ok(ToolCall::Park(reference.into())),
+                None => return Ok(ToolCall::Park(children.key(reference)?)),
             },
             _ => return Err(invalid("unknown coordination tool")),
         };
@@ -147,7 +147,7 @@ impl ToolProvider for Coordination {
 mod tests {
     use super::super::tests::{children, claim, native_fixture, served, shell_pid};
     use super::*;
-    use std::io::{self, Read as _, Seek as _};
+    use std::io::{self, Read as _, Seek as _, Write as _};
     use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
     /// EOF is delivered only after the actual reply writer is held.
@@ -282,6 +282,20 @@ mod tests {
                 let (writing, written) = sync_channel(1);
                 let (release, released) = sync_channel(1);
                 let mut observed = Observed { owner: Coordination { host: host.into(), children: Some(children) }, process, release };
+                let key = observed.owner.children.as_ref().unwrap().key(if unavailable { "refused" } else { "held" })?;
+                for reference in [if unavailable { "refused" } else { "held" }, key.as_str()] {
+                    let ToolCall::Park(parked) = observed.owner.call("wait", &json!({"reference":reference}))? else {
+                        return Err("running native child was not parked".into());
+                    };
+                    assert_eq!(parked, key, "wait aliases must share the original progress key");
+                }
+                let mut diagnostic = std::fs::OpenOptions::new().write(true).open(format!("/proc/{pid}/fd/2"))?;
+                diagnostic.write_all(b"native progress after parked wait\n")?;
+                let children = observed.owner.children.as_mut().unwrap();
+                children.ready.push(&key);
+                children.pump()?;
+                assert_eq!(observed.owner.progressed(), BTreeSet::from([key]),
+                    "actual native output must reach both reference spellings");
                 let displaced = tempfile::tempdir()?;
                 let hidden = displaced.path().join("workspace");
                 // Real directory withdrawal refuses the original request before
