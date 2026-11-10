@@ -1,11 +1,11 @@
 --- a/rust/crates/harness-core/src/tool/files/read.rs
 +++ b/rust/crates/harness-core/src/tool/files/read.rs
-@@ -22,7 +22,7 @@
-         };
-         let selected = layer
-             .as_ref()
--            .filter(|_| input.0.version.is_none())
-+            .filter(|_| false)
-             .map(|(selected, _)| selected);
-         if input.0.range.is_some() && input.0.selection.is_some() {
-             return Err(invalid(
+@@ -30,7 +30,7 @@ impl FileTool {
+             input.0.version.as_deref(),
+             work,
+         )?;
+-        if input.0.version.is_none()
++        if false
+             && let Some((selected, custody)) = layer
+         {
+             source = super::source::ReadSource {
