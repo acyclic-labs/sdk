@@ -1,34 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 import { packageClosure } from "./package-closure.mjs";
 import { copyWasmArtifacts } from "./archive-utils.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// Manual caller-array copies must stay behind the admitted byte snapshot.
-const assertByteSnapshotBoundary = (file, source) => {
-  // Rust slice accessors return Rust-owned bytes, never a caller's JS array.
-  // Their spelling/formatting must not turn an output copy into an input refusal.
-  const rustOwned = source
-    .replaceAll("cursor.commit.to_vec()", "")
-    .replaceAll("prepared.bytes().to_vec()", "")
-    .replace(/\.(?:as_bytes|as_slice)\(\)\s*\.to_vec\(\)/g, "")
-    .replaceAll(".map(|digest| digest.to_vec())", "")
-    .replace(/(canonical_json_digest\([^;]+?)\.to_vec\(\)/g, "$1");
-  if (/\.\s*(?:to_vec|copy_to|copy_to_uninit|raw_copy_to_ptr)\s*\(|Uint8Array::new\s*\(/.test(rustOwned)) {
-    throw new Error(`${file}: copy caller arrays through acyclic_stream::javascript_bytes::snapshot`);
-  }
-};
-const checkByteSnapshotBoundary = directory => {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const file = join(directory, entry.name);
-    if (entry.isDirectory()) checkByteSnapshotBoundary(file);
-    else if (entry.name.endsWith(".rs")) assertByteSnapshotBoundary(file, readFileSync(file, "utf8").replaceAll("\r\n", "\n"));
-  }
-};
 checkByteSnapshotBoundary(join(root, "rust/crates/harness/src/wasm"));
 
 const usage = "usage: build-wasm.mjs [PACKAGE [OUTPUT_DIR [CARGO [WASM_BINDGEN]]]]";
@@ -104,7 +84,7 @@ const targetRoot = JSON.parse(metadata).target_directory;
 const profile = process.env.ACYCLIC_WASM_PROFILE || "wasm-release";
 const profileDirectory = profile === "dev" ? "debug" : profile;
 
-const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url))]);
+const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url)), readFileSync(new URL("./wasm-source-policy.mjs", import.meta.url))]);
 
 const grouped = process.env.ACYCLIC_WASM_GROUPS_PREPARED === "1";
 const targets = grouped ? [packageArgument] : packageArgument
