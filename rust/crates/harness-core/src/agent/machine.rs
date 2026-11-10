@@ -857,7 +857,7 @@ pub(super) async fn failed_step(
     let previous = published(&state);
     let mut outs = Vec::new();
     shed(&mut state, &mut outs, failure);
-    let step = finalize_step(state, outs, &previous, cursor, Vec::new())?;
+    let step = finalize_step(state, outs, &previous, cursor, ChildWakes::default())?;
     let checkpoint = checkpoint::from_encoded(checkpoint::encode(&step.state)?)?;
     Ok(PreparedStep { step, checkpoint })
 }
