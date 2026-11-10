@@ -119,9 +119,14 @@ use acyclic_fs::{OperationReceipt, PublicationPermit, WorkCounters, WorkspaceErr
 #[cfg(not(loom))]
 mod public_conformance;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
+#[cfg(all(loom, not(target_arch = "wasm32"), feature = "native-mount"))]
 #[path = "../src/sync.rs"]
 mod sync;
+
+#[cfg(all(not(loom), not(target_arch = "wasm32"), feature = "native-mount"))]
+mod sync {
+    pub(crate) use acyclic_native_runtime::InlineMutex as Mutex;
+}
 
 #[cfg(all(not(loom), feature = "memory", feature = "distributed"))]
 mod fs_concurrency_bench;
