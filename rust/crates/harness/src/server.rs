@@ -206,7 +206,11 @@ pub async fn serve<C: Composition>(
     let bound = server.bound();
     // Every client's credential is the capability envelope its issuer
     // signs, verified against the issuer's trust.
-    let authority = Arc::new(bound.client_authority(server.root(), host.clock.clone())?);
+    let authority = Arc::new(
+        bound
+            .client_authority(server.root(), host.clock.clone())
+            .map_err(failed)?,
+    );
     let (lifetime, ended) = tokio::sync::watch::channel(());
     let completion = host.completion.take();
     let mut completion = std::pin::pin!(async move {
