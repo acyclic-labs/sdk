@@ -120,6 +120,9 @@ pub fn prepare<T>(
     invocation.argv = arguments;
     invocation.standard_input =
         standard_input.map(acyclic_native_runtime::OwnedCaptureInput::Literal);
+    if invocation.execution_grant.is_none() {
+        invocation.execution_grant = workspace_grant(mounts, &mut invocation.environment)?;
+    }
     super::invocation::validate(
         &invocation.executable,
         &invocation.cwd,
@@ -128,6 +131,63 @@ pub fn prepare<T>(
         &invocation.argv,
     )?;
     Ok(invocation)
+}
+
+/// Host-owned workspace boundary shared by shell and lifecycle hooks. Explicit
+/// execution grants retain their existing, separately authenticated authority.
+/// Linux refuses missing kernel support at launch, never retries unconfined.
+/// Other OS adapters remain pending and retain their inherited host boundary.
+#[doc(hidden)]
+pub fn workspace_grant<T>(
+    mounts: &MountTable<T>,
+    environment: &mut std::collections::BTreeMap<String, String>,
+) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use acyclic_native_runtime::execution::{
+            ExecutionAccess, ExecutionGrant, ExecutionNetwork,
+        };
+        // Workspace-write preserves host reads. Narrower explicit grants can
+        // restrict reads; this default boundary confines filesystem mutation.
+        let mut read = vec![std::path::PathBuf::from("/")];
+        let mut write = Vec::new();
+        let mut access = ExecutionAccess::ReadOnly;
+        let io = Error::process_io;
+        let mut primary = mounts.root.clone();
+        for (relative, mount) in mounts.mounts() {
+            let root = mount
+                .native_root
+                .clone()
+                .unwrap_or_else(|| mounts.root.join(relative));
+            if relative.is_empty() {
+                primary = root;
+                if !mount.mode.read_only() {
+                    access = ExecutionAccess::WorkspaceWrite;
+                }
+            } else if mount.mode.read_only() {
+                read.push(root);
+            } else {
+                write.push(root);
+            }
+        }
+        // Standard temporary-file APIs stay inside the same writable view;
+        // this adds no global /tmp allowance or per-agent mount/directory.
+        environment.insert(
+            "TMPDIR".into(),
+            primary
+                .to_str()
+                .ok_or_else(|| Error::Invalid("sandbox temporary directory is not UTF-8".into()))?
+                .into(),
+        );
+        ExecutionGrant::composed(&primary, access, write, read, ExecutionNetwork::On)
+            .map(Some)
+            .map_err(io)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (mounts, environment);
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
