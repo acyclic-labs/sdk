@@ -341,6 +341,7 @@ fn status(cut: &impl Cut) -> Result<String> {
         Phase::Idle => "Idle\n".into(),
         Phase::Running => "Running\n".into(),
         Phase::WaitingHost { .. } => "Waiting for host\n".into(),
+        Phase::Waiting { input: true, .. } => "Waiting for input or alarm\n".into(),
         Phase::Waiting { .. } => "Waiting\n".into(),
         Phase::Done { .. } => "Done\n".into(),
     })

@@ -1,7 +1,7 @@
 //! Inbox observations at model boundaries. They do not race or drop tool futures.
 
-use super::{AgentRecord as _, AgentState, Error, InboxRecord, turn_input};
-use acyclic_stream::{ReadRequest, StreamProvider};
+use super::{AgentPath, AgentRecord as _, Error, InboxRecord};
+use acyclic_stream::{ReadRequest, StreamProvider, StreamProviderExt as _};
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 
@@ -31,76 +31,81 @@ pub struct BoundaryCut {
 
 /// Read one window at an actual model boundary. A later arrival belongs to a
 /// later boundary. Cancel/archive are barriers and remain explicit interrupts.
-/// `agent` and `cursor` are the original actor delivery's admitted state and
-/// exclusive inbox cursor, after any awaited response was taken from its queue.
+/// `from` is the last admitted model frontier; a frozen range is replayed
+/// independently of which unrelated queued inputs the actor has consumed.
 pub async fn select_boundary<P: StreamProvider + ?Sized>(
     provider: &P,
-    agent: &AgentState,
-    cursor: u64,
+    agent: &AgentPath,
     from: u64,
-    initial: u64,
     until: Option<u64>,
 ) -> Result<BoundarySelection, Error> {
-    let limit = match until {
-        Some(until) => u32::try_from(
-            until
-                .checked_sub(from)
-                .ok_or(Error::Record("steering cursor precedes its source range"))?,
-        )
-        .ok()
-        .filter(|count| *count <= super::MAX_QUEUED as u32)
-        .ok_or(Error::Record("steering range exceeds one inbox window"))?,
-        None => super::MAX_QUEUED as u32,
-    };
+    if until.is_some_and(|until| until < from) {
+        return Err(Error::Record("steering cursor precedes its source range"));
+    }
     let mut selection = BoundarySelection {
         from,
         through: from,
         inputs: Vec::new(),
     };
-    if limit == 0 {
-        return Ok(selection);
-    }
-    let records = provider
-        .read(ReadRequest {
-            key: None,
-            path: agent.path.inbox()?,
-            from,
-            limit,
-            at_least: Default::default(),
-        })
-        .await;
-    let mut records = match records {
-        Ok(records) => records,
-        Err(acyclic_stream::StreamError::NotFound) if until.is_none() => return Ok(selection),
-        Err(error) => return Err(Error::Stream(error)),
-    };
-    while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
-        if record.sequence != selection.through {
-            return Err(Error::Record("steering inbox is not contiguous"));
+    let mut end = until;
+    loop {
+        let room = super::MAX_QUEUED - selection.inputs.len();
+        let limit = end.map_or(room as u64, |until| {
+            (until - selection.through).min(room as u64)
+        }) as u32;
+        if limit == 0 {
+            break;
         }
-        let input = InboxRecord::decode(&record.value)?;
-        let queued = match input {
-            InboxRecord::Cancel(_) | InboxRecord::Archive(_) => break,
-            InboxRecord::Notice { .. } | InboxRecord::Message(_) => Some(input),
-            other => {
-                // Inputs that keep their own turn are queue barriers. Passing
-                // one would let a later steering message settle before an
-                // earlier turn, destroying the inbox/conversation ordering.
-                if record.sequence > initial
-                    && agent.input_pending(cursor, record.sequence)
-                    && turn_input(record.sequence, other).is_some()
-                {
-                    break;
-                }
-                None
-            }
+        let records = provider
+            .read(ReadRequest {
+                key: None,
+                path: agent.inbox()?,
+                from: selection.through,
+                limit,
+                at_least: Default::default(),
+            })
+            .await;
+        let mut records = match records {
+            Ok(records) => records,
+            Err(acyclic_stream::StreamError::NotFound) if until.is_none() => break,
+            Err(error) => return Err(Error::Stream(error)),
         };
-        selection.through = record
-            .sequence
-            .checked_add(1)
-            .ok_or(Error::Record("steering inbox cursor overflow"))?;
-        if let Some(input) = queued {
-            selection.inputs.push((record.sequence, input));
+        let mut read = 0;
+        let mut barrier = false;
+        while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
+            if record.sequence != selection.through {
+                return Err(Error::Record("steering inbox is not contiguous"));
+            }
+            let input = InboxRecord::decode(&record.value)?;
+            if matches!(input, InboxRecord::Cancel(_) | InboxRecord::Archive(_)) {
+                barrier = true;
+                break;
+            }
+            selection.through = record
+                .sequence
+                .checked_add(1)
+                .ok_or(Error::Record("steering inbox cursor overflow"))?;
+            read += 1;
+            // Independent records keep their ordered turns. Page past them
+            // without retaining them or capping how far a reply can arrive.
+            if matches!(input, InboxRecord::Notice { .. } | InboxRecord::Message(_)) {
+                selection.inputs.push((record.sequence, input));
+            }
+        }
+        if barrier || read < limit {
+            break;
+        }
+        if end.is_none() && selection.inputs.len() < super::MAX_QUEUED {
+            // Only a paged observation needs a head fence. It bounds this cut
+            // even if independent producers keep appending during the reads;
+            // the ordinary single-page path buys no extra control request.
+            end = Some(
+                provider
+                    .head(agent.inbox()?)
+                    .await
+                    .map_err(Error::Stream)?
+                    .tail,
+            );
         }
     }
     if until.is_some_and(|until| until != selection.through) {

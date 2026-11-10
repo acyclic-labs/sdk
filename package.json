@@ -17,6 +17,7 @@
     "check:native-adapter": "bun run check && cargo build -p acyclic-fs-napi --locked && bun scripts/check-filesystem-napi.mjs --adapter",
     "test:node": "node scripts/node-tests.mjs --all",
     "test:artifact-cache": "node --test scripts/web-docs-cache.integration.mjs",
+    "test:wasm-provenance": "node --test scripts/wasm-build-provenance.integration.mjs",
     "test:prepare": "node scripts/generate-sdk-readmes.mjs check && bun run build && bash scripts/build-host-fixture.sh",
     "test": "bun run test:node && tsc -p scripts --pretty false && bun run check:docs && bun run check:types && bun run --filter '@acyclic-labs/fs' test:composition && bun run test:contracts",
     "test:contracts:browser": "bun run --filter '@acyclic-labs/actors' build:wasm && bun run --filter '@acyclic-labs/objects' build:wasm && bun run --filter '@acyclic-labs/stream' build:wasm && tsc -b typescript/packages/actors typescript/packages/workers typescript/packages/objects typescript/packages/stream && node typescript/packages/actors/test/browser-http-conformance.mjs",

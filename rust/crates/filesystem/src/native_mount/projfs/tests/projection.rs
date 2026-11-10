@@ -130,15 +130,24 @@ async fn a_failed_relist_retains_its_deferred_creations() -> Result<(), Box<dyn 
             .get_mut(&MountPath::root())
             .ok_or("missing materialized root")?
             .basis = Some(basis);
-        state.unplaced.insert(name);
+        state.unplaced.insert(name.clone());
         basis
     };
-    let refused = session.revalidate(&denied);
-    drop(scope);
+    // Wait for both source mutations before consuming the projector's result.
+    // Re-entering revalidate with the exhausted meter would refuse admission
+    // before settle can consume the failed pass, leaving its error for recovery.
+    source.fence_changes_with_meter(&work)?;
+    let refused = runtime.projector.settle();
     assert!(
         refused.is_err(),
         "the deferred write exceeded its allowance"
     );
+    {
+        let state = lock_recover(&runtime.projector.state);
+        assert!(!state.relisting, "the failed pass must return its custody");
+        assert!(state.unplaced.contains(&name));
+    }
+    drop(scope);
     session.revalidate(&work)?;
     assert_eq!(
         std::fs::read(destination.join("deferred.txt"))?,

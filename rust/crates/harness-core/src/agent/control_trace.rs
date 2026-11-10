@@ -18,7 +18,7 @@ pub enum Decision {
     Cascade(Control, usize, Cascade),
     Alarm(Control, bool, bool, usize, Option<u64>),
     Satisfy(Control, Control),
-    Until(u32, usize, bool, Option<u64>, Wait),
+    Until(u32, usize, bool, Option<u64>, bool, Wait),
 }
 
 impl Decision {
@@ -51,8 +51,8 @@ impl Decision {
                 kernel::alarm(control, queued, approval, pending) == actual
             }
             Self::Satisfy(control, actual) => kernel::satisfy(control) == actual,
-            Self::Until(need, open, sleep, deadline, actual) => {
-                kernel::until(need, open, sleep, deadline) == actual
+            Self::Until(need, open, sleep, deadline, input, actual) => {
+                kernel::until(need, open, sleep, deadline, input) == actual
             }
         }
     }

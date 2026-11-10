@@ -337,7 +337,7 @@ where
                 .as_ref()
                 .map(|name| ledger.guard_owned(name.logical_owned_bytes()))
                 .transpose()?;
-            let Some(((generation, page), mut page_hold)) = self
+            let Some(((generation, page), page_hold)) = self
                 .host
                 .list_directory_page(
                     host::DirectoryListing {
@@ -356,36 +356,8 @@ where
             else {
                 return Ok(None);
             };
-            let mut held =
-                ledger.reserve_decode(std::mem::size_of::<PrivateDirectoryPage>() as u64)?;
-            let mut entries = Vec::new();
-            let mut history = ledger.history_io();
-            crate::store::history::reserve(&mut entries, page.entries.len(), &mut history)?;
-            held.adopt((entries.capacity() * std::mem::size_of::<PrivateDirectoryEntry>()) as u64)?;
-            let has_more = page.has_more;
-            for entry in page.entries {
-                let name = ledger.sdk(entry.name.unicode_text(ledger, ledger.cancellation()))?;
-                held.adopt(name.capacity() as u64)?;
-                let kind = match entry.kind {
-                    FileKind::Regular => PrivateDirectoryEntryKind::File,
-                    FileKind::Directory => PrivateDirectoryEntryKind::Directory,
-                    _ => {
-                        return Err(stock_boundary(
-                            Some(ledger),
-                            crate::wire::ErrorCode::Unsupported,
-                            "private directory contains an unsupported entry kind",
-                        ));
-                    }
-                };
-                entries.push(PrivateDirectoryEntry { name, kind });
-            }
-            page_hold.substitute(generation.logical_owned_bytes()?)?;
-            held.absorb(page_hold)?;
-            let page = PrivateDirectoryPage {
-                generation,
-                entries,
-                has_more,
-            };
+            let (page, held) =
+                PrivateDirectoryPage::from_filesystem(generation, page, page_hold, ledger)?;
             self.authority
                 .recheck(&mut Some(&mut ledger.history_io()))?;
             // Only caller-funded results transfer custody out of this future.
@@ -918,3 +890,48 @@ use crate::executor::stock_boundary;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+
+impl PrivateDirectoryPage {
+    /// The one conversion from filesystem names into the public Unicode page.
+    /// The source reservation retains the generation and original name storage
+    /// while the same caller funds the Unicode projection.
+    pub(crate) fn from_filesystem<'io>(
+        generation: GenerationRef,
+        page: acyclic_fs::DirectoryPage,
+        mut source: crate::filesystem::DecodeReservation<'io>,
+        ledger: &'io crate::filesystem::PreparationIo,
+    ) -> Result<(Self, crate::filesystem::DecodeReservation<'io>)> {
+        let mut held = ledger.reserve_decode(std::mem::size_of::<Self>() as u64)?;
+        let mut entries = Vec::new();
+        let mut history = ledger.history_io();
+        crate::store::history::reserve(&mut entries, page.entries.len(), &mut history)?;
+        held.adopt((entries.capacity() * std::mem::size_of::<PrivateDirectoryEntry>()) as u64)?;
+        let has_more = page.has_more;
+        for entry in page.entries {
+            let name = ledger.sdk(entry.name.unicode_text(ledger, ledger.cancellation()))?;
+            held.adopt(name.capacity() as u64)?;
+            let kind = match entry.kind {
+                acyclic_fs::kernel::FileKind::Regular => PrivateDirectoryEntryKind::File,
+                acyclic_fs::kernel::FileKind::Directory => PrivateDirectoryEntryKind::Directory,
+                _ => {
+                    return Err(crate::executor::stock_boundary(
+                        Some(ledger),
+                        crate::wire::ErrorCode::Unsupported,
+                        "private directory contains an unsupported entry kind",
+                    ));
+                }
+            };
+            entries.push(PrivateDirectoryEntry { name, kind });
+        }
+        source.substitute(generation.logical_owned_bytes()?)?;
+        held.absorb(source)?;
+        Ok((
+            Self {
+                generation,
+                entries,
+                has_more,
+            },
+            held,
+        ))
+    }
+}

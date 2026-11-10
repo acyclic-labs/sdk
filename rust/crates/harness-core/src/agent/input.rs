@@ -105,6 +105,9 @@ impl TurnInput {
 pub struct Queued {
     /// Inbox sequence of the carrying record, as `Delivered::Committed` returned it.
     pub inbox: u64,
+    /// This record may join the running turn at a model boundary. Explicit
+    /// follow-ups and controls keep their own turn even when a later reply steers.
+    pub steering: bool,
     /// The input.
     pub input: TurnInput,
 }
@@ -122,6 +125,10 @@ pub struct Progress {
 
 /// The turn input an inbox record at `sequence` carries.
 pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
+    let steering = matches!(
+        &record,
+        InboxRecord::Message(_) | InboxRecord::Notice { .. }
+    );
     let input = match record {
         InboxRecord::Notice {
             id,
@@ -173,6 +180,7 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
     };
     input.map(|input| Queued {
         inbox: sequence,
+        steering,
         input,
     })
 }

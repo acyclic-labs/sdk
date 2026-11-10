@@ -41,8 +41,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            // V2 retains terminal archive refusals and their pending children.
-            version: "2".into(),
+            // V3 retains whether an actor wait also accepts inbox input.
+            version: "4".into(),
         });
     &IDENTITY
 }
@@ -661,6 +661,7 @@ mod tests {
         }
         for input in turn_inputs() {
             ConversationEntry {
+                observed_through: u64::MAX,
                 inbox: u64::MAX,
                 input,
                 output: file(),
@@ -715,6 +716,7 @@ mod tests {
                     committed_actions: true,
                     conversation_tail: u64::MAX,
                     steered_through: u64::MAX,
+                    steering_tail: u64::MAX,
                     pending_notices: Some(0..u64::MAX),
                     dropped_before: u64::MAX,
                     checkpoint: Some(u64::MAX),
@@ -849,7 +851,7 @@ mod tests {
                     }),
                 },
                 Phase::WaitingHost { host: widest(MAX_INTENT_BYTES) },
-                Phase::Waiting { deadline_unix_ms: Some(u64::MAX) }];
+                Phase::Waiting { deadline_unix_ms: Some(u64::MAX), input: true }];
             let record_outcomes = outcomes().into_iter().chain([AgentOutcome::Failed {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);
@@ -865,7 +867,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Failed { message: widest_text(MAX_MESSAGE_BYTES) }, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
+                let record = ConversationEntry { observed_through: u64::MAX, inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Failed { message: widest_text(MAX_MESSAGE_BYTES) }, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);

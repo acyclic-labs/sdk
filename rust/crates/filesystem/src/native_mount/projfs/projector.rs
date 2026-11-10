@@ -756,7 +756,13 @@ impl Projector {
                 || state.negative_cache_dirty
                 || !state.vacated.is_empty())
         {
-            if let Some(failure) = state.failure.take() {
+            // A failed control still owns the work accepted through its cut.
+            // Return its error only after the active pass has returned deferred
+            // path custody; its caller can then safely end the work scope.
+            if !state.relisting
+                && state.processed >= target
+                && let Some(failure) = state.failure.take()
+            {
                 return Err(NativeMountError::Driver(failure));
             }
             if state.startup.is_some()

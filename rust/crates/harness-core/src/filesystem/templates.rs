@@ -74,6 +74,18 @@ mod tests {
             TurnAdmission::LocalRoot,
         ));
         let parent = crate::templates::root()?;
+        // The shipped attention role is admitted through the same volume and
+        // template reader as worker forks, but starts with a fresh context.
+        let triager = templates
+            .child(&parent, &path, &volumes, "triager", None)
+            .await?;
+        assert_eq!(triager.context, SpawnContext::Fresh);
+        assert_eq!(triager.template.as_ref().unwrap().volume(), &seed);
+        let explanation = templates
+            .child(&parent, &path, &volumes, "explanation", None)
+            .await?;
+        assert_eq!(explanation.context, SpawnContext::Fork);
+        assert_eq!(explanation.template.as_ref().unwrap().volume(), &seed);
         let original = templates
             .child(&parent, &path, &volumes, "worker", None)
             .await?;
@@ -128,7 +140,7 @@ mod tests {
         )?;
         let directive = crate::templates::directive(&selected, reader.as_ref()).await?;
         assert_eq!(
-            directive.messages[0].content,
+            directive.context.messages[0].content,
             crate::model::ModelContent::Text("Retain this exact directive.".into())
         );
         // A child reads its original parent-home template by the same exact

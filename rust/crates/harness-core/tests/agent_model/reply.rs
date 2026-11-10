@@ -19,6 +19,7 @@ fn message(name: &str) -> Result<TurnInput> {
 
 fn entry(inbox: u64, input: TurnInput) -> Result<Vec<u8>> {
     Ok(ConversationEntry {
+        observed_through: inbox.saturating_add(1),
         inbox,
         input,
         output: file("output")?,
@@ -57,6 +58,30 @@ async fn append(provider: &MemoryStream, path: &AgentPath, records: Vec<Vec<u8>>
 async fn committed_reply_search_respects_identity_and_fork_base() -> Result {
     let provider = MemoryStream::default();
     let root = create(&provider, id(1)).await?;
+    for name in ["m1", "m2", "m3"] {
+        submit(
+            &provider,
+            send(
+                &root,
+                &user(),
+                &InboxRecord::Message(Message {
+                    from: user(),
+                    id: intent(name),
+                    body: Box::new(file(name)?),
+                    attachments: None,
+                }),
+            )?,
+        )
+        .await?;
+    }
+    // A later turn's steering receipt cannot claim an input cancelled before
+    // that turn began, even when the observed-prefix search lands on it.
+    let mut third = ConversationEntry::decode(&entry(3, message("m3")?)?)?;
+    third.steering = Some(SteeringTranscript {
+        through: 4,
+        file: file("later-transcript")?,
+    });
+    let third = third.with_observed_prefix(0);
     let approval = TurnInput::ApprovalRequested {
         child: root.child(&id(7))?,
         id: intent("q"),
@@ -68,7 +93,7 @@ async fn committed_reply_search_respects_identity_and_fork_base() -> Result {
         &root,
         vec![
             entry(1, message("m1")?)?,
-            entry(3, message("m3")?)?,
+            third.encode()?,
             entry(4, approval)?,
             entry(6, message("m6")?)?,
         ],
@@ -140,13 +165,14 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
         submit(&provider, send(&path, &user(), &record)?).await?;
     }
     let mut state = AgentState::adopted(path.clone(), &super::adopted(id(11))).expect("adopts");
-    let selected = select_boundary(&provider, &state, 0, 2, 1, Some(3)).await?;
+    let selected = select_boundary(&provider, &state.path, 2, Some(3)).await?;
     assert_eq!(selected.inputs.len(), 1);
     let mut settled = ConversationEntry::decode(&entry(1, message("initial")?)?)?;
     settled.steering = Some(SteeringTranscript {
         through: selected.through,
         file: file("transcript")?,
     });
+    settled = settled.with_observed_prefix(0);
     append(
         &provider,
         &path,
@@ -154,6 +180,7 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
     )
     .await?;
     state.queued.push_back(Queued {
+        steering: false,
         inbox: 2,
         input: message("steered")?,
     });

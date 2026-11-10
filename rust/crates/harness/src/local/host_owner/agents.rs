@@ -434,7 +434,7 @@ impl HostDriver {
     async fn turn(&self, agent: &AgentState, input: Option<Queued>) -> Result<TurnStep> {
         let mut session = self.session(agent).await?;
         // A turn resumes only on its host's hooks, each of which is input.
-        let Some(Queued { inbox, input }) = input else {
+        let Some(Queued { inbox, input, .. }) = input else {
             return Ok(idle(Vec::new()));
         };
         let (mut outs, mut drops) = (Vec::new(), None);
@@ -500,6 +500,7 @@ impl HostDriver {
             .stage(agent, snapshot(agent, inbox), &bytes, bytes.len() as u64)
             .await?;
         let entry = ConversationEntry {
+            observed_through: 0,
             inbox,
             input,
             output,
@@ -509,7 +510,8 @@ impl HostDriver {
             tool_results: None,
             steering: None,
             notices: None,
-        };
+        }
+        .with_observed_prefix(agent.steered_through);
         outs.push(Out::Conversation(entry.encode().map_err(storage)?));
         Ok(TurnStep {
             drops,

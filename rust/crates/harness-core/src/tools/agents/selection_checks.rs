@@ -51,7 +51,8 @@ fn waited<'de>(
     futures::executor::block_on(super::waited(
         &Selection(parent.clone()),
         crate::OperationId::from_bytes([1; 16]),
-        arguments,
+        WaitAgentInput::deserialize(arguments)
+            .map_err(|error| super::super::rejected_input(Error::Invalid(error.to_string())))?,
     ))
     .map_err(super::super::rejected_input)
 }

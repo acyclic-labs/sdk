@@ -23,11 +23,17 @@ fn alarm_from_history(
 
 /// The former mapping: a condition no open child can meet parked the turn
 /// on its deadline alone, asking no one.
-fn until_on_deadline(need: u32, open: usize, _sleep: bool, deadline: Option<u64>) -> Wait {
+fn until_on_deadline(
+    need: u32,
+    open: usize,
+    _sleep: bool,
+    deadline: Option<u64>,
+    input: bool,
+) -> Wait {
     if need == 0 || (need as usize > open && deadline.is_none()) {
         Wait::Continue
     } else {
-        Wait::Await(deadline)
+        Wait::Await { deadline, input }
     }
 }
 
@@ -159,3 +165,22 @@ fn an_unreachable_wait_parked_on_its_deadline_is_found() {
 }
 
 fn main() {}
+
+/// Losing the input arm would leave a no-deadline UI ask asleep forever.
+fn pick_ignores_input_wait(
+    mut control: Control,
+    alarm: bool,
+    queued: bool,
+    approval: bool,
+) -> Pick {
+    control.input = false;
+    production::pick(control, alarm, queued, approval)
+}
+
+#[kani::proof]
+fn lost_input_wait_wake_is_caught() {
+    input_wait_has_an_original_wake(Kernel {
+        pick: pick_ignores_input_wait,
+        ..PRODUCTION
+    });
+}

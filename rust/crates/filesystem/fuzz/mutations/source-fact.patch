@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/kernel/source_state.rs
++++ b/rust/crates/filesystem/src/kernel/source_state.rs
+@@ -121,7 +121,7 @@
+         ),
+         root_identity: decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+         mode: match decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
+-            1 => DurableSourceMode::Pinned,
++            1 => if std::env::var("ACYCLIC_FS_DECODER_DEFECT").as_deref() == Ok("source-fact") { DurableSourceMode::Tracking } else { DurableSourceMode::Pinned },
+             2 => DurableSourceMode::Tracking,
+             _ => return Err(invariant("unknown source mode").into()),
+         },

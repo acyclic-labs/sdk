@@ -20,7 +20,7 @@ struct Kernel {
     cascade: fn(Control, usize) -> Cascade,
     alarm: fn(Control, bool, bool, usize) -> Option<u64>,
     satisfy: fn(Control) -> Control,
-    until: fn(u32, usize, bool, Option<u64>) -> Wait,
+    until: fn(u32, usize, bool, Option<u64>, bool) -> Wait,
 }
 
 const PRODUCTION: Kernel = Kernel {
@@ -47,7 +47,10 @@ fn any_wait() -> Wait {
     match kani::any::<u8>() % 5 {
         0 => Wait::Continue,
         1 => Wait::Approval,
-        2 => Wait::Await(kani::any()),
+        2 => Wait::Await {
+            deadline: kani::any(),
+            input: kani::any(),
+        },
         3 => Wait::Input,
         _ => Wait::Done,
     }
@@ -256,10 +259,29 @@ fn parks_only_on_a_reachable_condition(kernel: Kernel) {
     let open: usize = kani::any();
     let sleep: bool = kani::any();
     let deadline: Option<u64> = kani::any();
-    let parks = (need > 0 && need as usize <= open) || (sleep && deadline.is_some());
-    match (kernel.until)(need, open, sleep, deadline) {
-        Wait::Await(waited) => assert!(parks && waited == deadline),
+    let input: bool = kani::any();
+    let parks = (need > 0 && need as usize <= open) || (sleep && (deadline.is_some() || input));
+    match (kernel.until)(need, open, sleep, deadline, input) {
+        Wait::Await {
+            deadline: waited,
+            input: wakes,
+        } => assert!(parks && waited == deadline && wakes == input),
         Wait::Continue => assert!(!parks),
         _ => panic!("a condition wait only parks or continues"),
     }
+}
+
+fn input_wait_has_an_original_wake(kernel: Kernel) {
+    let deadline: Option<u64> = kani::any();
+    let (waiting, _) = (kernel.settle)(
+        Control::ADOPTED,
+        Wait::Await {
+            deadline,
+            input: true,
+        },
+    );
+    assert!((kernel.pick)(waiting, false, false, false) == Pick::Nothing);
+    assert!((kernel.pick)(waiting, false, true, false) == Pick::Resume);
+    assert!((kernel.alarm)(waiting, true, false, 0) == Some(CONTINUE_NOW));
+    assert!((kernel.alarm)(waiting, false, false, 0).is_some() == deadline.is_some());
 }

@@ -17,9 +17,10 @@
 //! registration's start id. Every route drops an event at or below its
 //! floor, the last id its registration has had or did not want, so a re-arm
 //! neither loses nor repeats an event. History arrives in path order, so a
-//! shard re-arms only once its replay is done. Re-arming suspends the queue
-//! rather than waiting for it, so a blocked handler delays no registration
-//! and a handler may register or stop watches. Unregistering only removes routes;
+//! shard re-arms only once its replay is done. Its old native stream retires
+//! behind the queue's earlier callbacks before the replacement takes that slot.
+//! Registrations keep their replay cut while pending, so a blocked handler
+//! delays no registration and a handler may register or stop watches. Unregistering only removes routes;
 //! the stream stops when its last registration leaves.
 
 use super::*;
@@ -84,6 +85,7 @@ struct Route {
 
 struct Shard {
     stream: FsEventStreamRef,
+    retiring: FsEventStreamRef,
     root: Option<PathBuf>,
     routes: BTreeMap<PathBuf, Vec<Route>>,
     pending: Vec<Route>,
@@ -99,6 +101,7 @@ impl Shard {
     const fn new() -> Self {
         Self {
             stream: std::ptr::null_mut(),
+            retiring: std::ptr::null_mut(),
             root: None,
             routes: BTreeMap::new(),
             pending: Vec::new(),
@@ -343,14 +346,35 @@ impl Hub {
 
     fn arm_shard(&self, index: usize) {
         let now = self.current_event_id();
-        let (mut batch, root, since, old) = {
+        let (mut batch, root, since) = {
             let mut state = self.state();
             let Some(shard) = state.shards.get_mut(index) else {
                 return;
             };
             // History arrives in path order, so a replaying stream has no
             // id below which it has delivered everything; it re-arms when done.
-            if (shard.pending.is_empty() && !shard.purge) || shard.replaying {
+            if (shard.pending.is_empty() && !shard.purge)
+                || shard.replaying
+                || !shard.retiring.is_null()
+            {
+                return;
+            }
+            if !shard.stream.is_null() {
+                // WatchRoot retains descriptors along the native root's path.
+                // A replacement must take this shard's released native slot,
+                // after every old callback, rather than accumulating retired
+                // streams behind a suspended queue. Pending floors and last_id
+                // retain the replay cut across that event-driven handoff.
+                let old = std::mem::replace(&mut shard.stream, std::ptr::null_mut());
+                shard.retiring = old;
+                drop(state);
+                // SAFETY: arm custody owns this stream. Invalidation stops new
+                // callbacks; the serial release follows those already queued.
+                unsafe {
+                    (self.api.stream_stop)(old);
+                    (self.api.stream_invalidate)(old);
+                    dispatch_async_f(self.queue, old, release_stream);
+                }
                 return;
             }
             let mut batch = std::mem::take(&mut shard.pending);
@@ -378,10 +402,10 @@ impl Hub {
             let since = batch
                 .iter()
                 .map(|route| route.floor)
-                .chain((!shard.stream.is_null()).then_some(shard.last_id))
+                .chain((!shard.routes.is_empty()).then_some(shard.last_id))
                 .min()
                 .unwrap_or(EVENT_ID_SINCE_NOW);
-            (batch, root, since, shard.stream)
+            (batch, root, since)
         };
         // No callback runs between the new stream's start and the switch to
         // it, so none of its events finds it not yet the shard's.
@@ -398,6 +422,11 @@ impl Hub {
         let stream = match stream {
             Ok(stream) => stream,
             Err(error) => {
+                // A replacement now starts after its old native owner retired.
+                // If creation fails, every route has lost that producer.
+                batch.extend(std::mem::take(&mut shard.routes).into_values().flatten());
+                shard.root = None;
+                shard.purge = false;
                 batch.retain(|route| {
                     if route.registration.live.swap(false, Ordering::AcqRel) {
                         route.registration.failed.store(true, Ordering::Release);
@@ -426,10 +455,9 @@ impl Hub {
                 return;
             }
         };
-        // A callback already running when the queue was suspended may have
-        // delivered more since `since` was read. Now none can: the old stream
-        // delivered every event of its roots up to `last`, and the new one
-        // replays from no later than that.
+        // Retirement preserves the previous stream's delivered cut. The new
+        // stream replays from no later than that cut, while each original
+        // route retains its own already-delivered floor.
         let last = shard.last_id;
         for routes in shard.routes.values_mut() {
             for route in routes {
@@ -448,15 +476,6 @@ impl Hub {
             self.armed.notify_all();
         }
         drop(state);
-        if !old.is_null() {
-            // SAFETY: arm custody owns the replaced stream. Any of its
-            // callbacks already queued finds it no shard's and ignores it.
-            unsafe {
-                (self.api.stream_stop)(old);
-                (self.api.stream_invalidate)(old);
-                dispatch_async_f(self.queue, old, release_stream);
-            }
-        }
         drop(suspended);
     }
 
@@ -743,8 +762,22 @@ impl Drop for Suspended {
 
 extern "C" fn release_stream(stream: *mut c_void) {
     if let Some(hub) = HUB.get() {
-        // SAFETY: the stream was stopped and invalidated, and every callback
-        // queued before this has run.
-        unsafe { (hub.api.stream_release)(stream) };
+        {
+            // Keep pointer reuse excluded until the retired shard's marker is
+            // cleared. No new stream can occupy its native slot before this.
+            let _arm = hub.arm.lock().unwrap_or_else(PoisonError::into_inner);
+            // SAFETY: the stream was stopped and invalidated, and every
+            // callback queued before this serial release has run.
+            unsafe { (hub.api.stream_release)(stream) };
+            if let Some(shard) = hub
+                .state()
+                .shards
+                .iter_mut()
+                .find(|shard| shard.retiring == stream)
+            {
+                shard.retiring = std::ptr::null_mut();
+            }
+        }
+        hub.arm_all();
     }
 }

@@ -17,7 +17,7 @@
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
 import { enabled, featureSets, selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
@@ -69,9 +69,20 @@ export function selectFeaturePackages(items, selected) {
 // consumers must never fund another consumer's feature requirements. Include
 // each declared consumer feature, with and without defaults, and their full
 // union. Cargo's metadata expands workspace dependency inheritance for us.
+// Vendored dependency sources compile through their owning consumers and lockfile.
+// Their upstream manifests are not standalone SDK publication roots.
+export function publishedMatrixPackages(packages) {
+  const vendor = join(root, "rust", "vendor");
+  return packages.filter(item => {
+    const path = relative(vendor, resolve(item.manifest_path));
+    const outsideVendor = isAbsolute(path) || path === ".." || path.startsWith(".." + sep);
+    return outsideVendor && item.source === null
+      && (item.publish === null || item.publish.includes("crates-io"));
+  });
+}
+
 export function consumerSelections(packages, selected = [], { declared = false } = {}) {
-  const published = packages.filter(item => item.source === null
-    && (item.publish === null || item.publish.includes("crates-io")));
+  const published = publishedMatrixPackages(packages);
   const inventory = new Map(published.map(item => [item.name, item]));
   const sets = new Map(selectFeaturePackages(published, selected).map(item => [item.name, new Map()]));
   function add(name, features, flags) {
@@ -133,8 +144,7 @@ export function externalConsumerManifest(item, defaults, patches) {
 }
 
 async function externalConsumers(packages, selected, { list, target }) {
-  const published = packages.filter(item => item.source === null
-    && (item.publish === null || item.publish.includes("crates-io")));
+  const published = publishedMatrixPackages(packages);
   const items = selectFeaturePackages(published, selected);
   // Preserve the repository's dependency sources, including patched proc macros.
   const patches = [...readFileSync(join(root, "Cargo.toml"), "utf8")

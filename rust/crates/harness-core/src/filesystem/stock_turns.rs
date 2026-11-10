@@ -300,6 +300,13 @@ impl TurnExecutors for StockExecutors {
             };
             let executor = match (self.templates, &agent.profile) {
                 (true, Some(creation)) => {
+                    let directive =
+                        crate::templates::directive(creation, authority.content.reader.as_ref())
+                            .await?;
+                    let executor = match directive.allowed_tools.as_deref() {
+                        Some(allowed) => executor.with_tool_ceiling(allowed)?,
+                        None => executor,
+                    };
                     let digest = creation.template.as_ref().map_or_else(
                         || {
                             blake3::hash(include_bytes!("../seed/templates/orchestrator/AGENT.md"))
@@ -311,8 +318,7 @@ impl TurnExecutors for StockExecutors {
                     executor.with_context_stage(Arc::new(crate::context::SourceStage::new(
                         "template",
                         digest,
-                        crate::templates::directive(creation, authority.content.reader.as_ref())
-                            .await?,
+                        directive.context,
                         crate::context::ContextPlacement::Prepend,
                     )))?
                 }

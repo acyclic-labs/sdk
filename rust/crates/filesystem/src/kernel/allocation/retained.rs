@@ -1,6 +1,6 @@
 //! Owned custody at asynchronous boundaries, using the original ledger.
 use super::*;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod shared;
@@ -290,7 +290,7 @@ enum RetainedAllocationInner {
 }
 
 pub(crate) struct StandaloneLease {
-    ledger: Arc<Mutex<SharedAllocationBytes>>,
+    ledger: Arc<SharedAllocationState>,
     bytes: u64,
 }
 
@@ -307,7 +307,7 @@ impl Drop for StandaloneLease {
 }
 
 impl RetainedAllocation {
-    pub(crate) fn standalone_ledger(&self) -> Option<&Arc<Mutex<SharedAllocationBytes>>> {
+    pub(crate) fn standalone_ledger(&self) -> Option<&Arc<SharedAllocationState>> {
         match &self.inner {
             RetainedAllocationInner::Standalone { _lease } => Some(&_lease.ledger),
             #[cfg(not(target_arch = "wasm32"))]
@@ -367,7 +367,7 @@ impl RetainedAllocation {
         }
     }
 
-    pub(super) fn standalone(ledger: Arc<Mutex<SharedAllocationBytes>>, bytes: u64) -> Self {
+    pub(super) fn standalone(ledger: Arc<SharedAllocationState>, bytes: u64) -> Self {
         Self {
             inner: RetainedAllocationInner::Standalone {
                 _lease: StandaloneLease { ledger, bytes },
@@ -896,7 +896,7 @@ mod tests {
     }
 
     struct Observe {
-        ledger: Arc<Mutex<SharedAllocationBytes>>,
+        ledger: Arc<SharedAllocationState>,
         minimum: u64,
         observed: Arc<AtomicBool>,
     }
