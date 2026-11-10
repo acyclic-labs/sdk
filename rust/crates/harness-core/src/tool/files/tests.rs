@@ -143,7 +143,7 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     )
                     .unwrap_err()
                     .code(),
-                crate::wire::ErrorCode::Unauthorized,
+                crate::wire::ErrorCode::Invalid,
             );
             assert_eq!(
                 write()?
@@ -152,7 +152,7 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     .await
                     .unwrap_err()
                     .code(),
-                crate::wire::ErrorCode::Unauthorized,
+                crate::wire::ErrorCode::Invalid,
             );
             let after = work.receipt();
             assert_eq!(
