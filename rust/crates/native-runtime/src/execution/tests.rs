@@ -153,13 +153,14 @@ fn sandbox_denies_outside_write() {
 fn custom_arg0_refuses_confined_launch_before_guest_execution() {
     use std::io::Read;
     let workspace = tempfile::tempdir().unwrap();
+    let cwd = workspace.path().canonicalize().unwrap();
     let command = || {
         let mut command = Command::new("/bin/sh");
         command
             .arg0("custom-shell")
             .args(["-c", "printf '%s' \"$0\"; printf started > started"])
             .env_clear()
-            .current_dir(workspace.path())
+            .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
