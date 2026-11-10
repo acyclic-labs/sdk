@@ -42,7 +42,7 @@ fn fixture(reads: usize) -> Vec<ModelMessage> {
     }
     messages
 }
-fn result_body(message: &ModelMessage) -> &str {
+fn result_body(message: &ModelMessage) -> &String {
     let ModelContent::Part(ModelContentPart::ToolResult {
         content: ToolResultContent::Json { value },
         ..
@@ -50,10 +50,10 @@ fn result_body(message: &ModelMessage) -> &str {
     else {
         panic!("result exchange lost")
     };
-    value
-        .get("text")
-        .and_then(Value::as_str)
-        .expect("read text")
+    let Some(Value::String(body)) = value.get("text") else {
+        panic!("read text lost")
+    };
+    body
 }
 #[test]
 fn reused_ids_consume_pending_calls_in_both_orders_and_partial_reads() {
@@ -131,10 +131,13 @@ proptest! {
                 prop_assert_eq!(trace.iter().filter(|(name,_)|*name=="verify").copied().collect::<Vec<_>>(),baseline_trace);
                 // Each decoded version claims its scratch directly from the original
                 // ledger and releases it on drop; the only transfer is one absorb of
-                // each replacement body into the preparation that owns the request.
+                // each replacement body's retained capacity into the preparation
+                // that owns the request. The shared geometric writer introduced
+                // in b67582d4dc4 may retain more capacity than the text length.
                 let custody:Vec<_>=trace.iter().filter(|(name,_)|name.starts_with("custody-")).copied().collect();
-                let replacement=("custody-absorb",result_body(&baseline[2]).len() as u64);
-                prop_assert_eq!(custody,if native { vec![replacement;count] } else { Vec::new() });
+                let replacements:Vec<_>=output[1..].chunks_exact(2)
+                    .map(|exchange|("custody-absorb",result_body(&exchange[1]).capacity() as u64)).collect();
+                prop_assert_eq!(custody,if native { replacements } else { Vec::new() });
                 prop_assert_eq!(serde_json::to_vec(&output).unwrap(),serde_json::to_vec(&baseline).unwrap());
             }
             // Original receipts include the real shared-index work, decoding,
