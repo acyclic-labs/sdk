@@ -286,6 +286,7 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         &cancellation,
     )
     .unwrap();
+    let decoded_baseline = decoded_work.live_allocation_bytes();
     let mut decoded_accounting =
         crate::kernel::KernelAccounting::native(&decoded_work, decoded_work.cancellation());
     let original = restarted
@@ -301,12 +302,12 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     drop(original);
     drop(restarted);
     assert!(
-        decoded_work.live_allocation_bytes() > 0,
+        decoded_work.live_allocation_bytes() > decoded_baseline,
         "returned source aliases retain their original decoded backing"
     );
     drop(held_cut);
     drop(held_roots);
-    assert_eq!(decoded_work.live_allocation_bytes(), 0);
+    assert_eq!(decoded_work.live_allocation_bytes(), decoded_baseline);
 }
 
 #[tokio::test]
