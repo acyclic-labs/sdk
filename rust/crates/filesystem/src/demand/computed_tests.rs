@@ -534,10 +534,12 @@ async fn computed_mounted_override_removal_preserves_the_original_data_decision(
                     WorkBudget::UNBOUNDED,
                     &cancel,
                     &mut |_| async {
-                        Ok::<_, crate::WorkspaceError>(crate::OperationReceipt {
-                            value: (),
-                            work: WorkCounters::UNCHARGED,
-                        })
+                        Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                            crate::OperationReceipt {
+                                value: (),
+                                work: WorkCounters::UNCHARGED,
+                            },
+                        )
                     },
                 )
                 .await
