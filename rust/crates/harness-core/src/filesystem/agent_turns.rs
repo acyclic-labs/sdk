@@ -35,22 +35,7 @@ use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamProvider
 use futures::TryStreamExt;
 use std::sync::Arc;
 
-/// Name of the volume binding that holds an agent's journal and staged turn output.
-pub const PRIVATE_VOLUME: &str = "private";
-
-/// The private volume of `agent`, which every portable host creates and binds
-/// as [`PRIVATE_VOLUME`]. A platform selecting an Actor-hosted agent's volume
-/// for its Machine passes the manifest's volume provider and
-/// [`AgentId::hosted_root`](crate::agent::AgentId::hosted_root) of the actor id.
-pub fn private_volume(provider: ProviderRef, agent: &crate::agent::AgentId) -> Result<VolumeRef> {
-    VolumeRef::new(
-        provider,
-        PRIVATE_VOLUME.to_owned(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
-        &mut None,
-    )
-}
+pub use crate::conversation::{PRIVATE_VOLUME, private_volume};
 
 #[cfg(test)]
 #[path = "agent_turns/admission_tests.rs"]

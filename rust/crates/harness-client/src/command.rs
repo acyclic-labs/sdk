@@ -146,6 +146,17 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
         after: Option<acyclic_harness_core::resources::GenerationRef>,
     },
+    /// Snapshot explicit paths in the selected agent's private volume.
+    PrivateFiles {
+        /// Exact owner admitted within this tree.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Distinct normalized paths; no directory scan is performed.
+        paths: Vec<String>,
+        /// Wait for this volume's publication after the retained generation.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        after: Option<acyclic_harness_core::resources::GenerationRef>,
+    },
     /// Atomic conditional publication to that same session volume.
     PublishClientFiles {
         /// Agent selected within the authenticated tree.
@@ -490,7 +501,7 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
-            Self::ClientFiles { paths, .. } => {
+            Self::ClientFiles { paths, .. } | Self::PrivateFiles { paths, .. } => {
                 if paths.is_empty() {
                     return Err(CommandError::Invalid);
                 }
@@ -639,6 +650,7 @@ impl AgentCommand {
             | Self::Usage { agent, .. }
             | Self::Events { agent, .. }
             | Self::ClientFiles { agent, .. }
+            | Self::PrivateFiles { agent, .. }
             | Self::PublishClientFiles { agent, .. }
             | Self::Read { agent, .. }
             | Self::Stage { agent, .. }
@@ -653,6 +665,7 @@ impl AgentCommand {
             Self::Bind { .. } => "bind",
             Self::Root {} => "root",
             Self::ClientFiles { .. } => "client_files",
+            Self::PrivateFiles { .. } => "private_files",
             Self::PublishClientFiles { .. } => "publish_client_files",
             Self::Prompt { .. } => "prompt",
             Self::Cancel { .. } => "cancel",

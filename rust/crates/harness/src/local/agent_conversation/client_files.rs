@@ -37,6 +37,27 @@ impl Conversation {
         }
     }
 
+    /// Snapshot explicit private paths, optionally waiting on this volume's
+    /// original publication stream. The shared query owns cancellation/credit.
+    pub async fn private_files(
+        &self,
+        paths: Vec<String>,
+        after: Option<GenerationRef>,
+    ) -> Result<ClientFiles> {
+        match self
+            .connection
+            .execute(&AgentCommand::PrivateFiles {
+                agent: self.agent().clone(),
+                paths,
+                after,
+            })
+            .await?
+        {
+            AgentReply::ClientFiles { snapshot } => Ok(snapshot),
+            _ => Err(unexpected()),
+        }
+    }
+
     /// Publish an atomic conditional file batch. An uncertain outcome retains
     /// the caller's operation identity and exact original source descriptors.
     pub async fn publish_client_files(

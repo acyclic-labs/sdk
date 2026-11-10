@@ -468,6 +468,19 @@ where
                     settled,
                 })
             }
+            AgentCommand::PrivateFiles {
+                agent,
+                paths,
+                after,
+            } => {
+                let agent = self.within_tree(agent)?;
+                Ok(AgentReply::ClientFiles {
+                    snapshot: self
+                        .bound
+                        .private_files(agent, paths, after.as_ref())
+                        .await?,
+                })
+            }
             AgentCommand::ClientFiles {
                 agent,
                 session,
@@ -1399,6 +1412,7 @@ where
                 | AgentCommand::Usage { .. }
                 | AgentCommand::Events { .. }
                 | AgentCommand::ClientFiles { .. }
+                | AgentCommand::PrivateFiles { .. }
                 | AgentCommand::Read { .. } => true,
                 AgentCommand::Prompt { .. }
                 | AgentCommand::Cancel { .. }

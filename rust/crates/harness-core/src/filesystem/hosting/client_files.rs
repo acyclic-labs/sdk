@@ -69,14 +69,57 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         let (volume, scope, verifier) = self.client_volume(agent, session).await?;
         let grant = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "", &mut None)
             .map_err(turn)?;
-        let reference =
-            super::super::bounded_io::content_workspace(&self.volumes.provider, &volume, None)
-                .map_err(turn)?;
         let initial = if after.is_none() {
             Some(self.volumes.create_volume(&volume).await.map_err(turn)?)
         } else {
             None
         };
+        self.volume_files((&volume, &scope, &grant), paths, after, initial)
+            .await
+    }
+
+    /// Snapshot explicit private paths, waiting on the original publication
+    /// producer after a retained generation. Missing paths remain explicit.
+    pub async fn private_files(
+        &self,
+        agent: &AgentPath,
+        paths: &[String],
+        after: Option<&GenerationRef>,
+    ) -> Result<ClientFiles, Error> {
+        self.admit_path(agent)?;
+        let state = self.agents.state(agent).await?;
+        let authority = agent_authority(
+            &self.issuer,
+            &self.admission,
+            &state.path,
+            &state.volumes,
+            &[],
+        )
+        .await
+        .map_err(turn)?;
+        let volume = &authority.private.volume;
+        let grant = ContentGrant::verify_directory_read(
+            &authority.verifier,
+            &authority.scope,
+            volume,
+            "",
+            &mut None,
+        )
+        .map_err(turn)?;
+        self.volume_files((volume, &authority.scope, &grant), paths, after, None)
+            .await
+    }
+
+    async fn volume_files(
+        &self,
+        (volume, scope, grant): (&VolumeRef, &Scope, &ContentGrant),
+        paths: &[String],
+        after: Option<&GenerationRef>,
+        initial: Option<crate::filesystem::WorkspaceObservation>,
+    ) -> Result<ClientFiles, Error> {
+        let reference =
+            super::super::bounded_io::content_workspace(&self.volumes.provider, volume, None)
+                .map_err(turn)?;
         let waiting = if after.is_some() {
             let workspace = self.volumes.open(&reference, None).await.map_err(turn)?;
             let path = acyclic_fs::session::changes_path(
@@ -146,8 +189,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             let file = match self
                 .volumes
                 .read_private_path(
-                    &volume,
-                    &grant,
+                    volume,
+                    grant,
                     path,
                     Some(&selected.generation),
                     self.maximum_bytes,

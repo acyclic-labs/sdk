@@ -830,6 +830,45 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .await
             .is_err()
     );
+    let paths = vec!["directory-a".to_owned(), "absent-row".to_owned()];
+    let snapshot = client.private_files(paths.clone(), None).await?;
+    assert!(snapshot.files["absent-row"].is_none());
+    assert_eq!(
+        snapshot.files["directory-a"]
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("row".into()))?
+            .text,
+        "changed after selection"
+    );
+    let waiting = client.private_files(paths.clone(), Some(snapshot.generation.clone()));
+    futures::pin_mut!(waiting);
+    assert!(
+        futures::poll!(waiting.as_mut()).is_pending(),
+        "unchanged files must wait on publication"
+    );
+    private
+        .write_text("/directory-a", "authored row changed")
+        .await
+        .map_err(agent)?;
+    let updated = waiting.await?;
+    assert_ne!(updated.generation, snapshot.generation);
+    assert_eq!(
+        updated.files["directory-a"]
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("updated row".into()))?
+            .text,
+        "authored row changed"
+    );
+    assert!(
+        connection
+            .execute(&AgentCommand::PrivateFiles {
+                agent: AgentPath::root(&crate::agent::AgentId::from_bytes([91; 16])),
+                paths,
+                after: None,
+            })
+            .await
+            .is_err()
+    );
     // The same intent replays its commit at the same sequence; no second turn runs.
     assert_eq!(client.send("hello", "hello").await?, inbox);
     assert_eq!(records(&**agents.provider(), conversation).await?.len(), 1);

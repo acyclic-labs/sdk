@@ -431,25 +431,30 @@ fn validate_reply(
                 after,
             },
         ) => {
-            return if after.as_ref() != Some(&snapshot.generation)
-                && snapshot.files.len() == paths.len()
-                && paths.iter().all(|path| {
-                    snapshot.files.get(path).is_some_and(|file| {
-                        file.as_ref().is_none_or(|file| {
-                            file.file.path() == path
-                                && acyclic_harness_core::client_files::volume(
-                                    file.file.volume().provider().clone(),
-                                    agent,
-                                    *session,
-                                )
-                                .is_ok_and(|volume| &volume == file.file.volume())
-                        })
-                    })
-                }) {
-                Ok(())
-            } else {
-                Err(CommandError::Invalid)
-            };
+            return validate_files(snapshot, paths, after.as_ref(), |file| {
+                acyclic_harness_core::client_files::volume(
+                    file.volume().provider().clone(),
+                    agent,
+                    *session,
+                )
+                .is_ok_and(|volume| &volume == file.volume())
+            });
+        }
+        (
+            AgentReply::ClientFiles { snapshot },
+            AgentCommand::PrivateFiles {
+                agent,
+                paths,
+                after,
+            },
+        ) => {
+            return validate_files(snapshot, paths, after.as_ref(), |file| {
+                acyclic_harness_core::conversation::private_volume(
+                    file.volume().provider().clone(),
+                    &agent.id(),
+                )
+                .is_ok_and(|volume| &volume == file.volume())
+            });
         }
         (AgentReply::Root { .. }, AgentCommand::Root {})
         | (AgentReply::Bound { .. }, AgentCommand::Bind { .. })
@@ -1556,5 +1561,26 @@ mod tests {
             b"original-key"
         );
         Ok(())
+    }
+}
+
+fn validate_files(
+    snapshot: &acyclic_harness_core::client_files::ClientFiles,
+    paths: &[String],
+    after: Option<&acyclic_harness_core::resources::GenerationRef>,
+    owns: impl Fn(&acyclic_harness_core::conversation::FileRef) -> bool,
+) -> Result<(), CommandError> {
+    if after != Some(&snapshot.generation)
+        && snapshot.files.len() == paths.len()
+        && paths.iter().all(|path| {
+            snapshot.files.get(path).is_some_and(|file| {
+                file.as_ref()
+                    .is_none_or(|file| file.file.path() == path && owns(&file.file))
+            })
+        })
+    {
+        Ok(())
+    } else {
+        Err(CommandError::Invalid)
     }
 }
