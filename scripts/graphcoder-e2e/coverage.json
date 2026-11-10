@@ -24,6 +24,8 @@
       "owner": "tool-latency",
       "cases": [
         "bash-capture",
+        "shell-background-job",
+        "shell-no-deadline",
         "shell-gemini-signed",
         "file-tools-responses",
         "file-tools-chat",

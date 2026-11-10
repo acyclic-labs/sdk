@@ -12,10 +12,19 @@ impl FileTool {
     ) -> Result<(ToolResult, crate::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let mut input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+        if input.0.wait && input.0.version.is_some() {
+            return Err(invalid("waiting reads cannot select an immutable version"));
+        }
         if input.0.range.is_some() && input.0.selection.is_some() {
             return Err(invalid(
                 "byte ranges and projections are mutually exclusive",
             ));
+        }
+        if input.0.range.is_some_and(|range| range.end < range.start) {
+            return Err(invalid("read range is reversed"));
+        }
+        if input.0.wait {
+            context.wait_tool_path(&input.0.path, io).await?;
         }
         let mut source = super::source::ReadSource::decode(
             context,

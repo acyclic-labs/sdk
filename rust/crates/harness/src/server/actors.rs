@@ -186,7 +186,8 @@ where
                 provider,
                 within,
             } = self.placement;
-            let volumes = FilesystemHost::new(filesystem, &provider, None)?;
+            let volumes = FilesystemHost::new(filesystem.clone(), &provider, None)?
+                .with_changes(filesystem.stream_provider())?;
             let bound = Bound::admitted_host(
                 self.issuer,
                 self.caller,
