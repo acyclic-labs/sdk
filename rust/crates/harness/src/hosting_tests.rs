@@ -145,6 +145,10 @@ fn provider() -> Result<ProviderRef> {
 
 /// A credential that may invoke exactly `resource`.
 fn credential(resource: &str) -> Bytes {
+    credentials(&[resource])
+}
+
+fn credentials(resources: &[&str]) -> Bytes {
     use acyclic_auth::contract::*;
     acyclic_auth::testing::root(|block| {
         let Some(key) = block
@@ -155,15 +159,18 @@ fn credential(resource: &str) -> Bytes {
             return;
         };
         key.key.grants = GrantSet {
-            grants: vec![Grant {
-                kind: GrantKind::Resource(ResourceGrant {
-                    resource: ResourcePattern {
-                        name: resource.into(),
-                        prefix: false,
-                    },
-                    actions: vec!["actors/invoke".into()],
-                }),
-            }],
+            grants: resources
+                .iter()
+                .map(|resource| Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: (*resource).into(),
+                            prefix: false,
+                        },
+                        actions: vec!["actors/invoke".into()],
+                    }),
+                })
+                .collect(),
         };
     })
     .into()
