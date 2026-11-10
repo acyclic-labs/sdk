@@ -10,19 +10,41 @@ export async function initializeFixtureAuthority() {
  * Only public evidence and typed callbacks cross into the harness module. */
 export function fixtureAuthority(task, grants = hostFixtureGrants(), account = "browser") {
   const closed = new AbortController();
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 3599) * 1000n;
-  // This is the host invocation's original expiry event, shared by both modules.
-  const lifetime = AbortSignal.any([closed.signal, AbortSignal.timeout(Number(deadline) - Date.now())]);
-  const stopped = new Promise(resolve => lifetime.addEventListener("abort", () =>
-    resolve(closed.signal.aborted ? "cancelled" : "deadline"), { once: true }));
-  const host = new HostFixtureAuthority(task, grants, account, stopped, deadline);
+  const now = () => BigInt(Math.floor(performance.timeOrigin + performance.now()));
+  const deadline = (now() / 1000n + 3599n) * 1000n;
+  // The host owns one monotonic wall-time projection for the original lifetime
+  // and every narrowed operation. Guests retain this port, never a new clock.
+  const clock = {
+    nowUnixMilliseconds() {
+      if (closed.signal.aborted || now() >= deadline) throw new Error("fixture authority closed");
+      return now();
+    },
+    expiresAt(expiry, signal) {
+      const cancelled = AbortSignal.any([closed.signal, signal]);
+      if (cancelled.aborted) return Promise.resolve("cancelled");
+      const remaining = (expiry < deadline ? expiry : deadline) - now();
+      if (remaining <= 0n) return Promise.resolve("deadline");
+      return new Promise(resolve => {
+        const finish = reason => {
+          clearTimeout(timer);
+          cancelled.removeEventListener("abort", abort);
+          resolve(reason);
+        };
+        const abort = () => finish("cancelled");
+        const timer = setTimeout(() => finish("deadline"), Number(remaining));
+        cancelled.addEventListener("abort", abort, { once: true });
+      });
+    },
+  };
+  const stopped = clock.expiresAt(deadline, closed.signal);
+  const host = new HostFixtureAuthority(task, grants, account, stopped, deadline, clock);
   const admission = host.admission();
   admission.caller = Uint8Array.from(admission.caller);
   const capability = {
-    admission, stopped,
+    admission, stopped, clock,
     trustChanged: signal => host.trustChanged(signal),
     trustClosed: () => host.trustClosed(),
-    check: scope => lifetime.aborted || BigInt(Date.now()) >= deadline ? "closed" : host.check(scope),
+    check: scope => closed.signal.aborted || now() >= deadline ? "closed" : host.check(scope),
     derive(request, signal) {
       signal.throwIfAborted();
       if (this.check(request.parent) !== "current") return { kind: "closed" };
@@ -51,7 +73,7 @@ export function fixtureAuthority(task, grants = hostFixtureGrants(), account = "
   });
   // The descriptor selects a port; only this original host can produce it.
   const bindings = Object.freeze({ binding(kind) {
-    if (lifetime.aborted || BigInt(Date.now()) >= deadline)
+    if (closed.signal.aborted || now() >= deadline)
       throw new Error("guest admission stopped; recovery: obtain a fresh authenticated invocation before guest entry");
     return host.binding(kind, projections[kind]);
   } });

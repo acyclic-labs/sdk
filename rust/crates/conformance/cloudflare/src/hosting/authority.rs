@@ -1,8 +1,5 @@
 //! The qualification host's custody lives in this module's separate Wasm memory.
-use acyclic_auth::{
-    contract::*,
-    operation::{Context, Stopped},
-};
+use acyclic_auth::{contract::*, operation::Context};
 use acyclic_harness_core::{
     Capabilities, OperationId,
     conversation::{FileRef, VolumeRef},
@@ -95,6 +92,7 @@ impl HostFixtureAuthority {
         recipient_account: String,
         stopped: js_sys::Promise,
         deadline_unix_millis: u64,
+        clock: JsValue,
     ) -> Result<Self, JsValue> {
         let root = AuthorityRoot::new(
             "browser-agents",
@@ -139,17 +137,11 @@ impl HostFixtureAuthority {
             expires_at_unix_seconds,
             capability_handle: operation.to_string().into_bytes(),
         };
-        let context = Context::from_stopped(deadline_unix_millis, async move {
-            match wasm_bindgen_futures::JsFuture::from(stopped)
-                .await
-                .ok()
-                .and_then(|value| value.as_string())
-                .as_deref()
-            {
-                Some("deadline") => Stopped::Deadline,
-                _ => Stopped::Cancelled,
-            }
-        });
+        let context = acyclic_auth::operation::javascript::from_promise(
+            deadline_unix_millis,
+            stopped,
+            Some(clock),
+        )?;
         let admitted = root.admit(scope, context.clone()).map_err(error)?;
         let binding =
             acyclic_auth::guest::GuestAdmission::admit(admitted.clone()).map_err(error)?;

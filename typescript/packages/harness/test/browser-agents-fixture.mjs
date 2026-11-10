@@ -36,9 +36,24 @@ export async function agentsFixture(id, reply, initialize = init) {
   const failed = new Promise((_, reject) => { rejectFailure = reject; });
   failed.catch(() => {});
   const report = (actor, error) => { failures.push({ actor, error }); rejectFailure(new Error(`agent ${actor} failed: ${error}`)); };
+  const closing = new WeakMap();
   return { owner, registry, requests, failures, options,
     failed,
     open: () => WasmAgents.open(options, owner, registry, report),
+    close: agents => {
+      if (agents === undefined) return;
+      let closed = closing.get(agents);
+      if (closed === undefined) {
+        // Observe the original run before freeing its owner; reopen waits for
+        // that run to release storage, and unexpected terminal failures survive.
+        closed = agents.completion().catch(error => {
+          if (error !== "browser agent runtime aborted") throw error;
+        });
+        closing.set(agents, closed);
+        agents.free();
+      }
+      return closed;
+    },
     // Host-injected storage, the guest artifact's entry over it, and a host
     // over the same storage whose turns run only through the guest.
     providers: kind => kind === "memory" ? WasmAgentProviders.memory(options) : WasmAgentProviders.indexedDb(options),

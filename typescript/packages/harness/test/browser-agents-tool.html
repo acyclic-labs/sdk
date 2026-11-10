@@ -14,64 +14,67 @@ let fixture;
 let agents;
 let cleanup;
 try {
-  const invocations = [];
-  let dispatched;
-  const invocation = new Promise(resolve => { dispatched = resolve; });
-  fixture = await agentsFixture(crypto.randomUUID(), async function* ({ dispatch, request }) {
-    if (dispatch.step === 0) {
-      yield { kind: "tool_call", call_id: "effect", name: "test.effect", arguments: { value: "committed" } };
-    } else {
-      yield { kind: "content", delta: `saw:${JSON.stringify(request.messages.at(-1))}` };
+  try {
+    const invocations = [];
+    let dispatched;
+    const invocation = new Promise(resolve => { dispatched = resolve; });
+    fixture = await agentsFixture(crypto.randomUUID(), async function* ({ dispatch, request }) {
+      if (dispatch.step === 0) {
+        yield { kind: "tool_call", call_id: "effect", name: "test.effect", arguments: { value: "committed" } };
+      } else {
+        yield { kind: "content", delta: `saw:${JSON.stringify(request.messages.at(-1))}` };
+      }
+    });
+    const definition = { name: "test.effect", revision: "1", description: "Browser host effect",
+      input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+      output_schema: { type: "string" },
+      projection_schema: jsonToolProjectionSchema({ type: "object", properties: { observed: { type: "string" } },
+        required: ["observed"], additionalProperties: false }) };
+    // The effect is durable before its acknowledgment is lost: the host must
+    // reconcile it from the recorded intent, never execute it again.
+    const effectKey = `harness-agent-tool-effect-${crypto.randomUUID()}`;
+    let reconciliations = 0;
+    fixture.registry.registerTool(definition, async invocation => {
+      invocations.push(invocation);
+      assert(localStorage.getItem(effectKey) === null, "an uncertain effect was dispatched again");
+      localStorage.setItem(effectKey, JSON.stringify({ operation_id: invocation.operation_id, arguments: invocation.arguments }));
+      dispatched();
+      throw new Error("acknowledgment lost after durable effect");
+    }, async invocation => {
+      reconciliations++;
+      const effect = JSON.parse(localStorage.getItem(effectKey));
+      assert(effect.operation_id === invocation.operation_id, "reconciliation substituted the invocation identity");
+      assert(effect.arguments.value === invocation.arguments.value, "reconciliation substituted the arguments");
+      return { value: effect.arguments.value };
+    }, (_, canonical) => ({ kind: "json", value: { observed: canonical.value } }));
+    cleanup = () => localStorage.removeItem(effectKey);
+    let rejected = false;
+    try { fixture.registry.registerTool({ ...definition, description: "changed" }, () => {}, () => {}, () => {}); }
+    catch { rejected = true; }
+    assert(rejected, "same tool revision accepted a replacement definition");
+    agents = await fixture.open();
+    result.dataset.waiting = "the turn dispatches the effect and loses its acknowledgment";
+    const agent = await agents.create("tool-agent", "use the tool");
+    await Promise.race([invocation, fixture.failed]);
+    await fixture.close(agents);
+    result.dataset.waiting = "reopen reconciles the recorded effect and settles the turn";
+    agents = await fixture.open();
+    const entries = await untilRecords(fixture, agents, agent, "conversation", entries => entries.length === 1);
+    const text = await turnText(agents, agent, entries[0]);
+    assert(invocations.length === 1 && invocations[0].arguments.value === "committed", describe(invocations));
+    assert(reconciliations >= 1, "the uncertain effect settled without reconciliation");
+    assert(text.includes("committed"), `the reconciled result did not reach the model: ${text}`);
+  } finally {
+    try { await fixture?.close(agents); } finally {
+      try { fixture?.free(); } finally { cleanup?.(); }
     }
-  });
-  const definition = { name: "test.effect", revision: "1", description: "Browser host effect",
-    input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
-    output_schema: { type: "string" },
-    projection_schema: jsonToolProjectionSchema({ type: "object", properties: { observed: { type: "string" } },
-      required: ["observed"], additionalProperties: false }) };
-  // The effect is durable before its acknowledgment is lost: the host must
-  // reconcile it from the recorded intent, never execute it again.
-  const effectKey = `harness-agent-tool-effect-${crypto.randomUUID()}`;
-  let reconciliations = 0;
-  fixture.registry.registerTool(definition, async invocation => {
-    invocations.push(invocation);
-    assert(localStorage.getItem(effectKey) === null, "an uncertain effect was dispatched again");
-    localStorage.setItem(effectKey, JSON.stringify({ operation_id: invocation.operation_id, arguments: invocation.arguments }));
-    dispatched();
-    throw new Error("acknowledgment lost after durable effect");
-  }, async invocation => {
-    reconciliations++;
-    const effect = JSON.parse(localStorage.getItem(effectKey));
-    assert(effect.operation_id === invocation.operation_id, "reconciliation substituted the invocation identity");
-    assert(effect.arguments.value === invocation.arguments.value, "reconciliation substituted the arguments");
-    return { value: effect.arguments.value };
-  }, (_, canonical) => ({ kind: "json", value: { observed: canonical.value } }));
-  cleanup = () => localStorage.removeItem(effectKey);
-  let rejected = false;
-  try { fixture.registry.registerTool({ ...definition, description: "changed" }, () => {}, () => {}, () => {}); }
-  catch { rejected = true; }
-  assert(rejected, "same tool revision accepted a replacement definition");
-  agents = await fixture.open();
-  result.dataset.waiting = "the turn dispatches the effect and loses its acknowledgment";
-  const agent = await agents.create("tool-agent", "use the tool");
-  await Promise.race([invocation, fixture.failed]);
-  agents.free();
-  result.dataset.waiting = "reopen reconciles the recorded effect and settles the turn";
-  agents = await fixture.open();
-  const entries = await untilRecords(fixture, agents, agent, "conversation", entries => entries.length === 1);
-  const text = await turnText(agents, agent, entries[0]);
-  assert(invocations.length === 1 && invocations[0].arguments.value === "committed", describe(invocations));
-  assert(reconciliations >= 1, "the uncertain effect settled without reconciliation");
-  assert(text.includes("committed"), `the reconciled result did not reach the model: ${text}`);
+  }
   result.dataset.status = "passed";
   result.textContent = "pinned host tool executed once, lost its acknowledgment, and reopen reconciled it into the turn";
 } catch (error) {
   result.dataset.status = "failed";
   result.textContent = String(error.stack ?? error);
-} finally {
-  agents?.free();
-  fixture?.free();
-  cleanup?.();
 }
+
 </script>
 </html>

@@ -29,8 +29,25 @@ export function rejectWaits(error, ...registries) {
   }
 }
 
+/** Startup failures can precede a page's own result reporter. */
+export function pageFailure(message) {
+  if (message.method === "Runtime.exceptionThrown") {
+    const detail = message.params.exceptionDetails;
+    return new BrowserSourceEnded("javascript", new Error(detail.exception?.description ?? detail.text));
+  }
+  if (message.method === "Network.loadingFailed" && message.params.type === "Script") {
+    return new BrowserSourceEnded("module", new Error(message.params.errorText));
+  }
+  if (message.method === "Network.responseReceived" && message.params.type === "Script"
+    && message.params.response.status >= 400) {
+    const response = message.params.response;
+    return new BrowserSourceEnded("module", new Error(`HTTP ${response.status}: ${response.url}`));
+  }
+}
+
 export async function browserTest(module, args) {
   const root = resolve(import.meta.dirname, "..");
+  const page = module.endsWith(".html");
   const executable = [process.env.CHROME, "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find(path => path && existsSync(path));
   if (!executable) throw new BrowserSourceEnded("executable", new Error("no Chromium executable; set CHROME"));
   const server = createServer((request, response) => {
@@ -38,7 +55,8 @@ export async function browserTest(module, args) {
     if (path === "/") { response.setHeader("content-type", "text/html"); response.end("<!doctype html><title>Browser qualification</title>"); return; }
     const file = resolve(root, `.${decodeURIComponent(path)}`);
     if (!file.startsWith(`${root}${sep}`) || !existsSync(file)) { response.writeHead(404).end(); return; }
-    response.setHeader("content-type", file.endsWith(".wasm") ? "application/wasm" : "text/javascript");
+    response.setHeader("content-type", file.endsWith(".wasm") ? "application/wasm"
+      : file.endsWith(".html") ? "text/html" : "text/javascript");
     createReadStream(file).pipe(response);
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
@@ -75,6 +93,8 @@ export async function browserTest(module, args) {
           if (message.error) result?.reject(new Error(JSON.stringify(message.error)));
           else result?.resolve(message.result);
         } else {
+          const error = pageFailure(message);
+          if (error) { fail(error); return; }
           if (message.method === "Target.detachedFromTarget" || message.method === "Inspector.targetCrashed"
             || message.method === "Inspector.detached") {
             const reason = message.method === "Inspector.targetCrashed" ? "page crashed" : "page detached";
@@ -98,12 +118,28 @@ export async function browserTest(module, args) {
     const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
     await send("Inspector.enable", {}, sessionId);
     await send("Page.enable", {}, sessionId);
+    await send("Runtime.enable", {}, sessionId);
+    await send("Network.enable", {}, sessionId);
     const loaded = new Promise((resolve, reject) => {
       if (failure) reject(failure);
       else events.set(`${sessionId}:Page.loadEventFired`, { resolve, reject });
     });
-    await Promise.all([send("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/` }, sessionId), loaded]);
-    const expression = `import(${JSON.stringify(`/${module}`)}).then(module => module.test(${JSON.stringify(args)}))`;
+    await Promise.all([send("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/${page ? module : ""}` }, sessionId), loaded]);
+    const expression = page ? `new Promise((resolve, reject) => {
+      const result = document.querySelector("#result");
+      if (!result) throw new Error("browser page has no result");
+      const observe = () => {
+        const status = result.dataset.status;
+        if (status === "passed" || status === "failed") {
+          observer.disconnect();
+          if (status === "passed") resolve(result.textContent);
+          else reject(new Error(result.textContent));
+        }
+      };
+      const observer = new MutationObserver(observe);
+      observer.observe(result, { attributes: true, childList: true, subtree: true });
+      observe();
+    })` : `import(${JSON.stringify(`/${module}`)}).then(module => module.test(${JSON.stringify(args)}))`;
     const result = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId);
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? JSON.stringify(result.exceptionDetails));
     return result.result.value;

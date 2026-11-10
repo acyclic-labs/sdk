@@ -15,46 +15,50 @@ let providers;
 let guest;
 let agents;
 try {
-  fixture = await agentsFixture(crypto.randomUUID(), async function* ({ request, dispatch, texts }) {
-    if (dispatch.step === 0) {
-      assert(texts.at(-1) === "hello", "guest input differs");
-      assert(request.tools.some(tool => tool.name === "fs"), "guest omitted the filesystem tool");
-      yield { kind: "tool_call", call_id: "status", name: "fs", arguments: { command: "status --volume private" } };
-    } else {
-      const status = request.messages.flatMap(message => Array.isArray(message.content) ? message.content : [message.content])
-        .find(part => part?.kind === "tool_result" && part.call_id === "status" && part.name === "fs");
-      assert(status?.content.kind === "json" && status.content.value.result.Status,
-        "the original private-volume status did not reach the guest model");
-      yield { kind: "content", delta: "guest:status" };
+  try {
+    fixture = await agentsFixture(crypto.randomUUID(), async function* ({ request, dispatch, texts }) {
+      if (dispatch.step === 0) {
+        assert(texts.at(-1) === "hello", "guest input differs");
+        assert(request.tools.some(tool => tool.name === "fs"), "guest omitted the filesystem tool");
+        yield { kind: "tool_call", call_id: "status", name: "fs", arguments: { command: "status --volume private" } };
+      } else {
+        const status = request.messages.flatMap(message => Array.isArray(message.content) ? message.content : [message.content])
+          .find(part => part?.kind === "tool_result" && part.call_id === "status" && part.name === "fs");
+        assert(status?.content.kind === "json" && status.content.value.result.Status,
+          "the original private-volume status did not reach the guest model");
+        yield { kind: "content", delta: "guest:status" };
+      }
+    });
+    phase("load the guest artifact's canonical entry over host-injected storage");
+    providers = await fixture.providers("indexedDb");
+    guest = fixture.guest(providers);
+    const { AgentGuest } = await import("../generated/wasm/acyclic_harness_wasm.js");
+    assert(AgentGuest.abiVersion() === 1, "guest ABI version differs");
+    const manifest = guest.manifest();
+    assert(manifest instanceof Uint8Array && manifest.byteLength > 32, "guest manifest is empty");
+    let deliveries = 0;
+    const counted = { manifest: () => manifest, onRecord: (delivery, signal) => { deliveries += 1; return guest.onRecord(delivery, signal); } };
+    agents = fixture.hosting(providers, counted);
+    phase("one agent turn runs in the guest; the host publishes it");
+    const a = await agents.create("agent-guest", "hello");
+    const entries = await untilRecords(fixture, agents, a, "conversation", entries => entries.length === 1);
+    assert(await turnText(agents, a, entries[0]) === "guest:status", "guest filesystem result differs");
+    assert(deliveries >= 1, "the host published a turn without the guest");
+    await untilRecords(fixture, agents, a, "status", records => records.at(-1)?.value.phase === "idle");
+    assert(fixture.failures.length === 0, describe(fixture.failures));
+  } finally {
+    try { await fixture?.close(agents); } finally {
+      guest?.free();
+      providers?.free();
+      fixture?.free();
     }
-  });
-  phase("load the guest artifact's canonical entry over host-injected storage");
-  providers = await fixture.providers("indexedDb");
-  guest = fixture.guest(providers);
-  const { AgentGuest } = await import("../generated/wasm/acyclic_harness_wasm.js");
-  assert(AgentGuest.abiVersion() === 1, "guest ABI version differs");
-  const manifest = guest.manifest();
-  assert(manifest instanceof Uint8Array && manifest.byteLength > 32, "guest manifest is empty");
-  let deliveries = 0;
-  const counted = { manifest: () => manifest, onRecord: (delivery, signal) => { deliveries += 1; return guest.onRecord(delivery, signal); } };
-  agents = fixture.hosting(providers, counted);
-  phase("one agent turn runs in the guest; the host publishes it");
-  const a = await agents.create("agent-guest", "hello");
-  const entries = await untilRecords(fixture, agents, a, "conversation", entries => entries.length === 1);
-  assert(await turnText(agents, a, entries[0]) === "guest:status", "guest filesystem result differs");
-  assert(deliveries >= 1, "the host published a turn without the guest");
-  await untilRecords(fixture, agents, a, "status", records => records.at(-1)?.value.phase === "idle");
-  assert(fixture.failures.length === 0, describe(fixture.failures));
+  }
   result.dataset.status = "passed";
   result.textContent = "guest filesystem command used its original private volume and settled through its host";
 } catch (error) {
   result.dataset.status = "failed";
   result.textContent = String(error.stack ?? error);
-} finally {
-  agents?.free();
-  guest?.free();
-  providers?.free();
-  fixture?.free();
 }
+
 </script>
 </html>
