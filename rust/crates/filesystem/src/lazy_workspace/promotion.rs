@@ -37,10 +37,8 @@ impl<
         let mut transaction = accounted!(ctx, |work, cancel| self
             .workspace
             .begin_transaction(key, work, cancel))?;
-        if let Some(parent) = parent_path(path) {
-            accounted!(ctx, |work, cancel| transaction
-                .create_dir_all(parent, work, cancel))?;
-        }
+        self.stage_source_parents(&mut transaction, path, ctx)
+            .await?;
         self.apply_resolved_promotion(&mut transaction, path, lookup, maximum, ctx)
             .await?;
         self.commit(&mut transaction, permit, ctx).await
@@ -181,7 +179,6 @@ impl<
         result
     }
 
-    #[cfg(feature = "native-mount")]
     pub(super) async fn stage_source_parents(
         &self,
         transaction: &mut crate::Transaction<A, O>,

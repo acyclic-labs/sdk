@@ -48,10 +48,7 @@ impl<
         lookup: Option<&LazyLookup>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        if let Some(parent) = parent_path(path) {
-            accounted!(ctx, |work, cancel| transaction
-                .create_dir_all(parent, work, cancel))?;
-        }
+        self.stage_source_parents(transaction, path, ctx).await?;
         if let Some(lookup) = lookup
             && matches!(
                 lookup,
