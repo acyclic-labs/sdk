@@ -87,6 +87,33 @@ async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
     assert_eq!(provider.requests().len(), 1);
     assert_eq!(provider.reconciliations().len(), 1);
+    let completion = journal
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|record| {
+            matches!(
+                record.event,
+                ExecutionEvent::Model { usage: Some(_), .. }
+                    | ExecutionEvent::ModelInline { usage: Some(_), .. }
+            )
+        })
+        .unwrap()
+        .clone();
+    let (_, usage) = super::super::model_usage::project_completion(
+        &journal,
+        input.operation_id,
+        "unbound",
+        &completion,
+    )
+    .await?;
+    let usage = usage.expect("recovered completion has its original usage artifact");
+    assert_eq!(
+        (usage.started_at, usage.completed_at, usage.latency_ns),
+        (None, None, None),
+        "recovery invented a new call interval"
+    );
     assert_eq!(
         journal
             .0

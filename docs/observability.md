@@ -5,6 +5,34 @@ anything records them. `acyclic-observability` owns result recording and the
 operation lifecycle projection. Work accounting stays in `WorkCounters`, and
 spans only summarise it.
 
+## Model usage JSONL
+
+`graphcoder --usage-jsonl <path>` and `Conversation::write_usage_jsonl` use the
+same paged tree exporter. Each line is a version 3 `ModelUsageProjection`:
+`version`, `usage` (a version 3 `ModelUsageRecord`), and `estimated_cost` (the
+selected price provenance and derived estimate). Older formats are refused,
+with no migration or inferred replacement values.
+
+`usage.started_at` and `usage.completed_at` are optional unsigned Unix
+nanoseconds, observed immediately before live provider dispatch and on arrival
+of its terminal event, respectively. The shared wall clock has millisecond
+resolution. The terminal commit follows the completion observation; a staged
+artifact alone does not certify completion. `latency_ns` and `ttft_ns` retain
+their monotonic elapsed-time meaning. Wall-clock corrections can place
+`completed_at` before `started_at`; do not compute latency by subtracting them.
+Missing or unrepresentable observations are `null`. An unfinished admission
+and a completion recovered without its live dispatch clock retain unknown
+times. Replaying a committed call preserves its original times.
+
+`usage.agent_path` is the canonical `AgentPath`, not a separate parent ID:
+`harness/agents/<root-id>/children/<child-id>` identifies a child of
+`harness/agents/<root-id>`. Each deeper child appends `/children/<id>`; removing
+that final pair yields its parent. Roots have no parent. An executor without
+an agent binding records `null`. `dispatch` identifies the original call,
+`purpose` distinguishes response and summary calls, and `completed` reports
+whether a terminal observation was committed. Provider counters remain in
+`tokens`, with unknown counters preserved as `null`.
+
 ## One operation lifecycle
 
 Attach one `acyclic_observability::Operations` layer to the host's existing
