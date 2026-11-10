@@ -190,7 +190,7 @@ impl YieldingFile {
         if destination.is_empty() {
             return Ok(0);
         }
-        work.with_native_read_meter(|meter| {
+        work.native_metered(|meter| {
             use acyclic_native_runtime::{
                 NativeByteReservation, NativeOperationKind, NativeOperationReservation,
             };
