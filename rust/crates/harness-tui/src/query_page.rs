@@ -365,7 +365,7 @@ mod tests {
             false,
         );
         let mut transcript = crate::TranscriptRows::default();
-        transcript.push(false, "**bold** gap **again** end");
+        transcript.push(crate::BlockKind::Answer, "**bold** gap **again** end");
         let expected = [
             ("bold", true),
             ("gap", false),

@@ -44,8 +44,6 @@ pub use settings::{DEFAULT_SETTINGS, NotificationPolicy, UiSettings};
 #[cfg(feature = "tui")]
 mod prompt_box;
 #[cfg(feature = "tui")]
-mod prompt_files;
-#[cfg(feature = "tui")]
 mod prompt_input;
 #[cfg(feature = "tui")]
 mod query_controller;
@@ -68,7 +66,7 @@ mod transcript;
 #[cfg(feature = "tui")]
 pub use thinking::Thinking;
 #[cfg(feature = "tui")]
-pub use transcript::TranscriptRows;
+pub use transcript::{BlockKind, TranscriptRows};
 #[cfg(feature = "tui")]
 mod widget;
 
@@ -95,10 +93,6 @@ pub use keymap::{ACTIONS, Action, AppAction, Binding, KEYMAP, keymap_help, named
 pub use layout::{Cell, Layout, Row};
 #[cfg(feature = "tui")]
 pub use prompt_box::PromptBox;
-#[cfg(feature = "tui")]
-pub use prompt_files::{
-    format_history, load_draft, load_history, parse_history, save_draft, save_history,
-};
 #[cfg(feature = "tui")]
 pub use prompt_input::{InputEffect, PromptInput};
 #[cfg(feature = "tui")]

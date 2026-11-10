@@ -1,6 +1,6 @@
 use crate::key_event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::{Binding, KEYMAP, named_action};
-use std::{collections::BTreeMap, io, path::Path};
+use std::collections::BTreeMap;
 
 /// Canonical schema-validated `{"bindings":{"Ctrl+l":"cursor.line-start"}}`
 /// preferences. A null action disables a key. Super character shortcuts share
@@ -41,17 +41,6 @@ impl InputKeymap {
             })
             .collect();
         Self { overrides }
-    }
-
-    /// Read overrides from a caller-selected configuration file.
-    pub fn load(path: &Path) -> io::Result<Self> {
-        Self::parse(&std::fs::read_to_string(path)?)
-            .map_err(|errors| io::Error::new(io::ErrorKind::InvalidData, format!("{errors:?}")))
-    }
-
-    /// Write declarative overrides to the caller's config-volume path.
-    pub fn save(&self, path: &Path) -> io::Result<()> {
-        crate::prompt_files::write_atomic(path, self.encode().as_bytes())
     }
 
     /// Encode the canonical file format, including null disabled bindings.

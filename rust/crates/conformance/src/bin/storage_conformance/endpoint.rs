@@ -282,9 +282,14 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                     break entry;
                 }
             };
+            let turn = checked(phase, "read-turn", conversation.turn(&entry).await)?;
             assert_eq!(
-                checked(phase, "read-turn", conversation.turn(&entry).await)?,
-                (Some("stored prompt".into()), "stored answer".into())
+                (
+                    turn.prompt.as_deref(),
+                    turn.answer.as_str(),
+                    turn.tools.len()
+                ),
+                (Some("stored prompt"), "stored answer", 0)
             );
             let reply = checked(phase, "reply", conversation.reply("once", inbox).await)?;
             assert!(matches!(reply, Reply::Answered { sequence: 0, .. }));

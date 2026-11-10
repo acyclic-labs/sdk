@@ -15,10 +15,11 @@ use acyclic_harness::{
     client::commands::{
         CommandCatalog, CommandQuery, CommandRequest, CommandResolution, DEFAULT_COMMANDS_JSON,
     },
+    executor::ToolCard,
     interaction::ApprovalBinding,
     tui::{
-        Action, AppAction, Editor, InputEffect, PromptInput, QueryController, QueryPage, Screen,
-        Thinking, TranscriptRows, Viewport,
+        Action, AppAction, BlockKind, Editor, InputEffect, PromptInput, QueryController, QueryPage,
+        Screen, Thinking, TranscriptRows, Viewport,
         config::Token,
         key_event::InputEvent,
         ratatui::{
@@ -51,7 +52,7 @@ struct Older {
     epoch: u64,
     from: u64,
     cleared: bool,
-    blocks: Vec<(bool, String)>,
+    blocks: Vec<(BlockKind, String)>,
 }
 
 async fn older(
@@ -70,7 +71,7 @@ async fn older(
         for entry in conversation.entries(from, to).await? {
             if let Some(action) = checkpoint(&entry) {
                 match notice(&action) {
-                    Some(text) => page.blocks.push((false, text)),
+                    Some(text) => page.blocks.push((BlockKind::Answer, text)),
                     // A cleared conversation shows nothing before it.
                     None => {
                         page.blocks.clear();
@@ -86,25 +87,39 @@ async fn older(
     read.await.map_err(|error| error.to_string())
 }
 
-/// A settled turn's blocks: its prompt, its answer and, if it was
-/// interrupted, the mark. A cancelled checkpoint shows nothing.
+/// A settled turn's blocks: its prompt, its tool cards, its answer and,
+/// if it was interrupted, the mark. A cancelled checkpoint shows nothing.
 async fn turn(
     conversation: &Conversation,
     entry: &ConversationEntry,
-) -> acyclic_harness::Result<Vec<(bool, String)>> {
-    let mut blocks = Vec::new();
+) -> acyclic_harness::Result<Vec<(BlockKind, String)>> {
     if entry.input.context().is_some() {
-        return Ok(blocks);
+        return Ok(Vec::new());
     }
-    let (prompt, answer) = conversation.turn(entry).await?;
-    blocks.extend(prompt.map(|prompt| (true, prompt)));
-    if !answer.is_empty() {
-        blocks.push((false, answer));
-    }
+    let turn = conversation.turn(entry).await?;
+    let mut blocks = Vec::new();
+    blocks.extend(turn.prompt.map(|prompt| (BlockKind::Prompt, prompt)));
+    blocks.extend(work(turn.tools, turn.answer));
     if entry.outcome == TurnOutcome::Cancelled {
-        blocks.push((false, CANCELLED.into()));
+        blocks.push((BlockKind::Answer, CANCELLED.into()));
     }
     Ok(blocks)
+}
+
+/// A turn's work after its prompt: a collapsed card per tool call, then
+/// its answer, if any.
+fn work(tools: Vec<ToolCard>, answer: String) -> impl Iterator<Item = (BlockKind, String)> {
+    tools
+        .into_iter()
+        .map(|card| {
+            (
+                BlockKind::Tool {
+                    failed: card.failed,
+                },
+                card.line(),
+            )
+        })
+        .chain((!answer.is_empty()).then_some((BlockKind::Answer, answer)))
 }
 
 /// What a settled checkpoint shows; a clear shows nothing, before it too.
@@ -263,7 +278,7 @@ impl View {
                 self.checkpoints.retain(|inbox| *inbox != entry.inbox);
                 if let Some(action) = checkpoint(&entry) {
                     match notice(&action) {
-                        Some(text) => self.transcript.push(false, &text),
+                        Some(text) => self.transcript.push(BlockKind::Answer, &text),
                         // A cleared conversation shows nothing before it,
                         // and pages nothing in from before it.
                         None => {
@@ -293,16 +308,16 @@ impl View {
                     .map(|at| self.pending.remove(at).1);
                 // A turn's text is its committed entry's, a cancelled one's
                 // too, whichever of it and its status arrived first.
-                let (prompt, answer) = conversation.turn(&entry).await?;
-                if let Some(text) = sent.or(prompt) {
-                    self.transcript.push(true, &text);
+                let turn = conversation.turn(&entry).await?;
+                if let Some(text) = sent.or(turn.prompt) {
+                    self.transcript.push(BlockKind::Prompt, &text);
                 }
-                if !answer.is_empty() {
-                    self.transcript.push(false, &answer);
+                for (kind, text) in work(turn.tools, turn.answer) {
+                    self.transcript.push(kind, &text);
                 }
                 self.reply.clear();
                 if cancelled {
-                    self.transcript.push(false, CANCELLED);
+                    self.transcript.push(BlockKind::Answer, CANCELLED);
                     self.outcome = Outcome::Cancelled;
                     // It marks the stop a cancel in flight would otherwise mark.
                     self.cancel_marked = self.cancelling || self.stopped.is_some();
@@ -387,7 +402,7 @@ impl View {
     /// Records a failure in the transcript, where it stays visible.
     fn failed(&mut self, conversation: &Conversation, message: &str) {
         self.transcript.push(
-            false,
+            BlockKind::Answer,
             &format!("task {} failed: {message}", conversation.task()),
         );
         self.outcome = Outcome::Failed(message.into());
@@ -397,11 +412,11 @@ impl View {
     /// Shows the pending prompts and the streamed answer as settled.
     fn settle_pending(&mut self) {
         for (_, prompt) in self.pending.drain(..) {
-            self.transcript.push(true, &prompt);
+            self.transcript.push(BlockKind::Prompt, &prompt);
         }
         if !self.reply.is_empty() {
             self.transcript
-                .push(false, &std::mem::take(&mut self.reply));
+                .push(BlockKind::Answer, &std::mem::take(&mut self.reply));
         }
         self.pending_dirty = true;
     }
@@ -427,11 +442,11 @@ impl View {
             kept
         });
         for prompt in dropped {
-            self.transcript.push(true, &prompt);
+            self.transcript.push(BlockKind::Prompt, &prompt);
         }
         if !std::mem::take(&mut self.cancel_marked) {
             self.reply.clear();
-            self.transcript.push(false, CANCELLED);
+            self.transcript.push(BlockKind::Answer, CANCELLED);
             self.outcome = Outcome::Cancelled;
             self.ring = true;
         }
@@ -445,7 +460,7 @@ impl View {
             self.width = width;
             self.transcript.rows(width);
             self.transcript
-                .pending(self.pending.iter().map(|(_, text)| (true, text.as_str())));
+                .pending(self.pending.iter().map(|(_, text)| text.as_str()));
             self.pending_dirty = false;
             self.tail_dirty = true;
         }
@@ -1077,7 +1092,7 @@ mod tests {
     fn search_visits_each_older_match_across_prepended_pages() {
         let mut view = View::default();
         view.rows(16);
-        view.transcript.push(true, "match newest\nend");
+        view.transcript.push(BlockKind::Prompt, "match newest\nend");
         view.find("match", 1);
         for (from, text, expected) in [
             (
@@ -1091,7 +1106,7 @@ mod tests {
                 epoch: view.epoch,
                 from,
                 cleared: false,
-                blocks: vec![(true, text.into())],
+                blocks: vec![(BlockKind::Prompt, text.into())],
             });
             view.find("match", 1);
             let row = view.search.as_ref().unwrap().1;

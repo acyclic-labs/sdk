@@ -4,8 +4,8 @@ use acyclic_harness_tui::key_event::{
 };
 use acyclic_harness_tui::ratatui::layout::Rect;
 use acyclic_harness_tui::{
-    Editor, InputEffect, InputKeymap, PromptInput, Viewport, editor_command, format_history,
-    parse_history, prepare_image, windows_editor_command,
+    Editor, InputEffect, InputKeymap, PromptHistory, PromptInput, Viewport, editor_command,
+    prepare_image, windows_editor_command,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -76,31 +76,19 @@ fn exercise_variant(data: &[u8], broken: bool) {
     invariants(&input, 16);
 }
 
-/// Keymap, history and Windows editor command files that parse must round-trip.
-fn round_trip_files(
-    json: &str,
-) -> (
-    Option<InputKeymap>,
-    Option<acyclic_harness_tui::PromptHistory>,
-) {
+/// Keymap and Windows editor command files that parse must round-trip; a
+/// prompt list becomes a history snapshot.
+fn round_trip_files(json: &str) -> (Option<InputKeymap>, Option<PromptHistory>) {
     let mut parsed_map = None;
     if let Ok(map) = InputKeymap::parse(json) {
         let encoded = map.encode();
         assert_eq!(InputKeymap::parse(&encoded).ok(), Some(map.clone()));
         parsed_map = Some(map);
     }
-    let mut parsed_history = None;
-    if let Ok(history) = parse_history(json) {
-        let encoded = format_history(&history).ok();
-        let restored = encoded.as_deref().and_then(|text| {
-            parse_history(text)
-                .and_then(|restored| format_history(&restored))
-                .ok()
-        });
-        assert!(encoded.is_some(), "validated history serializes");
-        assert_eq!(restored, encoded);
-        parsed_history = Some(history);
-    }
+    // A prompt list folds into a history snapshot, as a live query's does.
+    let parsed_history = serde_json::from_str::<Vec<String>>(json)
+        .ok()
+        .map(PromptHistory::snapshot);
     let _ = editor_command(json);
     if let Ok((program, args)) = windows_editor_command(json) {
         let lossy = |(program, args): (std::ffi::OsString, Vec<std::ffi::OsString>)| {
@@ -174,9 +162,9 @@ fn fixture_input() -> PromptInput {
     let keymap = InputKeymap::parse(r#"{"bindings":{"Super+k":"cursor.line-start"}}"#);
     assert!(keymap.is_ok(), "valid keymap fixture: {keymap:?}");
     input.keymap = keymap.unwrap_or_default();
-    let history = parse_history(r#"["older\r\nprompt","newer\rhistory"]"#);
-    assert!(history.is_ok(), "valid history fixture: {history:?}");
-    input.replace_history(history.unwrap_or_default());
+    input.replace_history(PromptHistory::snapshot(
+        ["older\r\nprompt", "newer\rhistory"].map(String::from),
+    ));
     input
 }
 

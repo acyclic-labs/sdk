@@ -107,6 +107,8 @@ pub use code_mode::model::check as check_code_mode;
 mod summary;
 #[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
+mod tool_cards;
+pub use tool_cards::ToolCard;
 mod tool_execution;
 mod tool_failure;
 pub(crate) use tool_execution::tool_failure_content;

@@ -320,12 +320,14 @@ fn shift_click_extends_selection_and_release_survives_a_zero_size_area() {
 #[test]
 fn edited_submissions_append_to_the_shared_history_snapshot()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_harness_tui::{format_history, parse_history};
+    use acyclic_harness_tui::PromptHistory;
     let mut input = PromptInput::new(Editor::new("working draft"));
-    input.replace_history(parse_history(r#"["first"]"#)?);
+    input.replace_history(PromptHistory::snapshot(["first"].map(String::from)));
     input.edit_message("old-message".into(), "original");
     // A live-query snapshot changes history while the prior message is edited.
-    input.replace_history(parse_history(r#"["first","external"]"#)?);
+    input.replace_history(PromptHistory::snapshot(
+        ["first", "external"].map(String::from),
+    ));
     input.external_result(Some("edited\r\nmessage"), 0);
     assert_eq!(
         press(&mut input, KeyCode::Enter, M::NONE, 1),
@@ -336,8 +338,8 @@ fn edited_submissions_append_to_the_shared_history_snapshot()
         }]
     );
     assert_eq!(input.editor.text(), "working draft");
-    let saved = format_history(input.history())?;
-    input.replace_history(parse_history(&saved)?);
+    let saved = input.history().entries().to_vec();
+    input.replace_history(PromptHistory::snapshot(saved.clone()));
     assert_eq!(
         input.history().entries(),
         &["first", "external", "edited\nmessage"]
@@ -350,7 +352,7 @@ fn edited_submissions_append_to_the_shared_history_snapshot()
     press(&mut input, KeyCode::End, M::CONTROL, 5);
     press(&mut input, KeyCode::Down, M::NONE, 6);
     assert_eq!(input.editor.text(), "working draft");
-    assert_eq!(parse_history(&saved)?.entries(), input.history().entries());
+    assert_eq!(saved, input.history().entries());
     Ok(())
 }
 

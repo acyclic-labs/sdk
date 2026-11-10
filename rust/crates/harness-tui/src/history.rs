@@ -177,7 +177,22 @@ pub(crate) struct Navigation {
 }
 
 impl PromptHistory {
-    /// Replace the history-file projection and invalidate saved navigation.
+    /// A loaded projection of submitted prompts, oldest first, each recorded
+    /// as [`Self::push`] records it. A live query over the sessions' sent
+    /// prompts folds each snapshot into one and passes it to [`Self::replace`];
+    /// no separate history file exists.
+    #[must_use]
+    pub fn snapshot(prompts: impl IntoIterator<Item = String>) -> Self {
+        let mut history = Self::default();
+        for prompt in prompts {
+            history.push(prompt);
+        }
+        let mut loaded = Self::default();
+        loaded.replace(history);
+        loaded
+    }
+
+    /// Replace the projection and invalidate saved navigation.
     pub fn replace(&mut self, snapshot: Self) {
         self.entries = snapshot.entries;
         self.generation = self.generation.wrapping_add(1);

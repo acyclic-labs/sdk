@@ -204,6 +204,7 @@
         "pty-help",
         "pty-markdown",
         "pty-stream-delta",
+        "pty-tool-cards",
         "pty-image-attach",
         "pty-notification",
         "pty-slash",

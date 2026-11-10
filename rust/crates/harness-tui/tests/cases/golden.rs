@@ -8,7 +8,7 @@
 //! write it to `tests/golden/` instead, then review the diff.
 #![cfg(feature = "tui")]
 use acyclic_harness_tui::{
-    TranscriptRows,
+    BlockKind, TranscriptRows,
     config::{ConfigView, ThemeStyles, Token},
     ratatui::{
         style::{Color, Modifier, Style},
@@ -113,9 +113,9 @@ fn transcript((_, prompt, answer): (&str, &str, &str), width: u16, theme: ThemeS
     let mut transcript = TranscriptRows::default();
     transcript.set_theme(theme);
     if !prompt.is_empty() {
-        transcript.push(true, prompt);
+        transcript.push(BlockKind::Prompt, prompt);
     }
-    transcript.push(false, answer);
+    transcript.push(BlockKind::Answer, answer);
     rows(transcript.rows(width))
 }
 

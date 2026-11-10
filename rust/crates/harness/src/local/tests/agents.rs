@@ -569,10 +569,12 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert_eq!(entry.inbox, inbox);
     assert!(matches!(entry.input, TurnInput::Message { .. }));
     assert_eq!(provider.request_count(), 1);
+    let turn = client.turn(&entry).await?;
     assert_eq!(
-        client.turn(&entry).await?,
-        (Some("hello".into()), "done".into())
+        (turn.prompt.as_deref(), turn.answer.as_str()),
+        (Some("hello"), "done")
     );
+    assert!(turn.tools.is_empty());
     // An output-only projection must not depend on the prompt's source. The
     // full turn still reads both, and the output keeps its original read fence.
     let absent = |file: &crate::conversation::FileRef| {
@@ -1639,7 +1641,7 @@ async fn a_prompt_past_two_frames_is_accepted_and_reads_back_exactly() -> Result
     assert!(prompt.len() > 2 * MAX_AGENT_COMMAND_BYTES);
     let inbox = client.send("large", &prompt).await?;
     let entry = observed.settled(inbox).await?;
-    let (read, _) = client.turn(&entry).await?;
+    let read = client.turn(&entry).await?.prompt;
     assert!(read.as_deref() == Some(prompt.as_str()));
     // A resend is the same delivery.
     assert_eq!(client.send("large", &prompt).await?, inbox);
@@ -2612,7 +2614,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         client
             .turn(&refusal)
             .await?
-            .1
+            .answer
             .contains("expected project heads changed")
     );
     assert_eq!(
@@ -2773,7 +2775,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         client
             .turn(&refusal)
             .await?
-            .1
+            .answer
             .contains("cannot replace the current access policy")
     );
     assert_eq!(client.project_heads().await?, expected);
@@ -2951,7 +2953,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let inherited = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let branched = ConversationEntry::decode(&entries[1]).map_err(agent)?;
     assert!(matches!(branched.input, TurnInput::Brief { .. }));
-    assert_eq!(client.turn(&inherited).await?.1, "answer 0");
+    assert_eq!(client.turn(&inherited).await?.answer, "answer 0");
     let saved =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &child, 1).await?;
     assert_eq!(saved.context.tail, 2);

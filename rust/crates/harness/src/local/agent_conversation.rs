@@ -50,6 +50,17 @@ fn unexpected() -> Error {
     Error::Conflict("the endpoint answered another command".into())
 }
 
+/// A settled turn as a view shows it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Turn {
+    /// The prompt that started it; none for a turn no message started.
+    pub prompt: Option<String>,
+    /// Its tool calls in request order, collapsed.
+    pub tools: Vec<crate::executor::ToolCard>,
+    /// Its answer text, partial for a cancelled turn.
+    pub answer: String,
+}
+
 /// Where a sent message stands. Only a refusal is settled: an unknown
 /// outcome may have committed, so it is resent exactly, never reported.
 #[derive(Debug, PartialEq, Eq)]
@@ -473,16 +484,22 @@ impl Conversation {
         }
     }
 
-    /// The prompt and answer text of a settled turn.
+    /// A settled turn as a view shows it: its prompt, its tool calls and its
+    /// answer, from the entry's input and its one output record.
     ///
     /// # Errors
     /// Session, host or decoding failures.
-    pub async fn turn(&self, entry: &ConversationEntry) -> Result<(Option<String>, String)> {
+    pub async fn turn(&self, entry: &ConversationEntry) -> Result<Turn> {
         let prompt = match &entry.input {
             TurnInput::Message { body, .. } => Some(self.text(body).await?),
             _ => None,
         };
-        Ok((prompt, self.output_text(entry).await?))
+        let output = self.output(entry).await?;
+        Ok(Turn {
+            prompt,
+            tools: output.tool_cards(),
+            answer: output.text,
+        })
     }
 
     /// The retained output text of a settled turn, including partial output
@@ -492,9 +509,12 @@ impl Conversation {
     /// # Errors
     /// Session, host or output decoding failures.
     pub async fn output_text(&self, entry: &ConversationEntry) -> Result<String> {
+        Ok(self.output(entry).await?.text)
+    }
+
+    async fn output(&self, entry: &ConversationEntry) -> Result<TurnOutput> {
         let output = self.text(&entry.output).await?;
-        let output: TurnOutput = serde_json::from_str(&output).map_err(failed)?;
-        Ok(output.text)
+        serde_json::from_str(&output).map_err(failed)
     }
 
     async fn settlement(&self) -> Result<(u64, u64, Phase)> {

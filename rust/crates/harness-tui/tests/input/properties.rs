@@ -1,20 +1,17 @@
 use acyclic_harness_tui::key_event::{KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::{
-    ClipboardContent, InputKeymap, KEYMAP, PromptInput, format_history, parse_history,
-    prepare_image, unix_editor_command,
+    ClipboardContent, InputKeymap, KEYMAP, PromptHistory, PromptInput, prepare_image,
+    unix_editor_command,
 };
 use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
     #[test]
-    fn history_file_and_keymap_overrides_round_trip(
+    fn history_snapshots_and_keymap_overrides_round_trip(
         text in "[a-z界\r\n]{0,48}", owner in "[a-z]{1,8}", target in prop::sample::select(KEYMAP)
     ) {
-        let raw = serde_json::to_string(&vec![format!("{owner}:{text}")])?;
-        let history = parse_history(&raw)?;
-        let expected = format_history(&history)?;
-        prop_assert_eq!(format_history(&parse_history(&expected)?)?, expected);
+        let history = PromptHistory::snapshot([format!("{owner}:{text}")]);
         prop_assert_eq!(history.entries().first(), Some(&format!("{owner}:{}", text.replace("\r\n", "\n").replace('\r', "\n"))));
         prop_assert!(history.entries().iter().all(|entry| !entry.contains('\r')));
         let json = serde_json::json!({"bindings":{"Ctrl+l":target.action.name()}}).to_string();
@@ -72,7 +69,7 @@ proptest! {
             if edit { input.edit_message("message".into(), &text); }
             else { input.editor.set_text(&text, step as u64); }
             // Live snapshots replace the projection, never a saved editor's history.
-            input.replace_history(parse_history(&format_history(input.history())?)?);
+            input.replace_history(PromptHistory::snapshot(input.history().entries().to_vec()));
             if edit && cancel {
                 input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), step as u64, 80);
             } else {
@@ -81,8 +78,6 @@ proptest! {
                 if expected.last() != Some(&normalized) { expected.push(normalized); }
             }
             prop_assert_eq!(input.history().entries(), expected.as_slice());
-            let restored = parse_history(&format_history(input.history())?)?;
-            prop_assert_eq!(restored.entries(), expected.as_slice());
         }
     }
 
@@ -118,7 +113,7 @@ proptest! {
             vec!["first".to_owned(), "second".to_owned(), "third".to_owned()], replacements
         ] {
             let mut input = PromptInput::new(Editor::new("draft"));
-            input.replace_history(parse_history(r#"["first","second","third"]"#)?);
+            input.replace_history(PromptHistory::snapshot(["first", "second", "third"].map(String::from)));
             for (at, code, mods) in [(0, KeyCode::Home, KeyModifiers::CONTROL),
                 (1, KeyCode::Up, KeyModifiers::NONE), (2, KeyCode::Up, KeyModifiers::NONE),
                 (3, KeyCode::End, KeyModifiers::CONTROL)] {
@@ -130,10 +125,9 @@ proptest! {
                 input.committed_text("first", 4);
                 prop_assert_eq!(input.editor.text(), "first");
             } else { input.edit_message("message".into(), "editing"); }
-            let json = serde_json::to_string(&replacements)?;
             let before = input.history().generation();
             for _ in 0..reloads {
-                let snapshot = parse_history(&json)?;
+                let snapshot = PromptHistory::snapshot(replacements.clone());
                 prop_assert!(snapshot.generation() > 0);
                 input.replace_history(snapshot);
             }
