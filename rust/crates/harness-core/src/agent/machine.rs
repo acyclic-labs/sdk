@@ -860,8 +860,15 @@ pub(super) fn failed_step(
 // queued inputs retain their own turn and cannot release an input wait.
 fn wake_input(state: &AgentState) -> bool {
     if control(state).input {
-        state.steering_tail > state.steered_through.max(state.dropped_before)
-            || state.queued.iter().any(|input| input.steering)
+        // Starting input belongs to the retained turn even when a custom
+        // driver has no stock model boundary or steering journal.
+        let through = state.steered_through.max(state.dropped_before).max(
+            state
+                .turn
+                .as_ref()
+                .map_or(0, |turn| turn.inbox.saturating_add(1)),
+        );
+        state.steering_tail > through
     } else {
         !state.queued.is_empty()
     }
