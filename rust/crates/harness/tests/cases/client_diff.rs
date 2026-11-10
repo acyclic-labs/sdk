@@ -311,7 +311,7 @@ impl Fixture {
         Ok(())
     }
     async fn source(&self, path: &str) -> Result<PinnedContextPath> {
-        let page = self
+        let (page, _page_hold) = self
             .reader
             .list_private_directory(&self.root.volume, "", "", None, None, 128, None, None)?
             .await?

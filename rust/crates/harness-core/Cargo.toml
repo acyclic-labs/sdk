@@ -27,6 +27,10 @@ name = "history-codec-corpus"
 path = "examples/history-codec-corpus.rs"
 required-features = ["test-support"]
 
+[[example]]
+name = "config-types"
+path = "examples/config-types.rs"
+
 [[test]]
 name = "main"
 path = "tests/main.rs"

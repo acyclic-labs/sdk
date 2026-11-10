@@ -29,6 +29,17 @@ pub struct ReadFileInput {
 )]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReadSelection {
+    /// Exact UTF-8 source bytes, without automatic notebook or media projection.
+    Text,
+    /// Directory child names at one immutable generation. The last returned
+    /// entry's version is its exclusive continuation cursor.
+    Directory {
+        /// Opaque cursor from a previous entry in this directory.
+        #[serde(default)]
+        after: Option<String>,
+        /// Maximum names in this page.
+        limit: u32,
+    },
     /// Text lines, with an optional byte cursor returned by a previous page.
     Lines {
         /// First line to return.
@@ -84,6 +95,24 @@ pub struct WriteFileInput {
     pub path: String,
     /// Exact content bytes encoded as UTF-8.
     pub content: String,
+    /// `any` (or omission) replaces unconditionally; `absent` creates only
+    /// when missing; an opaque read version replaces exactly that source.
+    #[serde(default, rename = "ifVersion", skip_serializing_if = "Option::is_none")]
+    pub if_version: Option<String>,
+}
+
+/// Removal at the admitted current cut or one pinned file version.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveFileInput {
+    /// Public destination relative to the selected volume.
+    pub path: String,
+    /// `any` removes the current file; an opaque version requires that source.
+    #[serde(rename = "ifVersion")]
+    pub if_version: String,
 }
 
 /// Exact replacement against one pinned file generation.
@@ -290,7 +319,7 @@ mod codec_tests {
             let version = super::super::version::encode_version(&file, None).unwrap().0;
             round_trip(ReadFileInput { path: path.clone(), version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
             round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, replace_all: endpoints.is_some(), notebook: None });
-            round_trip(WriteFileInput { path, content: text });
+            round_trip(WriteFileInput { path, content: text, if_version: None });
         }
     }
 }

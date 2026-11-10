@@ -662,9 +662,63 @@ impl<'io> StockExecution<'io> {
         // Evaluation, the prompt and the approval request are charged to the
         // call's original ledger; the prompt's custody is held while it settles.
         // Policy and approval judge the canonical call, whatever its spelling.
-        let canonical = tool.executor.canonical(invocation, self.native_work())?;
-        let judged = canonical.as_deref().unwrap_or(invocation);
+        let original_canonical = tool.executor.canonical(invocation, self.native_work())?;
         let judged_tool = tool.executor.capability().unwrap_or(tool);
+        let normalize =
+            original_canonical.as_deref().unwrap_or(invocation).name != judged_tool.definition.name;
+        // A selected revision retains its journal spelling, while every policy
+        // judges the registered capability. Temporary copies share the original
+        // ledger and retire after their invocation, including failed copies.
+        #[cfg(feature = "filesystem")]
+        let temporary = if normalize {
+            PreparationIo::temporary(self.io)?
+        } else {
+            None
+        };
+        #[cfg(feature = "filesystem")]
+        let normalization_io = temporary.as_ref().or(self.io);
+        #[cfg(not(feature = "filesystem"))]
+        let normalization_io = self.io;
+        #[cfg(feature = "filesystem")]
+        let mut _normalization_hold = None;
+        let mut canonical = original_canonical;
+        if let Some(canonical) = &mut canonical {
+            if normalize {
+                let name = stock_string_copy(&judged_tool.definition.name, normalization_io)?;
+                #[cfg(feature = "filesystem")]
+                {
+                    _normalization_hold = normalization_io
+                        .map(|io| io.guard_owned(name.capacity() as u64))
+                        .transpose()?;
+                }
+                let old = std::mem::replace(&mut canonical.invocation.name, name);
+                let old_bytes = old.capacity() as u64;
+                drop(old);
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if let Some(hold) = &mut canonical.custody[1] {
+                    hold.release(old_bytes)?;
+                }
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let _ = old_bytes;
+            }
+        } else if normalize {
+            let normalized = ToolInvocation {
+                operation_id: invocation.operation_id,
+                call_id: stock_string_copy(&invocation.call_id, normalization_io)?,
+                name: stock_string_copy(&judged_tool.definition.name, normalization_io)?,
+                arguments: crate::model::clone_value(&invocation.arguments, normalization_io)?,
+            };
+            #[cfg(feature = "filesystem")]
+            {
+                _normalization_hold = normalization_io
+                    .map(|io| io.guard_owned(normalized.retained_payload_bytes()?))
+                    .transpose()?;
+            }
+            canonical = Some(crate::tool::CanonicalInvocation::new(
+                normalized, None, None,
+            ));
+        }
+        let judged = canonical.as_deref().unwrap_or(invocation);
         let (decision, custody) = policy.evaluate(judged, scope, self.io)?.await?;
         if !identity_matches()? {
             return Err(Error::Conflict(

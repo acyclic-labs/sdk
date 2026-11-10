@@ -79,3 +79,373 @@ fn publication_template_rejects_missing_scope_and_invalid_path_before_dispatch()
     );
     Ok(())
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn native_write_recovery_observes_the_original_receipt_without_republishing() -> Result<()> {
+    use crate::{conversation::VolumeOperation, runtime::Bindings};
+
+    let project =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+    let home = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+    let mut grants = vec!["tool:call:read".into(), "tool:call:write".into()];
+    for storage in [&project, &home] {
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            grants.push(storage.volume().capability(operation, &mut None)?);
+        }
+    }
+    let limits = Limits {
+        file_bytes: 65536,
+        render_bytes: 4096,
+        ..Limits::default()
+    };
+    let task = Arc::new(
+        Bindings {
+            scope: RuntimeScope::new(Capabilities::new(grants), limits)?,
+            content: Some(project.content_bindings()),
+            artifacts: Some(home.content_bindings()),
+            ..Bindings::local()
+        }
+        .build()?
+        .agent_context(&Capabilities::default(), home.content_bindings())?,
+    );
+    // A single-volume publisher must never interpret a read-only public view
+    // as a literal writable path, regardless of the conditional-write mode.
+    for prefix in [crate::layers::EFFECTIVE_PATH, crate::layers::SEED_PATH] {
+        for mode in ["omitted", "any", "absent"] {
+            let mut arguments =
+                json!({"path":format!("{prefix}example.txt"),"content":"forbidden"});
+            if mode != "omitted" {
+                arguments["ifVersion"] = json!(mode);
+            }
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: format!("read-only-{mode}"),
+                name: "write".into(),
+                arguments,
+            };
+            let context =
+                ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let before = work.receipt();
+            assert_eq!(
+                write()?
+                    .executor
+                    .authorize(
+                        Some(context.effective_scope()),
+                        Some(&context),
+                        &invocation,
+                        Some(&work)
+                    )
+                    .unwrap_err()
+                    .code(),
+                crate::wire::ErrorCode::Unauthorized,
+            );
+            assert_eq!(
+                write()?
+                    .executor
+                    .execute(invocation, Some(context))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                crate::wire::ErrorCode::Unauthorized,
+            );
+            let after = work.receipt();
+            assert_eq!(
+                after.backend_write_operations,
+                before.backend_write_operations
+            );
+            assert_eq!(
+                after.authority_records_appended,
+                before.authority_records_appended
+            );
+            assert_eq!(after.durability_operations, before.durability_operations);
+        }
+    }
+    for storage in [&project, &home] {
+        assert!(
+            storage
+                .list_private_directory("", None, None, 1)
+                .await?
+                .1
+                .entries
+                .is_empty()
+        );
+    }
+    for (prefix, storage) in [("", &project), (crate::layers::HOME_PATH, &home)] {
+        for mode in [
+            "omitted",
+            "any",
+            "absent",
+            "content",
+            "authored",
+            "namespace",
+        ] {
+            let relative = format!("{mode}.txt");
+            let path = format!("{prefix}{relative}");
+            let mut arguments = json!({"path":path,"content":"committed"});
+            if matches!(mode, "content" | "authored" | "namespace") {
+                let source = storage
+                    .stage(
+                        OperationId::new(),
+                        &relative,
+                        b"original",
+                        "text/plain",
+                        &relative,
+                    )
+                    .await?;
+                let version = if mode == "content" {
+                    encode_version(&source, None)?.0
+                } else if mode == "namespace" {
+                    // The existing directory producer supplies the generation;
+                    // the version needs no file-body read, length or digest.
+                    let (generation, page) =
+                        storage.list_private_directory("", None, None, 128).await?;
+                    assert!(
+                        page.entries
+                            .iter()
+                            .any(|entry| entry.name.as_bytes() == relative.as_bytes())
+                    );
+                    encode_path_version(storage.volume(), &relative, &generation, None)?.0
+                } else {
+                    let invocation = ToolInvocation {
+                        operation_id: OperationId::new(),
+                        call_id: "source".into(),
+                        name: "read".into(),
+                        arguments: json!({"path":path}),
+                    };
+                    let context = ToolContext::new(
+                        task.clone(),
+                        invocation.operation_id,
+                        &invocation.call_id,
+                    )?;
+                    let result = read()?.executor.execute(invocation, Some(context)).await?;
+                    let source: ReadFileResult = serde_json::from_value(result.value)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    assert!(matches!(source.file, FileReadSource::Authored(_)));
+                    super::version::encode_source(&source.file, None)?.0
+                };
+                arguments["ifVersion"] = json!(version);
+            } else if mode != "omitted" {
+                arguments["ifVersion"] = json!(mode);
+            }
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: format!("write-{mode}"),
+                name: "write".into(),
+                arguments,
+            };
+            if !prefix.is_empty() {
+                // Project authority never authorizes the same public home path.
+                let project_only = ToolContext::new(
+                    Arc::new(
+                        task.scoped(
+                            Capabilities::new([
+                                "tool:call:write".into(),
+                                project
+                                    .volume()
+                                    .capability(VolumeOperation::Read, &mut None)?,
+                                project
+                                    .volume()
+                                    .capability(VolumeOperation::Write, &mut None)?,
+                            ]),
+                            limits,
+                        )?,
+                    ),
+                    invocation.operation_id,
+                    &invocation.call_id,
+                )?;
+                assert_eq!(
+                    write()?
+                        .executor
+                        .authorize(
+                            Some(project_only.effective_scope()),
+                            Some(&project_only),
+                            &invocation,
+                            None,
+                        )
+                        .unwrap_err()
+                        .code(),
+                    crate::wire::ErrorCode::Unauthorized,
+                );
+            }
+            // Recovery owns one ledger across its receipt checks. Publication
+            // setup uses the real executor without consuming this read budget.
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            eprintln!("native recovery case: {path} ({mode})");
+            let context =
+                ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+            // An admitted source is not evidence that the write committed.
+            assert!(
+                write()?
+                    .executor
+                    .reconcile_with_native_context(&context, &invocation, &work)?
+                    .await
+                    .map_err(|error| {
+                        eprintln!(
+                            "missing-receipt observation failed: {error:?}; work={:?}",
+                            work.receipt()
+                        );
+                        error
+                    })?
+                    .0
+                    .is_none()
+            );
+            let expected = write()?
+                .executor
+                .execute(invocation.clone(), Some(context))
+                .await?;
+            let published: FileResult = serde_json::from_value(expected.value.clone())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(published.file.volume(), storage.volume());
+            assert_eq!(published.file.path(), relative);
+            assert_eq!(storage.read(&published.file).await?.as_ref(), b"committed");
+            let read_invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "read-after-write".into(),
+                name: "read".into(),
+                arguments: json!({"path":path}),
+            };
+            let read_context = ToolContext::new(
+                task.clone(),
+                read_invocation.operation_id,
+                &read_invocation.call_id,
+            )?;
+            assert_eq!(
+                read()?
+                    .executor
+                    .execute(read_invocation, Some(read_context))
+                    .await?
+                    .value["text"],
+                "committed"
+            );
+            if mode == "absent" {
+                let duplicate = ToolInvocation {
+                    operation_id: OperationId::new(),
+                    call_id: "duplicate".into(),
+                    ..invocation.clone()
+                };
+                let duplicate_context =
+                    ToolContext::new(task.clone(), duplicate.operation_id, &duplicate.call_id)?;
+                assert_eq!(
+                    write()?
+                        .executor
+                        .execute(duplicate, Some(duplicate_context))
+                        .await
+                        .unwrap_err()
+                        .code(),
+                    crate::wire::ErrorCode::Conflict,
+                );
+            }
+            // Lose the caller's completion, and let an unrelated publication win.
+            let later = storage
+                .stage(
+                    OperationId::new(),
+                    &relative,
+                    b"later",
+                    "text/plain",
+                    &relative,
+                )
+                .await?;
+            if mode == "namespace" {
+                // A token from a directory page must keep the original file,
+                // even after both replacement publications changed its head.
+                let pinned = ToolInvocation {
+                    operation_id: OperationId::new(),
+                    call_id: "namespace-pinned-read".into(),
+                    name: "read".into(),
+                    arguments: json!({"path":path,"version":invocation.arguments["ifVersion"]}),
+                };
+                let pinned_context =
+                    ToolContext::new(task.clone(), pinned.operation_id, &pinned.call_id)?;
+                assert_eq!(
+                    read()?
+                        .executor
+                        .execute(pinned, Some(pinned_context))
+                        .await?
+                        .value["text"],
+                    "original"
+                );
+            }
+            let before = storage.list_private_directory("", None, None, 1).await?.0;
+            let restarted =
+                ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+            if matches!(mode, "content" | "authored" | "namespace") {
+                // The former unconditional lookup cannot recover a replacement.
+                assert!(
+                    restarted
+                        .observe_tool_file_once(invocation.operation_id, None)
+                        .await?
+                        .0
+                        .is_none()
+                );
+            }
+            let work_before = work.receipt();
+            let (recovered, _custody) = write()?
+                .executor
+                .reconcile_with_native_context(&restarted, &invocation, &work)?
+                .await
+                .map_err(|error| {
+                    eprintln!(
+                        "original-receipt observation failed: {error:?}; work={:?}",
+                        work.receipt()
+                    );
+                    error
+                })?;
+            assert_eq!(recovered, Some(expected), "{path}");
+            let work_after = work.receipt();
+            assert_eq!(
+                work_after.backend_write_operations,
+                work_before.backend_write_operations
+            );
+            assert_eq!(
+                work_after.authority_records_appended,
+                work_before.authority_records_appended
+            );
+            assert_eq!(
+                work_after.durability_operations,
+                work_before.durability_operations
+            );
+            assert_eq!(
+                storage.list_private_directory("", None, None, 1).await?.0,
+                before
+            );
+            assert_eq!(storage.read(&later).await?.as_ref(), b"later");
+
+            let denied = ToolContext::new(
+                Arc::new(task.scoped(Capabilities::new(["tool:call:write"]), limits)?),
+                invocation.operation_id,
+                &invocation.call_id,
+            )?;
+            assert_eq!(
+                write()?
+                    .executor
+                    .reconcile_with_native_context(&denied, &invocation, &work)?
+                    .await
+                    .unwrap_err()
+                    .code(),
+                crate::wire::ErrorCode::Unauthorized
+            );
+            if matches!(mode, "content" | "authored" | "namespace") {
+                let mut forged = invocation.clone();
+                forged.arguments["path"] = json!(format!("{prefix}other.txt"));
+                assert!(
+                    write()?
+                        .executor
+                        .reconcile_with_native_context(&restarted, &forged, &work)?
+                        .await
+                        .is_err()
+                );
+            }
+        }
+    }
+    Ok(())
+}

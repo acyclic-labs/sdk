@@ -50,6 +50,7 @@ records!(
     crate::core::ExtensionConfiguration => None,
     FileRef => None, Vec<crate::conversation::Attachment> => None,
     crate::conversation::FilePathSelection => None,
+    crate::conversation::PathSelection => None,
 );
 impl PreparationRecord for crate::executor::ResponseProjection {
     fn json_value_schema() -> &'static Schema {

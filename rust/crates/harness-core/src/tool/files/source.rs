@@ -2,7 +2,7 @@ use super::*;
 
 /// One decoded or provider-selected source, kept with its original funding.
 pub(super) struct ReadSource {
-    pub source: Option<FileReadSource>,
+    pub source: Option<super::version::SelectedVersion>,
     pub custody: crate::NativeCustody,
 }
 
@@ -72,16 +72,6 @@ impl FileReadSource {
         match self {
             Self::Content(file) => file.descriptor().byte_length(),
             Self::Authored(file) => file.byte_length,
-        }
-    }
-
-    pub(super) fn validate(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        match self {
-            Self::Content(file) => file.validate(work),
-            Self::Authored(file) => file.validate(work),
         }
     }
 
