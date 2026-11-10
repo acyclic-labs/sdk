@@ -448,7 +448,14 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     let child_owner = actor("disposition-branch")?;
     let parent = store.load(&owner).await?;
     let mut fork = PreparedPublish::foreign(key("failure/branch")?);
-    for effect in store.fork(&parent, &child_owner, inbox(&child_owner)?)? {
+    for effect in [
+        store.branch(
+            &parent,
+            &child_owner,
+            Branch::unfunded(inbox(&child_owner)?),
+        )?,
+        store.activation(&child_owner),
+    ] {
         fork.join(effect)?;
     }
     store.submit(fork).await?;

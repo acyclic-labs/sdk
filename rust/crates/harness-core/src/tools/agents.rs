@@ -874,10 +874,13 @@ mod tests {
             sibling.id().as_str().as_bytes(),
         )
         .expect("sibling actor");
-        let effects = crate::agent::actor_store(&children.stream)
-            .map_err(agent)?
-            .create(&actor, Default::default(), None)
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        let store = crate::agent::actor_store(&children.stream).map_err(agent)?;
+        let effects = [
+            store
+                .create(None, &actor, acyclic_actors::local::Creation::default())
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            store.activation(&actor),
+        ];
         let request = acyclic_stream::CommitRequest {
             deadline_unix_millis: None,
             idempotency_key: acyclic_stream::IdempotencyKey::new(b"sibling".to_vec())

@@ -1,9 +1,14 @@
 # acyclic-actors
 
-Created actors start unplaced at epoch zero. A fork retains its parent's state
-cut and epoch; its first dispatch claims a newer epoch bound to the original
-Stream fork commit. A parent placement cannot authorize work in the child.
-Unchanged subscription bindings require no child state rewrite or actor scan.
+`local::Store::create` starts a dormant actor at epoch zero, either empty or
+from a template's exact cut. The creation overlay clears inherited alarms,
+metadata and journal history and supplies the initial checkpoint and funding.
+Its caller joins `Store::activation` with the first trigger. `Store::branch`
+retains the source's checkpoint, metadata, journal and alarm at an exact cut,
+but writes an overlay that starts paused with its own funding (zero unless
+allocated). Resumption claims a newer epoch bound to the original Stream fork
+commit. A parent placement cannot authorize work in the child. Each overlay
+encodes one bounded state record, without scanning actor or journal history.
 `local::Snapshot::provenance`
 returns the shared Streams `Provenance<StreamPath, ForkCut>` from the same head
 observation; later placements preserve that original ancestry.
@@ -341,7 +346,10 @@ authored Snapshot without a reread or decode; `Store::claim` likewise returns
 its confirmed placement cut. The original owner and exact-head fences still
 apply. A retained cut is a snapshot, not a fresh observation of another owner.
 Native `fund_escrow` retains funding supplied by the admitting host, and
-`debit_escrow` stages checked spend in this same transaction. Missing funding
+`debit_escrow` stages checked spend in this same transaction. `allocate_escrow`
+uses the same checked debit to fund a creation or branch overlay joined to
+that publication. The first claim adopts only funding written by the fork's
+own overlay; actor-blind copies retain foreign funding. Missing funding
 refuses; finite zero and explicitly unbounded `None` remain distinct. Discarded
 candidates roll back, while a committed debit never expires. Copied branch
 funding cannot be spent by a new placement. These values convey no grant or
