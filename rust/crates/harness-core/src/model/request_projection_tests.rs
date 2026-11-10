@@ -247,7 +247,7 @@ proptest! {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let admitted = expected.is_ok();
         let actual = request.validate(Limits::default(), None);
-        prop_assert_eq!(actual.map_err(|e| e.to_string()), expected.map_err(|e| e.to_string()));
+        prop_assert_eq!(actual.map_err(|e| e.code()), expected.map_err(|e| e.code()));
         prop_assert_eq!(&request, &original);
         let ToolResultContent::Json { value } = content(&request) else { unreachable!() };
         prop_assert_eq!(value["sentinel"].as_str().filter(|s| !s.is_empty()).map(str::as_ptr), owned_pointer);
@@ -276,6 +276,50 @@ proptest! {
         let mut wrong = envelope;
         wrong["kind"] = json!("parts");
         prop_assert!(crate::executor::validate_json_schema_value(&strict, &wrong, "model tool result", &mut None).is_err());
+    }
+
+    #[test]
+    fn shared_output_spills_survive_request_preparation_and_recovery(
+        text in ".{0,64}", omitted_bytes in 0u64..=crate::conversation::MAX_EXACT_JS_INTEGER,
+        multipart in any::<bool>(),
+    ) {
+        let preview = json!({
+            "output_spill":{"path":"output λ.json", "version":"retained-v1"},
+            "text":text, "omitted_bytes":omitted_bytes,
+        });
+        let request = |preview: Value| {
+            let projected = if multipart {
+                ToolResultContent::Parts { parts: vec![ModelDataPart::Text {
+                    text: format!(r#"{{"output_spill":{},"text":{},"omitted_bytes":{}}}"#,
+                        preview["output_spill"], preview["text"], preview["omitted_bytes"]),
+                }] }
+            } else {
+                ToolResultContent::Json { value: preview }
+            };
+            let mut request = answered("echo", json!("é"), projected);
+            request.tools[0].projection_schema =
+                crate::tool::json_projection_schema(json!({"type":"null"}));
+            request
+        };
+        let original = request(preview.clone());
+        let envelope = serde_json::to_value(content(&original)).unwrap();
+        prop_assert!(crate::executor::validate_json_schema_value(
+            &original.tools[0].projection_schema, &envelope, "tool", &mut None,
+        ).is_err(), "the authored schema alone must reject the intrinsic spill");
+        let prepared = PreparedModelRequest::prepare(original.clone(), Limits::default(), None).unwrap();
+        prop_assert_eq!(prepared.request(), &original);
+        let recovered = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None).unwrap();
+        prop_assert_eq!(recovered.request(), &original);
+        for (pointer, invalid) in [
+            ("/output_spill/path", json!("")),
+            ("/output_spill/version", json!("")),
+            ("/text", Value::Null),
+            ("/omitted_bytes", json!(-1)),
+        ] {
+            let mut broken = preview.clone();
+            *broken.pointer_mut(pointer).unwrap() = invalid;
+            prop_assert!(PreparedModelRequest::prepare(request(broken), Limits::default(), None).is_err());
+        }
     }
 
     // A permissive schema needs no payload ownership. The real request

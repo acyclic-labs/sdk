@@ -189,7 +189,10 @@ async fn custom_code_executor_preserves_other_native_declarations() -> Result<()
     let forged = crate::model::PreparedModelRequest::prepare(forged, executor.limits, None)?;
     assert!(
         StockExecution::ordinary(&executor)
-            .validate_response_request(&forged)
+            .validate_response_request(
+                &forged,
+                &StockExecution::ordinary(&executor).request_tools()?
+            )
             .is_err()
     );
     Ok(())
@@ -1535,6 +1538,52 @@ async fn retained_dynamic_exchange_keeps_its_validation_schema() -> Result<()> {
         .unwrap();
     *result = crate::model::ToolResultContent::Json { value: json!(7) };
     assert!(crate::model::PreparedModelRequest::prepare(corrupted, executor.limits, None).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_direct_request_retains_tools_before_model_start() -> Result<()> {
+    let (mut executor, _, echo) = executor("42", allowed()?, true)?;
+    let schema = json!({"type":"object"});
+    executor.tools = echo_tools(
+        echo,
+        schema.clone(),
+        schema.clone(),
+        crate::tool::json_projection_schema(schema),
+    )?;
+    let journal = Journal::default();
+    let original_input = input();
+    StockExecution::ordinary(&executor)
+        .ensure_started(&journal, &original_input)
+        .await?;
+    let original = StockExecution::ordinary(&executor)
+        .prepared_response(&journal, &original_input, 0, &[], None)
+        .await?;
+    assert!(!original.request().compose_tools);
+    assert!(!original.request().tools.is_empty());
+    executor.tools = ToolRegistry::default();
+    let resumed = StockExecution::ordinary(&executor)
+        .prepared_response(&journal, &original_input, 0, &[], None)
+        .await?;
+    assert_eq!(resumed.bytes(), original.bytes());
+    assert_eq!(
+        journal
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|record| matches!(record.event, ExecutionEvent::ContextPrepared { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        journal
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|record| !matches!(record.event, ExecutionEvent::ModelStarted { .. }))
+    );
     Ok(())
 }
 

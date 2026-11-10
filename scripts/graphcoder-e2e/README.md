@@ -105,9 +105,11 @@ complete platform. The full run requires both passing cases and coverage.
 Known product failures retain their assertions and fail normally.
 
 R17's `shell-background-job` keeps the shipping JSONL connection open across
-committed turns. Two real shell children wait on TCP gates while a later
+committed turns and delegates execution to the stock worker. The worker's
+original admission and terminal files return through the parent's settled child.
+Two real shell children wait on TCP gates while a later
 foreground command completes in a later committed turn. Writing one original
-cancellation path stops only that job. A final model turn waits for both original
+cancellation path from the worker stops only that job. A final model turn waits for both original
 private terminal files, requires the sibling's successful zero exit before EOF,
 and verifies complete spill beyond the preview boundary. The spill oracle rejects
 those original bytes with one byte deleted; the terminal oracle rejects the

@@ -143,7 +143,14 @@ async fn path_wait_observes_publication_without_probing_or_accepting_other_files
     let binding = crate::runtime::ContentBindings {
         volume: volume.clone(),
         reader: reader.clone(),
-        writer: None,
+        writer: Some(FilesystemContentPublisher::new(
+            host.clone(),
+            &volume,
+            &verifier,
+            &scope,
+            4096,
+            None,
+        )?),
     };
     let task = crate::runtime::Bindings {
         content: Some(binding.clone()),

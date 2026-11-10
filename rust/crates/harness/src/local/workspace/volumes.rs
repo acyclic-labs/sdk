@@ -325,12 +325,17 @@ fn keep_first(first: &mut Result<()>, next: Result<()>) {
 
 /// Retires every projection when the host disconnects. Active claims wake
 /// retirement after physical cleanup; the projection stays mounted until then.
+/// Each volume progresses independently, so an active worker cannot delay an
+/// idle volume's retirement. Report the first error in binding order after all
+/// retirements complete.
 pub(in crate::local) async fn retire(mounts: &Mounts) -> Result<()> {
     let mut retired = Ok(());
-    for (_, mount) in mounts.mounts() {
-        if let Some(source) = &mount.view.source {
-            keep_first(&mut retired, Box::pin(source.retire()).await);
-        }
+    let retirements = mounts
+        .mounts()
+        .filter_map(|(_, mount)| mount.view.source.as_ref())
+        .map(|source| Box::pin(source.retire()));
+    for result in futures::future::join_all(retirements).await {
+        keep_first(&mut retired, result);
     }
     retired
 }

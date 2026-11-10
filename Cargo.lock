@@ -275,6 +275,7 @@ dependencies = [
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-observability",
  "acyclic-plugin",
  "acyclic-stream",
  "acyclic-test-support",

@@ -83,7 +83,7 @@ impl HeldRoot {
                     from,
                     &destination.root.directory(),
                     to,
-                    crate::RenameMode::NoReplace,
+                    acyclic_native_runtime::RenameMode::NoReplace,
                     None,
                     work,
                 )

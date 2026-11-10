@@ -957,27 +957,15 @@ pub async fn run(
                 view.top,
             )));
         }
+        let mut previous_layout = None;
+        let mut files_changed = false;
         tokio::select! {
             snapshot = &mut files_future => {
                 let snapshot = snapshot?;
-                let layout_changed = ui.snapshot.files.get("layout.json").and_then(Option::as_ref).map(|file| &file.file)
-                    != snapshot.files.get("layout.json").and_then(Option::as_ref).map(|file| &file.file);
+                previous_layout = ui.layout_digest();
                 ui.snapshot = snapshot;
                 ui.project()?;
-                ui.complete(&mut input)?;
-                if overlay.as_ref().is_some_and(|(title, _)| *title == "Help") {
-                    overlay = Some(("Help", View::help(&ui.catalog, &input)));
-                }
-                ui.config.apply(&mut input, &profile).map_err(|errors| format!("UI configuration: {errors:?}"))?;
-                view.transcript.set_theme(input.theme);
-                view.pending_dirty = true;
-                view.tail_dirty = true;
-                if layout_changed {
-                    view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                        query_future.as_mut(), &ui.catalog, &input).or(view.notice.take());
-                    overlay_top = 0;
-                }
-                files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));
+                files_changed = true;
             }
             () = async {
                 if areas.animation {
@@ -1090,7 +1078,7 @@ pub async fn run(
                 output_rows.reverse();
             }
             batch = keys.next() => {
-                let mut selection_changed = false;
+                previous_layout = ui.layout_digest();
                 for event in batch.ok_or("terminal input ended")?? {
                     let effects = areas
                         .event(&mut input, event, &mut viewport, now, &mut |_| None)
@@ -1214,7 +1202,7 @@ pub async fn run(
                                         view.prompt = Some(Prompt::History { at });
                                         queries.close(query_future.as_mut());
                                         ui.select(&conversation, None).await?;
-                                        selection_changed = true;
+                                        files_changed = true;
                                     } else {
                                         view.notice = Some("Enter an immutable cut displayed on this history page.".into());
                                     }
@@ -1249,13 +1237,17 @@ pub async fn run(
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
                                         return view.exit();
                                     }
+                                    Ok(Some(resolution @ CommandResolution::Submit { request: CommandRequest::Theme { .. } })) => {
+                                        match ui.submit(&conversation, &resolution).await {
+                                            Ok(()) => files_changed = true,
+                                            Err(error) => view.notice = Some(error.to_string()),
+                                        }
+                                        continue;
+                                    }
                                     Ok(Some(CommandResolution::Select { query: selected @ (CommandQuery::Shortcuts | CommandQuery::Diff | CommandQuery::History | CommandQuery::Cost) })) => {
                                         match ui.select(&conversation, Some(&selected)).await {
                                             Ok(()) => {
-                                                selection_changed = true;
-                                                view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                                                    query_future.as_mut(), &ui.catalog, &input).or(view.notice.take());
-                                                overlay_top = 0;
+                                                files_changed = true;
                                             }
                                             Err(error) => view.notice = Some(error.to_string()),
                                         }
@@ -1316,10 +1308,7 @@ pub async fn run(
                             InputEffect::Host(Action::Escape) if overlay.is_some() || queries.source().is_some() => {
                                 match ui.select(&conversation, None).await {
                                     Ok(()) => {
-                                        selection_changed = true;
-                                        view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                                            query_future.as_mut(), &ui.catalog, &input).or(view.notice.take());
-                                        overlay_top = 0;
+                                        files_changed = true;
                                     }
                                     Err(error) => view.notice = Some(error.to_string()),
                                 }
@@ -1353,20 +1342,53 @@ pub async fn run(
                             _ => {}
                         }
                     }
-                }
-                if selection_changed {
-                    ui.complete(&mut input)?;
-                    ui.config.apply(&mut input, &profile)
-                        .map_err(|errors| format!("UI configuration: {errors:?}"))?;
-                    view.transcript.set_theme(input.theme);
-                    view.pending_dirty = true;
-                    view.tail_dirty = true;
-                    // Retire the older in-flight projection before following
-                    // the cut that supplied this batch's conditional sources.
-                    files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));
+                    // A batch can submit a panel and then Escape. Publish its
+                    // visible state before the next event decides what to close.
+                    if files_changed
+                        && let Some(notice) = apply_session_layout(
+                            &ui,
+                            &mut previous_layout,
+                            &mut overlay,
+                            &mut queries,
+                            query_future.as_mut(),
+                            &input,
+                        )
+                    {
+                        view.notice = notice.or(view.notice.take());
+                        overlay_top = 0;
+                    }
                 }
                 input.refresh_completions();
             }
+        }
+        if files_changed {
+            ui.complete(&mut input)?;
+            ui.config
+                .apply(&mut input, &profile)
+                .map_err(|errors| format!("UI configuration: {errors:?}"))?;
+            view.transcript.set_theme(input.theme);
+            view.pending_dirty = true;
+            view.tail_dirty = true;
+            if overlay.as_ref().is_some_and(|(title, _)| *title == "Help") {
+                overlay = Some(("Help", View::help(&ui.catalog, &input)));
+            }
+            if let Some(notice) = apply_session_layout(
+                &ui,
+                &mut previous_layout,
+                &mut overlay,
+                &mut queries,
+                query_future.as_mut(),
+                &input,
+            ) {
+                view.notice = notice.or(view.notice.take());
+                overlay_top = 0;
+            }
+            // A command can reopen past an in-flight follow. Apply the whole
+            // committed projection before advancing either path's follow cut.
+            files_future.set(session::follow(
+                Arc::clone(&conversation),
+                ui.snapshot.generation.clone(),
+            ));
         }
     }
 }
@@ -1641,6 +1663,31 @@ mod tests {
         }
         Ok(())
     }
+}
+
+// Reopened commands and follows compare against the last displayed layout.
+// Compare content, since an unrelated file commit also changes file revisions.
+// An unchanged layout preserves the selected page and its retained read.
+fn apply_session_layout<F>(
+    ui: &session::Session,
+    previous: &mut Option<[u8; 32]>,
+    overlay: &mut Option<(&'static str, Vec<Line<'static>>)>,
+    queries: &mut QueryController<query::Source, query::Context>,
+    pending: std::pin::Pin<&mut Option<F>>,
+    input: &PromptInput,
+) -> Option<Option<String>> {
+    if *previous == ui.layout_digest() {
+        return None;
+    }
+    *previous = ui.layout_digest();
+    Some(apply_open_view(
+        ui.open_view(),
+        overlay,
+        queries,
+        pending,
+        &ui.catalog,
+        input,
+    ))
 }
 
 /// Projects the session's saved view onto the terminal. Total over every

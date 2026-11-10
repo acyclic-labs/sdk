@@ -3,21 +3,15 @@
 import { connect } from "node:net";
 import { readFileSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
+import { verifySpill } from "./spill.mjs";
 const [name] = process.argv.slice(2);
+if (name === "cancel") {
+  writeFileSync(process.argv[3], "cancel\n");
+  process.exit(0);
+}
 if (name === "verify") {
-  const spill = readFileSync(process.argv[3], "utf8");
-  const check = text => {
-    if (text.split("x").length - 1 !== 80_000 ||
-      !["JOB_READY_two", "JOB_STDERR_two", "JOB_DONE_two"].every(marker => text.includes(marker)))
-      throw new Error("complete spill lost output bytes");
-  };
-  check(spill);
-  let rejected = false;
-  const offset = spill.indexOf("x");
-  try { check(spill.slice(0, offset) + spill.slice(offset + 1)); }
-  catch (error) { if (error.message !== "complete spill lost output bytes") throw error; rejected = true; }
-  if (!rejected) throw new Error("truncated original spill was accepted");
-  console.log("COMPLETE_SPILL_AND_NEGATIVE_CONTROL");
+  console.log(verifySpill(process.argv[3], 80_000,
+    ["JOB_READY_two", "JOB_STDERR_two", "JOB_DONE_two"]));
   process.exit(0);
 }
 const { port } = JSON.parse(readFileSync("shell-gate.json", "utf8"));

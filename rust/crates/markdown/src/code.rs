@@ -332,11 +332,14 @@ pub(crate) fn highlight(code: &mut Code, text: &str) -> Line {
             .insert(fingerprint, Arc::downgrade(&source.0));
     }
     code.previous = Some(Arc::clone(&source.0));
-    let mut line = Line::plain("│ ", MUTED);
-    line.code = true;
+    let mut line = band(Line::plain("│ ", MUTED));
     if code.deferred {
-        line.push(source.text(), Style::DEFAULT, None);
-        line.syntax = Some(source);
+        if !source.text().is_empty() {
+            line.push_new(source.text(), Style::DEFAULT, None);
+            if let Some(span) = line.spans.last_mut() {
+                span.syntax = Some(source);
+            }
+        }
     } else {
         for (range, style) in source.styles().iter() {
             line.push(
@@ -349,7 +352,7 @@ pub(crate) fn highlight(code: &mut Code, text: &str) -> Line {
     line
 }
 pub(crate) fn header(language: &str) -> Line {
-    let mut line = Line::plain(
+    band(Line::plain(
         &format!(
             "┌─ {}",
             if language.is_empty() {
@@ -359,14 +362,17 @@ pub(crate) fn header(language: &str) -> Line {
             }
         ),
         MUTED,
-    );
-    line.code = true;
-    line
+    ))
 }
 
 pub(crate) fn footer() -> Line {
-    let mut line = Line::plain("└─", MUTED);
-    line.code = true;
+    band(Line::plain("└─", MUTED))
+}
+
+fn band(mut line: Line) -> Line {
+    if let Some(span) = line.spans.first_mut() {
+        span.code = true;
+    }
     line
 }
 

@@ -60,13 +60,16 @@ impl InputWatch {
                 .rev()
                 .filter(|entry| entry.parent().is_some())
                 .chain(std::iter::once(path.as_path()));
-            let mut identity = None;
             for entry in entries {
-                let alias = entry != path
-                    && std::fs::symlink_metadata(entry)
-                        .map_err(|_| Error::Storage("cannot inspect input watch ancestor".into()))?
-                        .file_type()
-                        .is_symlink();
+                let alias = match std::fs::symlink_metadata(entry) {
+                    Ok(metadata) => metadata.file_type().is_symlink(),
+                    Err(error) if entry == path && error.kind() == std::io::ErrorKind::NotFound => {
+                        false
+                    }
+                    Err(_) => {
+                        return Err(Error::Storage("cannot inspect input watch ancestor".into()));
+                    }
+                };
                 // The shared Darwin FSEvents hub already reports root and
                 // ancestor moves. Registering ordinary parents there expands
                 // recursive coverage unnecessarily (up to the filesystem root).
@@ -87,7 +90,7 @@ impl InputWatch {
                     .strip_prefix(parent)
                     .map_err(|_| Error::Storage("input watch path is outside its ancestor".into()))?
                     .to_owned();
-                identity = Some(root.join(&relative));
+                let identity = root.join(&relative);
                 let registration = (root.clone(), relative.clone());
                 if registered.insert(registration.clone()) {
                     match self.hold(root, BTreeSet::from([relative])) {
@@ -104,27 +107,28 @@ impl InputWatch {
                     }
                     after_hold(entry)?;
                 }
-            }
-            let identity =
-                identity.ok_or_else(|| Error::Storage("input watch has no entry".into()))?;
-            if !resolved.insert(identity) {
-                continue;
-            }
-            // The alias entry is now held. A retarget after this read remains
-            // an invalidation; callers subscribe before arming and observing.
-            match std::fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    let target = std::fs::read_link(&path)
+                if alias {
+                    let suffix = path.strip_prefix(entry).map_err(|_| {
+                        Error::Storage("input watch alias is outside its source".into())
+                    })?;
+                    if !resolved.insert((identity, suffix.to_owned())) {
+                        continue;
+                    }
+                    // Register every alias before reading its target, including
+                    // directory links hidden by canonicalizing the final parent.
+                    let target = std::fs::read_link(entry)
                         .map_err(|_| Error::Storage("cannot read input watch alias".into()))?;
-                    pending.push(if target.is_absolute() {
+                    let target = if target.is_absolute() {
                         target
                     } else {
-                        path.parent().unwrap_or(Path::new(".")).join(target)
+                        entry.parent().unwrap_or(Path::new(".")).join(target)
+                    };
+                    pending.push(if suffix.as_os_str().is_empty() {
+                        target
+                    } else {
+                        target.join(suffix)
                     });
                 }
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => return Err(Error::Storage("cannot inspect input watch path".into())),
             }
         }
         *self
@@ -198,18 +202,24 @@ mod tests {
     #[tokio::test]
     async fn aliased_inputs_report_target_writes_and_alias_retargets() -> Result<()> {
         acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
-        for kind in [0, 1, 2] {
+        for kind in [0, 1, 2, 3] {
             for retarget in [false, true] {
                 let home = tempfile::tempdir().map_err(Error::process_io)?;
-                let target = home.path().join("target");
-                let replacement = home.path().join("replacement");
+                let outside = tempfile::tempdir().map_err(Error::process_io)?;
+                let target = outside.path().join("target");
+                let replacement = outside.path().join("replacement");
                 for directory in [&target, &replacement] {
                     std::fs::create_dir(directory).map_err(Error::process_io)?;
                     std::fs::write(directory.join("auth.json"), b"old")
                         .map_err(Error::process_io)?;
                 }
                 let alias = home.path().join("alias");
-                let intermediate = home.path().join("intermediate");
+                let intermediate = if kind == 3 {
+                    outside.path().join("intermediate")
+                } else {
+                    home.path().join("intermediate")
+                };
+                let directory_link = kind == 0 || kind == 3;
                 let link = |target: &Path, alias: &Path, file: bool| {
                     #[cfg(unix)]
                     let result = {
@@ -227,6 +237,9 @@ mod tests {
                 if kind == 2 {
                     link(&target.join("auth.json"), &intermediate, true)?;
                     link(Path::new("intermediate"), &alias, true)?;
+                } else if kind == 3 {
+                    link(&target, &intermediate, false)?;
+                    link(&intermediate, &alias, false)?;
                 } else {
                     let selected = if kind == 0 {
                         target.clone()
@@ -235,7 +248,7 @@ mod tests {
                     };
                     link(&selected, &alias, kind != 0)?;
                 }
-                let configured = if kind == 0 {
+                let configured = if directory_link {
                     alias.join("auth.json")
                 } else {
                     alias.clone()
@@ -243,22 +256,22 @@ mod tests {
                 let watch = InputWatch::new(vec![configured])?;
                 let changed = watch.credential_watch();
                 if retarget {
-                    let selected = if kind == 2 { &intermediate } else { &alias };
+                    let selected = if kind >= 2 { &intermediate } else { &alias };
                     #[cfg(unix)]
                     std::fs::remove_file(selected).map_err(Error::process_io)?;
                     #[cfg(windows)]
-                    if kind == 0 {
+                    if directory_link {
                         std::fs::remove_dir(selected)
                     } else {
                         std::fs::remove_file(selected)
                     }
                     .map_err(Error::process_io)?;
-                    let replacement = if kind == 0 {
+                    let replacement = if directory_link {
                         replacement
                     } else {
                         replacement.join("auth.json")
                     };
-                    link(&replacement, selected, kind != 0)?;
+                    link(&replacement, selected, !directory_link)?;
                 } else {
                     std::fs::write(target.join("auth.json"), b"new").map_err(Error::process_io)?;
                 }
