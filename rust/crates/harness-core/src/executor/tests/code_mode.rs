@@ -1254,7 +1254,7 @@ async fn mutating_builtins_cannot_abandon_queued_calls() -> Result<()> {
 
 #[tokio::test]
 async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Result<()> {
-    let code = r#"let refused = false; try { Function('return process.env')(); } catch (e) { refused = e instanceof ReferenceError; } export default ({refused, sum: [1,2,3].reduce((a,b) => a+b), host: [typeof fetch, typeof require, typeof process, typeof std, typeof os, typeof readFile, typeof Deno, typeof Bun, typeof WebSocket, typeof Date], hidden: typeof tools['example.echo'], bound: typeof tools.code, schema: tools.code.input_schema.required})"#;
+    let code = r#"let refused = false; try { Function('return process.env')(); } catch (e) { refused = e instanceof ReferenceError; } const imports = []; for (const name of ['node:fs', 'std', 'os', './host.js']) { try { await import(name); imports.push(false); } catch { imports.push(true); } } export default ({refused, imports, sum: [1,2,3].reduce((a,b) => a+b), host: [typeof fetch, typeof require, typeof process, typeof std, typeof os, typeof readFile, typeof Deno, typeof Bun, typeof WebSocket, typeof Date], hidden: typeof tools['example.echo'], bound: typeof tools.code, schema: tools.code.input_schema.required})"#;
     let (executor, model, echo) = executor(code, allowed()?, false)?;
     let journal = Journal::default();
     executor.execute(input(), &journal).await?;
@@ -1265,6 +1265,7 @@ async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Resul
     assert_eq!(value["schema"], json!(["code"]));
     assert_eq!(echo.0.load(Ordering::SeqCst), 0);
     assert_eq!(value["refused"], true);
+    assert_eq!(value["imports"], json!([true, true, true, true]));
     // Negative control: ordinary JavaScript still runs in this same sandbox.
     assert_eq!(value["sum"], 6);
     Ok(())

@@ -995,12 +995,13 @@ impl ToolContext {
 
     pub(crate) async fn list_tool_directory<'a, 'io: 'a>(
         &'a self,
-        request: crate::conversation::DirectoryRead<'a>,
+        mut request: crate::conversation::DirectoryRead<'a>,
         io: Option<&'io crate::conversation::ContentIo>,
     ) -> Result<(
         crate::conversation::PrivateDirectoryPage,
         Option<crate::conversation::ContentHold<'io>>,
     )> {
+        request.generation = self.layer_generation(request.volume, request.generation)?;
         self.task()
             .list_bound_directory(request, self.effective_scope(), io)
             .await

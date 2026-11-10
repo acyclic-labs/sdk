@@ -141,7 +141,7 @@ pub(crate) struct Module {
     pub(crate) imports: Vec<String>,
 }
 
-/// Compile one static module for settings and code execution.
+/// Compile one static TypeScript, JavaScript or JSON settings module.
 pub(crate) fn compile_module(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
     let text = std::str::from_utf8(source).map_err(|_| format!("{path} is not UTF-8"))?;
     if path.ends_with(".json") {
