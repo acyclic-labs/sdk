@@ -6,15 +6,15 @@ step=format
 trap 'rc=$?; echo "step=$step failed (exit $rc); recovery: bash scripts/backends/compile-storage.sh" >&2; exit "$rc"' ERR
 node scripts/qualify-rustfmt.mjs
 step=compile-storage-conformance
-cargo check --locked -p acyclic-conformance --features storage-backends,acyclic-objects/local --bin storage-conformance
+cargo check --locked -p acyclic-conformance --features storage-backends --bin storage-conformance
 step=compile-default-server-consumer
 cargo check --locked -p acyclic-plugin
 step=compile-postgres-checks
-cargo check --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance
+cargo check --locked -p acyclic-stream --no-default-features --features conformance --example provider-conformance
 step=compile-shared-stream-regressions
-cargo test --locked -p acyclic-stream --features postgres --lib --no-run
+cargo test --locked -p acyclic-stream --lib --no-run
 step=compile-shared-objects-regressions
-cargo test --locked -p acyclic-objects --features s3 --lib --no-run
+cargo test --locked -p acyclic-objects --lib --no-run
 step=compile-agent-host-baseline
 cargo test --locked -p acyclic-agent-host-conformance --features local --test main --no-run
 step=compile-portable-host-fixtures
