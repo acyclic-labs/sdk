@@ -9,15 +9,7 @@ impl ToolRegistry {
         name: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
-        match self.data.selected.get(name) {
-            Some(ModelSelection::Native(natives)) => match natives.first() {
-                Some(native) => Ok(self
-                    .get(native, None, io)?
-                    .and_then(|tool| tool.executor.capability())),
-                None => Ok(None),
-            },
-            _ => self.get(name, None, io),
-        }
+        self.get(name, None, io)
     }
 
     pub(crate) fn pin_model_definitions(

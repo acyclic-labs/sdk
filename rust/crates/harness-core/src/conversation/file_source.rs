@@ -51,6 +51,12 @@ impl PathSelection {
     }
 
     pub(crate) fn matches_content(&self, file: &FileRef) -> bool {
+        self.view().matches_content(file)
+    }
+}
+
+impl PathSelectionView<'_> {
+    pub(crate) fn matches_content(&self, file: &FileRef) -> bool {
         self.volume == file.volume()
             && self.path == file.path()
             && names_generation(file, self.generation)
@@ -102,10 +108,8 @@ impl FilePathSelection {
     /// the complete descriptor's version. This compares identity only; the
     /// original content reader still authenticates its bytes and descriptor.
     pub fn matches_content(&self, file: &FileRef) -> bool {
-        self.volume == *file.volume()
-            && self.path == file.path()
+        self.path_selection().matches_content(file)
             && self.byte_length == file.descriptor().byte_length()
-            && names_generation(file, &self.generation)
     }
 
     pub(crate) fn path_selection(&self) -> PathSelectionView<'_> {
