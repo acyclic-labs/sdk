@@ -104,7 +104,7 @@ pub(super) async fn load(
                     &prices,
                 )
                 .await?;
-            Ok(Panel::new(
+            Ok(QueryPage::new(
                 vec![
                     Line::raw("This agent and descendants · observed original calls"),
                     Line::raw(format!(
@@ -241,7 +241,7 @@ mod tests {
             pending.as_mut(),
         );
         queries.page = Some(
-            Panel::new(
+            QueryPage::new(
                 vec![
                     Line::raw("original action ".repeat(50)),
                     Line::raw("ACTION_END"),
