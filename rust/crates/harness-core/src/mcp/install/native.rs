@@ -113,12 +113,7 @@ pub(super) async fn connect(
     };
     // Eager schema exposure deliberately materializes the catalog. The shared
     // page stream itself fetches only when its consumer requests another page.
-    let tools = super::super::tool_pages(|cursor| connection.list(cursor))
-        .try_fold(Vec::new(), |mut tools, page| async move {
-            tools.extend(page);
-            Ok(tools)
-        })
-        .await?;
+    let tools = discover(|cursor| connection.list(cursor)).await?;
     let transport = match connection {
         #[cfg(feature = "mcp-stdio")]
         Connection::Stdio(transport) => {
@@ -224,6 +219,19 @@ impl Connection {
     }
 }
 
+/// Materializes the shared page stream for an eagerly exposed catalog.
+pub(super) async fn discover<F, Fut>(list: F) -> Result<Vec<McpToolDefinition>>
+where
+    F: Fn(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<rmcp::model::ListToolsResult>>,
+{
+    super::super::tool_pages(list)
+        .try_fold(Vec::new(), |mut tools, page| async move {
+            tools.extend(page);
+            Ok(tools)
+        })
+        .await
+}
 /// Resolved credentials of one server, held only by the host, zeroed on drop.
 pub(super) type Credentials = std::collections::BTreeMap<String, zeroize::Zeroizing<String>>;
 
