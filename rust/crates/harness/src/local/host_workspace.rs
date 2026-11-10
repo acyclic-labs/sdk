@@ -76,12 +76,11 @@ impl HostWorkspace {
         let root = Arc::new(admitted_mount_root.try_clone().map_err(storage)?);
         let admitted = workspace.task_view_admission.get_or_init(|| root);
         if admitted.identity() != admitted_mount_root.identity() {
-            return Err(Error::Conflict("host task-view admission changed".into()));
+            return Err(Error::Conflict(format!(
+                "host task-view admission changed at {}",
+                admitted_mount_root.path().display()
+            )));
         }
-        workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
-        acyclic_fs::initialize_native_mount_services_async()
-            .await
-            .map_err(storage)?;
         let mut result = Self {
             workspace,
             owner: Arc::new(AgentOwner(agent.clone())),
@@ -271,6 +270,14 @@ impl HostWorkspace {
                 "host child project volume class differs".into(),
             ));
         }
+        // Opening a native fork is the first operation that needs a projection.
+        // Roots and physical task views use the admitted checkout directories.
+        if self.workspace.mounting == WorkspaceMounting::Native {
+            workspace::volumes::require_available(self.workspace.native_mount_probe.probe())?;
+            acyclic_fs::initialize_native_mount_services_async()
+                .await
+                .map_err(storage)?;
+        }
         verify_root(&self.mount_root)?;
         let owner = &*self.owner;
         let state =
@@ -403,9 +410,10 @@ impl HostWorkspace {
 
 fn verify_root(root: &HeldRoot) -> Result<()> {
     if acyclic_fs::capture_root_identity(root.path()).map_err(storage)? != root.identity() {
-        return Err(Error::Unauthorized(
-            "host-admitted mount root was replaced".into(),
-        ));
+        return Err(Error::Unauthorized(format!(
+            "host-admitted mount root was replaced at {}",
+            root.path().display()
+        )));
     }
     Ok(())
 }

@@ -668,6 +668,12 @@ fn request_operation(
             remove_held_projection(&bridge.shared.requests, leaf),
         )
     })();
+    if let Err(error) = &result {
+        eprintln!(
+            "step=exchange native workspace request {operation} in {}: {error}",
+            cwd.display()
+        );
+    }
     result.map_err(|error: Error| error.for_request(operation))
 }
 
@@ -1092,6 +1098,12 @@ impl Served {
         operation: OperationId,
         outcome: Result<Value>,
     ) -> Result<()> {
+        if let Err(error) = &outcome {
+            eprintln!(
+                "step=dispatch native workspace request {operation} at {}: {error}",
+                status.path().display()
+            );
+        }
         let std::collections::hash_map::Entry::Occupied(mut tracked) = self.known.entry(operation)
         else {
             return Ok(());

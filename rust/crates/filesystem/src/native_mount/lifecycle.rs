@@ -18,32 +18,67 @@ pub async fn initialize_native_mount_services_async() -> Result<(), NativeMountE
 /// Probes the target's one canonical native namespace mechanism.
 #[must_use]
 pub fn probe_native_mount() -> NativeMountCapabilities {
-    #[cfg(target_os = "linux")]
-    let (kind, reason) = (Some(NativeMountKind::LinuxFuse), linux_fuse_refusal());
-    #[cfg(target_os = "linux")]
-    let available = reason.is_none();
-    #[cfg(target_os = "linux")]
-    let reason = reason.unwrap_or_default();
-    #[cfg(target_os = "macos")]
-    let (kind, available, reason) = (
-        Some(NativeMountKind::MacOsNfs),
-        Path::new("/sbin/mount_nfs").is_file(),
-        "the built-in macOS NFS mount utility is unavailable",
-    );
-    #[cfg(windows)]
-    let (kind, available, reason) = (
-        Some(NativeMountKind::WindowsProjFs),
-        Path::new(&std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
-            .join("System32")
-            .join("ProjectedFSLib.dll")
-            .is_file(),
-        "ProjectedFSLib.dll is unavailable",
-    );
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    let (kind, available, reason) = (None, false, "unsupported target");
-    NativeMountCapabilities {
-        kind,
-        unavailable_reason: (!available).then_some(reason),
+    NativeMountProbe::default().probe()
+}
+
+/// Host filesystem root used to inspect native mount prerequisites. Embedders
+/// may supply the root of the host namespace whose capabilities they admit.
+#[derive(Clone, Debug)]
+pub struct NativeMountProbe {
+    root: PathBuf,
+}
+
+impl Default for NativeMountProbe {
+    fn default() -> Self {
+        #[cfg(windows)]
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        #[cfg(not(windows))]
+        let root = "/";
+        Self::new(root)
+    }
+}
+
+impl NativeMountProbe {
+    /// Uses `root/dev/fuse` on Linux, `root/sbin/mount_nfs` on macOS, and
+    /// `root/System32/ProjectedFSLib.dll` on Windows.
+    #[must_use]
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// Probes the same prerequisites as [`probe_native_mount`].
+    #[must_use]
+    pub fn probe(&self) -> NativeMountCapabilities {
+        #[cfg(target_os = "linux")]
+        let (kind, reason) = (
+            Some(NativeMountKind::LinuxFuse),
+            linux_fuse_refusal(&self.root),
+        );
+        #[cfg(target_os = "linux")]
+        let available = reason.is_none();
+        #[cfg(target_os = "linux")]
+        let reason = reason.unwrap_or_default();
+        #[cfg(target_os = "macos")]
+        let (kind, available, reason) = (
+            Some(NativeMountKind::MacOsNfs),
+            self.root.join("sbin/mount_nfs").is_file(),
+            "the built-in macOS NFS mount utility is unavailable",
+        );
+        #[cfg(windows)]
+        let (kind, available, reason) = (
+            Some(NativeMountKind::WindowsProjFs),
+            self.root
+                .join("System32")
+                .join("ProjectedFSLib.dll")
+                .is_file(),
+            "ProjectedFSLib.dll is unavailable",
+        );
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        let (kind, available, reason) = (None, false, "unsupported target");
+        NativeMountCapabilities {
+            kind,
+            unavailable_reason: (!available).then_some(reason),
+        }
     }
 }
 
@@ -55,13 +90,13 @@ pub fn probe_native_mount() -> NativeMountCapabilities {
 /// unreadable status leaves those facts unknown, never refused. The mount
 /// that follows still reports its own exact failure.
 #[cfg(target_os = "linux")]
-fn linux_fuse_refusal() -> Option<&'static str> {
+fn linux_fuse_refusal(root: &Path) -> Option<&'static str> {
     use std::os::unix::{ffi::OsStrExt as _, fs::MetadataExt as _};
     const SYS_ADMIN: u64 = 1 << 21;
     if std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/fuse")
+        .open(root.join("dev/fuse"))
         .is_err()
     {
         return Some(
@@ -70,15 +105,15 @@ fn linux_fuse_refusal() -> Option<&'static str> {
     }
     // Docker's stock `AppArmor` profile denies every mount, whatever the
     // capabilities; another profile's rules are its own and stay unjudged.
-    let confinement = std::fs::read_to_string("/proc/self/attr/apparmor/current")
-        .or_else(|_| std::fs::read_to_string("/proc/self/attr/current"))
+    let confinement = std::fs::read_to_string(root.join("proc/self/attr/apparmor/current"))
+        .or_else(|_| std::fs::read_to_string(root.join("proc/self/attr/current")))
         .unwrap_or_default();
     if confinement.trim() == "docker-default (enforce)" {
         return Some(
             "no mount authority: the docker-default AppArmor profile denies mount; recovery:              docker run --security-opt apparmor=unconfined (or a profile allowing fuse mounts)",
         );
     }
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let status = std::fs::read_to_string(root.join("proc/self/status")).ok()?;
     let field = |name: &str| {
         status
             .lines()
@@ -101,7 +136,7 @@ fn linux_fuse_refusal() -> Option<&'static str> {
     }
     let helper = super::fuse::FUSE_HELPERS.iter().find_map(|helper| {
         let path = std::path::Path::new(std::ffi::OsStr::from_bytes(helper.to_bytes()));
-        std::fs::metadata(path)
+        std::fs::metadata(root.join(path.strip_prefix("/").ok()?))
             .ok()
             .filter(std::fs::Metadata::is_file)
     });

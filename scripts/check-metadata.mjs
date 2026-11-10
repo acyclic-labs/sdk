@@ -3,13 +3,10 @@ import { readFile } from "node:fs/promises";
 import "./check-compatibility-digests.mjs";
 import { packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
 import { sha256File } from "./file-digest.mjs";
+import { retiredRuntimeFindings } from "./retired-runtime.mjs";
 
 const root = new URL("..", import.meta.url);
 const load = async path => JSON.parse(await readFile(new URL(path, root), "utf8"));
-// Retirement applies to declared SDK surfaces; repository tooling may use Python.
-const retiredRuntime = /python|pytest|boto3|botocore|\.py(?:i|c|o)?\b/i;
-if (!["fixture.py", "fixture.pyi", "fixture.pyc", "fixture.pyo", "python fixture"].every(value => retiredRuntime.test(value))
-  || retiredRuntime.test("node fixture.mjs")) throw new Error("step=retired-runtime inventory controls; recovery command: node scripts/check-metadata.mjs");
 const ajv = new Ajv2020({ allErrors: true });
 ajv.compile(await load("rust/crates/conformance/schemas/runner-report.schema.json"));
 new Ajv2020({ allErrors: true }).compile(
@@ -24,12 +21,12 @@ const documents = [
   ["release/cargo-equivalent-archives.json", "compatibility/schemas/release-cargo-equivalent-archives.schema.json"],
   ["release/npm-packages.json", "compatibility/schemas/release-npm-packages.schema.json"],
 ];
+const checkedDocuments = new Map();
 for (const [documentPath, schemaPath] of documents) {
   const validate = ajv.compile(await load(schemaPath));
   const document = await load(documentPath);
   if (!validate(document)) throw new Error(`${documentPath}: ${ajv.errorsText(validate.errors)}`);
-  if (["languages/package-names.json", "release/npm-packages.json", "release/cargo-crates.json"].includes(documentPath)
-    && retiredRuntime.test(JSON.stringify(document))) throw new Error(`step=retired-runtime SDK inventory ${documentPath}; recovery command: restore supported package declarations in ${documentPath}, then node scripts/check-metadata.mjs`);
+  checkedDocuments.set(documentPath, document);
   if (documentPath === ".github/qualification-lanes.json") {
     const lanes = /** @type {Record<string, unknown>[]} */ (document);
     const { cache_size, ...withoutLimit } = lanes[0];
@@ -40,6 +37,8 @@ for (const [documentPath, schemaPath] of documents) {
     }
   }
 }
+const retiredFindings = retiredRuntimeFindings(checkedDocuments);
+if (retiredFindings.length) throw new Error(retiredFindings.join("\nerror: "));
 const provenance = await load("provenance/manifest.json");
 for (const item of provenance.imports) if (item.auditResult !== "approved") throw new Error(`unapproved import: ${item.destinationPath}`);
 

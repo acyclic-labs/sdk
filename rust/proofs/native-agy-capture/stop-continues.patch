@@ -1,0 +1,12 @@
+diff --git a/plugin/src/main.rs b/plugin/src/main.rs
+--- a/plugin/src/main.rs
++++ b/plugin/src/main.rs
+@@ -297,7 +297,7 @@ fn native_hook_failure(host: &str, event: &str, error: &str) -> Value {
+         "PreInvocation" => {
+             json!({"terminationBehavior":"terminate","injectSteps":[{"errorMessage":{"userMessage":reason}}]})
+         }
+-        "Stop" => json!({"decision":"stop","reason":reason}),
++        "Stop" => json!({"decision":"continue","reason":reason}),
+         _ => json!({"reason":reason}),
+     }
+ }

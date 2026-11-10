@@ -125,6 +125,19 @@ This checks the in-process format and policy boundary; it does not qualify the
 OS environment handoff, native CLI parsing, credential inheritance, physical
 processes, concurrency or all platforms.
 
+The same target checks AGY's relative inline file-permission resolution through
+the production child argument builder: allow, ask and deny keep their native
+lists; relative read/write targets name the admitted cwd; absolute paths,
+wildcard/home references, provider settings and unrelated fields are preserved.
+The decoded-policy oracle distinguishes malformed JSON and refused relative
+permission paths from admitted settings, preserving the original invalid-input
+type. `parent-permission-refusal` retains the authored `write_file(..)` request.
+Arbitrary external filenames are not opened by the in-memory target. The shared
+launch property covers actual selected settings files and both root and child
+invocations. `mutations/native_launch_relative_permissions.patch` disables
+production relative-path resolution and must fail at `relative permissions
+changed authority or workspace` in this target, or at the shared launch property.
+
 The same target supplies relative and absolute configuration paths and requires
 their inherited targets to remain rooted at the original workspace. It also
 constructs native non-Unicode working directories from arbitrary input bytes
@@ -190,6 +203,7 @@ The retained request seeds and their SHA-256 digests are:
 | `missing-value` | `dfa99913ec3738de2968c58d601846d4efc06a0cdf871c9ded10b536e6dcd6ca` |
 | `empty` | `4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945` |
 | `partial-json` | `795c797dd7cbb280e5d38dd4ce2ddc06d48fb65eed17b365311392c20c6c1f68` |
+| `parent-permission-refusal` | `a71d2f4f024fd0e3c7c0dfffcb3fcfee24b6065e3407a2ed77bb69242004699a` |
 
 Native request presence is checked by the real-file custody control:
 
@@ -217,3 +231,5 @@ independence, malformed-frame/JSON invalidation and refusal custody until the
 original new-turn boundary. Seeds are unchanged copies of the recorded fixtures
 in `../src/local/host_process/fixtures`. Run with
 `cargo fuzz run native_reply --fuzz-dir rust/crates/harness/fuzz-native-journal`.
+
+The retained `mutations/native_launch_current_directory.patch` preserves an otherwise equivalent current-directory component. The original native command control fails EROFS with that spelling; the unchanged fuzzer rejects it before host execution. Parent components are refused in every relative permission target, including paths that would return inside the view after lexical normalization.

@@ -25,6 +25,21 @@ const queryFormats = [...nativeView.matchAll(/refusal\(format_args!\("([^"]*quer
 assert.deepEqual(queryFormats, ["Usage query ended: {error}", "Filesystem query ended: {error}"],
   "retain both native query failure source joins");
 
+// xterm invokes parser observers asynchronously. Return an observer assertion
+// through the original write completion so mutation workers can classify it.
+function checkedFrames(screen, observe) {
+  let failure;
+  const frames = new TerminalFrames(screen, () => {
+    try { observe(); } catch (error) { failure ??= error; }
+  });
+  const write = frames.write.bind(frames);
+  frames.write = async bytes => {
+    await write(bytes);
+    if (failure) throw failure;
+  };
+  return frames;
+}
+
 function admission(visible, text, kind, reason, schedule, assertion) {
   const history = new FailureHistory();
   const wrongKind = kind === "task_failure" ? "query_failure" : "task_failure";
@@ -63,7 +78,7 @@ async function recovery(schedule) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const history = new FailureHistory(), raw = OutputWatch.of("", []);
   let admitted, refusal;
-  const frames = new TerminalFrames(screen, () => {
+  const frames = checkedFrames(screen, () => {
     const { visible, diagnostic } = screenSnapshot(screen, { completeLines: true });
     refusal ??= history.unexpected(diagnostic, admitted ? undefined : interrupted.condition);
     if (!admitted && matches(screen, raw, interrupted.condition, visible, diagnostic)) {
@@ -103,7 +118,7 @@ export async function fuzz(schedule) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const history = new FailureHistory();
   let refusal, refusedScreen, observations = 0;
-  const frames = new TerminalFrames(screen, () => {
+  const frames = checkedFrames(screen, () => {
     assert.ok(frames.ready());
     observations++;
     const visible = screenText(screen), failure = history.unexpected(visible);

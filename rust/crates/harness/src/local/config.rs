@@ -102,6 +102,8 @@ pub struct LocalHarnessConfig {
     pub(crate) environment_platform: crate::native_environment::PlatformPolicy,
     #[cfg(any(test, feature = "native-execution"))]
     pub(super) workspace_mounting: WorkspaceMounting,
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) native_mount_probe: acyclic_fs::NativeMountProbe,
 }
 
 #[cfg(any(
@@ -235,6 +237,8 @@ impl LocalHarnessConfig {
             environment_platform: crate::native_environment::PlatformPolicy::Native,
             #[cfg(any(test, feature = "native-execution"))]
             workspace_mounting: WorkspaceMounting::Native,
+            #[cfg(any(test, feature = "native-execution"))]
+            native_mount_probe: Default::default(),
         }
     }
     /// Selects how task views reach the host filesystem; `Native` by default.
@@ -244,6 +248,16 @@ impl LocalHarnessConfig {
         self.workspace_mounting = mounting;
         self
     }
+    /// Selects the host filesystem root whose native mount prerequisites are
+    /// admitted. Root coordination still uses the existing physical checkout;
+    /// only projected views and native shell tools require these capabilities.
+    #[cfg(any(test, feature = "native-execution"))]
+    #[must_use]
+    pub fn native_mount_probe(mut self, probe: acyclic_fs::NativeMountProbe) -> Self {
+        self.native_mount_probe = probe;
+        self
+    }
+
     /// Selects instruction scope relative to the workspace boundary.
     /// Empty selects root instructions; traversal outside the workspace is rejected.
     #[must_use]

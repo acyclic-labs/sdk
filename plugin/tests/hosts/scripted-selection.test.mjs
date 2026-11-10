@@ -9,13 +9,15 @@ test('framing admits only its CLI artifact without Codex or GraphCoder',()=>{
  assert.equal(scenario.selection,'managed:bounded-framing');
  assert.equal(scenario.args.length,2);
  assert.equal(scenario.args[1],process.execPath);
- assert.ok(scenario.args[0].endsWith('mcp-framing.py'));
+ assert.ok(scenario.args[0].endsWith('mcp-framing.mjs'));
 });
 
-test('scale does not require Codex; managed sandbox scenarios refuse its absence',()=>{
+test('scripted native adapters need no installed host; sandbox scenarios refuse its absence',()=>{
  const artifacts={artifacts:{acyclic:{path:process.execPath},graphcoder:{path:process.execPath}}};
  for(const host of ['codex','claude-code','pi'])
   assert.equal(scriptedScenario(artifacts,undefined,'scale:'+host).args.at(-1),host);
+ for(const host of ['codex','claude-code'])
+  assert.equal(scriptedScenario(artifacts,undefined,'concurrent:'+host).args.at(-1),host);
  for(const name of ['lifecycle','recursive','resume'])
   assert.throws(()=>scriptedScenario(artifacts,undefined,'managed:'+name),
    /step=admit managed sandbox executable; recovery:/);

@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness/src/local/host_process/children/answer.rs b/rust/crates/harness/src/local/host_process/children/answer.rs
+--- a/rust/crates/harness/src/local/host_process/children/answer.rs
++++ b/rust/crates/harness/src/local/host_process/children/answer.rs
+@@ -116,8 +116,8 @@ impl NativeAnswer {
+                 }
+             }
+             Some("step_finish")
+-                if event.pointer("/part/reason").and_then(Value::as_str) == Some("stop")
++                if event.pointer("/part/reason").and_then(Value::as_str) == Some("completed")
+                     && self.outcome.is_none()
+                     && !self.omitted =>
+             {
+                 self.outcome = self.pending.take().map(Outcome::Succeeded);

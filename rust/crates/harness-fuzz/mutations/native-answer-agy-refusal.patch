@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness/src/local/host_process/children/answer.rs b/rust/crates/harness/src/local/host_process/children/answer.rs
+--- a/rust/crates/harness/src/local/host_process/children/answer.rs
++++ b/rust/crates/harness/src/local/host_process/children/answer.rs
+@@ -37,10 +37,7 @@ impl NativeAnswer {
+             self.pending = None;
+             let result = &event["result"];
+             self.outcome = match result.get("status").and_then(Value::as_str) {
+-                Some("SUCCESS")
+-                    if result.get("finished_reason").is_none()
+-                        && result.get("error").is_none() =>
+-                {
++                Some(_) => {
+                     result
+                         .get("response")
+                         .and_then(Value::as_str)

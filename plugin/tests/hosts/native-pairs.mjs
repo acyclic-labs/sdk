@@ -194,11 +194,10 @@ export async function nativeWorkflow({host,binary,plugin,output,source,artifactS
    prompt_sha256:createHash('sha256').update(prompt).digest('hex')},null,2)+'\n'),run:async()=>{
    await installedHost({host,processes:scope,fixture,packageStage,
     capture:record=>captures.push(record),tools,nativePermissions:['Bash'],prompt,answer});
-   // The same owner holds the view until this run settles. Read its proof
-   // before withOwnedCase retires that owner and detaches the private volume.
+   // Read the original query proofs while this run still owns its workspace.
    for(const [file,bytes] of [['parent.txt','PARENT'],['child.txt','CHILD'],['resumed.txt','RESUMED']])
     assert.equal(await readFile(join(workspace,file),'utf8'),bytes,'original native effect missing: '+file);
-   const session=async phase=>JSON.parse(await readFile(join(workspace,'.volumes/home',`native-${phase}-session.json`),'utf8'));
+   const session=async phase=>JSON.parse(await readFile(join(workspace,'.acyclic-sdk',`native-${phase}-session.json`),'utf8'));
    assertNativeResume(await session('initial'),await session('resumed'));
   }});
   return outcome;

@@ -1,5 +1,43 @@
 # Native host pairs
 
+Concurrent MCP session programs reuse the native process fixture and its captured
+completion records, without a live model:
+
+```sh
+node plugin/tests/hosts/concurrent-spawn.mjs ACYCLIC GRAPHCODER claude-code 0eaa80
+```
+
+Omit the final hex argument to run the retained zero-, one- and two-send
+programs. The zero-send program parks a wait before admitting the peer spawn.
+
+`native-calls.mjs`'s `fuzz(bytes, tool)` directs the real initialized MCP client. Bytes
+choose the interleaving of two child call chains, up to two queued sends, spawn
+replay, duplicate waits and forward/reverse reply reads. All calls are submitted
+before responses are consumed. Each native turn holds its physical view until
+its peer reaches that turn's socket; there are no clock waits. The oracle checks
+original task/prompt identities, replayed view identity, turn counts and shared
+wait results, then rejects mutations of those actual replies (four for the
+retained replay input). The fixture emits the original call and
+reply trace in its result and the scripted qualification receipt. Its selector exposes
+`concurrent:codex` and `concurrent:claude-code`; other hosts require captured
+completion records before qualification.
+
+After joining the children, a producer-loss control observes a live child held
+on its original socket, submits its wait, then kills and joins the MCP server.
+The unanswered call must end in the shared client's original pipe/process-close
+error. Under the [native process ownership contract](../../README.md), the MCP
+server is the spawning owner: its death contains the held child. The original
+socket must close without release; a fresh MCP connection fences the orphaned
+turn and observes its cancelled result, never a successful answer.
+These are process and socket events, without a deadline; the original error
+is retained with the trace.
+
+The managed lifecycle, recursive and resume scenarios require the Linux native
+Codex sandbox leg. Each first proves a workspace write succeeds and a sibling
+write is denied. Their temporary root is under `/var/tmp`, outside the default
+`/tmp` and fixture `TMPDIR` write grants. Unavailable sandbox enforcement fails
+the capability assertion; none of these scenarios is silently skipped.
+
 The native pair collector uses the same pinned package, shipping plugin install,
 workspace owner and native permission path as the installed acceptance cases.
 It observes the original process writer, transcript sink, exit and close.

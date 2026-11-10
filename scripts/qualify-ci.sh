@@ -419,6 +419,7 @@ case "$lane" in
     node scripts/check-test-support.mjs
     node --experimental-vm-modules scripts/static-ci.mjs
     node scripts/check-compatibility-digests.mjs
+    node --test scripts/check-metadata.test.mjs
     bash scripts/test-qualify-ci-preflight.sh
     node --test scripts/wasm-size-report.test.mjs
     bash scripts/test-ensure-rust-target.sh
