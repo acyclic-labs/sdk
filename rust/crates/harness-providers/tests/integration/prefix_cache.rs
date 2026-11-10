@@ -604,15 +604,7 @@ async fn run(
         .resolve_spawn_name(&root, "kid")
         .await?
         .live()
-        .ok_or_else(|| {
-            let state = transport.state.lock().unwrap_or_else(|p| p.into_inner());
-            format!(
-                "missing kid; last model request: {}",
-                state.2.last().map_or_else(String::new, |sent| {
-                    String::from_utf8_lossy(&sent.body).into_owned()
-                })
-            )
-        })?;
+        .ok_or("missing kid")?;
     // Child homes are fresh. A matching grandchild directive requires an
     // explicit override in its own parent's home as well.
     set_template(child.clone()).await?;
