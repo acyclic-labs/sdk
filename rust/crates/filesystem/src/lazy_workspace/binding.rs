@@ -1,5 +1,16 @@
 use super::*;
 
+pub(super) fn selected_source_reference<D: DemandSource>(
+    source: &D,
+    retained: Option<&SourceReference>,
+    ctx: &mut KernelAccounting<'_>,
+) -> Result<SourceReference, LazyWorkspaceError> {
+    match retained {
+        Some(source) => Ok(source.clone()),
+        None => source.reference(ctx).map_err(Into::into),
+    }
+}
+
 impl<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -170,10 +181,7 @@ impl<
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SourceReference, LazyWorkspaceError> {
-        match &self.retained_source {
-            Some(source) => Ok(source.clone()),
-            None => self.source.reference(ctx).map_err(Into::into),
-        }
+        selected_source_reference(self.source.as_ref(), self.retained_source.as_ref(), ctx)
     }
 
     /// Captures an ordinary complete cut without enumeration.

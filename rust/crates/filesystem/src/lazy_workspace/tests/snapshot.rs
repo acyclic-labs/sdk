@@ -325,4 +325,32 @@ async fn routed_forks_retain_both_layers_after_independent_provider_progress() {
             .as_slice(),
         b"old context"
     );
+    // Publication uses the same retained source selector as reads, including
+    // after reopening the child while both upstream providers have advanced.
+    let child_basis = reopened.snapshot(accounting!()).await.unwrap();
+    let (commit, published) = reopened
+        .write_at_snapshot::<_, _, Box<dyn std::error::Error + Send + Sync>>(
+            child_basis.clone(),
+            std::iter::once((
+                "/ui/authored.txt",
+                Some(acyclic_stream::OwnedBytes::from_static(b"child write")),
+            )),
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            accounting!(),
+            &mut (),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(commit, TransactionCommit::Committed(_)));
+    assert_eq!(published.unwrap().source, child_basis.source);
+    assert_eq!(
+        reopened
+            .read("/ui/authored.txt", 64, accounting!())
+            .await
+            .unwrap()
+            .bytes
+            .as_slice(),
+        b"child write"
+    );
 }

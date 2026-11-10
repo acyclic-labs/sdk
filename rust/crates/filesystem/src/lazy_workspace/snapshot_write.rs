@@ -151,21 +151,24 @@ impl<
         };
         let (context, evidence) = publication_evidence(context, key.operation_id(), permit, ctx)?;
         let source = Arc::clone(&self.source);
+        let retained_source = self.retained_source.clone();
         let before = guard.clone();
         let expected_source = basis.source.clone();
         let commit = 'sdk: {
             if let Some(work) = ctx.native_work() {
                 let mut callback = move |work: &crate::NativeMaterializationWork| {
                     let source = Arc::clone(&source);
+                    let retained_source = retained_source.clone();
                     let mut before = before.clone();
                     let work = work.clone();
                     let expected_source = expected_source.clone();
                     async move {
                         let mut ctx = KernelAccounting::native(&work, work.cancellation());
-                        if source
-                            .reference(&mut ctx)
-                            .map_err(LazyWorkspaceError::from)?
-                            != expected_source
+                        if binding::selected_source_reference(
+                            source.as_ref(),
+                            retained_source.as_ref(),
+                            &mut ctx,
+                        )? != expected_source
                         {
                             return Err(E::from(LazyWorkspaceError::StaleSource));
                         }
@@ -191,16 +194,18 @@ impl<
                     &cancel.clone(),
                     move |budget| {
                         let source = Arc::clone(&source);
+                        let retained_source = retained_source.clone();
                         let mut before = before.clone();
                         let cancel = cancel.clone();
                         let expected_source = expected_source.clone();
                         async move {
                             let mut ctx = KernelAccounting::standalone(budget, &cancel);
                             let result: Result<(), E> = async {
-                                if source
-                                    .reference(&mut ctx)
-                                    .map_err(LazyWorkspaceError::from)?
-                                    != expected_source
+                                if binding::selected_source_reference(
+                                    source.as_ref(),
+                                    retained_source.as_ref(),
+                                    &mut ctx,
+                                )? != expected_source
                                 {
                                     return Err(E::from(LazyWorkspaceError::StaleSource));
                                 }
