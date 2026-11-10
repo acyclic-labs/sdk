@@ -260,6 +260,33 @@ struct TurnBindings<'a> {
 }
 
 impl LocalHarness {
+    /// Bind a committed project using the same adapter for turns and human
+    /// filesystem actions. Only an action needing native access binds a view.
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) async fn project_workspace(
+        &self,
+        workspace: &Arc<super::workspace::LocalWorkspace>,
+        agent: &AgentPath,
+        project: &VolumeRef,
+        scratch: &VolumeRef,
+        scope: &crate::core::Scope,
+        verifier: &crate::core::AuthorityVerifier,
+    ) -> Result<Arc<super::workspace::LocalWorkspace>> {
+        if project == &self.project && scratch == &self.scratch {
+            return Ok(Arc::clone(workspace));
+        }
+        let view = workspace.spawned_project_view(project).await?;
+        let owner = super::workspace::owner::AgentOwner(agent.clone());
+        let authority = crate::filesystem::NativeMountAuthority::admitted(
+            verifier.clone(),
+            scope.copy(&mut None)?,
+        );
+        let (workspace, _) = workspace
+            .bound_task_view(view, project, scratch.clone(), &owner, &authority)
+            .await?;
+        Ok(workspace)
+    }
+
     /// Retained session volumes are the same for model and native-host roots;
     /// each root binds its own private journal separately.
     pub(super) fn session_bindings(&self) -> [VolumeBinding; 3] {
@@ -324,14 +351,15 @@ impl LocalHarness {
             }
             #[cfg(any(test, feature = "native-execution"))]
             if let Some(workspace) = &self.workspace {
-                let view = workspace.spawned_project_view(project).await?;
-                let owner = super::workspace::owner::AgentOwner(agent.path.clone());
-                let mount_authority = crate::filesystem::NativeMountAuthority::admitted(
-                    verifier.clone(),
-                    authority.scope.copy(&mut None)?,
-                );
-                let (workspace, _) = workspace
-                    .bound_task_view(view, project, scratch.clone(), &owner, &mount_authority)
+                let workspace = self
+                    .project_workspace(
+                        workspace,
+                        &agent.path,
+                        project,
+                        scratch,
+                        &authority.scope,
+                        &verifier,
+                    )
                     .await?;
                 let (tools, writer) = workspace
                     .executor(

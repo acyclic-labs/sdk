@@ -28,6 +28,7 @@ pub(super) enum Intent {
     Attach(AgentPath),
     Diff(AgentPath),
     Wait(AgentPath),
+    Merge(AgentPath),
     Parent,
     History(isize),
     Sibling(bool),
@@ -337,7 +338,7 @@ impl Sidebar {
             )));
         }
         rows.push(Line::raw(
-            "Enter attach · d diff · w wait · ←/→ fold · Esc input",
+            "Enter attach · d diff · m merge · w wait · ←/→ fold · Esc input",
         ));
         rows
     }
@@ -485,6 +486,9 @@ impl Sidebar {
         if key.modifiers.is_empty() && !self.search.as_ref().is_some_and(|search| search.editing) {
             match key.code {
                 KeyCode::Char('d') => return selected.map(Intent::Diff).or(Some(Intent::Consumed)),
+                KeyCode::Char('m') => {
+                    return selected.map(Intent::Merge).or(Some(Intent::Consumed));
+                }
                 KeyCode::Char('w') => return selected.map(Intent::Wait).or(Some(Intent::Consumed)),
                 _ => {}
             }

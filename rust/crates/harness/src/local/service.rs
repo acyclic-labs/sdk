@@ -753,9 +753,16 @@ mod tests {
         let checkout = tempfile::tempdir().map_err(storage)?;
         let storage_dir = tempfile::tempdir().map_err(storage)?;
         std::fs::write(checkout.path().join("shared.txt"), b"base\n").map_err(storage)?;
-        let provider = Arc::new(ScriptedModelProvider::new(
-            std::iter::empty::<ScriptedTurn>(),
-        ));
+        let provider = Arc::new(
+            ScriptedModelProvider::new([
+                ScriptedTurn::Text("child ready".into()),
+                ScriptedTurn::Text("grandchild ready".into()),
+            ])
+            .with_context_capacity(crate::context::ModelContextCapacity {
+                context_tokens: 32_768,
+                output_tokens: Some(4096),
+            }),
+        );
         let local = Arc::new(
             super::super::LocalHarness::open(
                 local_harness_config(
@@ -873,6 +880,85 @@ mod tests {
             provider.request_count(),
             0,
             "merging must not dispatch a model"
+        );
+        // A tree-only credential may act on its descendants, and a nested
+        // merge must publish to its direct parent rather than the host checkout.
+        let tree = local.connect().await?;
+        let mut selected = tree.clone();
+        let mut descendants = Vec::new();
+        for name in ["child", "grandchild"] {
+            let crate::client::AgentReply::Spawned { agent, .. } = selected
+                .execute(&crate::client::AgentCommand::Spawn {
+                    parent: selected.root().clone(),
+                    id: crate::agent::IntentId::try_from(name).map_err(storage)?,
+                    brief: crate::model::ModelContent::Text("wait for human integration".into()),
+                    role: "worker".into(),
+                })
+                .await?
+            else {
+                return Err(Error::Invalid("missing descendant".into()));
+            };
+            selected = tree.select(agent).await?;
+            Conversation::open(selected.clone())
+                .wait_current_input()
+                .await?;
+            descendants.push(selected.clone());
+        }
+        let state = local
+            .agents()
+            .await?
+            .0
+            .state(selected.root())
+            .await
+            .map_err(storage)?;
+        let project = state
+            .volumes
+            .iter()
+            .find(|binding| binding.name == "project")
+            .ok_or_else(|| Error::Invalid("missing descendant project".into()))?;
+        let reference = workspace_ref(
+            project.volume.provider().clone(),
+            &project.volume.storage_name(&mut None)?,
+        )?;
+        local
+            .files
+            .apply(
+                &reference,
+                None,
+                &[WorkspaceMutation::PutFile {
+                    path: "/nested.txt".into(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"nested\n"),
+                }],
+                &crate::IdempotencyKey::new("nested-edit")?,
+            )
+            .await?;
+        let commit = sessions::merge(&descendants[1], "merge-grandchild").await?;
+        assert!(commit.is_some());
+        assert_eq!(
+            sessions::merge(&descendants[1], "merge-grandchild").await?,
+            commit
+        );
+        assert!(
+            !checkout.path().join("nested.txt").exists(),
+            "a grandchild merge must not target the root checkout"
+        );
+        let parent = Conversation::open(descendants[0].clone());
+        let diff = parent
+            .diff(crate::client::AgentPageRequest::default())
+            .await?;
+        assert!(
+            diff.iter().any(|file| file.path.ends_with("nested.txt")),
+            "the direct parent must own the merged edit"
+        );
+        sessions::merge(&descendants[0], "merge-child").await?;
+        assert_eq!(
+            std::fs::read(checkout.path().join("nested.txt")).map_err(storage)?,
+            b"nested\n"
+        );
+        assert_eq!(
+            provider.request_count(),
+            2,
+            "human filesystem actions must not dispatch a model"
         );
         Ok(())
     }

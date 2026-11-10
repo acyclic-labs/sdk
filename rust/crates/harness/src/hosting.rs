@@ -436,12 +436,12 @@ where
             AgentCommand::Sessions { .. }
                 | AgentCommand::NewSession { .. }
                 | AgentCommand::ForkSession { .. }
-                | AgentCommand::MergeSession { .. }
                 | AgentCommand::SelectSession { .. }
                 | AgentCommand::LatestSession {}
-        ) || command
-            .agent()
-            .is_some_and(|agent| !self.root.contains(agent))
+        ) || matches!(command, AgentCommand::MergeSession { agent, .. } if agent.parent().is_none())
+            || command
+                .agent()
+                .is_some_and(|agent| !self.root.contains(agent))
         {
             self.session_resource()
         } else {
@@ -567,8 +567,8 @@ where
                 Ok(AgentReply::Paused { paused: *paused })
             }
             AgentCommand::MergeSession { agent, id } => {
-                if !self.platform.sessions() || agent.parent().is_some() {
-                    return Err(Error::Record("session merge requires an independent root"));
+                if agent.parent().is_none() && !self.platform.sessions() {
+                    return Err(Error::Record("root merge requires a session directory"));
                 }
                 let identity = crate::contract::canonical_json_bytes(&(by, id, agent))
                     .map_err(|_| Error::Record("merge identity cannot encode"))?;

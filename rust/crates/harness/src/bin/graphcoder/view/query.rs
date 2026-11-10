@@ -9,6 +9,7 @@ pub(super) enum Source {
     History(Option<String>),
     AgentDiff(AgentPath, Option<String>),
     Wait(AgentPath),
+    Merge(AgentPath, String),
 }
 
 impl Source {
@@ -16,6 +17,7 @@ impl Source {
         match self {
             Self::Diff(_) | Self::AgentDiff(..) => "Diff",
             Self::Wait(_) => "Wait",
+            Self::Merge(..) => "Merge",
             Self::History(_) => "History",
         }
     }
@@ -25,6 +27,7 @@ impl Source {
             Self::Diff(_) => Self::Diff(None),
             Self::AgentDiff(agent, _) => Self::AgentDiff(agent.clone(), None),
             Self::Wait(agent) => Self::Wait(agent.clone()),
+            Self::Merge(agent, operation) => Self::Merge(agent.clone(), operation.clone()),
             Self::History(_) => Self::History(None),
         }
     }
@@ -52,6 +55,22 @@ pub(super) async fn load(
         Source::AgentDiff(agent, cursor) => {
             let selected = root.select(agent.clone()).await?;
             diff::query(selected, rows, cursor, Some(agent)).await
+        }
+        Source::Merge(agent, operation) => {
+            let selected = root.select(agent).await?;
+            let commit =
+                acyclic_harness::local::sessions::merge(selected.connection(), &operation).await?;
+            Ok(Panel::new(
+                vec![
+                    Line::raw(match commit {
+                        Some(commit) => format!("Merged · {commit}"),
+                        None => "No changes to merge".into(),
+                    }),
+                    Line::raw("Esc: close"),
+                ],
+                None,
+                false,
+            ))
         }
         Source::Wait(agent) => {
             let selected = root.select(agent).await?;
@@ -110,7 +129,7 @@ mod tests {
             Source::AgentDiff(agent, _) => {
                 Source::AgentDiff(agent.clone(), Some("original-diff-cut".into()))
             }
-            Source::Wait(_) => return Panel::new(vec![], None, false),
+            Source::Wait(_) | Source::Merge(..) => return Panel::new(vec![], None, false),
         };
         Panel::new(vec![Line::raw("original source row")], Some(next), false)
     }

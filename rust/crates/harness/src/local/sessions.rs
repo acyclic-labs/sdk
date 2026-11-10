@@ -271,7 +271,7 @@ pub async fn pause_all(connection: &Connection, paused: bool) -> Result<()> {
     }
 }
 
-/// Integrate the selected root through the ordinary filesystem merge. Retain
+/// Integrate the selected fork through the ordinary filesystem merge. Retain
 /// this operation on uncertainty or while resolving its checkout conflict files.
 pub async fn merge(connection: &Connection, operation: &str) -> Result<Option<String>> {
     let id = IntentId::try_from(operation).map_err(storage)?;

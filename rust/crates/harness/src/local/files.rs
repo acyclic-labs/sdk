@@ -2,9 +2,9 @@ use super::*;
 use crate::filesystem::FilesystemContentVerifier;
 
 impl LocalHarness {
-    /// A directory-authorized integration uses the same native capture,
+    /// An authorized fork integration uses the same native capture,
     /// operation receipt, recovery and conflict files as ordinary `fs merge`.
-    /// This binds the source's lazy cut; it creates no physical task view.
+    /// Source reads bind its lazy cut; native access binds only the destination.
     #[cfg(any(test, feature = "native-execution"))]
     pub(super) async fn merge_session(
         &self,
@@ -19,9 +19,9 @@ impl LocalHarness {
             .agents
             .get()
             .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?;
-        if agent.parent().is_some() || agent == hosted.root() {
+        if agent == hosted.root() {
             return Err(Error::Invalid(
-                "merge selects an independent session fork".into(),
+                "merge selects a session fork or child".into(),
             ));
         }
         let state = hosted.agents().state(agent).await.map_err(storage)?;
@@ -31,21 +31,57 @@ impl LocalHarness {
             .find(|binding| binding.name == "project")
             .ok_or_else(|| Error::Invalid("session has no project binding".into()))?;
         let source = workspace.spawned_project_view(&project.volume).await?;
-        let branch = format!("agents/session-{}", agent.id());
+        let (destination, scope, signed, owner) = if let Some(parent) = agent.parent() {
+            let parent_state = hosted.agents().state(&parent).await.map_err(storage)?;
+            let binding = |name: &str| {
+                parent_state
+                    .volumes
+                    .iter()
+                    .find(|binding| binding.name == name)
+                    .map(|binding| &binding.volume)
+                    .ok_or_else(|| Error::Invalid(format!("parent has no {name} binding")))
+            };
+            let (signed, verifier) = hosted
+                .server()
+                .bound()
+                .volume_scope(&parent)
+                .await
+                .map_err(storage)?;
+            let destination = self
+                .project_workspace(
+                    workspace,
+                    &parent,
+                    binding("project")?,
+                    binding(crate::filesystem::HOME_VOLUME)?,
+                    &signed,
+                    &verifier,
+                )
+                .await?;
+            let scope = crate::runtime::RuntimeScope::new(
+                signed.capabilities().clone(),
+                Default::default(),
+            )?;
+            (destination, scope, signed, parent)
+        } else {
+            let signed = self.signed.copy(&mut None)?;
+            let scope = crate::runtime::RuntimeScope::new(
+                signed.capabilities().clone(),
+                Default::default(),
+            )?;
+            (Arc::clone(workspace), scope, signed, hosted.root().clone())
+        };
+        let workspace = &destination;
+        let branch = format!("agents/{}", agent.id());
         let command = format!("merge {branch}");
         let configuration = super::checkout_tools::capture::configuration(workspace)?;
         let commands = super::workspace::git::Commands {
             workspace,
-            signed: &self.signed,
+            signed: &signed,
             clock: self.clock.as_ref(),
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
         };
-        let owner = super::workspace::owner::AgentOwner(agent.clone());
-        let scope = crate::runtime::RuntimeScope::new(
-            self.signed.capabilities().clone(),
-            Default::default(),
-        )?;
+        let owner = super::workspace::owner::AgentOwner(owner);
         let output = commands
             .invoke(
                 &command,
@@ -59,8 +95,13 @@ impl LocalHarness {
                     }),
                 },
                 async {
+                    let (selected, _) = workspace.selected_view().await?;
                     acyclic_fs::GitCompatRepository::new(
-                        workspace.view().workspace().id(),
+                        selected
+                            .as_ref()
+                            .unwrap_or_else(|| workspace.view())
+                            .workspace()
+                            .id(),
                         workspace.store.clone(),
                     )
                     .register_branch_workspace(branch, source.workspace().id(), None, false)

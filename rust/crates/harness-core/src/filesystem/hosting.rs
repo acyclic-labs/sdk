@@ -652,6 +652,27 @@ where
         Ok((bytes.to_vec(), length))
     }
 
+    /// Authority for a host-owned filesystem command on this agent's bound
+    /// volumes. This retains the endpoint's original admission, including
+    /// read-only and workload attenuation, just like its ordinary turns.
+    pub async fn volume_scope(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<(Scope, AuthorityVerifier), Error> {
+        self.admit_path(agent)?;
+        let state = self.agents.state(agent).await?;
+        let authority = agent_authority(
+            &self.issuer,
+            &self.admission,
+            &state.path,
+            &state.volumes,
+            &[],
+        )
+        .await
+        .map_err(turn)?;
+        Ok((authority.scope, authority.verifier))
+    }
+
     /// Authenticated reader of the selected agent's bound volumes, for shared
     /// file projections such as a session's diff. Enrollment cannot widen its
     /// original admission or read another session's private content.

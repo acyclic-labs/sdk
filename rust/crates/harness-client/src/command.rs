@@ -174,10 +174,11 @@ pub enum AgentCommand {
         /// True to pause, false to resume.
         paused: bool,
     },
-    /// Integrate this session through the platform's ordinary filesystem
-    /// merge. Conflicts remain files in the destination checkout.
+    /// Integrate this fork through the platform's ordinary filesystem merge.
+    /// A child targets its parent; an independent session targets the checkout.
+    /// Conflicts remain files in the destination checkout.
     MergeSession {
-        /// Independent session selected for integration.
+        /// Session or child selected for integration.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Stable merge request identity.
