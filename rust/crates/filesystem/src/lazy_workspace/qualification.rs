@@ -193,7 +193,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-        if state.source != self.binding_source(&state, ctx)? {
+        if state.source != self.binding_source(&state, ctx).await? {
             return Err(LazyWorkspaceError::StaleSource);
         }
         match (operation, state.pending_remove.as_ref()) {

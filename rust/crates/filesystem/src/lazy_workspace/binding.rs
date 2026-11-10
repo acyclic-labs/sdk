@@ -233,7 +233,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or_else(missing)?;
-        let source = self.binding_source(&state, ctx)?;
+        let source = self.binding_source(&state, ctx).await?;
         if state.source == source {
             return Ok(state);
         }
@@ -254,7 +254,7 @@ impl<
     }
 
     /// A root follows its provider; a fork owns its original source cut.
-    pub(super) fn binding_source(
+    pub(super) async fn binding_source(
         &self,
         state: &LazyWorkspaceState,
         ctx: &mut KernelAccounting<'_>,
@@ -286,7 +286,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::NotFound)?;
-        let source = self.binding_source(&state, ctx)?;
+        let source = self.binding_source(&state, ctx).await?;
         if let Some(pending) = &state.pending_remove {
             if state.source != source {
                 return Err(LazyWorkspaceError::StaleSource);
