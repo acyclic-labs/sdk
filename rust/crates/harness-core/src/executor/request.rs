@@ -317,9 +317,28 @@ impl StockExecution<'_> {
         #[cfg(not(feature = "filesystem"))]
         let io = self.io;
         let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
+        // The authenticated prepared request owns its historical live tables.
+        // Comparing those schemas with today's catalog would revoke a saved
+        // result after removal. Fixed declarations must still match exactly.
+        let historical = request.messages.iter().any(|message| {
+            message.content.notice_parts().is_some_and(|(notices, _)| {
+                notices
+                    .iter()
+                    .any(|notice| notice.source == "tools" && notice.kind == "tools.changed")
+            })
+        });
+        let definitions_match = if historical {
+            self.stock
+                .tools
+                .fixed_definitions(self.stock.tool_scope.grants(), io)?
+                .iter()
+                .all(|fixed| request.tools.iter().any(|retained| retained == fixed))
+        } else {
+            request.tools == tools
+        };
         if request.summary != self.summary.is_some()
             || request.model != self.stock.model
-            || (!request.compose_tools && request.tools != tools)
+            || (!request.compose_tools && !definitions_match)
             || request.compose_tools != self.code_composition(&tools)?
             || request.max_output_tokens != self.output_tokens()
             || request.sampling != self.sampling()?
