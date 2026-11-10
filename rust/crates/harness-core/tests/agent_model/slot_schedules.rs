@@ -67,17 +67,28 @@ async fn an_invalid_turn_fails_before_publishing_status_or_effects() -> Result {
             inbox: 0,
             checkpoint: Vec::new(),
         });
-        state.phase = if child_settled {
-            let child = state.open_children.first().ok_or("missing child")?.id();
+        let wake = if child_settled {
+            let mut children = state.open_children.iter();
+            let child = children.next().ok_or("missing awaited child")?.clone();
+            let settled = children.next().ok_or("missing settled child")?.id();
             state.open_children.clear();
-            state.child_settlements.push((child, 0));
-            Phase::Waiting {
+            state.open_children.insert(child.clone());
+            state.child_settlements.push((settled, 0));
+            state.awaiting.insert(child.clone());
+            state.need = 1;
+            state.phase = Phase::Waiting {
                 deadline_unix_ms: None,
                 input: false,
+            };
+            Wake::Inbox {
+                sequence: 1,
+                record: InboxRecord::ChildSettled(ChildSettled { child }),
             }
         } else {
-            Phase::Running
+            state.phase = Phase::Running;
+            Wake::Alarm
         };
+        let cursor = if child_settled { 2 } else { 1 };
         let driver = script(vec![TurnStep {
             checkpoint: Some(vec![]),
             reserved_children: 0,
@@ -97,8 +108,8 @@ async fn an_invalid_turn_fails_before_publishing_status_or_effects() -> Result {
             &driver,
             &root,
             Some(state),
-            (1, 0),
-            Wake::Alarm,
+            (cursor, 0),
+            wake,
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
@@ -120,7 +131,7 @@ async fn an_invalid_turn_fails_before_publishing_status_or_effects() -> Result {
         status.encode()?;
         lower(
             &result,
-            1,
+            cursor,
             acyclic_stream::IdempotencyKey::new("invalid-turn")?,
         )?;
     }
