@@ -539,11 +539,19 @@ impl ExecutionGrant {
         requested: &Self,
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<()> {
-        if !self.policy.contains(
-            &requested.policy.workspace,
-            requested.access == ExecutionAccess::WorkspaceWrite,
-            meter,
-        )? {
+        // Preserve the primary workspace proof before any index work. Apart
+        // from avoiding a lookup for the common case, this keeps admission's
+        // original operation and examination ordering on its funding ledger.
+        if !self
+            .policy
+            .workspace
+            .contains(&requested.policy.workspace, meter)?
+            && !self.policy.contains(
+                &requested.policy.workspace,
+                requested.access == ExecutionAccess::WorkspaceWrite,
+                meter,
+            )?
+        {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
         for (index, writable) in [
