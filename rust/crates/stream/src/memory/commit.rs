@@ -101,13 +101,9 @@ fn bind_histories(
         if let History::Batch { records, .. } =
             Arc::get_mut(&mut history.history).ok_or(StreamError::Unavailable)?
         {
-            for record in &mut Arc::get_mut(records)
-                .ok_or(StreamError::Unavailable)?
-                .records
-            {
-                record.commit_id = commit_id;
-                record.committed_at_micros = time;
-            }
+            let records = Arc::get_mut(records).ok_or(StreamError::Unavailable)?;
+            records.commit_id = commit_id;
+            records.committed_at_micros = time;
         }
     }
     Ok(())
@@ -222,11 +218,10 @@ impl MemoryStream {
         let mut ranges = original.map_or_else(HistoryRanges::default, |path| path.ranges.clone());
         if let Some(History::Batch { records, .. }) =
             original.and_then(|path| path.history.as_deref())
-            && let Some(first) = records.records.first()
-            && before.is_none_or(|before| first.sequence < before)
+            && before.is_none_or(|before| records.start < before)
         {
             ranges = ranges.insert(
-                first.sequence.to_be_bytes(),
+                records.start.to_be_bytes(),
                 Arc::clone(records),
                 &mut HistoryIndexWork(self),
             )?;
@@ -265,27 +260,38 @@ impl MemoryStream {
             });
         }
         let (mut records, mut claim) = self.vector(source.len())?;
+        let first = source.first().ok_or(StreamError::Unavailable)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let copied = (source.len() * std::mem::size_of::<crate::AppendRecord>()
+            + std::mem::size_of::<(u64, StreamPath, CommitId, u64)>()) as u64;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
-            work.record(work.meter.admit_examination(
-                source.len() as u64,
-                (source.len() * std::mem::size_of::<Record>()) as u64,
-            ))?;
+            work.record(work.meter.admit_examination(source.len() as u64, copied))?;
         }
-        records.extend(source.iter().cloned());
+        let (start, origin, commit_id, committed_at_micros) = (
+            first.sequence,
+            first.origin.clone(),
+            first.commit_id,
+            first.committed_at_micros,
+        );
+        records.extend(source.iter().map(|record| crate::AppendRecord {
+            value: record.value.clone(),
+            headers: record.headers.clone(),
+        }));
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
-            work.record(work.meter.record_examination(
-                source.len() as u64,
-                (source.len() * std::mem::size_of::<Record>()) as u64,
-            ))?;
+            work.record(work.meter.record_examination(source.len() as u64, copied))?;
         }
         self.absorb(
             &mut claim,
             self.allocate(std::mem::size_of::<RecordBatch>())?,
         )?;
         let records = Arc::new(RecordBatch {
-            records,
+            values: records,
+            start,
+            origin,
+            commit_id,
+            committed_at_micros,
             _allocation: claim,
         });
         let keys = parent
@@ -688,9 +694,9 @@ impl MemoryStream {
             .and_then(|window| {
                 window
                     .records
-                    .records
+                    .values
                     .get(window.start)
-                    .map(|record| record.commit_id)
+                    .map(|_| window.records.commit_id)
             })
             .ok_or(StreamError::Unavailable)
     }
@@ -764,12 +770,9 @@ fn bind_acceptance(
                 None
             }
         });
-        for record in &mut Arc::get_mut(records)
+        Arc::get_mut(records)
             .ok_or(StreamError::Unavailable)?
-            .records
-        {
-            record.committed_at_micros = time;
-        }
+            .committed_at_micros = time;
         for (slot, window) in data.prefix.iter_mut().zip(windows) {
             if let Some((start, end)) = window {
                 *slot = Some(HistoryWindow {
@@ -962,15 +965,13 @@ fn fact_data(
             }
         }
     }
-    if let History::Batch { records, .. } = history.as_ref()
-        && let Some(first) = records.records.first()
-    {
+    if let History::Batch { records, .. } = history.as_ref() {
         for (slot, sequence) in prefix.iter_mut().zip([0_u64, 1]) {
             if slot.is_none()
                 && let Some(index) = sequence
-                    .checked_sub(first.sequence)
+                    .checked_sub(records.start)
                     .and_then(|index| usize::try_from(index).ok())
-                    .filter(|&index| index < records.records.len())
+                    .filter(|&index| index < records.values.len())
             {
                 *slot = Some(HistoryWindow {
                     records: Arc::clone(records),

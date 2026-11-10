@@ -1,6 +1,26 @@
+// An append has one contiguous sequence and one origin, commit and time.
+// Retain that metadata once; materialize public records only when read.
 struct RecordBatch {
-    records: Vec<Record>,
+    values: Vec<crate::AppendRecord>,
+    start: u64,
+    origin: StreamPath,
+    commit_id: CommitId,
+    committed_at_micros: u64,
     _allocation: Allocation,
+}
+
+impl RecordBatch {
+    fn record(&self, index: usize) -> Option<Record> {
+        let value = self.values.get(index)?;
+        Some(Record {
+            sequence: self.start.checked_add(index as u64)?,
+            value: value.value.clone(),
+            headers: value.headers.clone(),
+            origin: self.origin.clone(),
+            commit_id: self.commit_id,
+            committed_at_micros: self.committed_at_micros,
+        })
+    }
 }
 
 type HistoryRanges = acyclic_collections::PersistentIndex<Arc<RecordBatch>, Allocation>;
@@ -92,9 +112,7 @@ impl History {
     #[cfg(all(test, not(target_arch = "wasm32")))]
     fn boundary(&self) -> u64 {
         match self {
-            Self::Batch { records, .. } => {
-                records.records.first().map_or(0, |record| record.sequence)
-            }
+            Self::Batch { records, .. } => records.start,
             Self::Prefix { tail, .. } => *tail,
         }
     }
@@ -155,9 +173,7 @@ impl<'a> Iterator for HistoryWalk<'a> {
                 parent, records, ..
             } => {
                 self.next = parent.as_ref();
-                if let Some(first) = records.records.first() {
-                    self.ceiling = self.ceiling.min(first.sequence);
-                }
+                self.ceiling = self.ceiling.min(records.start);
             }
             History::Prefix { source, tail, .. } => {
                 self.next = source.as_ref();
@@ -169,9 +185,12 @@ impl<'a> Iterator for HistoryWalk<'a> {
 }
 
 fn history_window(records: Arc<RecordBatch>, ceiling: u64, from: u64) -> Option<HistoryWindow> {
-    let first = records.records.first()?.sequence;
+    if records.values.is_empty() {
+        return None;
+    }
+    let first = records.start;
     let batch_end = records
-        .records
+        .values
         .len()
         .try_into()
         .ok()
@@ -240,10 +259,7 @@ impl PinnedHistory {
         HISTORY_VISITS.with(|count| count.set(count.get() + 1));
         let ceiling = self.tail.min(after.saturating_add(u64::from(budget)));
         if let Some(History::Batch { records, .. }) = self.root.as_deref()
-            && records
-                .records
-                .first()
-                .is_some_and(|first| first.sequence <= after)
+            && records.start <= after
         {
             return Ok(history_window(Arc::clone(records), ceiling, after));
         }

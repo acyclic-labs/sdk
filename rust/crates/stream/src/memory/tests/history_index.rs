@@ -257,8 +257,9 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
             });
             let window = window.unwrap();
             assert_eq!(window.end - window.start, 1);
-            assert_eq!(window.records.records[window.start].value, values[2]);
-            assert_eq!(window.records.records[window.start].origin, original);
+            let record = window.records.record(window.start).unwrap();
+            assert_eq!(record.value, values[2]);
+            assert_eq!(record.origin, original);
             assert_eq!(allocation.count_total, 0);
             assert!(items <= 1 + 65 * 58);
             costs.push(items);
@@ -371,7 +372,7 @@ async fn pinned_ranges_preserve_cold_bounds_cuts_and_original_admission() -> Tes
         unreachable!()
     };
     assert_eq!(Arc::strong_count(records), 1);
-    assert_eq!(records.records[0].committed_at_micros, 42);
+    assert_eq!(records.record(0).unwrap().committed_at_micros, 42);
     drop(state);
     let restored = MemoryStream::default();
     restored

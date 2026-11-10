@@ -107,7 +107,7 @@ impl HistoryCursor {
         let mut pinned = PinnedHistory::new(path, path.tail);
         let previous = crate::pages::PageSource::next_page(&mut pinned, from, 1).await?;
         if previous
-            .and_then(|window| window.records.records.get(window.start).cloned())
+            .and_then(|window| window.records.record(window.start))
             .is_none_or(|record| record.sequence != from || record.commit_id != anchor)
         {
             return Err(StreamError::PrefixNotRetained);
@@ -219,7 +219,7 @@ impl FiniteRead {
         &mut self,
         mut examine: impl FnMut(u64) -> Result<(), E>,
         invalid: impl Fn() -> E,
-    ) -> Result<Option<&Record>, E> {
+    ) -> Result<Option<&crate::AppendRecord>, E> {
         // A range cursor's `from` bounds only its current key; the index
         // seek decides whether anything later remains.
         if self.remaining == 0 || (self.key.is_none() && self.next >= self.history.tail) {
@@ -256,23 +256,23 @@ impl FiniteRead {
                 },
                 examine,
             )?;
-            if self
-                .window
-                .as_ref()
-                .and_then(|window| window.records.records.get(window.start))
-                .is_none_or(|record| record.sequence != after)
-            {
+            if self.window.as_ref().is_none_or(|window| {
+                window.records.start.checked_add(window.start as u64) != Some(after)
+            }) {
                 return Err(invalid());
             }
         }
-        let record = self
-            .window
-            .as_ref()
-            .and_then(|window| window.records.records.get(window.start))
-            .ok_or_else(&invalid)?;
-        if self.key.is_none() && record.sequence != self.next {
+        let window = self.window.as_ref().ok_or_else(&invalid)?;
+        if self.key.is_none()
+            && window.records.start.checked_add(window.start as u64) != Some(self.next)
+        {
             return Err(invalid());
         }
+        let record = window
+            .records
+            .values
+            .get(window.start)
+            .ok_or_else(&invalid)?;
         Ok(Some(record))
     }
 
