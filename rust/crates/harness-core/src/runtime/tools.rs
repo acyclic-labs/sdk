@@ -1051,7 +1051,10 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(
         std::borrow::Cow<'a, str>,
-        Option<(crate::conversation::FilePathSelection, crate::conversation::FileSelectionCustody)>,
+        Option<(
+            crate::conversation::FilePathSelection,
+            crate::conversation::FileSelectionCustody,
+        )>,
     )> {
         use crate::layers::{WHY_SUFFIX, equals_from_prefix, layered, off_from_prefix};
         let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
