@@ -300,7 +300,20 @@ impl CaptureBatch<'_> {
             .source_namespace
             .filter(|_| !exists_with_kind && host_kind != FileKind::Directory)
         {
-            let identity = crate::demand::native::file_identity(&metadata);
+            // Linux's metadata-only capture stat omits generation cookies.
+            // One metered identity stat for a new source-backed object buys
+            // the same inode-reuse protection and identity as lazy reads.
+            #[cfg(target_os = "linux")]
+            let identity_metadata = {
+                let observed = self.source_root.stat(&host_path, &mut self.meter.clone())?;
+                ensure_same_host_node(&metadata, &observed)?;
+                observed
+            };
+            #[cfg(target_os = "linux")]
+            let identity_metadata = &identity_metadata;
+            #[cfg(not(target_os = "linux"))]
+            let identity_metadata = &metadata;
+            let identity = crate::demand::native::file_identity(identity_metadata);
             let file_id = crate::demand::source_file_id(
                 &namespace,
                 &identity,
