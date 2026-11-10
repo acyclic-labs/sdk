@@ -149,7 +149,7 @@ async fn authority_append_merge_keeps_soft_first_effects_separate() -> TestResul
         let provider = acyclic_stream::MemoryStream::default();
         let path = StreamPath::new("hard/records")?;
         let optional = StreamPath::new("soft/records")?;
-        acyclic_stream::StreamProvider::append(
+        acyclic_stream::StreamProviderExt::append(
             &provider,
             acyclic_stream::AppendRequest {
                 path: path.clone(),
@@ -219,7 +219,7 @@ async fn authority_append_merge_keeps_soft_first_effects_separate() -> TestResul
         assert_eq!(rows.len(), 2);
         assert!(view.staged(&optional, &mut work)?.is_none());
         let acyclic_stream::CommitOutcome::Committed(receipt) =
-            acyclic_stream::StreamProvider::commit(&provider, prefix).await?
+            acyclic_stream::StreamProviderExt::commit(&provider, prefix).await?
         else {
             return Err("hard append was refused".into());
         };
