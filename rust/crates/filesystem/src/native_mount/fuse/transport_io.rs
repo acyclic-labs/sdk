@@ -13,10 +13,10 @@ pub(super) enum Ready {
     Closed,
 }
 
-/// One packet worker's lifetime interest in the shared input queue. Device
-/// readiness selects exclusive recipients; stop must still wake every worker.
-/// The registration borrows no device ownership, so retirement can close the
-/// sole physical descriptor after waking and joining its current borrowers.
+/// The transport's shared readiness queue. Its receive lock covers both the
+/// readiness observation and the packet read; readiness alone conveys no claim.
+/// The registration owns no device descriptor. Stop wakes the current wait,
+/// then closes this queue after its receive borrower releases the lock.
 pub(super) struct PacketReader(OwnedFd);
 
 impl PacketReader {
@@ -29,7 +29,7 @@ impl PacketReader {
         // SAFETY: this is the fresh descriptor returned above.
         let reader = Self(unsafe { OwnedFd::from_raw_fd(queue) });
         reader.register(wake.as_fd(), libc::EPOLLIN, 0)?;
-        reader.register(device, libc::EPOLLIN | libc::EPOLLEXCLUSIVE, 1)?;
+        reader.register(device, libc::EPOLLIN, 1)?;
         Ok(reader)
     }
 
