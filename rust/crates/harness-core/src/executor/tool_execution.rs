@@ -169,11 +169,7 @@ impl<'io> StockExecution<'io> {
                             "tool call identity is bound to another invocation",
                         ));
                     }
-                    #[cfg(all(
-                        feature = "hooks",
-                        feature = "filesystem",
-                        not(target_arch = "wasm32")
-                    ))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     {
                         let output = self
                             .tool_hook(
@@ -199,11 +195,7 @@ impl<'io> StockExecution<'io> {
                         }
                         self.append_hook_context(_hook_context, output)?;
                     }
-                    #[cfg(not(all(
-                        feature = "hooks",
-                        feature = "filesystem",
-                        not(target_arch = "wasm32")
-                    )))]
+                    #[cfg(target_arch = "wasm32")]
                     if original.0.invocation != invocation {
                         return Err(stock_boundary(
                             self.io,
