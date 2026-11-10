@@ -4,7 +4,7 @@ use acyclic_harness::{
     OperationId,
     client_files::{ClientFileChange, ClientFiles},
     command_request::{CommandFileRoot, CommandFileSnapshot, layout_view, view_changes},
-    conversation::FileRef,
+    conversation::FileDescriptor,
     tui::config::{ConfigFile, ConfigView, Scope},
 };
 use serde_json::Value;
@@ -15,7 +15,9 @@ pub(super) struct Session {
     pub config: ConfigView,
     pub catalog: CommandCatalog,
     pub prices: Arc<acyclic_harness::executor::ModelPrices>,
-    price_source: Option<FileRef>,
+    // Reads retain their authenticated generation in snapshot. Repricing
+    // depends on the verified contents, not unrelated files at that cut.
+    price_source: Option<FileDescriptor>,
     open_view: Option<String>,
 }
 
@@ -60,7 +62,7 @@ impl Session {
 
     pub fn project(&mut self) -> Result<(), Failure> {
         let source = self.snapshot.files.get(PRICES).and_then(Option::as_ref);
-        if source.map(|file| &file.file) != self.price_source.as_ref() {
+        if source.map(|file| file.file.descriptor()) != self.price_source.as_ref() {
             let prices = match source {
                 Some(file) => {
                     acyclic_harness::executor::ModelPrices::from_jsonl(file.text.as_bytes())?
@@ -68,7 +70,7 @@ impl Session {
                 None => Default::default(),
             };
             self.prices = Arc::new(prices);
-            self.price_source = source.map(|file| file.file.clone());
+            self.price_source = source.map(|file| file.file.descriptor().clone());
         }
         self.catalog = match self.snapshot.files.get(COMMANDS).and_then(Option::as_ref) {
             Some(file) => {
