@@ -12,6 +12,101 @@ const SECOND: &str = concat!(
     "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":13,\"output_tokens\":1}}}\n\n",
 );
 
+#[tokio::test]
+async fn prepared_bodies_keep_the_credential_snapshot_that_selected_native_reasoning() -> Result<()>
+{
+    use acyclic_harness_core::model::{ReasoningBlock, ReasoningKind, ReasoningOutcome};
+
+    struct Captured {
+        inner: Arc<Script>,
+        requests: Mutex<Vec<(BTreeMap<String, String>, Bytes)>>,
+    }
+    impl HttpTransport for Captured {
+        fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
+            self.inner.delay(wait)
+        }
+        fn now(&self) -> std::time::Duration {
+            self.inner.now()
+        }
+        fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((request.headers.clone(), request.body.clone()));
+            self.inner.send(request)
+        }
+    }
+
+    let generation = Arc::new(AtomicUsize::new(0));
+    let source = generation.clone();
+    let mut credentials = Credentials::default();
+    credentials.source = Some(Arc::new(move |provider, origin| {
+        Ok(
+            (provider == "openai" && origin == crate::credentials::Source::Environment)
+                .then(|| format!("fixture-{}", source.load(Ordering::SeqCst))),
+        )
+    }));
+    let (_, inner) = provider(Adapter::Responses, 200);
+    let transport = Arc::new(Captured {
+        inner,
+        requests: Mutex::new(Vec::new()),
+    });
+    let registry = Registry::with_transport(credentials, transport.clone());
+    let provider = Arc::new(registry.resolve("openai/gpt-5")?);
+    let (request, _) = request(&provider)?;
+    let mut request = request.request().clone();
+    request.messages.push(ModelMessage {
+        role: ModelRole::Assistant,
+        content: ModelContent::Part(ModelContentPart::Reasoning {
+            block: ReasoningBlock {
+                kind: ReasoningKind::Encrypted,
+                text: None,
+                origin: provider.reasoning_origin(Some("fixture-1"), None),
+                continuity: br#"{"type":"reasoning","id":"rs_prepared","encrypted_content":"scoped-prepared==","summary":[]}"#.to_vec(),
+                outcome: ReasoningOutcome::PreservedOpaque,
+            },
+        }),
+    });
+    let request = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+    generation.store(1, Ordering::SeqCst);
+    Credentials::changed();
+    let prepared =
+        Arc::new(crate::prepared::PreparedInput::new(provider.clone(), request.clone()).await?);
+    generation.store(2, Ordering::SeqCst);
+    Credentials::changed();
+    prepared.count().await?;
+    generation.store(3, Ordering::SeqCst);
+    Credentials::changed();
+    let dispatch = ModelDispatch {
+        request_digest: request.request_digest(),
+        ..parser_dispatch()
+    };
+    crate::prepared::PreparedInput::generate(prepared, dispatch)
+        .try_collect::<Vec<_>>()
+        .await?;
+    provider
+        .generate(&request, dispatch)
+        .try_collect::<Vec<_>>()
+        .await?;
+    let requests = transport.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    for (headers, body) in &requests[..2] {
+        assert_eq!(headers["authorization"], "Bearer fixture-1");
+        assert!(
+            std::str::from_utf8(body)
+                .unwrap()
+                .contains("scoped-prepared==")
+        );
+    }
+    assert_eq!(requests[2].0["authorization"], "Bearer fixture-3");
+    assert!(
+        !std::str::from_utf8(&requests[2].1)
+            .unwrap()
+            .contains("scoped-prepared==")
+    );
+    Ok(())
+}
+
 struct Responses {
     sent: AtomicUsize,
 }
