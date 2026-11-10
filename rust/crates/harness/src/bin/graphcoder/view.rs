@@ -1112,7 +1112,8 @@ async fn run_current(
                 for event in navigation.into_iter().map(Err).chain(batch.into_iter().map(Ok)) {
                     let intent = match &event {
                         Err(agent) => Some(tree::Intent::Attach(agent.clone())),
-                        Ok(event) => sidebar.event(event, &input.keymap, ui.tree.unwrap_or(tree_shown), areas.tree),
+                        Ok(event) if overlay.is_none() && queries.source().is_none() => sidebar.event(event, &input.keymap, ui.tree.unwrap_or(tree_shown), areas.tree),
+                        Ok(_) => None,
                     };
                     if let Some(intent) = intent {
                         let attach = match intent {

@@ -58,6 +58,14 @@
               "path": ".volumes/private/ui/age",
               "content": "2m"
             }
+          },
+          {
+            "id": "child-project",
+            "name": "write",
+            "arguments": {
+              "path": "tree.txt",
+              "content": "TREE_PROJECT_EDIT\n"
+            }
           }
         ]
       },
@@ -219,6 +227,108 @@
             "contains": [
               "TREE_ROOT_DONE",
               "Pine · M · $1 · 2m"
+            ]
+          },
+          "send": "\u0014"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE"
+            ],
+            "absent": [
+              "Pine · M · $1 · 2m"
+            ]
+          },
+          "send": "\u0014"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ]
+          },
+          "send": "d"
+        },
+        {
+          "when": {
+            "contains": [
+              "Diff",
+              "tree.txt",
+              "TREE_PROJECT_EDIT"
+            ]
+          },
+          "send": "\u001b"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ],
+            "absent": [
+              "Diff"
+            ]
+          },
+          "send": "w"
+        },
+        {
+          "when": {
+            "contains": [
+              "Captured inputs settled"
+            ]
+          },
+          "send": "\u001b"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ],
+            "absent": [
+              "Captured inputs settled"
+            ]
+          },
+          "send": "m"
+        },
+        {
+          "when": {
+            "contains": [
+              "Merged ·"
+            ]
+          },
+          "send": "\u001b"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ],
+            "absent": [
+              "Merged ·"
+            ]
+          },
+          "send": "x"
+        },
+        {
+          "when": {
+            "contains": [
+              "Discarded · agent archived without merging"
+            ]
+          },
+          "send": "\u001b"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE",
+              "Pine · M · $1 · 2m"
+            ],
+            "absent": [
+              "Discarded ·"
             ]
           },
           "send": "\u0004"
