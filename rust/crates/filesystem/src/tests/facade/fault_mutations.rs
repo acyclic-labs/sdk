@@ -58,6 +58,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     let large = path("fault-large")?;
     let large_id = through_every_object_cut!(checkout.create(
         crate::AuthoredMutation::CreateFile {
+            file_id: None,
             path: large.clone(),
             bytes: (bytes::Bytes::from(vec![b'x'; 4_096])).into(),
             metadata: crate::kernel::FileMetadata::default()
@@ -69,6 +70,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     let inline = path("fault-inline")?;
     let inline_id = through_every_object_cut!(checkout.create(
         crate::AuthoredMutation::CreateFile {
+            file_id: None,
             path: inline.clone(),
             bytes: (bytes::Bytes::from_static(b"inline")).into(),
             metadata: crate::kernel::FileMetadata::default()
@@ -88,6 +90,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     let authored = path("fault-authored-large")?;
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFile {
+            file_id: None,
             path: authored.clone(),
             bytes: OwnedBytes::from(vec![b'a'; 4_096]),
             metadata: FileMetadata::default(),
@@ -105,6 +108,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     ));
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateSymbolicLink {
+            file_id: None,
             path: path("fault-authored-link")?,
             target: OwnedBytes::from_static(b"fault-authored-large"),
             metadata: FileMetadata::default(),

@@ -18,6 +18,8 @@ pub enum AuthoredMutation {
         bytes: acyclic_stream::OwnedBytes,
         /// Exact cross-profile metadata.
         metadata: FileMetadata,
+        /// Optional stable source identity; the engine rejects an existing ID.
+        file_id: Option<FileId>,
     },
     /// Creates one regular file from already staged authenticated content.
     CreateFileFromContent {
@@ -45,6 +47,8 @@ pub enum AuthoredMutation {
         target: acyclic_stream::OwnedBytes,
         /// Exact cross-profile metadata.
         metadata: FileMetadata,
+        /// Optional stable source identity; the engine rejects an existing ID.
+        file_id: Option<FileId>,
     },
     /// Creates one payload-free FIFO, socket, or mount boundary.
     CreateEmptySpecial {
@@ -54,6 +58,8 @@ pub enum AuthoredMutation {
         kind: FileKind,
         /// Exact cross-profile metadata.
         metadata: FileMetadata,
+        /// Optional stable source identity; the engine rejects an existing ID.
+        file_id: Option<FileId>,
     },
     /// Creates one POSIX character or block device.
     CreateDevice {
@@ -67,6 +73,8 @@ pub enum AuthoredMutation {
         minor: u32,
         /// Exact cross-profile metadata.
         metadata: FileMetadata,
+        /// Optional stable source identity; the engine rejects an existing ID.
+        file_id: Option<FileId>,
     },
     /// Creates one opaque Windows reparse point.
     CreateReparsePoint {
@@ -76,6 +84,8 @@ pub enum AuthoredMutation {
         payload: acyclic_stream::OwnedBytes,
         /// Exact cross-profile metadata.
         metadata: FileMetadata,
+        /// Optional stable source identity; the engine rejects an existing ID.
+        file_id: Option<FileId>,
     },
     /// Removes one namespace binding.
     Remove {

@@ -508,6 +508,7 @@ where
     ) -> Result<MountWriteFacts, MountSourceError> {
         invoke(&self.runtime, work, || {
             self.create(path, work, |path| AuthoredMutation::CreateFile {
+                file_id: None,
                 path,
                 metadata,
                 bytes: acyclic_stream::OwnedBytes::new(),
@@ -538,6 +539,7 @@ where
     ) -> Result<MountWriteFacts, MountSourceError> {
         invoke(&self.runtime, work, || {
             self.create(path, work, |path| AuthoredMutation::CreateSymbolicLink {
+                file_id: None,
                 path,
                 metadata,
                 target: target.bytes,
@@ -567,6 +569,7 @@ where
         invoke(&self.runtime, work, || {
             self.create(path, work, |path| match device {
                 Some((major, minor)) => AuthoredMutation::CreateDevice {
+                    file_id: None,
                     path,
                     kind,
                     major,
@@ -574,6 +577,7 @@ where
                     metadata,
                 },
                 None => AuthoredMutation::CreateEmptySpecial {
+                    file_id: None,
                     path,
                     kind,
                     metadata,

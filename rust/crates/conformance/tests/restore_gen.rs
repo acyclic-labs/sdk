@@ -60,6 +60,7 @@ fn restore_gen_preserves_storage_identity_and_refuses_invalid_references_before_
         checkout
             .create(
                 AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: NamespacePath::new(
                         vec![LogicalName::new(
                             NameEncoding::Utf8,

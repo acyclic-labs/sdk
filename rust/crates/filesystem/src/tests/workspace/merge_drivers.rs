@@ -1334,6 +1334,7 @@ async fn merge_directory_opaque_bindings() -> Result<(), Box<dyn Error>> {
                 .checkout
                 .create(
                     crate::AuthoredMutation::CreateFile {
+                        file_id: None,
                         path: path.clone(),
                         bytes: Bytes::copy_from_slice(content.as_bytes()).into(),
                         metadata: FileMetadata::default(),

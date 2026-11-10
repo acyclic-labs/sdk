@@ -16,6 +16,7 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     let destination = path("destination-path")?;
     let source_id = (checkout.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: source.clone(),
             bytes: OwnedBytes::from(vec![b's'; 128]),
             metadata: FileMetadata::default(),
@@ -27,6 +28,7 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     .value;
     (checkout.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: destination.clone(),
             bytes: OwnedBytes::from(vec![b'd'; 128]),
             metadata: FileMetadata::default(),

@@ -276,6 +276,7 @@ mod tests {
             .checkout
             .apply_authored_transaction(
                 vec![crate::AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: crate::kernel::NamespacePath::new(
                         vec![crate::kernel::LogicalName::new(
                             crate::kernel::NameEncoding::Utf8,

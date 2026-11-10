@@ -329,6 +329,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     checkout
         .create(
             crate::AuthoredMutation::CreateFile {
+                file_id: None,
                 path: file.clone(),
                 bytes: (bytes::Bytes::from_static(b"retained")).into(),
                 metadata: crate::kernel::FileMetadata::default(),
@@ -353,6 +354,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     checkout
         .create(
             crate::AuthoredMutation::CreateFile {
+                file_id: None,
                 path: pending.clone(),
                 bytes: (bytes::Bytes::from(vec![b'p'; 256 * 1_024])).into(),
                 metadata: crate::kernel::FileMetadata::default(),
@@ -529,6 +531,7 @@ async fn local_commit_flushes(files: u8) -> Result<(usize, usize), Box<dyn std::
                 checkout
                     .create(
                         crate::AuthoredMutation::CreateFile {
+                            file_id: None,
                             path: path(&format!("f{file}.txt"))?,
                             bytes: bytes::Bytes::from(vec![file; 4096]).into(),
                             metadata: crate::kernel::FileMetadata::default(),

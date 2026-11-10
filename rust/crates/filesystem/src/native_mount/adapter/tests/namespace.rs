@@ -106,6 +106,7 @@ fn changes_record_their_requesters_origin() -> Result<(), Box<dyn std::error::Er
         let queued = native_test_path("queued");
         source.runtime.wait(|| {
             source.create(&queued, &work, |path| AuthoredMutation::CreateFile {
+                file_id: None,
                 path,
                 metadata: metadata(),
                 bytes: acyclic_stream::OwnedBytes::new(),
@@ -483,6 +484,7 @@ fn an_unrecorded_checkout_change_invalidates_every_lookup() -> Result<(), Box<dy
         apply_authored(
             &mut checkout.checkout,
             &AuthoredMutation::CreateFile {
+                file_id: None,
                 path: namespace,
                 metadata: metadata(),
                 bytes: OwnedBytes::new(),

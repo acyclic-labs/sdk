@@ -33,6 +33,7 @@ pub(crate) async fn folded_checkout(
     let mut mutations = Vec::new();
     for name in names {
         mutations.push(AuthoredMutation::CreateFile {
+            file_id: None,
             path: path(&name)?,
             bytes: acyclic_stream::OwnedBytes::new(),
             metadata: FileMetadata::default(),
