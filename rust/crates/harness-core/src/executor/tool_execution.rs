@@ -133,12 +133,50 @@ impl<'io> StockExecution<'io> {
                         .find(|tool| tool.name == invocation.name)
                 })
                 .ok_or(Error::Indeterminate(operation_id))?;
-            Some(
-                self.stock
-                    .tools
-                    .recover(definition, self.io)?
-                    .ok_or(Error::Indeterminate(operation_id))?,
-            )
+            match self.stock.tools.recover(definition, self.io)? {
+                Some(tool) => Some(tool),
+                None if matches!(recorded, RecordedCall::Completed { .. }) => {
+                    // Retained results belong to the journal, even after their
+                    // source is uninstalled. Only an unresolved effect needs
+                    // a live handle to its original producer.
+                    let original = original
+                        .as_ref()
+                        .ok_or(Error::Indeterminate(operation_id))?;
+                    if original.0.invocation.call_id != invocation.call_id
+                        || original.0.invocation.name != invocation.name
+                        || original.0.invocation.operation_id != invocation.operation_id
+                        || &original.0.metadata != metadata
+                    {
+                        return Err(stock_boundary(
+                            self.io,
+                            Conflict,
+                            "tool call identity is bound to another invocation",
+                        ));
+                    }
+                    let content = completed_tool_projection(
+                        journal,
+                        &records,
+                        step,
+                        crate::tool::RecordedInvocation {
+                            invocation: &original.0.invocation,
+                            metadata: &original.0.metadata,
+                            target: None,
+                            filesystem: None,
+                        },
+                        &retained
+                            .request
+                            .as_ref()
+                            .ok_or(Error::Indeterminate(operation_id))?
+                            .request()
+                            .tools,
+                        self.stock.limits,
+                        self.io,
+                    )
+                    .await?;
+                    return self.push_tool_result(&invocation, content, None, prior_messages);
+                }
+                None => return Err(Error::Indeterminate(operation_id)),
+            }
         } else {
             self.stock.tools.refresh().await?;
             self.stock.tools.resolve(&invocation.name, self.io)?
