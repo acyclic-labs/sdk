@@ -8,6 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     prost.bytes([".acyclic.stream.v1"]);
     let grpc = std::env::var_os("CARGO_FEATURE_GRPC").is_some();
     compiler.compile(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
         prost,
         acyclic_proto_build::services(grpc)
             .build_transport(std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32"))
