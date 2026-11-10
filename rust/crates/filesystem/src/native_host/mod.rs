@@ -85,10 +85,10 @@ mod unix_path;
 pub(crate) use unix_path::*;
 mod open;
 pub(crate) use open::*;
-pub use open::{file_transfer, read_regular_file};
 #[cfg(all(not(loom), any(test, feature = "fuzzing")))]
 #[doc(hidden)]
 pub use open::{check_native_root_name_prefix, check_prepared_ascii_leaf};
+pub use open::{file_transfer, read_regular_file};
 mod mutation;
 pub(crate) use mutation::*;
 mod leaf;
