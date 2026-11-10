@@ -24,9 +24,10 @@ http.workspace = true
 schemars = "=1.2.3"
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "net", "io-util"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "io-util"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.48.0", default-features = false, features = ["net", "io-util"] }
 reqwest = { workspace = true }
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http1"] }
 hyper-util = { workspace = true }
