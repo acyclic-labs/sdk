@@ -43,10 +43,10 @@ async fn finite_reads_admit_before_revision_waits_and_keep_the_original_producer
                 ..valid.clone()
             },
             ReadRequest {
-                key: Some(ReadKeySeek {
-                    key: vec![0; crate::MAX_RECORD_KEY_BYTES + 1].into(),
-                    before: 2,
-                }),
+                key: Some(ReadKeySeek::exact(
+                    vec![0_u8; crate::MAX_RECORD_KEY_BYTES + 1],
+                    2,
+                )),
                 ..valid.clone()
             },
         ] {

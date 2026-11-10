@@ -592,9 +592,16 @@ where
                     .reader
                     .read(file, file.descriptor().byte_length(), None, None)?
                     .await?;
-                AgentApprovalPolicy::from_file(&bytes, parent, self.approvers.clone(), limits)?
+                AgentApprovalPolicy::from_file(
+                    agent.path.id(),
+                    &bytes,
+                    parent,
+                    self.approvers.clone(),
+                    limits,
+                )?
             }
             None => AgentApprovalPolicy::new(
+                agent.path.id(),
                 self.policy.clone(),
                 parent,
                 self.approvers.clone(),
@@ -612,12 +619,12 @@ where
         agent: &AgentState,
         id: &str,
         responder: crate::approvals::ApprovalResponder<'_>,
-        approved: bool,
+        verdict: crate::interaction::ApprovalVerdict,
         reason: Option<String>,
     ) -> Result<()> {
         let (_, bindings, files) = self.approval_journal(agent).await?;
         let (policy, _) = self.approvals(agent, &bindings.content).await?;
-        crate::approvals::decide(&*files, &policy, id, responder, approved, reason).await
+        crate::approvals::decide(&*files, &policy, id, responder, verdict, reason).await
     }
 
     /// Decides approval `request` of `agent` as `responder`, then wakes the
@@ -633,7 +640,7 @@ where
         agent: &AgentPath,
         request: &crate::agent::IntentId,
         responder: crate::approvals::ApprovalResponder<'_>,
-        approved: bool,
+        verdict: crate::interaction::ApprovalVerdict,
         reason: Option<String>,
     ) -> std::result::Result<crate::agent::Delivered, crate::agent::Error> {
         use crate::agent::{Approval, Error as AgentError, InboxRecord, Sender};
@@ -652,7 +659,7 @@ where
             },
             _ => return Err(AgentError::Record("external approval role is required")),
         };
-        self.decide(&state, request.as_str(), responder, approved, reason)
+        self.decide(&state, request.as_str(), responder, verdict, reason)
             .await
             .map_err(|error| AgentError::Turn(Box::new(error)))?;
         let wake = InboxRecord::Approval(Approval {

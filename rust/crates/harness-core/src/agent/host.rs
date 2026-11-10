@@ -48,6 +48,8 @@ pub struct InputProgress {
     pub settled: bool,
     /// Archive closed the producer. Consuming an input never closes it.
     pub closed: bool,
+    /// Direct open children in that same checkpoint. No child tree is read.
+    pub open_children: u64,
     /// Wait for a change after this same observation.
     pub follow: acyclic_stream::FollowRequest,
 }
@@ -292,7 +294,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .get(INBOX)
             .filter(|subscription| subscription.path == inbox)
             .ok_or(Error::Record("agent inbox subscription differs"))?;
-        let (settled, closed) = if let Some(checkpoint) = state.checkpoint() {
+        let (settled, closed, open_children) = if let Some(checkpoint) = state.checkpoint() {
             let observed = super::checkpoint_state(checkpoint)?;
             if &observed.path != agent || observed.parent != agent.parent() {
                 return Err(Error::Record("agent state binding differs"));
@@ -302,15 +304,17 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             (
                 observed.closed || input < observed.settled_before(subscription.cursor),
                 observed.closed,
+                observed.open_children.len() as u64,
             )
         } else if subscription.cursor > input {
             return Err(Error::Record("consumed input has no agent checkpoint"));
         } else {
-            (false, false)
+            (false, false, 0)
         };
         Ok(InputProgress {
             settled,
             closed,
+            open_children,
             follow: snapshot.follow_request(),
         })
     }
@@ -576,8 +580,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         let inbox = to.inbox()?;
         let actor = self.actor(to)?;
         request
-            .mutations
-            .push(self.runtime.store().activation(&actor).mutation);
+            .effects
+            .push(self.runtime.store().activation(&actor));
         match submit(&*self.provider, request).await? {
             Submitted::Committed(receipt) => {
                 let append = receipt

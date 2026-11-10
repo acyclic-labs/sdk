@@ -50,6 +50,8 @@ pub(crate) async fn count(
     ceiling: u64,
     work: NativeWork<'_>,
 ) -> Result<(ModelTokenCount, NativeCustody)> {
+    let current = provider.current_credentials()?;
+    let provider = &current;
     if request.request().model != provider.model {
         return Err(boundary(
             work,

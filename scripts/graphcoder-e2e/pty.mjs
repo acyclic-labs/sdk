@@ -27,7 +27,7 @@ const IDLE = "\u25cb GraphCoder";
 // The needles a PTY input watches in its raw output.
 export function rawNeedles(actions) {
   return [OVERFLOW, SHOW_CURSOR, HIDE_CURSOR,
-    ...actions.flatMap(action => [...(action.when?.raw ?? []), ...(action.assert?.raw ?? [])])];
+    ...actions.flatMap(action => [...(action.when?.raw ?? []), ...(action.assert?.raw ?? []), ...(action.reject?.raw ?? [])])];
 }
 
 // `raw` is the OutputWatch over the executable's raw terminal output.
@@ -73,6 +73,11 @@ export async function pty(processes, binary, fixture, input, capture) {
           throw error;
         }
         if (!action || settled || !frames.available()) return;
+        if (action.reject && matches(screen, raw, action.reject, visible, diagnostic)) {
+          const error = new Error(`step=await terminal action ${index}: rejected terminal state before the required observation\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+          error.code = "terminal_action_rejected";
+          throw error;
+        }
         const unavailable = command && `${command} is not available in this view`;
         if (unavailable && visible.includes(unavailable)
             && !(action.when.contains ?? []).some(text => text && unavailable.includes(text))) {

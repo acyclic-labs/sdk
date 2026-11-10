@@ -266,8 +266,7 @@ fn check_root_composition(
         *first = Some(next);
         return Ok(());
     };
-    invalid.conditions.extend(next.conditions);
-    invalid.mutations.extend(next.mutations);
+    invalid.effects.extend(next.effects);
     if acyclic_stream::request::validate_commit(&mut invalid)
         != Err(acyclic_stream::StreamError::InvalidArgument)
     {

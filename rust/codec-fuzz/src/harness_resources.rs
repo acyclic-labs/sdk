@@ -791,11 +791,13 @@ fn envelope() -> &'static Record {
             provider
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![owner.parts().0.clone()],
-                    mutations: vec![CommitMutation::Append {
-                        path: path.clone(),
-                        records: vec![AppendRecord::from(owner.parts().1.clone())],
-                    }],
+                    effects: vec![acyclic_stream::CommitEffect::hard(
+                        vec![owner.parts().0.clone()],
+                        vec![CommitMutation::Append {
+                            path: path.clone(),
+                            records: vec![AppendRecord::from(owner.parts().1.clone())],
+                        }],
+                    )],
                     idempotency_key: IdempotencyKey::unique(),
                 })
                 .await

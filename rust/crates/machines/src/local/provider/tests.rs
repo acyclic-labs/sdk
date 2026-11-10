@@ -1,7 +1,7 @@
 use super::*;
 use crate::local::provider_tests::{enrollment, options};
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
+    AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest,
     StreamProviderExt as _,
 };
 use futures::FutureExt;
@@ -364,18 +364,20 @@ async fn failed_terminal_publication_preserves_pending_admission()
                 idempotency_key: acyclic_stream::IdempotencyKey::new(
                     machine.to_string().into_bytes()
                 )?,
-                conditions: vec![CommitCondition::Head {
-                    path: path.clone(),
-                    expected: head.tail,
-                    commit_id: record.commit_id
-                }],
-                mutations: vec![CommitMutation::Append {
-                    path: path.clone(),
-                    records: vec![AppendRecord {
-                        value: record.value,
-                        headers: record.headers
+                effects: vec![CommitEffect::hard(
+                    vec![CommitCondition::Head {
+                        path: path.clone(),
+                        expected: head.tail,
+                        commit_id: record.commit_id
+                    }],
+                    vec![CommitMutation::Append {
+                        path: path.clone(),
+                        records: vec![AppendRecord {
+                            value: record.value,
+                            headers: record.headers
+                        }]
                     }]
-                }],
+                )],
             })
             .await?,
         CommitOutcome::Committed(_)

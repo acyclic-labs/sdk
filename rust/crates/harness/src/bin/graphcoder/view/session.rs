@@ -4,6 +4,7 @@ use acyclic_harness::{
     OperationId,
     client_files::{ClientFileChange, ClientFiles},
     command_request::{CommandFileRoot, CommandFileSnapshot, layout_view, view_changes},
+    conversation::FileDescriptor,
     tui::config::{ConfigFile, ConfigView, Scope},
 };
 use serde_json::Value;
@@ -13,10 +14,15 @@ pub(super) struct Session {
     pub snapshot: ClientFiles,
     pub config: ConfigView,
     pub catalog: CommandCatalog,
+    pub prices: Arc<acyclic_harness::executor::ModelPrices>,
+    // Reads retain their authenticated generation in snapshot. Repricing
+    // depends on the verified contents, not unrelated files at that cut.
+    price_source: Option<FileDescriptor>,
     open_view: Option<String>,
 }
 
 const COMMANDS: &str = "commands/commands.json";
+const PRICES: &str = "prices.jsonl";
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,7 +32,7 @@ struct CommandFile {
 }
 
 fn paths() -> Vec<String> {
-    ["layout.json", COMMANDS]
+    ["layout.json", COMMANDS, PRICES]
         .into_iter()
         .map(str::to_owned)
         .chain(
@@ -46,6 +52,8 @@ impl Session {
             snapshot,
             config: ConfigView::default(),
             catalog: CommandCatalog::builtins()?,
+            prices: Arc::default(),
+            price_source: None,
             open_view: None,
         };
         session.project()?;
@@ -53,6 +61,17 @@ impl Session {
     }
 
     pub fn project(&mut self) -> Result<(), Failure> {
+        let source = self.snapshot.files.get(PRICES).and_then(Option::as_ref);
+        if source.map(|file| file.file.descriptor()) != self.price_source.as_ref() {
+            let prices = match source {
+                Some(file) => {
+                    acyclic_harness::executor::ModelPrices::from_jsonl(file.text.as_bytes())?
+                }
+                None => Default::default(),
+            };
+            self.prices = Arc::new(prices);
+            self.price_source = source.map(|file| file.file.descriptor().clone());
+        }
         self.catalog = match self.snapshot.files.get(COMMANDS).and_then(Option::as_ref) {
             Some(file) => {
                 let document: CommandFile = serde_json::from_str(&file.text)?;
@@ -103,6 +122,34 @@ impl Session {
         self.open_view.as_deref()
     }
 
+    /// Retain an explicitly selected original price file in this session's
+    /// existing conditional publication, so reopen keeps the same revision.
+    pub async fn prices(
+        &mut self,
+        conversation: &Conversation,
+        text: String,
+    ) -> Result<(), Failure> {
+        let expected = self.snapshot.files.get(PRICES).and_then(Option::as_ref);
+        if expected.is_some_and(|file| file.text == text) {
+            return Ok(());
+        }
+        conversation
+            .publish_client_files(
+                conversation.client_session(),
+                OperationId::new(),
+                vec![ClientFileChange {
+                    path: PRICES.into(),
+                    expected: expected.map(|file| file.file.clone()),
+                    text,
+                }],
+            )
+            .await?;
+        self.snapshot = conversation
+            .client_files(conversation.client_session(), paths(), None)
+            .await?;
+        self.project()
+    }
+
     pub async fn select(
         &mut self,
         conversation: &Conversation,
@@ -142,10 +189,12 @@ impl Session {
             .publish_client_files(conversation.client_session(), operation, changes)
             .await?;
         // The next conditional edit needs the committed descriptor, including
-        // another command in this input batch. Reopen one consistent query cut
-        // rather than manufacturing a FileRef or retaining optimistic state.
-        *self = Self::open(conversation).await?;
-        Ok(())
+        // another command in this input batch. Read one consistent query cut
+        // while retaining projections of unchanged original file contents.
+        self.snapshot = conversation
+            .client_files(conversation.client_session(), paths(), None)
+            .await?;
+        self.project()
     }
 }
 
@@ -261,6 +310,41 @@ mod tests {
                 query: CommandQuery::Diff
             })
         ));
+        let price_text = serde_json::json!({
+            "version":1,"revision":"selected-1","provider":"scripted","model":"test",
+            "effective_at":1,"currency":"USD","input_nano_units_per_million":1000000,
+            "output_nano_units_per_million":2000000,"cached":{"kind":"included"},
+            "cache_write":{"kind":"included"},"reasoning":{"kind":"included"}
+        })
+        .to_string();
+        let (price_snapshot, ()) = futures::try_join!(
+            follow(Arc::clone(&conversation), ui.snapshot.generation.clone())
+                .map_err(Failure::from),
+            ui.prices(&conversation, price_text.clone()),
+        )?;
+        assert_eq!(
+            price_snapshot
+                .files
+                .get(PRICES)
+                .and_then(Option::as_ref)
+                .map(|file| file.text.as_str()),
+            Some(price_text.as_str())
+        );
+        let reopened = Session::open(&conversation).await?;
+        assert_eq!(reopened.prices.currency(), Some("USD"));
+        assert_eq!(
+            reopened
+                .snapshot
+                .files
+                .get(PRICES)
+                .and_then(Option::as_ref)
+                .map(|file| &file.file),
+            ui.snapshot
+                .files
+                .get(PRICES)
+                .and_then(Option::as_ref)
+                .map(|file| &file.file)
+        );
         // Poll the original live query before publishing through a second call
         // on the same authenticated session. No timing or readiness probe.
         let (changed, ()) = futures::try_join!(
@@ -296,12 +380,49 @@ mod tests {
         }
         // These use the same production command path without yielding to the
         // terminal's background query between selections.
+        let selected_prices = Arc::clone(&ui.prices);
         ui.select(&conversation, Some(&CommandQuery::History))
             .await
             .map_err(|error| {
                 format!("sequential view selection lost its committed source: {error}")
             })?;
+        assert!(
+            Arc::ptr_eq(&selected_prices, &ui.prices),
+            "layout-only cuts must not restart pricing replay"
+        );
+        // Another writer publishes prices while the terminal's follow still
+        // names its earlier cut. A view command observes the new original file
+        // first; the eventual follow must retain that same admitted book.
+        let before_prices = ui.snapshot.generation.clone();
+        let mut replacement: Value = serde_json::from_str(&price_text)?;
+        replacement["revision"] = "selected-2".into();
+        replacement["currency"] = "EUR".into();
+        conversation
+            .publish_client_files(
+                conversation.client_session(),
+                OperationId::new(),
+                vec![ClientFileChange {
+                    path: PRICES.into(),
+                    expected: ui
+                        .snapshot
+                        .files
+                        .get(PRICES)
+                        .and_then(Option::as_ref)
+                        .map(|file| file.file.clone()),
+                    text: replacement.to_string(),
+                }],
+            )
+            .await?;
         ui.select(&conversation, Some(&CommandQuery::Diff)).await?;
+        assert!(!Arc::ptr_eq(&selected_prices, &ui.prices));
+        assert_eq!(ui.prices.currency(), Some("EUR"));
+        let replacement_prices = Arc::clone(&ui.prices);
+        ui.snapshot = follow(Arc::clone(&conversation), before_prices).await?;
+        ui.project()?;
+        assert!(
+            Arc::ptr_eq(&replacement_prices, &ui.prices),
+            "the delayed follow must not readmit the same original price file"
+        );
         assert_eq!(ui.open_view(), Some("diff"));
         let original = ui
             .snapshot

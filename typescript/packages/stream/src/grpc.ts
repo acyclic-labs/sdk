@@ -223,9 +223,9 @@ export class GrpcStreamProvider implements StreamProvider {
     this.#sessions.served(atLeast, response.applied);
     return response.tail;
   }
-  async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> {
+  async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
     const records = values.map(value => value.slice());
-    const authored = options === undefined ? undefined : structuredClone(options);
+    const authored = structuredClone(options);
     const input = await validateAppend(path, records, authored);
     const request = fromBinary(wire.AppendRequestSchema, input);
     const response = await this.#call("append", () => this.#client.append(request));
@@ -233,8 +233,8 @@ export class GrpcStreamProvider implements StreamProvider {
     if (result.ok) this.#sessions.observe(result.revision);
     return result;
   }
-  async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> {
-    const request = { kind: "fork" as const, source, destination, ...(options === undefined ? {} : { options: structuredClone(options) }) };
+  async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
+    const request = { kind: "fork" as const, source, destination, options: structuredClone(options) };
     const input = await validateWireRequest(request);
     const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, input)));
     const receipt = this.#project<ForkReceipt>("fork", toBinary(wire.ForkReceiptSchema, response));

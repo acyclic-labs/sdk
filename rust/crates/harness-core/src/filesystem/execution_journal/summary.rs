@@ -489,6 +489,7 @@ impl PreparationRecord for Observation {
                 "projection_rejected",
                 "publication_rejected",
                 "unavailable",
+                "removed",
                 "invalid_input",
                 "interrupted",
             ];

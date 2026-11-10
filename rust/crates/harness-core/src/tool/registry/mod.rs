@@ -47,6 +47,103 @@ impl ModelSelection {
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     data: Arc<RegistryData>,
+    sources: Vec<Arc<dyn ToolSource>>,
+    source_ceiling: Option<Arc<[String]>>,
+}
+
+/// A shared, event-invalidated tool catalog. Refresh runs before model dispatch;
+/// snapshots retain their executors while an admitted call is in flight.
+pub trait ToolSource: acyclic_stream::ProviderPlatform {
+    /// Refresh only sources invalidated by their watch.
+    fn refresh(&self) -> BoxFuture<'_, Result<()>>;
+    /// The last completely admitted catalog.
+    fn snapshot(&self) -> Result<ToolRegistry>;
+    /// Names previously published by this source and subsequently revoked.
+    fn was_removed(&self, _name: &str) -> Result<bool> {
+        Ok(false)
+    }
+    /// The host's grant for tools supplied by this source.
+    fn capability(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl ToolRegistry {
+    pub(crate) fn restrict_sources(&mut self, allowed: &[String]) {
+        self.source_ceiling = Some(
+            allowed
+                .iter()
+                .filter(|name| self.source_allowed(name))
+                .cloned()
+                .collect(),
+        );
+    }
+
+    fn source_allowed(&self, name: &str) -> bool {
+        self.source_ceiling
+            .as_ref()
+            .is_none_or(|allowed| allowed.iter().any(|allowed| allowed == name))
+    }
+
+    pub(crate) fn source_granted(&self, name: &str, grants: &crate::Capabilities) -> Result<bool> {
+        if !self.source_allowed(name) {
+            return Ok(false);
+        }
+        for source in &self.sources {
+            let snapshot = source.snapshot()?;
+            if (source
+                .capability()
+                .is_some_and(|grant| grants.contains(grant))
+                && snapshot.resolve(name, None)?.is_some())
+                || snapshot.source_granted(name, grants)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    pub(crate) fn was_removed(&self, name: &str) -> Result<bool> {
+        for source in &self.sources {
+            if source.was_removed(name)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    /// Attach one host-owned live source, shared by all registry clones.
+    pub fn with_source(mut self, source: Arc<dyn ToolSource>) -> Self {
+        self.sources.push(source);
+        self
+    }
+
+    pub(crate) fn retain_sources(&mut self, mut keep: impl FnMut(&dyn ToolSource) -> bool) {
+        self.sources.retain(|source| keep(source.as_ref()));
+    }
+
+    pub(crate) async fn refresh(&self) -> Result<()> {
+        for source in &self.sources {
+            source.refresh().await?;
+        }
+        Ok(())
+    }
+
+    /// Resolve the current live selection, retaining its executor through a call.
+    pub fn resolve(
+        &self,
+        name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<Arc<Tool>>> {
+        for source in &self.sources {
+            if let Some(tool) = source.snapshot()?.resolve(name, io)? {
+                return Ok(self.source_allowed(name).then_some(tool));
+            }
+        }
+        Ok(self.get_shared(name, None, io)?.cloned())
+    }
+
+    pub(crate) fn has_sources(&self) -> bool {
+        !self.sources.is_empty()
+    }
 }
 
 #[derive(Clone, Default)]

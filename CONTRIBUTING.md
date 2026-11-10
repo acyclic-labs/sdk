@@ -174,7 +174,9 @@ The `dev` and `test` profiles use LLVM, panic unwinding and line tables for
 backtraces. The independent `acyclic-fs-wire` and `acyclic-plugin-identity` crates
 build at `opt-level = 0`; other crates retain `opt-level = 1` because their
 unoptimized async state machines exceed default thread stacks. SHA-2 and BLAKE3
-retain targeted optimization for executable readiness. `--release` stays a
+retain targeted optimization for executable readiness. Large asynchronous layers
+use funded heap boundaries; `clippy::large_futures` rejects callers that embed a
+large future. `--release` stays a
 fast incremental build for development; the shipped `acyclic` executable comes
 from `node scripts/build-product.mjs`, which uses the `dist` profile (fat LTO,
 one codegen unit, stripped) and writes `target/[<triple>/]dist/acyclic`.

@@ -185,7 +185,7 @@ impl StockExecution<'_> {
         // Summaries retain the selected source, including its existing notices.
         // Only the transient instruction is appended; tools cannot be invoked.
         if compose_tools && self.summary.is_none() {
-            self.code_tools_notice(&mut context, &tools)?;
+            self.tools_notice(&mut context, &tools)?;
         }
         let message_count = context.messages.len();
         let request =
@@ -271,6 +271,8 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn request_tools(&self) -> Result<Vec<crate::tool::ToolDefinition>> {
+        // Native adapters bind after the epoch's canonical selection. Their
+        // declarations and executors are one pair; never replace just a schema.
         stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)
     }
 
@@ -317,7 +319,7 @@ impl StockExecution<'_> {
         let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
         if request.summary != self.summary.is_some()
             || request.model != self.stock.model
-            || request.tools != tools
+            || (!request.compose_tools && request.tools != tools)
             || request.compose_tools != self.code_composition(&tools)?
             || request.max_output_tokens != self.output_tokens()
             || request.sampling != self.sampling()?

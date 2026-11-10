@@ -3,12 +3,12 @@
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::file_table_mutation::FileTableFormat;
 use super::persistent_btree::{Format, Page};
+use super::persistent_io::Source;
 use super::persistent_io::{self, OwnedPage, PageLease};
 use super::persistent_point::{Owned, retire_allocation, split_allocation};
 use super::tree_mutation::TreeFormat;
 use super::{CanonicalDecodeError, DecodeLimits, FileRecord, LogicalName, TreeEntry};
 use crate::FsError;
-use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::performance::{WorkCounters, WorkError};
 use crate::storage::ObjectId;
@@ -47,8 +47,8 @@ fn page_view<F: Format>(page: &OwnedPage<F>) -> &Page<F> {
     }
 }
 
-async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
-    store: &S,
+async fn diff_with_accounting<F: Format>(
+    store: &dyn Source,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
     maximum_changes: u32,
@@ -117,8 +117,8 @@ fn allocation_error(error: FsError) -> FsError {
     }
 }
 
-pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
-    store: &S,
+pub(crate) async fn diff_file_records_with_accounting(
+    store: &dyn Source,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
     maximum_changes: u32,
@@ -126,7 +126,7 @@ pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<crate::FileId, FileRecord>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<S, FileTableFormat>(
+    diff_with_accounting::<FileTableFormat>(
         store,
         before,
         after,
@@ -138,8 +138,8 @@ pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     .await
 }
 
-pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
-    store: &S,
+pub(crate) async fn diff_tree_entries_with_accounting(
+    store: &dyn Source,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
     maximum_changes: u32,
@@ -147,7 +147,7 @@ pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<LogicalName, TreeEntry>, KernelOwnedAllocation), FsError> {
-    diff_with_accounting::<S, TreeFormat>(
+    diff_with_accounting::<TreeFormat>(
         store,
         before,
         after,

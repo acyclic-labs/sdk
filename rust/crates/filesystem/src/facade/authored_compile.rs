@@ -16,7 +16,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             mut bytes,
         } = authored;
         let path_bytes = value.logical_owned_bytes();
-        let result = async {
+        let result = crate::heap_future::in_borrowed_frame!(accounting, |accounting| async {
             accounting.check()?;
             let mutation = match value {
                 AuthoredMutation::Reidentify { path, file_id } => {
@@ -375,8 +375,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 mutation,
             )?;
             Ok(None)
-        }
-        .await;
+        });
         retire_allocation(allocation, bytes, accounting)?;
         result
     }

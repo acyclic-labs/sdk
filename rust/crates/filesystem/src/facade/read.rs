@@ -395,7 +395,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &CancellationToken,
     ) -> Result<FileRangeRead, FsError> {
         let before = readonly_standalone_live(accounting);
-        let result = async {
+        let result = crate::heap_future::in_borrowed_frame!(accounting, |accounting| async {
             let mut read = crate::kernel::read_file_range_with_accounting(
                 &self.volume.fs.inner.objects,
                 FileRangeRequest {
@@ -420,8 +420,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             }
             read.work = accounting.spent();
             Ok(read)
-        }
-        .await;
+        });
         let retained = result.as_ref().map_or(0, |read| read.logical_owned_bytes);
         readonly_cleanup_standalone(accounting, before, retained)?;
         result

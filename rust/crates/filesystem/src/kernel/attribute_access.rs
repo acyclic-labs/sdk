@@ -21,7 +21,7 @@ pub async fn lookup_attributes<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Vec<Option<AttributeEntry>>>, AttributeLookupFailure> {
-    persistent_batch::lookup_async::<S, AttributeFormat>(
+    persistent_batch::lookup_async::<AttributeFormat>(
         store,
         root,
         names,
@@ -89,7 +89,7 @@ pub(crate) async fn lookup_attribute_async_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Option<AttributeEntry>, KernelOwnedAllocation), crate::FsError> {
-    let (value, allocation) = persistent_point::lookup_async_with_accounting::<S, AttributeFormat>(
+    let (value, allocation) = persistent_point::lookup_async_with_accounting::<AttributeFormat>(
         store,
         root,
         name,

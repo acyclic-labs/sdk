@@ -76,6 +76,7 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
 /// The one harness approval owner over `files` under `policy`, for an agent
 /// with no parent.
 fn agent_approvals(
+    volume: &VolumeRef,
     files: &Arc<dyn ApprovalFiles>,
     policy: ApprovalPolicy,
     maximum_file_bytes: u64,
@@ -84,7 +85,16 @@ fn agent_approvals(
         file_bytes: maximum_file_bytes,
         ..Limits::default()
     };
-    let policy = AgentApprovalPolicy::new(policy, None, Default::default(), limits)?;
+    let VolumeOwner::Agent(owner) = volume.owner() else {
+        return Err(Error::Invalid("approval storage has no agent owner".into()));
+    };
+    let policy = AgentApprovalPolicy::new(
+        crate::agent::AgentId::from_bytes(owner.into_bytes()),
+        policy,
+        None,
+        Default::default(),
+        limits,
+    )?;
     Ok(Arc::new(AgentApprovals::new(
         Arc::clone(files),
         Arc::new(policy),
@@ -265,6 +275,7 @@ impl<
                 )?,
             ));
             let approvals = agent_approvals(
+                &volume,
                 &approval_files,
                 ApprovalPolicy::default(),
                 maximum_file_bytes,
@@ -317,7 +328,12 @@ impl<
     /// uses the harness default policy chain. Binds before the journal is
     /// shared, so every approval of this storage sees one policy.
     pub fn with_approval_policy(mut self, policy: ApprovalPolicy) -> Result<Self> {
-        let approvals = agent_approvals(&self.approval_files, policy, self.maximum_file_bytes)?;
+        let approvals = agent_approvals(
+            &self.volume,
+            &self.approval_files,
+            policy,
+            self.maximum_file_bytes,
+        )?;
         let journal = Arc::try_unwrap(self.journal).map_err(|_| {
             Error::Conflict("approval policy must be bound before the journal is shared".into())
         })?;
@@ -333,11 +349,11 @@ impl<
         &self,
         id: InteractionId,
         responder: ApprovalResponder<'_>,
-        approved: bool,
+        verdict: crate::interaction::ApprovalVerdict,
         reason: Option<String>,
     ) -> Result<Option<InteractionOutcome>> {
         self.approvals
-            .decide(id, responder, approved, reason)
+            .decide(id, responder, verdict, reason)
             .await?;
         self.approvals
             .outcome(id, self.journal.as_ref(), None)

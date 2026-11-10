@@ -49,8 +49,8 @@ export class HttpStreamProvider implements StreamProvider {
     return observation;
   }
   async tail(path: string): Promise<Sequence> { return this.#tail(path); }
-  async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); const input = await validateAppend(path, records, authored); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
-  async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); const input = await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
+  async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = structuredClone(options); const input = await validateAppend(path, records, authored); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
+  async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> { const authored = structuredClone(options); const input = await validateWireRequest({ kind: "fork", source, destination, options: authored }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
   read(path: string, options: ReadOptions): Opened {
     return this.#sessions.read(path, options, this.#maximum).through(records => observedIterable(this.#observer, "stream", "read", records));
   }

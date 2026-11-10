@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -132,7 +132,8 @@ async function prepare(test, gitOrigin) {
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
   fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog,
     ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`]),
-    ...(test.variant === "physical" ? ["--workspace-mounting", "physical"] : [])];
+    ...(test.variant === "physical" ? ["--workspace-mounting", "physical"] : []),
+    ...expand(test.extra_args ?? [], fixture)];
   // Tracing owns explicit text storage, including through the native PTY host.
   for (const option of ["diagnostic-records", "diagnostic-record-bytes"]) {
     const value = process.env[`E2E_${option.toUpperCase().replaceAll("-", "_")}`];
@@ -151,6 +152,15 @@ async function execute(test, prepared) {
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
       const inputFixture = { ...fixture, env: { ...fixture.env, ...input.environment } };
+      if (input.select_spawned_agent) {
+        const { record, name } = input.select_spawned_agent;
+        assert.ok(!isAbsolute(record) && !record.split(/[\\/]/).includes(".."), "unsafe spawn record path");
+        const hooks = (await readFile(join(fixture.workspace, record), "utf8")).trim().split("\n").map(JSON.parse);
+        const spawned = hooks.find(hook => hook.hook_event_name === "PostToolUse"
+          && hook.tool_name === "spawn" && hook.tool_input?.name === name);
+        assert.equal(typeof spawned?.tool_response?.agent, "string", "missing original spawn result");
+        inputFixture.args = [...fixture.args, "--agent", spawned.tool_response.agent];
+      }
       if (input.mode === "conversation") {
         await conversation(processes, binary, fixture, { ...input, operation: input.operation ?? operation },
           capture => captures.push(capture));
@@ -168,7 +178,7 @@ async function execute(test, prepared) {
       const op = input.operation ?? operation;
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
       await withFileSource(processes, fixture, input.file_source, async (path, closed) => {
-        const arguments_ = [...fixture.args, ...args, ...(input.extra_args ?? [])]
+        const arguments_ = [...inputFixture.args, ...args, ...(input.extra_args ?? [])]
           .map(argument => argument === "{{file_source}}" ? path : argument);
         const running = await processes.startReported(binary, arguments_, { cwd: input.cwd ?? fixture.workspace, env: inputFixture.env });
         if (input.kill_on) {
@@ -241,6 +251,33 @@ function verify(result, records) {
     for (const [path, expected] of Object.entries(test.assert.jsonl ?? {})) {
       const rows = readFileSync(join(fixture.workspace, path), "utf8").trim().split("\n").map(JSON.parse);
       for (const expectedRow of expected) assert.ok(rows.some(row => subset(row, expectedRow)), `missing JSONL ${JSON.stringify(expectedRow)} in ${path}`);
+    }
+    if (test.assert.usage_rollup) {
+      const expected = test.assert.usage_rollup;
+      const rows = readFileSync(join(fixture.workspace, expected.path), "utf8").trim().split("\n").map(JSON.parse);
+      const agents = new Map();
+      for (const row of rows) {
+        assert.equal(row.version, 2);
+        assert.equal(typeof row.usage.agent_path, "string");
+        const calls = agents.get(row.usage.agent_path) ?? [];
+        calls.push(row); agents.set(row.usage.agent_path, calls);
+      }
+      assert.equal(agents.size, expected.agents);
+      const root = rows[0].usage.agent_path;
+      for (const agent of agents.keys()) assert.ok(agent === root || agent.startsWith(`${root}/children/`));
+      for (const [selection, calls] of [["root", agents.get(root)], ["subtree", rows]]) {
+        const wanted = expected[selection];
+        assert.equal(calls.length, wanted.calls, `${selection} calls`);
+        assert.equal(calls.filter(row => row.usage.completed).length, wanted.completed, `${selection} completed`);
+        const known = calls.filter(row => row.estimated_cost.token_nano_units !== null);
+        const subtotal = known.reduce((sum, row) => sum + row.estimated_cost.token_nano_units, 0);
+        assert.equal(known.length === calls.length ? subtotal : null, wanted.token_nano_units, `${selection} charge`);
+        if (wanted.known_nano_units !== undefined) assert.equal(subtotal, wanted.known_nano_units, `${selection} partial facts`);
+        for (const row of calls) {
+          assert.equal(row.estimated_cost.currency, wanted.currency);
+          assert.equal(row.estimated_cost.price_revision, wanted.price_revision);
+        }
+      }
     }
     return result;
   } catch (error) {

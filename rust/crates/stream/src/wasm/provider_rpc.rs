@@ -221,6 +221,7 @@ impl InjectedStream {
                     .map_err(|_| StreamError::InvalidArgument)?,
             )?
             .key
+            .map(|key| (key, from))
         } else {
             None
         };
@@ -228,84 +229,86 @@ impl InjectedStream {
         Ok(crate::Opened::new(
             snapshot,
             selection,
-            futures::stream::try_unfold((cursor, from), move |(mut cursor, next)| {
-                let (seek, path) = (seek.clone(), path.clone());
-                async move {
-                    let Some(frame) = cursor.next().await? else {
-                        return if read || finite {
-                            Ok(None)
-                        } else {
-                            Err(StreamError::Unavailable)
-                        };
-                    };
-                    if frame.channel_id != 1 || frame.generation != 1 {
-                        return Err(StreamError::InvalidResponse);
-                    }
-                    let (update, after) = match frame.body {
-                        Some(wire::session_frame::Body::Data(data)) => {
-                            let Some(wire::session_data::Item::Record(record)) = data.item else {
-                                return Err(StreamError::InvalidResponse);
+            futures::stream::try_unfold(
+                (cursor, from, seek),
+                move |(mut cursor, next, mut seek)| {
+                    let path = path.clone();
+                    async move {
+                        let Some(frame) = cursor.next().await? else {
+                            return if read || finite {
+                                Ok(None)
+                            } else {
+                                Err(StreamError::Unavailable)
                             };
-                            let record = wire_codec::record(record, Some(&path))?;
-                            if record.sequence < next
-                                || (read && seek.is_none() && record.sequence != next)
-                                || seek.as_ref().is_some_and(|key| {
-                                    record.sequence >= key.before
-                                        || !record
-                                            .headers
-                                            .keys()
-                                            .iter()
-                                            .any(|value| value == &key.key)
-                                })
-                            {
-                                return Err(StreamError::InvalidResponse);
-                            }
-                            let after = record
-                                .sequence
+                        };
+                        if frame.channel_id != 1 || frame.generation != 1 {
+                            return Err(StreamError::InvalidResponse);
+                        }
+                        let (update, after) = match frame.body {
+                            Some(wire::session_frame::Body::Data(data)) => {
+                                let Some(wire::session_data::Item::Record(record)) = data.item
+                                else {
+                                    return Err(StreamError::InvalidResponse);
+                                };
+                                let record = wire_codec::record(record, Some(&path))?;
+                                // An indexed read's cursor counts its results.
+                                let after = match &mut seek {
+                                    Some((key, from)) => {
+                                        key.advance(from, record.sequence, record.headers.keys())?;
+                                        next
+                                    }
+                                    None if record.sequence < next
+                                        || (read && record.sequence != next) =>
+                                    {
+                                        return Err(StreamError::InvalidResponse);
+                                    }
+                                    None => record.sequence,
+                                }
                                 .checked_add(1)
                                 .ok_or(StreamError::OutOfRange)?;
-                            if data.after.as_ref().is_none_or(|cursor| {
-                                cursor.next != after || !cursor.opaque.is_empty()
-                            }) {
-                                return Err(StreamError::InvalidResponse);
+                                if data.after.as_ref().is_none_or(|cursor| {
+                                    cursor.next != after || !cursor.opaque.is_empty()
+                                }) {
+                                    return Err(StreamError::InvalidResponse);
+                                }
+                                (FollowUpdate::Record(record), after)
                             }
-                            (FollowUpdate::Record(record), after)
-                        }
-                        Some(wire::session_frame::Body::Watermark(progress))
-                            if !read && progress.opening_tail.is_some() =>
-                        {
-                            if progress.after.is_some() {
-                                return Err(StreamError::InvalidResponse);
+                            Some(wire::session_frame::Body::Watermark(progress))
+                                if !read && progress.opening_tail.is_some() =>
+                            {
+                                if progress.after.is_some() {
+                                    return Err(StreamError::InvalidResponse);
+                                }
+                                (
+                                    FollowUpdate::Opening {
+                                        tail: progress
+                                            .opening_tail
+                                            .ok_or(StreamError::InvalidResponse)?,
+                                    },
+                                    next,
+                                )
                             }
-                            (
-                                FollowUpdate::Opening {
-                                    tail: progress
-                                        .opening_tail
-                                        .ok_or(StreamError::InvalidResponse)?,
-                                },
-                                next,
-                            )
-                        }
-                        Some(wire::session_frame::Body::Watermark(progress)) if !read => {
-                            let after = progress.after.ok_or(StreamError::InvalidResponse)?;
-                            if after.next <= next || !after.opaque.is_empty() {
-                                return Err(StreamError::InvalidResponse);
+                            Some(wire::session_frame::Body::Watermark(progress)) if !read => {
+                                let after = progress.after.ok_or(StreamError::InvalidResponse)?;
+                                if after.next <= next || !after.opaque.is_empty() {
+                                    return Err(StreamError::InvalidResponse);
+                                }
+                                (
+                                    FollowUpdate::Progress {
+                                        next: after.next,
+                                        preceding: wire_codec::commit_id(
+                                            &progress.preceding_commit_id,
+                                        )?,
+                                    },
+                                    after.next,
+                                )
                             }
-                            (
-                                FollowUpdate::Progress {
-                                    next: after.next,
-                                    preceding: wire_codec::commit_id(
-                                        &progress.preceding_commit_id,
-                                    )?,
-                                },
-                                after.next,
-                            )
-                        }
-                        _ => return Err(StreamError::InvalidResponse),
-                    };
-                    Ok(Some((update, (cursor, after))))
-                }
-            })
+                            _ => return Err(StreamError::InvalidResponse),
+                        };
+                        Ok(Some((update, (cursor, after, seek))))
+                    }
+                },
+            )
             .boxed_local(),
         ))
     }
@@ -472,12 +475,13 @@ impl super::WasmStream {
     ) -> Result<super::WasmFollow, JsValue> {
         super::check_command_size(input)?;
         let provider = self.provider();
-        let (path, mut updates): (_, FollowStream) = match operation {
+        let (path, mut updates, indexed): (_, FollowStream, bool) = match operation {
             "read" if preceding.is_empty() => {
                 let request =
                     wire_codec::read_from_wire(super::decode::<wire::ReadRequest>(input)?)
                         .map_err(super::js_error)?;
                 let path = request.path.clone();
+                let indexed = request.key.is_some();
                 let records = provider
                     .read(request)
                     .await
@@ -487,7 +491,7 @@ impl super::WasmStream {
                             .map(|item| item.map(FollowUpdate::Record))
                             .boxed_local()
                     });
-                (path, records)
+                (path, records, indexed)
             }
             "follow" => {
                 let mut request =
@@ -510,7 +514,7 @@ impl super::WasmStream {
                     .transpose()
                     .map_err(super::js_error)?
                     .flatten();
-                (path, updates)
+                (path, updates, false)
             }
             _ => return Err(super::js_error(StreamError::InvalidArgument)),
         };
@@ -527,10 +531,11 @@ impl super::WasmStream {
             .bootstrap
             .take()
             .map(|record| Ok(FollowUpdate::Record(record)));
+        let mut next = updates.selection.from;
         let stream = futures::stream::iter(bootstrap)
             .chain(updates)
             .map(move |item| {
-                item.map(|update| {
+                item.and_then(|update| {
                     let body = match update {
                         FollowUpdate::Opening { tail } => {
                             wire::session_frame::Body::Watermark(wire::SessionWatermark {
@@ -540,13 +545,22 @@ impl super::WasmStream {
                             })
                         }
                         FollowUpdate::Record(record) => {
-                            let after = record.sequence + 1;
+                            let accepted = record
+                                .sequence
+                                .checked_add(1)
+                                .ok_or(StreamError::OutOfRange)?;
+                            let after = if indexed {
+                                next = next.checked_add(1).ok_or(StreamError::OutOfRange)?;
+                                next
+                            } else {
+                                accepted
+                            };
                             wire::session_frame::Body::Data(wire::SessionData {
                                 after: Some(wire::SessionCursor {
                                     next: after,
                                     opaque: bytes::Bytes::new(),
                                 }),
-                                accepted: after,
+                                accepted,
                                 durable: 0,
                                 item: Some(wire::session_data::Item::Record(
                                     wire_codec::record_wire(record, Some(&path)),
@@ -568,12 +582,12 @@ impl super::WasmStream {
                             })
                         }
                     };
-                    wire::SessionFrame {
+                    Ok(wire::SessionFrame {
                         channel_id: 1,
                         generation: 1,
                         body: Some(body),
                     }
-                    .encode_length_delimited_to_vec()
+                    .encode_length_delimited_to_vec())
                 })
             })
             .boxed_local();

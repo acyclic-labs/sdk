@@ -24,6 +24,10 @@ impl Accounting {
 
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
+    pub(crate) inputs: Option<Arc<crate::credentials::CredentialInputs>>,
+    pub(crate) credential_config: Option<Arc<ProviderSpec>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) account_pin: Arc<std::sync::OnceLock<Option<blake3::Hash>>>,
     pub(crate) files: crate::files::Files,
     /// Calibration and observed usage share one original selection owner.
     pub(crate) accounting: Arc<Accounting>,
@@ -42,6 +46,8 @@ pub struct ResolvedModel {
     pub(crate) transport: Arc<dyn HttpTransport>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_login: Option<Arc<crate::CodexLogin>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) explicit_codex_login: Option<Arc<crate::CodexLogin>>,
 }
 
 impl ResolvedModel {
@@ -54,6 +60,10 @@ impl ResolvedModel {
         files: crate::files::Files,
     ) -> Self {
         Self {
+            inputs: self.inputs.clone(),
+            credential_config: self.credential_config.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            account_pin: self.account_pin.clone(),
             files,
             accounting: Arc::clone(&self.accounting),
             model,
@@ -67,7 +77,59 @@ impl ResolvedModel {
             transport: self.transport.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login: self.codex_login.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            explicit_codex_login: self.explicit_codex_login.clone(),
         }
+    }
+
+    /// Credentials are request inputs; resolving a model does not freeze them.
+    pub(crate) fn current_credentials(&self) -> Result<Self> {
+        let mut current = self.derived(self.model.clone(), self.profile, self.files.clone());
+        let (Some(inputs), Some(config)) = (&self.inputs, &self.credential_config) else {
+            return Ok(current);
+        };
+        if config.authentication.secret_reference().is_some() || self.credential_scope.is_some() {
+            return Ok(current);
+        }
+        let credential = inputs.select(&self.model.provider)?.for_config(config);
+        #[cfg(not(target_arch = "wasm32"))]
+        let credential = match credential {
+            crate::credentials::Credential::Key(_) => credential,
+            _ => self
+                .explicit_codex_login
+                .clone()
+                .map(crate::credentials::Credential::Codex)
+                .unwrap_or(credential)
+                .for_config(config),
+        };
+        current.config = config.clone();
+        current.key = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            current.codex_login = None;
+        }
+        match credential {
+            crate::credentials::Credential::Key(key) => current.key = Some(key),
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::credentials::Credential::Codex(login) => {
+                if !crate::registry::codex_route(config) {
+                    return Err(invalid(
+                        "Codex CLI credentials require the built-in Responses route",
+                    ));
+                }
+                current.codex_login = Some(Arc::new(login.pinned(self.account_pin.clone())));
+            }
+            crate::credentials::Credential::Missing => {}
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if current.codex_login.is_some() {
+            current.config = Arc::new(ProviderSpec {
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                token_counter: None,
+                ..config.as_ref().clone()
+            });
+        }
+        Ok(current)
     }
 
     /// The original selected catalog member's tool family, including under

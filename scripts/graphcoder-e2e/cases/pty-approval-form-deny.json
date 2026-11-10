@@ -1,5 +1,6 @@
 {
   "id": "pty-approval-form-deny",
+  "adapter": "anthropic",
   "workspace": {
     "kind": "plain",
     "files": {}
@@ -7,13 +8,67 @@
   "model": {
     "steps": [
       {
-        "when": {},
+        "when": {
+          "user": "CREATE_APPROVAL_WORKER"
+        },
+        "tools": [
+          {
+            "id": "spawn-approval-worker",
+            "name": "spawn",
+            "arguments": {
+              "name": "approval-worker",
+              "task": "APPROVAL_WORKER_READY",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CREATE_APPROVAL_WORKER",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "wait-approval-worker",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                {
+                  "$tool_result": "/agent"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "APPROVAL_WORKER_READY"
+        },
+        "text": [
+          "WORKER_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "CREATE_APPROVAL_WORKER",
+          "tool_result": "WORKER_READY"
+        },
+        "text": [
+          "WORKER_CREATED"
+        ]
+      },
+      {
+        "when": {
+          "user": "write approved file"
+        },
         "tools": [
           {
             "id": "write",
-            "name": "write",
+            "name": "Write",
             "arguments": {
-              "path": "approved.txt",
+              "file_path": "approved.txt",
               "content": "APPROVED_E2E\n"
             }
           }
@@ -21,7 +76,23 @@
       },
       {
         "when": {
+          "user": "write approved file",
           "tool_result": "tool execution failed: interaction declined"
+        },
+        "tools": [
+          {
+            "id": "verify-write",
+            "name": "Read",
+            "arguments": {
+              "file_path": "approved.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "write approved file",
+          "tool_result": "selected file does not exist"
         },
         "text": [
           "DENIAL_E2E_DONE"
@@ -30,6 +101,11 @@
     ]
   },
   "inputs": [
+    {
+      "mode": "headless",
+      "text": "CREATE_APPROVAL_WORKER",
+      "answer": "WORKER_CREATED"
+    },
     {
       "mode": "pty",
       "actions": [
@@ -78,12 +154,15 @@
           },
           "send": "\u0004"
         }
-      ]
+      ],
+      "select_spawned_agent": {
+        "record": "hooks.jsonl",
+        "name": "approval-worker"
+      }
     }
   ],
   "assert": {
-    "requests": 2,
-    "files": {},
+    "requests": 7,
     "jsonl": {
       "hooks.jsonl": [
         {
@@ -91,17 +170,16 @@
         }
       ]
     },
-    "absent_files": [
-      "approved.txt"
-    ],
     "tool_errors": [
-      "tool execution failed: interaction declined"
+      "tool execution failed: interaction declined",
+      "tool execution failed: tool rejected: selected file does not exist"
     ],
     "tool_contains": [
-      "tool execution failed: interaction declined"
+      "tool execution failed: interaction declined",
+      "tool execution failed: tool rejected: selected file does not exist"
     ]
   },
   "settings": {
-    ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}]}}"
+    ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PreToolUse\":[{\"matcher\":\"Write\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}]}}"
   }
 }

@@ -546,7 +546,7 @@ pub(super) async fn prompt(
                 let answer = answers.next_line().await?.unwrap_or_default();
                 let approved = matches!(answer.trim(), "y" | "Y" | "yes");
                 conversation
-                    .decide_with_binding(&id, binding, approved)
+                    .decide_with_binding(&id, binding, approved.into())
                     .await?;
                 continue;
             }
@@ -1142,7 +1142,7 @@ pub(super) async fn jsonl(
                 if input_format == super::args::InputFormat::Text {
                     if let Some((id, binding)) = approval.take() {
                         let answer = line.as_deref().unwrap_or_default();
-                        conversation.decide_with_binding(&id, binding, matches!(answer.trim(), "y" | "Y" | "yes")).await?;
+                        conversation.decide_with_binding(&id, binding, matches!(answer.trim(), "y" | "Y" | "yes").into()).await?;
                     } else if line.as_deref().is_some_and(|line| !line.trim().is_empty()) {
                         return Err("text input: no task or pending approval; recovery: use graphcoder -p 'TASK' or graphcoder exec --operation OPERATION with JSONL input".into());
                     }
@@ -1169,7 +1169,7 @@ pub(super) async fn jsonl(
                 }
                 Request::Approval { approve, binding, approved } => {
                     conversation
-                        .decide_with_binding(&approve, binding, approved)
+                        .decide_with_binding(&approve, binding, approved.into())
                         .await?;
                 }
                 Request::Cancel { cancel: true } => {

@@ -1,6 +1,6 @@
 //! Presentation of the shared committed usage projection. The caller retains
 //! its query frontier and caches this line until a contribution changes.
-use crate::executor::{ModelUsageTotals, UsageTotal};
+use crate::executor::{ContextUsage, ModelUsageTotals, UsageTotal};
 use acyclic_harness_tui::ratatui::text::Line;
 use std::fmt::Write as _;
 
@@ -36,6 +36,48 @@ pub fn usage_summary(totals: &ModelUsageTotals) -> Line<'static> {
         text.push_str(label);
         text.push(' ');
         count_text(&mut text, count);
+    }
+    Line::raw(text)
+}
+
+/// Show original model and verified context occupancy alongside the usage footer.
+/// Missing facts stay unknown. This function performs no source reads or counts.
+pub fn context_summary(
+    model: Option<(&str, &str)>,
+    context: Option<ContextUsage>,
+    open_children: Option<u64>,
+) -> Line<'static> {
+    let mut text = String::from("model ");
+    if let Some((provider, model)) = model {
+        let _ = write!(text, "{provider}/{model}");
+    } else {
+        text.push('?');
+    }
+    text.push_str(" · context ");
+    match context {
+        Some(ContextUsage::Counted {
+            input_tokens,
+            capacity_tokens,
+        }) if capacity_tokens != 0 => {
+            // Accounting can use a proven upper bound to avoid a tokenizer request.
+            // Round up so the displayed bound remains sound. Values above 100%
+            // remain visible while the prepared context awaits compaction.
+            let tenths = (u128::from(input_tokens) * 1000).div_ceil(u128::from(capacity_tokens));
+            let _ = write!(
+                text,
+                "≤{}.{:01}% (≤{input_tokens}/{capacity_tokens})",
+                tenths / 10,
+                tenths % 10
+            );
+        }
+        _ => text.push('?'),
+    }
+    text.push_str(" · children ");
+    match open_children {
+        Some(count) => {
+            let _ = write!(text, "{count}");
+        }
+        None => text.push('?'),
     }
     Line::raw(text)
 }

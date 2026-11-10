@@ -190,16 +190,13 @@ fn cursor_advance(request: &acyclic_stream::CommitRequest) -> bool {
 }
 
 fn cursor_publication(request: &acyclic_stream::CommitRequest) -> Option<(&StreamPath, u64)> {
-    request
-        .mutations
-        .iter()
-        .find_map(|mutation| match mutation {
-            CommitMutation::Append { path, records } => records.iter().find_map(|record| {
-                State::decode(record.value.as_ref())
-                    .ok()?
-                    .cursor("activation")
-                    .map(|cursor| (path, cursor))
-            }),
-            _ => None,
-        })
+    request.mutations().find_map(|mutation| match mutation {
+        CommitMutation::Append { path, records } => records.iter().find_map(|record| {
+            State::decode(record.value.as_ref())
+                .ok()?
+                .cursor("activation")
+                .map(|cursor| (path, cursor))
+        }),
+        _ => None,
+    })
 }
