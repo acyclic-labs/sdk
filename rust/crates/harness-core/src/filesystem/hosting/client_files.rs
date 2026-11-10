@@ -104,7 +104,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         let reference =
             super::super::bounded_io::content_workspace(&self.volumes.provider, &volume, None)
                 .map_err(turn)?;
-        let initial = if after.is_none() {
+        let initial = if after.is_none() && session.is_some() {
             Some(self.volumes.create_volume(&volume).await.map_err(turn)?)
         } else {
             None
@@ -236,7 +236,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         changes: &[ClientFileChange],
     ) -> Result<GenerationRef, Error> {
         let (volume, scope, verifier) = self.client_volume(agent, session).await?;
-        self.volumes.create_volume(&volume).await.map_err(turn)?;
+        if session.is_some() {
+            self.volumes.create_volume(&volume).await.map_err(turn)?;
+        }
         let publisher = FilesystemContentPublisher::new(
             self.volumes.clone(),
             &volume,
