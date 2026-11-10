@@ -901,7 +901,7 @@ mod tests {
                         action_digest: [255; 32],
                     }),
                 },
-                Phase::WaitingHost { host: widest(MAX_INTENT_BYTES) },
+                Phase::WaitingHost { host: widest(MAX_NAME_BYTES) },
                 Phase::Waiting { deadline_unix_ms: Some(u64::MAX), input: true }];
             let record_outcomes = outcomes().into_iter().chain([AgentOutcome::Failed {
                 message: widest_text(MAX_MESSAGE_BYTES),
