@@ -176,8 +176,10 @@ impl StockExecutors {
         {
             None => Ok((self.model.clone(), self.provider.clone())),
             Some(selection)
-                if selection.split_once('/')
-                    == Some((self.model.provider.as_str(), self.model.name.as_str())) =>
+                if selection
+                    .strip_prefix(self.model.provider.as_str())
+                    .and_then(|suffix| suffix.strip_prefix('/'))
+                    == Some(self.model.name.as_str()) =>
             {
                 Ok((self.model.clone(), self.provider.clone()))
             }
