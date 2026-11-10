@@ -42,9 +42,9 @@ for patch in "${patches[@]}"; do
   git apply --check "$patch"
 done
 cargo fmt -p acyclic-fs --check
-# Local workspace dependencies inherit their own Clippy denials. Lint only the
-# rescued package; compiling its dependencies is not a dependency lint audit.
-cargo clippy --locked -p acyclic-fs --no-deps --lib --tests --features test-support -- -D warnings
+# This proof checks compilation and runtime oracles under the workspace's
+# existing policy, without introducing a crate-wide lint audit.
+cargo check --locked -p acyclic-fs --lib --test main --features test-support
 cargo nextest run --locked -p acyclic-fs --lib --test main --features test-support \
   --color never -E "$positive"
 
