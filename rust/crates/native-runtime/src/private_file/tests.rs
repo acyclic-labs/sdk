@@ -281,14 +281,15 @@ fn reads_do_not_commit_namespace_but_publication_still_requires_durability() -> 
 }
 
 #[test]
-fn bounded_reader_rejects_growth_and_admits_before_allocation() -> io::Result<()> {
+fn optional_reader_rejects_growth_and_admits_before_allocation() -> io::Result<()> {
     let root = tempfile::tempdir()?;
     let path = root.path().join("owner");
     create(&path)?.write_all(b"original")?;
     assert!(
         read_with::<(), io::Error>(&path, 1, |_, _| panic!("oversize read was admitted")).is_err()
     );
-    let result = read_with::<Vec<u8>, io::Error>(&path, 100, |file, length| {
+    assert_eq!(read(&path, None)?.0, b"original");
+    let result = read_with::<Vec<u8>, io::Error>(&path, None, |file, length| {
         let mut bytes = Vec::with_capacity(usize::try_from(length).map_err(io::Error::other)? + 1);
         file.read_to_end(&mut bytes)?;
         open(&path, true)?.set_len(length + 1)?;
