@@ -139,6 +139,7 @@
         "pty-approval-policy",
         "pty-approval-deny",
         "pty-approval-form-approve",
+        "pty-hook-allow",
         "pty-approval-form-deny",
         "pty-approval-policy-deny",
         "pty-approval-clear-confirm"

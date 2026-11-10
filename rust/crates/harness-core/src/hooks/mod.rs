@@ -370,6 +370,7 @@ pub(crate) fn report(event: HookEvent, output: &HookOutput) {
 }
 
 mod output;
+pub(crate) use output::ToolHookDecision;
 pub use output::{HookDiagnostic, HookOutput};
 
 mod native;
