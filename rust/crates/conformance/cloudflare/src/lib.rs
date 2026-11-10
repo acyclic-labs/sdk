@@ -1,7 +1,7 @@
 //! The shared conformance entry points, called inside a SQLite Durable Object.
 
 #[cfg(target_arch = "wasm32")]
-mod actors;
+pub use acyclic_hosted_actors_conformance::{ActorsDomain, ActorsPackage};
 #[cfg(target_arch = "wasm32")]
 mod hosting;
 #[cfg(target_arch = "wasm32")]

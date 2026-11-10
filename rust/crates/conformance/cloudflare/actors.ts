@@ -3,6 +3,7 @@ import { ActorsDomain, ActorsPackage } from "./generated/acyclic_cloudflare_conf
 import { WasmActorHost, WasmStream } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
 import { SqliteEventStorage, SqliteJournal, type StreamChange } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
+import { streamProviderPort } from "../../../../typescript/packages/harness/src/stream-provider.js";
 
 interface Env { ACTORS: DurableObjectNamespace<Actors>; ACTOR: DurableObjectNamespace<Actor> }
 interface Route { address: number[]; paths: string[]; generation: number; pending: boolean }
@@ -25,29 +26,32 @@ function route(value: string): Route {
 export class Actors extends DurableObject<Env> {
   private readonly routes = new SqliteEventStorage(this.ctx.storage, "actors-routing");
   private readonly metadata = new SqliteEventStorage(this.ctx.storage, "actors-discovery");
-  private readonly domain = Promise.resolve().then(() => ActorsDomain.open({
-    configure: (configuration: Uint8Array, maximum: number, authority: Uint8Array) => this.journal.configure(configuration, maximum, authority),
-    flush: () => this.journal.flush(),
-    read: (index: number, page: number) => this.journal.read(index, page),
-    append: async (index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]) => {
-      // Durable recovery exists BEFORE publishing any state or routing changes.
-      await this.ctx.storage.setAlarm(Date.now());
-      const head = await this.journal.append(index, admit, changes);
-      // Close cleanup racing the pre-publication arm while append awaited IO.
-      await this.ctx.storage.setAlarm(Date.now());
-      return head;
-    },
-  }, async (address: Uint8Array, paused: boolean) => {
-    await this.discover();
-    if (this.routes.get(key(address)) === undefined) refuse("pause-owner");
-    await this.owner(address).pause(paused);
-  }, () => this.restart(), async (address: Uint8Array) => {
-    await this.discover();
-    if (this.routes.get(key(address)) === undefined) refuse("completion-owner");
-    // The same owner wake awaits publication and its final registered-input recheck.
-    ++this.calls.wake;
-    await this.owner(address).wake();
-  }));
+  private readonly domain = Promise.resolve().then(async () => {
+    const provider = await WasmStream.openJournal({
+      configure: (configuration: Uint8Array, maximum: number, authority: Uint8Array) => this.journal.configure(configuration, maximum, authority),
+      flush: () => this.journal.flush(),
+      read: (index: number, page: number) => this.journal.read(index, page),
+      append: async (index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]) => {
+        // Durable recovery exists BEFORE publishing any state or routing changes.
+        await this.ctx.storage.setAlarm(Date.now());
+        const head = await this.journal.append(index, admit, changes);
+        // Close cleanup racing the pre-publication arm while append awaited IO.
+        await this.ctx.storage.setAlarm(Date.now());
+        return head;
+      },
+    }, {});
+    return ActorsDomain.open(streamProviderPort(provider), async (address: Uint8Array, paused: boolean) => {
+      await this.discover();
+      if (this.routes.get(key(address)) === undefined) refuse("pause-owner");
+      await this.owner(address).pause(paused);
+    }, () => this.restart(), async (address: Uint8Array) => {
+      await this.discover();
+      if (this.routes.get(key(address)) === undefined) refuse("completion-owner");
+      // The same owner wake awaits publication and its final registered-input recheck.
+      ++this.calls.wake;
+      await this.owner(address).wake();
+    });
+  });
   private readonly journal = new SqliteJournal(this.ctx.storage, "actors", changes => {
     if (changes.some(([path]) => path === root)) {
       const generation = Number(this.metadata.get("generation") ?? "0") + 1;

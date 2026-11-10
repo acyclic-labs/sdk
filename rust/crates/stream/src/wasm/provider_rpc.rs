@@ -89,13 +89,17 @@ impl CursorFrames {
     }
 }
 
-/// A trusted host port over the public canonical provider protobufs.
-pub(crate) struct InjectedStream {
+/// Canonical provider over a host-admitted JavaScript protobuf port. This is
+/// the same adapter used by `WasmStream::connect_provider`; Rust consumers can
+/// retain its concrete type to compose request accounting without another hop.
+pub struct InjectedStream {
     port: Port,
     claims: OperationClaims,
 }
 impl InjectedStream {
-    pub(crate) fn new(port: JsValue) -> Result<Self, StreamError> {
+    /// Retain the original host's port. Invalid replies and producer loss remain
+    /// errors; no memory provider or secondary transport is installed.
+    pub fn new(port: JsValue) -> Result<Self, StreamError> {
         if !port.is_object() {
             return Err(StreamError::InvalidArgument);
         }
