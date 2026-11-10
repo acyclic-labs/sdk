@@ -107,6 +107,15 @@ impl crate::hosting::Platform for LocalUser {
         })
     }
 
+    #[cfg(any(test, feature = "native-execution"))]
+    fn merge_session<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        operation: OperationId,
+    ) -> BoxProviderFuture<'a, Result<Option<String>>> {
+        Box::pin(async move { self.harness()?.merge_session(agent, operation).await })
+    }
+
     fn policy<'a>(
         &'a self,
         _: &'a Principal,

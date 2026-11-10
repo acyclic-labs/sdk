@@ -79,6 +79,11 @@ pub enum AgentReply {
         /// True for pause, false for resume.
         paused: bool,
     },
+    /// Original Git-facade merge receipt; an unchanged source needs no commit.
+    Merged {
+        /// Content-addressed merge commit, when the facade created one.
+        commit: Option<String>,
+    },
     /// Requested session files at one committed generation.
     ClientFiles {
         /// Exactly the requested paths at the selected committed generation.
@@ -475,6 +480,18 @@ fn validate_reply(
                         })
                     })
                 }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (AgentReply::Merged { commit }, AgentCommand::MergeSession { .. }) => {
+            return if commit.as_ref().is_none_or(|commit| {
+                commit.len() == 64
+                    && commit
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            }) {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)

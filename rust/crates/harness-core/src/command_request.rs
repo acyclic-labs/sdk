@@ -76,6 +76,8 @@ pub enum CommandRequest {
     },
     /// Restore the currently selected summary checkpoint and its fixed history cut.
     Rewind {},
+    /// Integrate the selected session's project through the filesystem merge.
+    Merge {},
     /// Change the model through the harness request owner.
     Model {
         /// Provider/model identifier.

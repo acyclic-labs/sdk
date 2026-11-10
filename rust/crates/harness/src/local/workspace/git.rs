@@ -41,6 +41,46 @@ struct Invocation<'a> {
 }
 
 impl Commands<'_> {
+    /// One serialized entry to the git facade, shared by native hosts and
+    /// platform-owned session integration. The existing capture, recovery,
+    /// publication window and conflict projection all remain inside it.
+    pub(in crate::local) fn invoke<'a, F>(
+        &'a self,
+        command: &'a str,
+        context: CommandContext<'a>,
+        before: F,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_fs::GitCommandOutput>>
+    where
+        F: std::future::Future<Output = Result<()>> + Send + 'a,
+    {
+        Box::pin(async move {
+            context.owner.verify().await?;
+            let parsed = self.fs_arguments(command, context.scope)?;
+            let mut state =
+                crate::sync::owned::lock_owned(StateArc::clone(&self.workspace.state)).await;
+            let (selected, pending) = self.workspace.selected_view().await?;
+            reconciliation::recover_pending(
+                self.workspace,
+                selected.as_ref().unwrap_or_else(|| self.workspace.view()),
+                pending,
+                &|| context.owner.verify(),
+            )
+            .await?;
+            state.active = selected;
+            let physical = self
+                .workspace
+                .selected_workspace(&mut state, context.owner)
+                .await?;
+            before.await?;
+            let result = self.fs(parsed, &context, &mut state, &physical).await?;
+            context.owner.verify().await?;
+            match result {
+                Outcome::Completed(output) => Ok(*output),
+                Outcome::Rejected(error) => Err(*error),
+            }
+        })
+    }
+
     pub(in crate::local) fn fs_arguments(
         &self,
         command: &str,

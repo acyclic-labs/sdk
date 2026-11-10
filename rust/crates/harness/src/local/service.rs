@@ -728,4 +728,128 @@ mod tests {
         drop(directory.own()?);
         Ok(())
     }
+
+    #[tokio::test]
+    async fn session_merges_publish_checkout_files_and_preserve_conflicts() -> Result<()> {
+        use crate::filesystem::{WorkspaceMutation, workspace_ref};
+        use crate::local::{WorkspaceMounting, sessions};
+        let checkout = tempfile::tempdir().map_err(storage)?;
+        let storage_dir = tempfile::tempdir().map_err(storage)?;
+        std::fs::write(checkout.path().join("shared.txt"), b"base\n").map_err(storage)?;
+        let provider = Arc::new(ScriptedModelProvider::new(
+            std::iter::empty::<ScriptedTurn>(),
+        ));
+        let local = Arc::new(
+            super::super::LocalHarness::open(
+                local_harness_config(
+                    checkout.path(),
+                    (
+                        Model::new("scripted".into(), "test".into(), "1".into())?,
+                        provider.clone(),
+                    ),
+                )?
+                .state_directory(storage_dir.path())
+                .workspace_mounting(WorkspaceMounting::Physical)
+                .without_default_tools(),
+            )
+            .await?,
+        );
+        let directory = local.connect_sessions().await?;
+        let first = sessions::create(&directory, "merge-first").await?;
+        let second = sessions::create(&directory, "merge-second").await?;
+        for (connection, name, text) in [
+            (&first, "first.txt", b"first\n".as_slice()),
+            (&second, "second.txt", b"second\n".as_slice()),
+        ] {
+            let state = local
+                .agents()
+                .await?
+                .0
+                .state(connection.root())
+                .await
+                .map_err(storage)?;
+            let project = state
+                .volumes
+                .iter()
+                .find(|binding| binding.name == "project")
+                .ok_or_else(|| Error::Invalid("missing isolated project".into()))?;
+            let reference = workspace_ref(
+                project.volume.provider().clone(),
+                &project.volume.storage_name(&mut None)?,
+            )?;
+            local
+                .files
+                .apply(
+                    &reference,
+                    None,
+                    &[
+                        WorkspaceMutation::PutFile {
+                            path: format!("/{name}"),
+                            bytes: acyclic_stream::OwnedBytes::copy_from_slice(text),
+                        },
+                        WorkspaceMutation::PutFile {
+                            path: "/shared.txt".into(),
+                            bytes: acyclic_stream::OwnedBytes::copy_from_slice(text),
+                        },
+                    ],
+                    &crate::IdempotencyKey::new(name)?,
+                )
+                .await?;
+        }
+        assert_eq!(
+            std::fs::read(checkout.path().join("shared.txt")).map_err(storage)?,
+            b"base\n"
+        );
+        let first_commit = sessions::merge(&first, "publish-first").await?;
+        assert!(
+            first_commit.is_some(),
+            "integration must create a merge commit"
+        );
+        assert_eq!(
+            std::fs::read(checkout.path().join("first.txt")).map_err(storage)?,
+            b"first\n"
+        );
+        assert_eq!(
+            std::fs::read(checkout.path().join("shared.txt")).map_err(storage)?,
+            b"first\n"
+        );
+        assert_eq!(
+            sessions::merge(&first, "publish-first").await?,
+            first_commit
+        );
+        assert!(sessions::merge(&second, "publish-second").await.is_err());
+        let conflicted =
+            std::fs::read_to_string(checkout.path().join("shared.txt")).map_err(storage)?;
+        assert!(
+            conflicted.contains("<<<<<<<")
+                && conflicted.contains("first")
+                && conflicted.contains("second"),
+            "merge conflicts must remain ordinary checkout files: {conflicted}"
+        );
+        assert_eq!(
+            std::fs::read(checkout.path().join("first.txt")).map_err(storage)?,
+            b"first\n"
+        );
+        std::fs::write(checkout.path().join("shared.txt"), b"resolved\n").map_err(storage)?;
+        let second_commit = sessions::merge(&second, "publish-second").await?;
+        assert!(second_commit.is_some());
+        assert_eq!(
+            std::fs::read(checkout.path().join("shared.txt")).map_err(storage)?,
+            b"resolved\n"
+        );
+        assert_eq!(
+            std::fs::read(checkout.path().join("second.txt")).map_err(storage)?,
+            b"second\n"
+        );
+        assert_eq!(
+            sessions::merge(&second, "publish-second").await?,
+            second_commit
+        );
+        assert_eq!(
+            provider.request_count(),
+            0,
+            "merging must not dispatch a model"
+        );
+        Ok(())
+    }
 }
