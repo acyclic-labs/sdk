@@ -9,9 +9,19 @@ pub type ContentIo = ();
 /// Retained content metadata ownership.
 #[cfg(feature = "filesystem")]
 pub type ContentHold<'a> = crate::filesystem::DecodeReservation<'a>;
-/// Retained content metadata ownership.
+/// Retained content metadata ownership. Without filesystem accounting no
+/// content is funded, so no hold can exist and every funded branch is
+/// statically unreachable while keeping the same API as the funded hold.
 #[cfg(not(feature = "filesystem"))]
-pub type ContentHold<'a> = std::marker::PhantomData<&'a ()>;
+pub struct ContentHold<'a>(std::convert::Infallible, std::marker::PhantomData<&'a ()>);
+
+#[cfg(not(feature = "filesystem"))]
+impl ContentHold<'_> {
+    /// Same contract as the funded hold; uninhabited, so never called.
+    pub(crate) fn into_retained(self) -> Result<()> {
+        match self.0 {}
+    }
+}
 
 /// Caller authority ceiling and accounting for a content operation.
 /// The ceiling can only narrow the adapter's authenticated workload authority.
