@@ -316,7 +316,7 @@ fn cancelled_flight_settlement_releases_followers_and_original_backing() {
             // The first retained flight promotes this caller's ledger. That
             // original control remains funded while the caller owns it.
             crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
-                std::sync::Mutex<crate::kernel::allocation::SharedAllocationBytes>,
+                crate::kernel::allocation::SharedAllocationState,
             >())
             .unwrap() as u64
         };

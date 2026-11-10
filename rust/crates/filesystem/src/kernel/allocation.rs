@@ -6,6 +6,8 @@ use crate::storage::ObjectId;
 use std::mem::size_of;
 use thiserror::Error;
 
+pub(crate) type SharedAllocationState = crate::sync::InlineMutex<SharedAllocationBytes>;
+
 /// Tracks live and reserved logical allocation bytes. Promotion retains this
 /// same ledger when a value crosses an owned asynchronous boundary.
 #[derive(Debug, Default)]
@@ -19,9 +21,9 @@ enum LedgerState {
     #[default]
     Empty,
     Inline(AllocationBytes),
-    Shared(std::sync::Arc<crate::sync::InlineMutex<SharedAllocationBytes>>),
+    Shared(std::sync::Arc<SharedAllocationState>),
     Suspended(
-        std::sync::Arc<crate::sync::InlineMutex<SharedAllocationBytes>>,
+        std::sync::Arc<SharedAllocationState>,
         // Observes the same original producer after reply withdrawal. The
         // producer owns a Shared ledger, so this cannot form an Arc cycle.
         #[cfg(not(target_arch = "wasm32"))]
@@ -484,10 +486,7 @@ impl AllocationLedger {
         self.snapshot().live_bytes()
     }
 
-    pub(crate) fn shares_retained_ledger(
-        &self,
-        ledger: *const crate::sync::InlineMutex<SharedAllocationBytes>,
-    ) -> bool {
+    pub(crate) fn shares_retained_ledger(&self, ledger: *const SharedAllocationState) -> bool {
         match &self.state {
             LedgerState::Shared(state) | LedgerState::Suspended(state, ..) => {
                 std::ptr::eq(ledger, std::sync::Arc::as_ptr(state))
@@ -563,7 +562,7 @@ impl AllocationLedger {
         self.ensure_active()?;
         if !matches!(self.state, LedgerState::Shared(_)) {
             let control = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
-                crate::sync::InlineMutex<SharedAllocationBytes>,
+                SharedAllocationState,
             >())
             .map_err(|_| WorkError::Overflow)? as u64;
             self.claim_bytes(control, 1, work, budget)
@@ -576,7 +575,7 @@ impl AllocationLedger {
                 retained_bytes: control,
             };
             self.state =
-                LedgerState::Shared(std::sync::Arc::new(crate::sync::InlineMutex::new(state)));
+                LedgerState::Shared(std::sync::Arc::new(SharedAllocationState::new(state)));
         }
         let LedgerState::Shared(state) = &self.state else {
             unreachable!("promoted above")

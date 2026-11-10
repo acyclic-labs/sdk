@@ -6,7 +6,7 @@ impl AllocationLedger {
     /// Checks retirement without pretending that the original ledger has died.
     /// Returns whether a retained owner promoted this ledger to shared custody.
     pub(crate) fn assert_payloads_retired(&self) -> Result<bool, crate::FsError> {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         match &self.state {
             LedgerState::Shared(control) => {
@@ -16,7 +16,7 @@ impl AllocationLedger {
                     "payload funding still retained"
                 );
                 let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
-                    Mutex<SharedAllocationBytes>,
+                    SharedAllocationState,
                 >())
                 .map_err(|_| WorkError::Overflow)? as u64;
                 assert_eq!(self.live_bytes(), bytes, "only the live ledger is funded");
