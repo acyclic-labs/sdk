@@ -17,17 +17,11 @@ mod cancellation;
 mod native;
 use cancellation::CancelOnDrop;
 
-/// Positive discovery and tool-exchange bounds, independent of task allowances.
+/// Protective per-message bounds, independent of catalog size and task allowances.
 #[derive(Clone, Copy)]
 pub struct McpClientLimits {
-    /// Maximum concurrently initialized servers.
-    pub servers: u32,
-    /// Maximum advertised tools from each server, before filtering.
-    pub tools_per_server: u32,
-    /// Maximum pages from one tools/list traversal.
-    pub pages_per_server: u32,
-    /// Maximum aggregate catalog bytes from each server.
-    pub catalog_bytes: u32,
+    /// Maximum bytes in one discovery request or response, never the whole catalog.
+    pub frame_bytes: u32,
     /// Maximum request or response bytes for an installed tool call.
     pub tool_bytes: u32,
 }
@@ -35,10 +29,7 @@ pub struct McpClientLimits {
 impl Default for McpClientLimits {
     fn default() -> Self {
         Self {
-            servers: 32,
-            tools_per_server: 128,
-            pages_per_server: 16,
-            catalog_bytes: 1_048_576,
+            frame_bytes: 1_048_576,
             tool_bytes: 1_048_576,
         }
     }
@@ -100,16 +91,8 @@ impl McpConfig {
     where
         F: for<'a> Fn(&'a McpServer) -> BoxProviderFuture<'a, Result<Connected>>,
     {
-        if limits.servers == 0
-            || limits.tools_per_server == 0
-            || limits.pages_per_server == 0
-            || limits.catalog_bytes == 0
-            || limits.tool_bytes == 0
-            || self.servers.len() as u64 > u64::from(limits.servers)
-        {
-            return Err(Error::Invalid(
-                "MCP startup bounds must be positive and sufficient".into(),
-            ));
+        if limits.frame_bytes == 0 || limits.tool_bytes == 0 {
+            return Err(Error::Invalid("MCP message bounds must be positive".into()));
         }
         let mut diagnostics = Vec::new();
         let mut capabilities = Capabilities::default();
@@ -203,9 +186,6 @@ fn register(
     check: &(impl Fn() -> Result<()> + ?Sized),
 ) -> Result<(ToolRegistry, Capabilities)> {
     check()?;
-    if connected.tools.len() as u64 > u64::from(limits.tools_per_server) {
-        return Err(Error::Invalid("MCP discovery exceeds tool bound".into()));
-    }
     let mut catalog = McpCatalog {
         server: name,
         revision: String::new(),
@@ -242,7 +222,7 @@ fn register(
         None,
         &connected.transport,
         &projection,
-        (limits.tools_per_server, limits.catalog_bytes),
+        None,
         &check,
     )?;
     let mut capabilities = Capabilities::new(

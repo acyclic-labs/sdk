@@ -11,11 +11,8 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::{
-        Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+    collections::BTreeMap,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 #[derive(Default)]
@@ -316,13 +313,14 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
 #[tokio::test]
 async fn initialization_is_concurrent_and_optional_diagnostics_keep_config_order() -> Result<()> {
     let mut config = McpConfig::default();
-    for name in ["a", "b", "c"] {
+    let names: Vec<_> = (0..33).map(|index| format!("server{index:02}")).collect();
+    for name in &names {
         config.servers.insert(
-            name.into(),
+            name.clone(),
             server(json!({"command":name}), Dialect::Codex)?,
         );
     }
-    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let barrier = Arc::new(tokio::sync::Barrier::new(names.len()));
     let result = config
         .install_with(
             ToolRegistry::default(),
@@ -342,7 +340,7 @@ async fn initialization_is_concurrent_and_optional_diagnostics_keep_config_order
             .iter()
             .map(|failure| failure.server.as_str())
             .collect::<Vec<_>>(),
-        ["a", "b", "c"]
+        names.iter().map(String::as_str).collect::<Vec<_>>()
     );
     assert!(result.tools.definitions(None)?.is_empty());
     assert!(result.capabilities.iter().next().is_none());
@@ -376,13 +374,10 @@ async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect()
     assert!(installed.tools.definitions(None)?.is_empty());
     assert!(installed.capabilities.iter().next().is_none());
     assert!(installed.diagnostics.is_empty());
-    for field in 0..5 {
+    for field in 0..2 {
         let mut limits = McpClientLimits::default();
         match field {
-            0 => limits.servers = 0,
-            1 => limits.tools_per_server = 0,
-            2 => limits.pages_per_server = 0,
-            3 => limits.catalog_bytes = 0,
+            0 => limits.frame_bytes = 0,
             _ => limits.tool_bytes = 0,
         }
         assert!(matches!(
@@ -439,85 +434,6 @@ async fn startup_deadlines_and_required_failures_are_bounded_without_retries() -
             Err(Error::Process(crate::ProcessError::Timeout { .. })) => assert!(required),
             _ => panic!("unexpected startup decision"),
         }
-    }
-    Ok(())
-}
-
-fn page(names: &[&str], cursor: Option<&str>) -> rmcp::model::ListToolsResult {
-    let mut page = rmcp::model::ListToolsResult::default();
-    page.tools = names
-        .iter()
-        .map(|name| {
-            let mut tool = rmcp::model::Tool::default();
-            tool.name = (*name).to_owned().into();
-            tool.input_schema =
-                Arc::new(serde_json::from_value(json!({"type":"object"})).expect("schema"));
-            tool
-        })
-        .collect();
-    page.next_cursor = cursor.map(str::to_owned);
-    page
-}
-
-#[tokio::test]
-async fn discovery_moves_schemas_and_rejects_cursor_count_and_byte_overruns() -> Result<()> {
-    let first = page(&["one"], Some("next"));
-    let schema_pointer = &first.tools[0].input_schema["type"] as *const Value;
-    let pages = Mutex::new(VecDeque::from([first, page(&["two"], None)]));
-    let mut requests = Vec::new();
-    let cursors = Mutex::new(&mut requests);
-    let tools = native::discover(McpClientLimits::default(), |cursor| {
-        cursors.lock().expect("cursor lock").push(cursor);
-        std::future::ready(Ok(pages
-            .lock()
-            .expect("pages lock")
-            .pop_front()
-            .expect("next page")))
-    })
-    .await?;
-    assert_eq!(
-        &tools[0].input_schema["type"] as *const Value,
-        schema_pointer
-    );
-    assert_eq!(requests, [None, Some("next".into())]);
-    for (pages, limits) in [
-        (
-            vec![page(&["a"], Some("x")), page(&["b"], Some("x"))],
-            McpClientLimits::default(),
-        ),
-        (vec![page(&[], Some(""))], McpClientLimits::default()),
-        (
-            vec![page(&[], Some("x"))],
-            McpClientLimits {
-                pages_per_server: 1,
-                ..Default::default()
-            },
-        ),
-        (
-            vec![page(&["a", "b"], None)],
-            McpClientLimits {
-                tools_per_server: 1,
-                ..Default::default()
-            },
-        ),
-        (
-            vec![page(&["a"], None)],
-            McpClientLimits {
-                catalog_bytes: 1,
-                ..Default::default()
-            },
-        ),
-    ] {
-        let pages = Mutex::new(VecDeque::from(pages));
-        assert!(
-            native::discover(limits, |_| std::future::ready(Ok(pages
-                .lock()
-                .expect("pages lock")
-                .pop_front()
-                .expect("next page"))))
-            .await
-            .is_err()
-        );
     }
     Ok(())
 }
@@ -741,9 +657,8 @@ IFS= read -r input
             ToolRegistry::default(),
             root.path(),
             McpClientLimits {
-                catalog_bytes: 1024,
+                frame_bytes: 1024,
                 tool_bytes: 8192,
-                ..Default::default()
             },
             Arc::new(crate::secrets::EnvSecrets),
         )

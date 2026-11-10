@@ -1,0 +1,517 @@
+{
+  "id": "mcp-paged-catalog",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "mcp",
+            "name": "code",
+            "arguments": {
+              "code": "await tools['mcp.fixture.echo152']({text: 'hello'})"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "MCP_E2E_hello"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "jsonl": {
+      "mcp.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "1"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "2"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "3"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "4"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "5"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "6"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "7"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "8"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "9"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "10"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "11"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "12"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "13"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "14"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "15"
+          }
+        },
+        {
+          "method": "tools/list",
+          "params": {
+            "cursor": "16"
+          }
+        },
+        {
+          "method": "tools/call",
+          "params": {
+            "name": "echo152",
+            "arguments": {
+              "text": "hello"
+            }
+          }
+        }
+      ],
+      "server0.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server1.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server2.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server3.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server4.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server5.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server6.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server7.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server8.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server9.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server10.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server11.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server12.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server13.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server14.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server15.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server16.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server17.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server18.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server19.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server20.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server21.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server22.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server23.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server24.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server25.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server26.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server27.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server28.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server29.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server30.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ],
+      "server31.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        }
+      ]
+    },
+    "model_contains": [
+      "MCP_E2E_hello"
+    ]
+  },
+  "settings": {
+    ".claude.json": "{\"mcpServers\":{\"fixture\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/mcp.jsonl\",\"{\\\"pages\\\":17,\\\"toolsPerPage\\\":9,\\\"descriptionBytes\\\":8192}\"],\"required\":true},\"server0\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server0.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server1\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server1.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server2\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server2.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server3\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server3.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server4\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server4.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server5\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server5.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server6\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server6.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server7\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server7.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server8\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server8.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server9\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server9.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server10\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server10.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server11\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server11.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server12\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server12.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server13\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server13.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server14\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server14.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server15\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server15.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server16\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server16.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server17\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server17.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server18\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server18.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server19\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server19.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server20\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server20.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server21\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server21.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server22\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server22.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server23\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server23.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server24\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server24.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server25\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server25.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server26\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server26.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server27\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server27.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server28\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server28.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server29\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server29.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server30\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server30.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true},\"server31\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/server31.jsonl\",\"{\\\"toolsPerPage\\\":0}\"],\"required\":true}}}"
+  }
+}

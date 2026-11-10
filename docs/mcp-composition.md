@@ -52,6 +52,20 @@ declared total bounds before publishing replacement; a partial page must never
 withdraw tools from the installed catalog. Search uses that pinned catalog and
 grants no permission to invoke a result.
 
+Native configuration installation has no server, tool, page-count or aggregate
+catalog-byte ceiling. `McpClientLimits::frame_bytes` protects each discovery
+message independently; `tool_bytes` protects each call. Neither is a catalog
+allowance. Explicit caller-selected allowances on `McpCatalog` still bind scoped
+catalog approvals.
+
+`mcp::tool_pages` is the shared lazy `tools/list` traversal for stdio and HTTP.
+It requests one page only when consumed, forwards opaque continuation cursors,
+continues through empty pages, and stops at an absent cursor. Empty or repeated
+cursors fail without retries. Dropping it cancels the current request without
+prefetching. The native installer's eager schema policy consumes this stream
+before atomically publishing the validated catalog, preserving canonical revision
+identity across page boundaries and restarts.
+
 The existing executor authorizes `mcp:call:<namespace>` before replay, dispatch
 and reconciliation. HTTP request IDs do not promise server idempotency. Native
 HTTP has no remote receipt API: reconcile returns `None` without network I/O.

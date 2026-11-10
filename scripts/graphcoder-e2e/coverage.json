@@ -155,6 +155,7 @@
       "owner": "e2e-gate",
       "cases": [
         "mcp-tool",
+        "mcp-paged-catalog",
         "hooks-all-events"
       ]
     },

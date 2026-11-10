@@ -3,6 +3,8 @@ use crate::{
     OperationId,
     mcp::{McpTransport, config::Dialect},
 };
+use futures::TryStreamExt;
+#[cfg(feature = "mcp-stdio")]
 use std::collections::BTreeSet;
 
 enum Connection {
@@ -34,7 +36,7 @@ pub(super) async fn connect(
                     super::super::stdio::StdioMcpTransport::spawn(
                         child,
                         None,
-                        limits.catalog_bytes,
+                        limits.frame_bytes,
                         server.startup_timeout_ms,
                     )
                     .await?,
@@ -68,7 +70,7 @@ pub(super) async fn connect(
                 provider.clone(),
                 url.into_owned(),
                 None,
-                limits.catalog_bytes,
+                limits.frame_bytes,
                 server.startup_timeout_ms,
                 None,
             )?;
@@ -96,7 +98,14 @@ pub(super) async fn connect(
             ));
         }
     };
-    let tools = discover(limits, |cursor| connection.list(cursor)).await?;
+    // Eager schema exposure deliberately materializes the catalog. The shared
+    // page stream itself fetches only when its consumer requests another page.
+    let tools = super::super::tool_pages(|cursor| connection.list(cursor))
+        .try_fold(Vec::new(), |mut tools, page| async move {
+            tools.extend(page);
+            Ok(tools)
+        })
+        .await?;
     let transport = match connection {
         #[cfg(feature = "mcp-stdio")]
         Connection::Stdio(transport) => {
@@ -199,41 +208,6 @@ impl Connection {
             Self::Http(transport) => transport.list_tools(OperationId::new(), cursor).await,
         }
     }
-}
-
-pub(super) async fn discover<F, Fut>(
-    limits: McpClientLimits,
-    list: F,
-) -> Result<Vec<McpToolDefinition>>
-where
-    F: Fn(Option<String>) -> Fut,
-    Fut: std::future::Future<Output = Result<rmcp::model::ListToolsResult>>,
-{
-    let mut cursor = None;
-    let mut seen = BTreeSet::new();
-    let mut tools = Vec::new();
-    let mut remaining = u64::from(limits.catalog_bytes);
-    for _ in 0..limits.pages_per_server {
-        let page = list(cursor).await?;
-        if tools.len() as u64 + page.tools.len() as u64 > u64::from(limits.tools_per_server) {
-            return Err(Error::Invalid("MCP discovery exceeds tool bound".into()));
-        }
-        let bytes = crate::executor::json::json_byte_length(&page, remaining, &mut None)?;
-        remaining = remaining
-            .checked_sub(bytes)
-            .ok_or_else(|| Error::Invalid("MCP discovery exceeds byte bound".into()))?;
-        tools.extend(page.tools.into_iter().map(McpToolDefinition::from));
-        cursor = page.next_cursor;
-        let Some(next) = &cursor else {
-            return Ok(tools);
-        };
-        if next.is_empty() || !seen.insert(next.clone()) {
-            return Err(Error::Invalid(
-                "MCP discovery repeated an invalid cursor".into(),
-            ));
-        }
-    }
-    Err(Error::Invalid("MCP discovery exceeds page bound".into()))
 }
 
 /// Resolved credentials of one server, held only by the host, zeroed on drop.

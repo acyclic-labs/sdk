@@ -17,11 +17,13 @@ pub use config::{McpConfig, McpServer, McpTransport};
 ))]
 mod install;
 mod layouts;
+mod paging;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "mcp-stdio", feature = "mcp-http")
 ))]
 pub use install::{McpClientLimits, McpInstallation, McpServerFailure};
+pub use paging::tool_pages;
 pub mod http;
 #[cfg(all(feature = "mcp-oauth", not(target_arch = "wasm32")))]
 pub mod oauth;

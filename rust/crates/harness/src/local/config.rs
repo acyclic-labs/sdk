@@ -496,7 +496,7 @@ impl LocalHarnessConfig {
         self.settings = Some(settings);
         self
     }
-    /// Selects independent finite MCP discovery and tool-exchange bounds.
+    /// Selects protective MCP discovery-frame and tool-exchange bounds.
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     #[must_use]
     pub fn mcp_limits(mut self, limits: crate::mcp::McpClientLimits) -> Self {
