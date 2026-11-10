@@ -8,6 +8,15 @@
 use super::{ExecutionAccess, ExecutionNetwork, Grant, refused};
 use std::{fs::File, io, os::fd::AsRawFd, path::Path};
 
+// Apple's installed spawn.h declares this extension; libc exposes the flags
+// but not the file action. Keep this one native declaration in the adapter.
+unsafe extern "C" {
+    fn posix_spawn_file_actions_addinherit_np(
+        actions: *mut libc::posix_spawn_file_actions_t,
+        descriptor: libc::c_int,
+    ) -> libc::c_int;
+}
+
 pub(super) fn validate_stdio(descriptors: [Option<std::os::fd::RawFd>; 3]) -> io::Result<()> {
     let null = File::open("/dev/null")?.metadata()?;
     use std::os::unix::fs::MetadataExt;
@@ -182,10 +191,7 @@ impl SealedExec {
             // SAFETY: live action object and standard descriptors, which std
             // establishes before the exec hook; no ambient FD is inherited.
             status(unsafe {
-                libc::posix_spawn_file_actions_addinherit_np(
-                    result.actions.as_mut().unwrap(),
-                    descriptor,
-                )
+                posix_spawn_file_actions_addinherit_np(result.actions.as_mut().unwrap(), descriptor)
             })?;
         }
         Ok(result)
