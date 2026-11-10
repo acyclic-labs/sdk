@@ -515,7 +515,7 @@ case "$lane" in
       RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown \
         --test main client_public_consumer::identical_public_harness_trace
-    harness_tests -p acyclic-harness --features filesystem,test-support --test main client_public_consumer::identical_public_harness_trace
+    harness_tests -p acyclic-harness --features test-support --test main client_public_consumer::identical_public_harness_trace
     RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown --test main client_views_parity::
     RUSTFLAGS="$warning_rustflags" \
