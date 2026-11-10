@@ -17,6 +17,9 @@ use ratatui::{
 use std::{borrow::Cow, collections::VecDeque};
 use unicode_width::UnicodeWidthStr;
 
+#[cfg(test)]
+thread_local! { pub(crate) static WRAP_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// What a transcript block is, and so how it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockKind {
@@ -217,6 +220,8 @@ fn settled(text: &str) -> &str {
 /// A prompt is shown bold as typed after an accent marker; an answer is
 /// rendered markdown; a tool card is one row.
 fn wrap(kind: BlockKind, text: &str, width: usize, theme: &ThemeStyles) -> Vec<Line<'static>> {
+    #[cfg(test)]
+    WRAP_BYTES.with(|work| work.set(work.get() + text.len()));
     let prompt = match kind {
         BlockKind::Prompt => true,
         BlockKind::Answer => false,
