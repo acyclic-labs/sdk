@@ -310,6 +310,29 @@ async fn live_mcp_case(compose: bool) -> Result<()> {
         1,
         "reconciliation never reissues the effect"
     );
+    let original = requests[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == "mcp.watched.old")
+        .expect("original admitted schema");
+    let (different, _) = live::LiveCatalog::new(
+        "watched".into(),
+        server(
+            json!({"command":"fake"}),
+            super::super::config::Dialect::Codex,
+        )?,
+        Connected {
+            transport: remote.clone(),
+            tools: advertised(&["new"]),
+            binding: [2; 32],
+            generation: 1,
+        },
+        McpClientLimits::default(),
+    )?;
+    assert!(
+        different.recover(original, None)?.is_none(),
+        "a replacement producer cannot reconcile the original effect"
+    );
     let admitted = watched.definitions(None)?;
     remote.changed.fetch_add(1, Ordering::Release);
     remote.fail.store(true, Ordering::Release);
