@@ -26,7 +26,14 @@ impl FileTool {
                 .and_then(Value::as_str)
                 .is_some_and(crate::layers::read_only)
         {
-            return Err(Error::tool_rejected("file path is read-only"));
+            return Err(crate::executor::with_history_io(io, |history| {
+                crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "file path is read-only",
+                )
+            })
+            .tool_input());
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io {
