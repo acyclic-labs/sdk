@@ -42,6 +42,14 @@ impl<'a> InstructionSource<'a> {
             .map_or(".", |(directory, _)| directory)
     }
 
+    pub(crate) fn volume(self) -> &'a crate::conversation::VolumeRef {
+        self.volume
+    }
+
+    pub(crate) fn path(self) -> &'a str {
+        self.path
+    }
+
     /// Exact UTF-8 frame length, before reading its body.
     pub fn framed_bytes(self) -> Result<u64> {
         let overhead = "#  instructions for \n\n<INSTRUCTIONS>\n\n</INSTRUCTIONS>".len() as u64;

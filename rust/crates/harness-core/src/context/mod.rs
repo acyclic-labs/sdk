@@ -46,6 +46,8 @@ pub use compaction::*;
 pub(crate) use compaction::{clone_context, compact_projection, prefix_digest};
 mod snapshot;
 pub use snapshot::*;
+mod epoch;
+pub use epoch::{CONTEXT_CHANGED, ContextChange, ContextEpoch};
 mod manifest;
 pub use manifest::ContextManifest;
 #[doc(hidden)]

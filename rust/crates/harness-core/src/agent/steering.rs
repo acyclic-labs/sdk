@@ -122,6 +122,19 @@ pub struct SteeringSnapshot {
 /// A journal's model-boundary binding. The executor freezes the selected range
 /// with ContextPrepared; replay must reconstruct only that immutable range.
 pub trait ModelBoundary: acyclic_stream::ProviderPlatform {
+    /// Include a source update published during turn preparation in the first
+    /// request. Its committed exclusive cursor fences the ordered inbox window;
+    /// unrelated later arrivals remain for their original next boundary.
+    fn include_prepared_sources(
+        &self,
+        _operation: crate::OperationId,
+        _through: u64,
+    ) -> crate::Result<()> {
+        Err(crate::Error::Unsupported(
+            "model boundary cannot include prepared sources".into(),
+        ))
+    }
+
     /// Inputs at this safe boundary, after every prior tool result settled.
     fn messages(
         &self,
