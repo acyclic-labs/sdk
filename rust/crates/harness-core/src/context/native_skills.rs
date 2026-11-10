@@ -83,8 +83,10 @@ impl UserWatch {
     /// a change racing the scan always invalidates its catalog.
     fn arm(&self, roots: &[PathBuf], bounds: &DiscoveryWork) -> Option<u64> {
         use std::sync::atomic::Ordering;
-        let generation = self.generation.load(Ordering::Acquire);
         let mut retained = self.watches.lock().ok()?;
+        // Dropping any admitted watches invalidates every catalog held at the
+        // old generation, even if replacement discovery subsequently fails.
+        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         retained.clear();
         let mut work = *bounds;
         let mut watches = Vec::new();
@@ -700,6 +702,14 @@ impl DiscoverySource for ProjectCatalog<'_> {
     }
 }
 impl SkillReader for ProjectCatalog<'_> {
+    fn skill_identity(&self, path: &str, _: &PinnedContextPath) -> Result<String> {
+        serde_json::to_string(&(
+            self.native.root_identity().to_bytes().to_vec(),
+            path.trim_start_matches('/'),
+        ))
+        .map_err(storage)
+    }
+
     fn skill_prefix<'a>(
         &'a mut self,
         relative: &'a str,
@@ -859,6 +869,14 @@ impl DiscoverySource for UserCatalogSource<'_> {
     }
 }
 impl SkillReader for UserCatalogSource<'_> {
+    fn skill_identity(&self, path: &str, _: &PinnedContextPath) -> Result<String> {
+        serde_json::to_string(&(
+            self.source.root_identity().to_bytes().to_vec(),
+            path.trim_start_matches('/'),
+        ))
+        .map_err(storage)
+    }
+
     fn skill_prefix<'a>(
         &'a mut self,
         path: &'a str,
