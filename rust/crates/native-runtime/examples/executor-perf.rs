@@ -46,7 +46,16 @@ fn main() -> io::Result<()> {
         return Err(io::Error::other("sample count must be positive"));
     }
     let start = Instant::now();
-    let runtime = acyclic_native_runtime::coordination_runtime()?;
+    // Retain the exact former construction only as a before/after experiment,
+    // so both measurements use identical code, compiler and machine state.
+    let runtime = if std::env::args().nth(2).as_deref() == Some("before") {
+        tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()?
+    } else {
+        acyclic_native_runtime::coordination_runtime()?
+    };
     println!(
         "runtime workers={} construction_ns={} samples={samples}",
         runtime.metrics().num_workers(),
