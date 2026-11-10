@@ -443,7 +443,8 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
             "shed checkpoint lost its parent report"
         );
         host.drain(&root).await?;
-        let mut expected_children = parent_before.open_children;
+        let mut expected_children = parent_before.open_children.clone();
+        drop(parent_before);
         if oversized {
             expected_children.remove(&child).await?;
         }

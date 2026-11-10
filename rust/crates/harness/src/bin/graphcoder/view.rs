@@ -962,10 +962,10 @@ pub async fn run(
             batch = keys.next() => {
                 let mut selection_changed = false;
                 for event in batch.ok_or("terminal input ended")?? {
-                    if let Some(intent) = sidebar.event(&event, &input.keymap, tree_shown, areas.tree) {
+                    if let Some(intent) = sidebar.event(&event, &input.keymap, ui.tree.unwrap_or(tree_shown), areas.tree) {
                         let attach = match intent {
                             tree::Intent::Toggle => {
-                                let shown = !tree_shown;
+                                let shown = !ui.tree.unwrap_or(tree_shown);
                                 ui.show_tree(&conversation, shown).await?;
                                 sidebar.focused = shown;
                                 selection_changed = true;
