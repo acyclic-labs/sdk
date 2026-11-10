@@ -1175,7 +1175,7 @@ fn a_children_cursor_carries_its_hierarchy_version_and_last_path() -> Result {
     let cursor = children_cursor(&version, after.as_str());
     assert_eq!(
         page_json_bytes(&cursor)? - 2,
-        children_cursor_bytes(&version, &after) as u64
+        children_cursor_bytes(&version, after.as_str()) as u64
     );
     assert_eq!(
         parse_children_cursor(&cursor)?,
