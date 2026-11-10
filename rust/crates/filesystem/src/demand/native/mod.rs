@@ -2,7 +2,7 @@ use super::*;
 use crate::facade::FsWork;
 use crate::kernel::allocation::{
     fixed_index::FixedIndex,
-    retained::{RetainedArc, RetainedWeak},
+    retained::{ErasedRetainedWeak, RetainedArc},
 };
 use crate::lock_order::{CURSOR, Mutex as RankedMutex};
 use crate::model::{FilesystemProfile, VolumeLimits};

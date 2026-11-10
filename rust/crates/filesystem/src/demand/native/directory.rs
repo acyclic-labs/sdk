@@ -66,7 +66,7 @@ impl Drop for DirectoryCursor {
             match source.cursors.lock() {
                 Ok(mut cursors) => {
                     cursors.retire_if(self.token.to_be_bytes(), |owner| {
-                        std::ptr::eq(owner.as_ptr(), self)
+                        std::ptr::addr_eq(owner.as_ptr(), self)
                     });
                 }
                 Err(_) => {
@@ -348,7 +348,9 @@ impl NativeDemandSource {
                 return Err(DemandError::StaleCursor);
             }
             let owner = match cursor.native {
-                Some(owner) => owner,
+                Some(owner) => owner
+                    .downcast::<DirectoryCursor>()
+                    .ok_or(DemandError::StaleCursor)?,
                 None => {
                     let cursors = self
                         .inner
@@ -359,7 +361,8 @@ impl NativeDemandSource {
                         cursors
                             .get(cursor.token.to_be_bytes(), accounting)
                             .map_err(DemandError::from)?
-                            .and_then(RetainedWeak::upgrade)
+                            .and_then(ErasedRetainedWeak::upgrade)
+                            .and_then(|owner| owner.downcast::<DirectoryCursor>())
                             .ok_or(DemandError::StaleCursor)
                     })?
                 }
@@ -417,7 +420,7 @@ impl NativeDemandSource {
                 account_source(work, |accounting, _| {
                     cursors
                         .get_or_try_insert_with(token.to_be_bytes(), accounting, |_| {
-                            Ok(cursor.downgrade())
+                            Ok(cursor.clone().erase().downgrade())
                         })
                         .map(|_| ())
                         .map_err(DemandError::from)
@@ -441,7 +444,7 @@ impl NativeDemandSource {
         let next = state.has_next(entries.range.end).then(|| SourceCursor {
             source,
             token: lease.cursor.token,
-            native: Some(lease.cursor.clone()),
+            native: Some(lease.cursor.clone().erase()),
         });
         self.check(source, work)?;
         if self.metadata(directory, work)?.as_ref().map(version) != Some(observed) {

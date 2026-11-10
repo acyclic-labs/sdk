@@ -5,9 +5,11 @@ use super::*;
 pub struct SourceCursor {
     pub(crate) source: SourceReference,
     pub(crate) token: u64,
+    /// The native enumeration this continuation resumes. Erased: a cursor is a
+    /// value consumers hold across awaits, and its auto-trait proof must not
+    /// walk the native source's owner graph in every downstream crate.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-    pub(super) native:
-        Option<crate::kernel::allocation::retained::RetainedArc<native::DirectoryCursor>>,
+    pub(super) native: Option<crate::kernel::allocation::retained::ErasedRetainedArc>,
 }
 
 impl SourceCursor {

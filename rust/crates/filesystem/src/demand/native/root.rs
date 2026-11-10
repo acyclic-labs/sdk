@@ -18,7 +18,9 @@ struct NativeDemandInner {
     epoch: AtomicU64,
     profile: FilesystemProfile,
     limits: VolumeLimits,
-    cursors: RankedMutex<FixedIndex<RetainedWeak<DirectoryCursor>, 8>, CURSOR>,
+    /// Weak locators of live directory cursors, erased so that the source's
+    /// auto-trait proof does not re-enter every cursor and, through it, the source.
+    cursors: RankedMutex<FixedIndex<ErasedRetainedWeak, 8>, CURSOR>,
     next_cursor: AtomicU64,
     requests: Arc<Semaphore>,
     observer: Option<Arc<dyn DemandDirectoryObserver>>,

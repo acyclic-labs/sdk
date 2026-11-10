@@ -3,9 +3,41 @@ use super::*;
 
 // Fields retire in declaration order, including during unwinding: value
 // backing first, then its original funding and that funding's own backing.
-pub(crate) struct RetainedArc<T> {
+pub(crate) struct RetainedArc<T: ?Sized> {
     value: Arc<T>,
     allocation: RetainedFunding,
+}
+
+/// A retained owner whose concrete type is hidden from its holders. A value
+/// type or registry that carries an owner (a continuation, a weak index)
+/// holds this, so proving the holder `Send`/`Sync` stops at the trait object
+/// instead of walking the owner's whole graph, and every cycle back through
+/// it, in every downstream crate.
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub(crate) type ErasedRetainedArc = RetainedArc<dyn std::any::Any + Send + Sync>;
+/// The weak form of [`ErasedRetainedArc`].
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub(crate) type ErasedRetainedWeak = RetainedWeak<dyn std::any::Any + Send + Sync>;
+
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+impl<T: Send + Sync + 'static> RetainedArc<T> {
+    pub(crate) fn erase(self) -> ErasedRetainedArc {
+        RetainedArc {
+            value: self.value,
+            allocation: self.allocation,
+        }
+    }
+}
+
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+impl ErasedRetainedArc {
+    /// The original owner, or `None` when it has another type.
+    pub(crate) fn downcast<T: Send + Sync + 'static>(self) -> Option<RetainedArc<T>> {
+        Some(RetainedArc {
+            value: self.value.downcast().ok()?,
+            allocation: self.allocation,
+        })
+    }
 }
 
 #[derive(Clone, Default)]
@@ -34,7 +66,7 @@ impl<T> RetainedArcAdmission<T> {
     }
 }
 
-pub(crate) struct RetainedWeak<T> {
+pub(crate) struct RetainedWeak<T: ?Sized> {
     value: std::sync::Weak<T>,
     allocation: RetainedFunding,
 }
@@ -79,7 +111,9 @@ impl<T> RetainedArc<T> {
             value: std::marker::PhantomData,
         })
     }
+}
 
+impl<T: ?Sized> RetainedArc<T> {
     pub(crate) fn downgrade(&self) -> RetainedWeak<T> {
         RetainedWeak {
             value: Arc::downgrade(&self.value),
@@ -88,7 +122,7 @@ impl<T> RetainedArc<T> {
     }
 }
 
-impl<T> Clone for RetainedArc<T> {
+impl<T: ?Sized> Clone for RetainedArc<T> {
     fn clone(&self) -> Self {
         Self {
             value: Arc::clone(&self.value),
@@ -97,7 +131,7 @@ impl<T> Clone for RetainedArc<T> {
     }
 }
 
-impl<T> std::ops::Deref for RetainedArc<T> {
+impl<T: ?Sized> std::ops::Deref for RetainedArc<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -114,7 +148,7 @@ impl<T> Default for RetainedWeak<T> {
     }
 }
 
-impl<T> RetainedWeak<T> {
+impl<T: ?Sized> RetainedWeak<T> {
     #[cfg(test)]
     pub(crate) fn strong_count(&self) -> usize {
         self.value.strong_count()
