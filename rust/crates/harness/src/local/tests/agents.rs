@@ -2197,6 +2197,92 @@ async fn a_prompt_past_two_frames_is_accepted_and_reads_back_exactly() -> Result
 }
 
 #[tokio::test]
+async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> {
+    use crate::model::{ModelContent, ModelEvent, ToolCall};
+    use crate::test_support::{ScriptedEvent, ScriptedTurn};
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    let call = |name: &str, arguments| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                name.into(),
+                name.into(),
+                arguments,
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ])
+    };
+    let provider = super::scripted([
+        call(
+            "write",
+            serde_json::json!({"path":".volumes/shared/board.txt", "content":"shared-board-sentinel-73dae"}),
+        ),
+        ScriptedTurn::Text("writer settled".into()),
+        call(
+            "read",
+            serde_json::json!({"path":".volumes/shared/board.txt"}),
+        ),
+        ScriptedTurn::Text("reader settled".into()),
+    ]);
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(
+                directory.path(),
+                volume(directory.path()).await?,
+                provider.clone(),
+            )?
+            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+            .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let root = connection.root().clone();
+    for (id, brief) in [
+        ("writer", "write the shared board"),
+        ("reader", "read the shared board"),
+    ] {
+        let AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&AgentCommand::Spawn {
+                parent: root.clone(),
+                id: crate::agent::IntentId::try_from(id).map_err(agent)?,
+                brief: ModelContent::Text(brief.into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("shared-board spawn refused".into()));
+        };
+        let entries = settled(&harness, &child).await?;
+        assert!(matches!(
+            ConversationEntry::decode(
+                entries
+                    .last()
+                    .ok_or_else(|| Error::NotFound("shared-board settlement".into()))?
+            )
+            .map_err(agent)?
+            .outcome,
+            crate::agent::TurnOutcome::Completed
+        ));
+    }
+    assert_eq!(provider.request_count(), 4);
+    let observed = super::request_text(
+        &harness,
+        &provider
+            .request(3)
+            .ok_or_else(|| Error::NotFound("shared-board read request".into()))?,
+    )
+    .await?;
+    assert!(
+        observed.contains("shared-board-sentinel-73dae"),
+        "the sibling did not read the original shared write: {observed}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Result<()> {
     use crate::model::{ModelContent, ModelContentPart, ModelEvent, ToolCall};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};

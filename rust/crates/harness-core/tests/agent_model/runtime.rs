@@ -1231,6 +1231,60 @@ async fn reply_waits_require_original_committed_requests() -> Result {
         host.spawned(&root, inbox, &intent("s")).await,
         Err(Error::Conflict(_))
     ));
+    // A deepest parent still consumes the original committed spawn. Its
+    // result is a depth refusal, including when observed after later work.
+    let mut deepest = descendant;
+    while deepest.depth() < MAX_DEPTH {
+        let Delivered::Committed { inbox } = host.send(&deepest, &user(), &request).await? else {
+            return Err("deep spawn was not committed".into());
+        };
+        let (spawn, child) = requested_child(&deepest, inbox)?;
+        host.drain(&deepest).await?;
+        assert_eq!(
+            host.spawned(&deepest, inbox, &spawn).await?,
+            SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        );
+        deepest = child;
+    }
+    let Delivered::Committed { inbox } = host.send(&deepest, &user(), &request).await? else {
+        return Err("depth-refused spawn was not committed".into());
+    };
+    let spawn = intent(&format!("request:{inbox}"));
+    let waiting = host.spawned(&deepest, inbox, &spawn);
+    tokio::pin!(waiting);
+    assert!(futures::poll!(&mut waiting).is_pending());
+    host.drain(&deepest).await?;
+    assert_eq!(
+        waiting.await?,
+        SpawnOutcome::Refused {
+            reason: SpawnRefusal::Depth
+        }
+    );
+    let later = InboxRecord::Approval(Approval {
+        id: intent("after-depth-refusal"),
+    });
+    let Delivered::Committed { inbox: later_inbox } = host.send(&deepest, &user(), &later).await?
+    else {
+        return Err("later depth control was not committed".into());
+    };
+    host.drain(&deepest).await?;
+    assert_eq!(
+        host.spawned(&deepest, inbox, &spawn).await?,
+        SpawnOutcome::Refused {
+            reason: SpawnRefusal::Depth
+        }
+    );
+    assert!(matches!(
+        host.spawned(
+            &deepest,
+            later_inbox,
+            &intent(&format!("request:{later_inbox}"))
+        )
+        .await,
+        Err(Error::Conflict(_))
+    ));
     Ok(())
 }
 

@@ -471,7 +471,11 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         intent: &IntentId,
         checkpoint: Option<&acyclic_actors::guest::Checkpoint>,
     ) -> Result<SpawnOutcome, Error> {
-        let child = parent.child(&super::AgentId::derive(&parent.id(), intent.as_str()))?;
+        let Ok(child) = super::TurnEffect::child(parent, intent) else {
+            return Ok(SpawnOutcome::Refused {
+                reason: SpawnRefusal::Depth,
+            });
+        };
         match self
             .provider
             .read(ReadRequest {
