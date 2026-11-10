@@ -1,6 +1,9 @@
 //! One visible page on the selected conversation's authenticated connection.
 use super::{Conversation, Failure, Line, diff};
-use acyclic_harness::{client::AgentPageRequest, tui::QueryPage};
+use acyclic_harness::{
+    client::AgentPageRequest,
+    tui::{QueryController, QueryPage},
+};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -43,6 +46,19 @@ impl Source {
 }
 
 pub(super) type Panel = QueryPage<Source>;
+
+/// Call only after painting the selected panel. Loading the final source
+/// range is insufficient: its wrapped rows must reach the visible bottom.
+pub(super) fn reviewed(queries: &QueryController<Source>, top: usize, height: u16) -> Option<u64> {
+    let Source::Approval { status, .. } = queries.source()? else {
+        return None;
+    };
+    let page = queries.page.as_ref()?;
+    (height != 0
+        && page.next.is_none()
+        && top.saturating_add(usize::from(height)) >= page.lines.len())
+    .then_some(*status)
+}
 
 /// The existing session owns the wait. Closing or replacing the selection
 /// drops that consumer; input and redraw keep the same pending future.
@@ -143,6 +159,75 @@ mod tests {
     use acyclic_harness::tui::QueryController;
     use std::{cell::Cell, task::Poll};
     use tokio::sync::oneshot;
+
+    #[test]
+    fn approval_review_waits_for_the_last_wrapped_rows_to_be_painted() -> Result<(), Failure> {
+        use acyclic_harness::tui::{
+            PromptInput, Screen, Viewport,
+            ratatui::{Terminal, backend::TestBackend, layout::Rect},
+        };
+        let mut queries = QueryController::default();
+        let mut pending = std::pin::pin!(None::<std::future::Ready<()>>);
+        queries.select(
+            Source::Approval {
+                status: 7,
+                offset: 0,
+            },
+            pending.as_mut(),
+        );
+        queries.page = Some(Panel::new(
+            vec![
+                Line::raw("original action ".repeat(50)),
+                Line::raw("ACTION_END"),
+            ],
+            None,
+            false,
+        ));
+        let input = PromptInput::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 20))?;
+        let area = Rect::new(0, 0, 40, 20);
+        let areas = Screen::default().areas(area, &input);
+        queries.page.as_mut().unwrap().wrap(areas.overlay_columns());
+        let height = areas.overlay_rows(0);
+        let mut top = 0;
+        loop {
+            let page = queries.page.as_ref().unwrap();
+            terminal.draw(|frame| {
+                Screen {
+                    overlay: &page.lines,
+                    overlay_scroll: top,
+                    overlay_title: "Approval",
+                    ..Screen::default()
+                }
+                .render(frame, &input, &mut Viewport::default(), 0, 0);
+            })?;
+            let painted_end = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("ACTION_END");
+            assert_eq!(reviewed(&queries, top, height), painted_end.then_some(7));
+            assert_eq!(reviewed(&queries, top, 0), None);
+            if painted_end {
+                break;
+            }
+            assert!(!queries.page.as_ref().unwrap().page_boundary(
+                &mut top,
+                -isize::from(height),
+                height
+            ));
+        }
+        // The end of a range with more source bytes cannot finish review.
+        queries.page.as_mut().unwrap().next = Some(Source::Approval {
+            status: 7,
+            offset: 32,
+        });
+        assert_eq!(reviewed(&queries, top, height), None);
+        Ok(())
+    }
 
     // A real channel supplies reply readiness, cancellation and producer loss.
     // This async wrapper also makes the original read !Unpin, like load().
