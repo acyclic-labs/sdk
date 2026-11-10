@@ -242,6 +242,9 @@ impl Policy {
             };
         // The caller has just bound and verified this original workspace.
         prepared.path(root, workspace, grant.workspace.is_dir, meter)?;
+        for root in grant.write.entries() {
+            prepared.path(&root.bind_controlled(meter)?, workspace, root.is_dir, meter)?;
+        }
         // The kernel ruleset owns the inserted inode reference. The grant
         // independently pins every original object against identity reuse;
         // another live descriptor per rule buys no additional guarantee.
@@ -354,7 +357,7 @@ impl Prepared {
             Some(policy) => {
                 // Retention saves compilation, never the original path fences.
                 // A replaced read root refuses before any child can launch.
-                for root in grant.read.entries() {
+                for root in grant.write.entries().iter().chain(grant.read.entries()) {
                     drop(root.bind_controlled(meter)?);
                 }
                 PolicyOwner::Shared(Arc::clone(policy))
@@ -363,9 +366,15 @@ impl Prepared {
         };
         // Resolve once beneath the original verified workspace. Both cold and
         // retained policies use this same cwd owner and final-child handoff.
+        let cwd = cwd.unwrap_or(&grant.workspace);
+        let selected = grant.cwd_root(cwd)?;
+        let root = if std::ptr::eq(selected, &grant.workspace) {
+            root
+        } else {
+            selected.bind_controlled(meter)?
+        };
         let relative = cwd
-            .unwrap_or(&grant.workspace)
-            .strip_prefix(&grant.workspace.path)
+            .strip_prefix(&selected.path)
             .map_err(|_| refused("execution working directory escapes the granted workspace"))?;
         let cwd = if relative.as_os_str().is_empty() {
             root

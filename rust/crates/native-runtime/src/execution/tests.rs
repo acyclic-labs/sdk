@@ -6,6 +6,63 @@ use crate::{ProcessCommand as Command, ProcessStdio as Stdio, ProcessTree};
 mod ipc;
 
 #[cfg(target_os = "linux")]
+#[test]
+fn composed_grants_attenuate_all_write_roots_and_fence_replacement() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    let volume = temp.path().join("volume");
+    let foreign = temp.path().join("foreign");
+    for path in [&workspace, &volume, &foreign] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let grant = ExecutionGrant::composed(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [volume.clone()],
+        system_read_roots(),
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    let child = grant
+        .attenuate(
+            &volume,
+            ExecutionAccess::WorkspaceWrite,
+            [],
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+    grant.check_attenuation(&child).unwrap();
+    assert!(
+        grant
+            .clone()
+            .into_read_only()
+            .check_attenuation(&child)
+            .is_err()
+    );
+    let escape = ExecutionGrant::composed(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [foreign],
+        [],
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    assert!(grant.check_attenuation(&escape).is_err());
+    // A retained ruleset pins the original inode. Replacing its path must
+    // refuse launch, rather than refresh the policy around the new directory.
+    let grant = grant.compile_native().unwrap();
+    std::fs::rename(&volume, temp.path().join("retired-volume")).unwrap();
+    std::fs::create_dir(&volume).unwrap();
+    assert!(
+        grant
+            .prepare()
+            .unwrap_err()
+            .to_string()
+            .contains("root was replaced")
+    );
+}
+
+#[cfg(target_os = "linux")]
 pub(crate) fn system_read_roots() -> Vec<PathBuf> {
     ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]
         .into_iter()
