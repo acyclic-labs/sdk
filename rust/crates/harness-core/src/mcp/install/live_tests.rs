@@ -536,3 +536,132 @@ async fn live_refresh_deadline_retains_optional_catalog_and_releases_the_refresh
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn role_ceilings_bound_live_source_declarations_and_direct_or_composed_calls() -> Result<()> {
+    for compose in [false, true] {
+        for configured in [false, true] {
+            for allowed in [false, true] {
+                role_ceiling_case(compose, configured, allowed).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn role_ceiling_case(compose: bool, configured: bool, allowed: bool) -> Result<()> {
+    let remote = Arc::new(Remote {
+        change_schema: false,
+        changed: AtomicU64::new(0),
+        lists: AtomicUsize::new(0),
+        fail: AtomicBool::new(false),
+        stall: AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+        reconciles: AtomicUsize::new(0),
+    });
+    let (tools, _) = live::LiveCatalog::new(
+        "watched".into(),
+        server(
+            json!({"command":"fake"}),
+            super::super::config::Dialect::Codex,
+        )?,
+        Connected {
+            transport: remote.clone(),
+            tools: advertised(&["old"]),
+            binding: [1; 32],
+            generation: 0,
+        },
+        McpClientLimits::default(),
+    )?;
+    let mut tools = crate::tool::ToolRegistry::default().with_source(Arc::new(Nested(tools)));
+    let mut grants = crate::Capabilities::new([if configured {
+        "mcp:configured"
+    } else {
+        "mcp:call:watched"
+    }]);
+    if compose {
+        let code = crate::tools::catalog()
+            .find(|spec| spec.name == "code")
+            .expect("code")
+            .bind()?;
+        tools.register((code, None), &mut None, None)?;
+        grants.0.insert("tool:call:code".into());
+    }
+    let call = |name: &str| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                name.into(),
+                if compose {
+                    "code".into()
+                } else {
+                    format!("mcp.watched.{name}")
+                },
+                if compose {
+                    json!({"code":format!("await tools['mcp.watched.{name}']({{}})")})
+                } else {
+                    json!({})
+                },
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::Value::Null,
+            }),
+        ])
+    };
+    let model = Arc::new(ScriptedModelProvider::new([
+        call("old"),
+        ScriptedTurn::Text("first".into()),
+        call("new"),
+        ScriptedTurn::Text("second".into()),
+    ]));
+    let mut ceiling = vec!["code".into()];
+    if allowed {
+        ceiling.push("mcp.watched.old".into());
+    }
+    let executor = StockExecutor::new(
+        Model::new("test".into(), "model".into(), "1".into())?,
+        model.clone(),
+        ContextPipeline::default(),
+        tools,
+    )
+    .with_compaction_policy(CompactionPolicy::Disabled)
+    .with_tool_authority(
+        RuntimeScope::new(grants, Default::default())?,
+        Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
+    )?
+    .with_tool_ceiling(&ceiling)?
+    .with_tool_ceiling(&[
+        "code".into(),
+        "mcp.watched.old".into(),
+        "mcp.watched.new".into(),
+    ])?;
+    let journal = crate::executor::tests::Journal::default();
+    for _ in 0..2 {
+        let input = TurnInput {
+            max_steps: None,
+            operation_id: crate::OperationId::new(),
+            input: ModelContent::Text("go".into()),
+            selected_context: None,
+        };
+        let output = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(executor.execute(input, &journal).await?, output);
+        remote.changed.store(1, Ordering::Release);
+    }
+    let requests = model.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "mcp.watched.old"),
+        allowed
+    );
+    assert!(
+        !requests[2]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "mcp.watched.new")
+    );
+    assert_eq!(remote.calls.load(Ordering::SeqCst), usize::from(allowed));
+    assert_eq!(remote.reconciles.load(Ordering::SeqCst), 0);
+    Ok(())
+}
