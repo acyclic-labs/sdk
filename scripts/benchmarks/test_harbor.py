@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import importlib.metadata
 import json
+import shlex
 import tempfile
 import unittest
 from pathlib import Path
@@ -57,11 +58,34 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
                 environment = Environment()
                 await agent.setup(environment)
                 uploaded = json.loads(environment.uploads[agent.state + "/catalog.json"])
-                self.assertEqual(uploaded["benchmark"]["token_counter"] is None, counterless)
+                self.assertEqual(uploaded[provider]["token_counter"] is None, counterless)
                 self.assertEqual("--no-compaction" in environment.commands[-1], counterless)
                 self.assertIn("doctor", environment.commands[-1])
                 await agent.run("hello", environment, None)
                 self.assertEqual("--no-compaction" in environment.commands[-1], counterless)
+
+    async def test_mixed_providers_reach_install_doctor_and_execution(self):
+        workers = [dict(model_name="deepseek/fixture", adapter="chat",
+                        base_url="http://127.0.0.1:9999/deepseek/v1",
+                        context_tokens=200, output_tokens=20),
+                   dict(model_name="deepseek/reviewer", adapter="chat",
+                        base_url="http://127.0.0.1:9999/deepseek/v1",
+                        context_tokens=300, output_tokens=30)]
+        agent = GraphCoder(**self.kwargs, providers=workers)
+        environment = Environment()
+        await agent.setup(environment)
+        uploaded = json.loads(environment.uploads[agent.state + "/catalog.json"])
+        self.assertEqual(set(uploaded), {"openai", "deepseek"})
+        self.assertEqual(uploaded["openai"]["adapter"], "responses")
+        self.assertEqual(uploaded["deepseek"]["adapter"], "chat")
+        self.assertEqual(set(uploaded["deepseek"]["models"]), {"fixture", "reviewer"})
+        self.assertEqual(uploaded["deepseek"]["models"]["reviewer"]["capacity"]["context_tokens"], 300)
+        doctor = environment.commands[-1]
+        await agent.run("use worker roles", environment, None)
+        for command in (doctor, environment.commands[-1]):
+            arguments = shlex.split(command)
+            self.assertEqual(arguments[arguments.index("--model") + 1], "openai/fixture")
+            self.assertIn("--no-compaction", arguments)
 
     async def test_install_run_and_failed_reinstall_fence_execution(self):
         self.assertEqual(importlib.metadata.version("harbor"), "0.24.0")

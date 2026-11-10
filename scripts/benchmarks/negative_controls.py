@@ -9,6 +9,12 @@ from pathlib import Path
 
 
 CONTROLS = [
+    ("worker providers omitted from the catalog", "graphcoder_harbor.py",
+     "adapter=adapter, providers=providers", "adapter=adapter, providers=None",
+     "test_harbor.HarborContracts.test_mixed_providers_reach_install_doctor_and_execution"),
+    ("root provider identity rewritten", "contracts.py",
+     '"--model", model,', '"--model", "benchmark/" + model.split("/", 1)[1],',
+     "test_harbor.HarborContracts.test_mixed_providers_reach_install_doctor_and_execution"),
     ("doctor loses counterless execution policy", "graphcoder_harbor.py",
      "self.binary, self.state, self.model_name, compaction=self.compaction",
      "self.binary, self.state, self.model_name",

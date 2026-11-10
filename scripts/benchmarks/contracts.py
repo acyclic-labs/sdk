@@ -52,8 +52,33 @@ class Artifact:
 
 
 def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: int,
-            *, adapter: str | None = None):
-    """One explicit endpoint; no key, auth-file, or host-login option exists."""
+            *, adapter: str | None = None, providers: list[dict] | None = None):
+    """Root and additional models, with explicit endpoints and no credentials.
+
+    Each providers entry takes the same model_name, base_url, context_tokens,
+    output_tokens and optional adapter fields as the root. Provider-qualified
+    names remain selectable by role files. Models sharing a provider must use
+    the same endpoint and adapter; different routes need different provider IDs.
+    """
+    result = {}
+    for selection in [dict(model_name=model_name, base_url=base_url,
+                           context_tokens=context_tokens, output_tokens=output_tokens,
+                           adapter=adapter), *(providers or [])]:
+        provider, entry = _provider(**selection)
+        if provider in result:
+            previous = result[provider]
+            if any(previous[key] != value for key, value in entry.items() if key != "models"):
+                raise ValueError(f"conflicting endpoint or adapter for provider: {provider}")
+            if previous["models"].keys() & entry["models"].keys():
+                raise ValueError(f"duplicate model for provider: {provider}")
+            previous["models"].update(entry["models"])
+        else:
+            result[provider] = entry
+    return result
+
+
+def _provider(model_name: str, base_url: str, context_tokens: int, output_tokens: int,
+              *, adapter: str | None = None):
     if not isinstance(model_name, str) or "/" not in model_name:
         raise ValueError("model_name must be provider/model")
     provider, model = model_name.split("/", 1)
@@ -81,14 +106,14 @@ def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: 
                           "rust/crates/harness-providers/src/token_counters.json").read_text())
     if adapter not in counters:
         raise ValueError(f"unknown adapter: {adapter}")
-    return {"benchmark": {
+    return provider, {
         "adapter": adapter, "authentication": "optional", "base_url": base_url,
         "models": {model: {"capacity": {"context_tokens": context_tokens,
                                       "output_tokens": output_tokens},
                            "features": {"tools": True, "images": False}}},
         "max_event_bytes": 1048576,
         "token_counter": counters[adapter],
-    }}
+    }
 
 
 def _invocation(binary: str, state: str, model: str, compaction: bool) -> list[str]:
@@ -102,9 +127,8 @@ def _invocation(binary: str, state: str, model: str, compaction: bool) -> list[s
         "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,
         "XDG_STATE_HOME=" + home, "XDG_CACHE_HOME=" + home,
         "TMPDIR=" + str(PurePosixPath(state) / "tmp"),
-        "ACYCLIC_SIGNING_CUSTODY=private-file", "ACYCLIC_SIGNING_CUSTODY_DIRECTORY=" + home,
         binary, "--catalog", str(PurePosixPath(state) / "catalog.json"),
-        "--settings-root", home, "--model", "benchmark/" + model.split("/", 1)[1],
+        "--settings-root", home, "--model", model,
     ] + ([] if compaction else ["--no-compaction"])
 
 
