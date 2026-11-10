@@ -276,7 +276,7 @@ const claims = {
       ],
       positiveCommand: ["test", "--locked", "-p", "acyclic-harness-core", "--features", "filesystem", "--lib", "--", "--exact", "--nocapture",
         "filesystem::memory::tests::layered_reads::every_effective_projection_keeps_the_original_probe_generation",
-        "filesystem::memory::tests::layered_reads::explicit_versions_keep_their_selection_across_a_new_home_probe",
+        "filesystem::memory::tests::layered_reads::explicit_versions_keep_their_selection_without_a_new_home_probe",
         "filesystem::memory::tests::layered_reads::seed_fallback_and_off_markers_keep_the_original_layer_decision",
         "filesystem::memory::tests::layered_reads::effective_reads_preserve_the_selected_layers_authority",
         "filesystem::memory::tests::projections::cached_line_reads_keep_original_receipts_outside_the_source_volume"],
