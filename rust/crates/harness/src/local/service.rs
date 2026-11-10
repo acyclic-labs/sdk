@@ -851,6 +851,12 @@ mod tests {
         let checkout = tempfile::tempdir().map_err(storage)?;
         let storage_dir = tempfile::tempdir().map_err(storage)?;
         std::fs::write(checkout.path().join("shared.txt"), b"base\n").map_err(storage)?;
+        std::fs::create_dir(checkout.path().join("nested")).map_err(storage)?;
+        std::fs::write(
+            checkout.path().join("nested/kept.txt"),
+            b"native untouched\n",
+        )
+        .map_err(storage)?;
         let provider = Arc::new(ScriptedModelProvider::new(
             std::iter::empty::<ScriptedTurn>(),
         ));
@@ -921,6 +927,10 @@ mod tests {
         assert!(
             first_commit.is_some(),
             "integration must create a merge commit"
+        );
+        assert_eq!(
+            std::fs::read(checkout.path().join("nested/kept.txt")).map_err(storage)?,
+            b"native untouched\n"
         );
         assert_eq!(
             std::fs::read(checkout.path().join("first.txt")).map_err(storage)?,
