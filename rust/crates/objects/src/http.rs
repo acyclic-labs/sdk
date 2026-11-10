@@ -123,7 +123,7 @@ pub struct HttpObjects {
     authorization: Option<HeaderValue>,
     credential: Option<CredentialProvider>,
     context: Option<acyclic_auth::operation::Context>,
-    maximum: usize,
+    maximum: Option<usize>,
 }
 
 impl HttpObjects {
@@ -135,11 +135,11 @@ impl HttpObjects {
         self
     }
 
-    /// Creates a bounded client with optional exclusive PEM trust.
+    /// Creates a client with optional aggregate response credit and exclusive PEM trust.
     pub fn new(
         endpoint: &str,
         token: &str,
-        maximum_response_bytes: usize,
+        maximum_response_bytes: Option<usize>,
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
         Self::build(endpoint, Some(token), None, maximum_response_bytes, ca)
@@ -149,7 +149,7 @@ impl HttpObjects {
     pub fn with_credential_provider(
         endpoint: &str,
         credential: CredentialProvider,
-        maximum: usize,
+        maximum: Option<usize>,
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
         Self::build(endpoint, None, Some(credential), maximum, ca)
@@ -159,7 +159,7 @@ impl HttpObjects {
         endpoint: &str,
         token: Option<&str>,
         credential: Option<CredentialProvider>,
-        maximum_response_bytes: usize,
+        maximum_response_bytes: Option<usize>,
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
         let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
@@ -177,7 +177,7 @@ impl HttpObjects {
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
-            || maximum_response_bytes == 0
+            || maximum_response_bytes == Some(0)
         {
             return Err(invalid());
         }
@@ -280,7 +280,7 @@ impl HttpObjects {
                 context.check()?;
             }
             let decoded =
-                json::decode(output_name, &bytes, self.maximum).map_err(|_| unavailable())?;
+                json::decode(output_name, &bytes, bytes.len()).map_err(|_| unavailable())?;
             if let Some(lease) = &lease {
                 lease
                     .check()
@@ -293,15 +293,19 @@ impl HttpObjects {
     }
 
     async fn bytes(&self, mut response: Response) -> Result<Vec<u8>, Error> {
-        if response
-            .content_length()
-            .is_some_and(|size| size > self.maximum as u64)
-        {
+        if self.maximum.is_some_and(|maximum| {
+            response
+                .content_length()
+                .is_some_and(|size| size > maximum as u64)
+        }) {
             return Err(wire::ErrorCode::QuotaExceeded.into());
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
-            if chunk.len() > self.maximum.saturating_sub(bytes.len()) {
+            if self
+                .maximum
+                .is_some_and(|maximum| chunk.len() > maximum.saturating_sub(bytes.len()))
+            {
                 return Err(wire::ErrorCode::QuotaExceeded.into());
             }
             bytes.extend_from_slice(&chunk);
@@ -315,7 +319,7 @@ impl HttpObjects {
             Ok(bytes) => bytes,
             Err(error) => return error,
         };
-        if let Some(error) = json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, self.maximum)
+        if let Some(error) = json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, bytes.len())
             .ok()
             .and_then(Error::from_detail)
         {
@@ -382,25 +386,31 @@ impl Blobs for HttpObjects {
         // alone, exactly as its single put would. Chunks go in request order,
         // so a member's references in an earlier chunk have settled before
         // it is sent.
-        let per_call = put_batch_acknowledgement().map_or(1, |(single, step)| {
-            1 + self.maximum.saturating_sub(single) / step.max(1)
+        let bounds = self.maximum.map(|maximum| {
+            let per_call = put_batch_acknowledgement().map_or(1, |(single, step)| {
+                1 + maximum.saturating_sub(single) / step.max(1)
+            });
+            (maximum, per_call, put_batch_request())
         });
-        let request = put_batch_request();
         let mut results = Vec::with_capacity(requests.len());
         let mut requests = requests.into_iter().peekable();
         while requests.peek().is_some() {
             let mut chunk = Vec::new();
-            let mut used = request.map_or(0, |(frame, ..)| frame);
+            let mut used = bounds
+                .and_then(|(_, _, request)| request)
+                .map_or(0, |(frame, ..)| frame);
             while let Some((body, references)) = requests.peek() {
-                let cost = request.map_or(usize::MAX, |bound| {
-                    request_member(bound, body.bytes().len(), references.len())
-                });
-                if !chunk.is_empty()
-                    && (chunk.len() == per_call || used.saturating_add(cost) > self.maximum)
-                {
-                    break;
+                if let Some((maximum, per_call, request)) = bounds {
+                    let cost = request.map_or(usize::MAX, |bound| {
+                        request_member(bound, body.bytes().len(), references.len())
+                    });
+                    if !chunk.is_empty()
+                        && (chunk.len() == per_call || used.saturating_add(cost) > maximum)
+                    {
+                        break;
+                    }
+                    used = used.saturating_add(cost);
                 }
-                used = used.saturating_add(cost);
                 chunk.extend(requests.next());
             }
             let members = chunk.len();

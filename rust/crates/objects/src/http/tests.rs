@@ -113,14 +113,14 @@ async fn http_availability_uses_shared_accounts_framing_and_terminal_failure() -
         }
     }
     let _stop = Stop(server.abort_handle());
-    let first = HttpObjects::new(&endpoint, "first", 1024 * 1024, None)?;
-    let second = HttpObjects::new(&endpoint, "second", 1024 * 1024, None)?;
+    let first = HttpObjects::new(&endpoint, "first", Some(1024 * 1024), None)?;
+    let second = HttpObjects::new(&endpoint, "second", Some(1024 * 1024), None)?;
     crate::conformance::verify(&first, &second, "http-availability").await?;
     let digest = Digest::of(b"HTTP physical restoration");
     let mut observation = first.availability(digest).await?;
     let mut isolated = second.availability(digest).await?;
     assert!(
-        matches!(HttpObjects::new(&endpoint, "denied", 1024, None)?.availability(digest).await, Err(error) if error.code == wire::ErrorCode::AccessDenied)
+        matches!(HttpObjects::new(&endpoint, "denied", Some(1024), None)?.availability(digest).await, Err(error) if error.code == wire::ErrorCode::AccessDenied)
     );
     let account = service.store.account(b"first")?;
     account.availability_source().restored(digest)?;
@@ -172,9 +172,14 @@ async fn http_availability_retains_original_context_at_open_and_delivery() -> Te
     let result = crate::availability::client::context_tests::verify(
         |context, credential| {
             Box::new(
-                HttpObjects::with_credential_provider(&endpoint, credential, 1024 * 1024, None)
-                    .unwrap()
-                    .with_context(context),
+                HttpObjects::with_credential_provider(
+                    &endpoint,
+                    credential,
+                    Some(1024 * 1024),
+                    None,
+                )
+                .unwrap()
+                .with_context(context),
             )
         },
         source,
@@ -257,29 +262,36 @@ fn sealed(bodies: &[Vec<u8>]) -> Vec<(crate::Sealed, Vec<Digest>)> {
 async fn http_put_batch_splits_by_the_reply_budget_and_every_member_commits() -> TestResult {
     const BUDGET: usize = 1024;
     const MEMBERS: usize = 100;
-    let gateway = counting_gateway().await?;
-    let objects = HttpObjects::new(&gateway.endpoint, "first", BUDGET, None)?;
-    let (single, step) = put_batch_acknowledgement().ok_or("acknowledgement bound")?;
-    let request = put_batch_request().ok_or("request bound")?;
-    let member = request_member(request, 4, 0);
-    // Uniform members: the tighter of the reply and request budgets.
-    let per_call = (1 + (BUDGET - single) / step).min(1 + (BUDGET - request.0 - member) / member);
-    // Negative control: one reply answering every member exceeds the budget.
-    assert!(single + (MEMBERS - 1) * step > BUDGET);
-    let bodies: Vec<_> = (0..MEMBERS as u32)
-        .map(|index| index.to_le_bytes().to_vec())
-        .collect();
-    committed(&objects.put_batch_sealed(sealed(&bodies)).await, &bodies)?;
-    assert_eq!(
-        gateway.calls.load(Ordering::SeqCst),
-        MEMBERS.div_ceil(per_call)
-    );
-    // The repeat is answered in the same number of calls.
-    committed(&objects.put_batch_sealed(sealed(&bodies)).await, &bodies)?;
-    assert_eq!(
-        gateway.calls.load(Ordering::SeqCst),
-        2 * MEMBERS.div_ceil(per_call)
-    );
+    for maximum in [Some(BUDGET), None] {
+        let gateway = counting_gateway().await?;
+        let objects = HttpObjects::new(&gateway.endpoint, "first", maximum, None)?;
+        let (single, step) = put_batch_acknowledgement().ok_or("acknowledgement bound")?;
+        let request = put_batch_request().ok_or("request bound")?;
+        let member = request_member(request, 4, 0);
+        // Uniform members: the tighter of the reply and request budgets.
+        let per_call = match maximum {
+            Some(maximum) => {
+                (1 + (maximum - single) / step).min(1 + (maximum - request.0 - member) / member)
+            }
+            None => MEMBERS,
+        };
+        // Negative control: one reply answering every member exceeds the budget.
+        assert!(single + (MEMBERS - 1) * step > BUDGET);
+        let bodies: Vec<_> = (0..MEMBERS as u32)
+            .map(|index| index.to_le_bytes().to_vec())
+            .collect();
+        committed(&objects.put_batch_sealed(sealed(&bodies)).await, &bodies)?;
+        assert_eq!(
+            gateway.calls.load(Ordering::SeqCst),
+            MEMBERS.div_ceil(per_call)
+        );
+        // The repeat is answered in the same number of calls.
+        committed(&objects.put_batch_sealed(sealed(&bodies)).await, &bodies)?;
+        assert_eq!(
+            gateway.calls.load(Ordering::SeqCst),
+            2 * MEMBERS.div_ceil(per_call)
+        );
+    }
     Ok(())
 }
 
@@ -287,7 +299,7 @@ async fn http_put_batch_splits_by_the_reply_budget_and_every_member_commits() ->
 async fn http_put_batch_splits_by_the_request_budget_and_large_members_commit() -> TestResult {
     const BUDGET: usize = 1024 * 1024;
     let gateway = counting_gateway().await?;
-    let objects = HttpObjects::new(&gateway.endpoint, "first", BUDGET, None)?;
+    let objects = HttpObjects::new(&gateway.endpoint, "first", Some(BUDGET), None)?;
     let bodies = vec![vec![1; 400 * 1024], vec![2; 400 * 1024]];
     // Negative control: both members in one request exceed the gateway's
     // and the client's budget, though each fits alone.
@@ -345,7 +357,7 @@ async fn a_servers_cause_reaches_the_http_client() -> TestResult {
         .with_state(service.clone());
     let server = tokio::spawn(async move { axum::serve(listener, router).await });
     let _stop = Stop(server.abort_handle());
-    let client = HttpObjects::new(&endpoint, "first", 1024 * 1024, None)?;
+    let client = HttpObjects::new(&endpoint, "first", Some(1024 * 1024), None)?;
     for faults in [2, 16, 48] {
         let error = crate::tests::failed_release(&client, service.store.medium(), faults)
             .await

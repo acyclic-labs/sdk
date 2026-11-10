@@ -13,7 +13,7 @@ async fn stopped_http_put_hashes_no_bytes_and_never_calls_credentials() -> TestR
         panic!("stopped operation must not resolve credentials");
     });
     let objects =
-        HttpObjects::with_credential_provider("http://127.0.0.1:1/", provider, 4096, None)?
+        HttpObjects::with_credential_provider("http://127.0.0.1:1/", provider, Some(4096), None)?
             .with_context(Context::new(1, std::future::ready(()), pending()));
     let body: OwnedBytes = b"stopped-before-sealing".as_slice().into();
     let before = acyclic_stream::hashed_on_this_thread();
@@ -74,7 +74,7 @@ async fn original_context_owns_http_body_progress_and_clones() -> TestResult {
         let (expire, expired) = oneshot::channel();
         let (cancel, cancelled) = oneshot::channel();
         let objects =
-            HttpObjects::new(&endpoint, "fixture", 4096, None)?.with_context(Context::new(
+            HttpObjects::new(&endpoint, "fixture", Some(4096), None)?.with_context(Context::new(
                 u64::MAX,
                 async {
                     let _ = expired.await;
@@ -141,7 +141,7 @@ async fn a_credential_callback_cannot_cancel_then_dispatch_http() -> TestResult 
             cancel.lock().unwrap().take().unwrap().send(()).unwrap();
             std::future::ready(Ok("fixture".into()))
         });
-        let objects = HttpObjects::with_credential_provider(&endpoint, provider, 4096, None)?
+        let objects = HttpObjects::with_credential_provider(&endpoint, provider, Some(4096), None)?
             .with_context(Context::new(u64::MAX, pending(), async {
                 let _ = cancelled.await;
             }));
