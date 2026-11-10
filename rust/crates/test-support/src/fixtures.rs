@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 ///
 /// Runtime Cargo metadata wins over the compiled path. Nextest's portable
 /// executable variable is used when Cargo metadata is absent. An optional
-/// explicitly selected executable takes precedence over both.
+/// explicitly selected executable takes precedence over both. Checking a consumer
+/// does not require Cargo to have built its executable: the compiled path is
+/// consulted only when no explicit or runtime executable was selected.
 ///
 /// # Panics
 ///
-/// If the selected executable path is not absolute.
+/// If no executable metadata is available, or its selected path is not absolute.
 #[macro_export]
 macro_rules! cargo_binary {
     ($name:literal) => {
@@ -19,7 +21,15 @@ macro_rules! cargo_binary {
             .or_else(|| ::std::env::var_os(concat!("CARGO_BIN_EXE_", $name)))
             .or_else(|| ::std::env::var_os(concat!("NEXTEST_BIN_EXE_", $name).replace('-', "_")));
         let path = selected.map_or_else(
-            || ::std::path::PathBuf::from(env!(concat!("CARGO_BIN_EXE_", $name))),
+            || {
+                ::std::path::PathBuf::from(
+                    option_env!(concat!("CARGO_BIN_EXE_", $name)).expect(concat!(
+                        "test binary metadata absent for ",
+                        $name,
+                        "; select its executable explicitly or supply Cargo/Nextest runtime metadata"
+                    )),
+                )
+            },
             ::std::path::PathBuf::from,
         );
         assert!(
@@ -98,4 +108,32 @@ macro_rules! crate_path {
     ($relative:expr) => {
         $crate::crate_source_path(env!("CARGO_MANIFEST_DIR"), $relative)
     };
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn selected_external_runner_executes_without_compiled_cargo_metadata() {
+        let executable = crate::cargo_binary!(
+            "external-native-test-consumer",
+            Some(
+                std::env::current_exe()
+                    .expect("current test executable")
+                    .into_os_string()
+            )
+        );
+        let output = std::process::Command::new(executable)
+            .arg("--list")
+            .output()
+            .expect("execute explicitly selected original runner");
+        assert!(
+            output.status.success(),
+            "selected runner failed: {output:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("selected_external_runner_executes_without_compiled_cargo_metadata"),
+            "selected runner did not expose its original property: {output:?}"
+        );
+    }
 }
