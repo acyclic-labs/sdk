@@ -229,7 +229,41 @@ impl<'io> StockExecution<'io> {
             }
         } else {
             self.stock.tools.refresh().await?;
-            self.stock.tools.resolve(&invocation.name, self.io)?
+            let selected = self.stock.tools.resolve(&invocation.name, self.io)?;
+            if let Some(tool) = &selected
+                && self
+                    .stock
+                    .tools
+                    .fixed_for_grants(&invocation.name, self.stock.tool_scope.grants(), self.io)?
+                    .is_none()
+            {
+                let retained = self
+                    .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
+                    .await?;
+                if !retained.request.as_ref().is_some_and(|request| {
+                    request
+                        .request()
+                        .tools
+                        .iter()
+                        .any(|definition| definition == &tool.definition)
+                }) {
+                    let content = self
+                        .settle_tool_refusal(
+                            journal,
+                            operation_id,
+                            step,
+                            &invocation,
+                            ToolCallRejection::Failed(stock_boundary(
+                                self.io,
+                                Conflict,
+                                "tool definition changed after the model request",
+                            )),
+                        )
+                        .await?;
+                    return self.push_tool_result(&invocation, content, None, prior_messages);
+                }
+            }
+            selected
         };
         let admitted = match selected {
             Some(tool) => self
