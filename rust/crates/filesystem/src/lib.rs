@@ -63,7 +63,7 @@ pub mod access;
 mod arc_layout;
 mod operation_claim;
 mod sync;
-#[cfg(all(any(test, feature = "native-watch"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod watch_queue;
 pub use acyclic_stream::{
     OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
@@ -80,7 +80,7 @@ pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
 pub mod compat_wire;
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod core_state;
 pub mod mount_qualification;
 #[cfg(not(target_arch = "wasm32"))]
@@ -91,20 +91,16 @@ pub mod demand;
 /// Session filesystem payloads.
 pub mod session;
 pub use demand::DemandError;
-#[cfg(any(test, feature = "distributed"))]
 pub mod distributed;
-#[cfg(any(test, feature = "distributed"))]
 mod logical_objects;
-#[cfg(any(test, feature = "distributed"))]
 pub use logical_objects::{LogicalObjectStore, ObjectSealer, PlainObjects};
 pub mod facade;
 #[macro_use]
 pub mod foundation;
 mod publication_changes;
-#[cfg(any(test, feature = "distributed"))]
 pub use publication_changes::PublicationEntry;
 pub use publication_changes::{PublicationChanges, PublicationContext};
-#[cfg(all(feature = "native-watch", target_os = "macos"))]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
 mod fsevents;
 pub mod git_compat;
 mod heap_future;
@@ -133,7 +129,7 @@ pub mod tooling_contracts;
 pub use acyclic_fs_base::numeric::exact_u32_from_f64;
 #[cfg(kani)]
 mod kani_proofs;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_capture;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_exchange;
@@ -144,12 +140,16 @@ pub mod native_host;
 mod native_identity;
 #[cfg(all(
     not(target_arch = "wasm32"),
-    any(all(windows, feature = "native-mount"), feature = "test-support", kani)
+    any(
+        all(windows, not(target_arch = "wasm32")),
+        feature = "test-support",
+        kani
+    )
 ))]
 mod native_ownership;
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub use native_ownership::codec_fuzz as native_ownership_codec;
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_mount;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_name;
@@ -158,17 +158,16 @@ pub mod path;
 pub mod performance;
 mod record_store;
 pub mod s3;
-#[cfg(all(feature = "s3-http", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod s3_http;
-#[cfg(any(test, feature = "memory"))]
 pub mod simulation;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod source;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod source_watch;
 pub mod speculation;
 #[cfg(all(
-    any(test, feature = "local", feature = "conformance"),
+    any(test, not(target_arch = "wasm32"), feature = "conformance"),
     not(target_arch = "wasm32")
 ))]
 #[doc(hidden)]
@@ -179,13 +178,17 @@ pub mod streams_record;
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
 pub use acyclic_fs_base::text_merge;
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod watch;
-#[cfg(all(feature = "native-watch", target_os = "windows"))]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
 mod windows_usn;
 #[cfg(all(
     not(target_arch = "wasm32"),
-    any(test, feature = "test-support", all(feature = "native-watch", windows))
+    any(
+        test,
+        feature = "test-support",
+        all(not(target_arch = "wasm32"), windows)
+    )
 ))]
 #[doc(hidden)]
 pub mod windows_usn_codec;
@@ -193,14 +196,14 @@ pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;
 
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 /// Scopes authority writes that survive a crash of this process but wait
 /// for [`LocalFs::flush_deferred_authority`] to survive a power loss.
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_stream::deferring_durability as deferring_authority_durability;
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 #[cfg(not(target_arch = "wasm32"))]
 pub use async_storage::NativeAuthorityGuard;
@@ -213,9 +216,8 @@ pub use async_storage::{
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
-#[cfg(any(test, feature = "distributed"))]
 pub use distributed::{
     AuthorityPlacement, FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,
     FilesystemCommitResult, PreparedFilesystemAppend, PreparedFilesystemCommit,
@@ -231,14 +233,12 @@ pub use facade::{
     ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
     StagedContent, Volume, VolumeInitialization,
 };
-#[cfg(any(test, feature = "distributed"))]
 pub use facade::{CreateSpec, ForkSpec, ForkedGeneration, RestoreSpec};
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use facade::{
     LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
     LocalOperationWindowStore, LocalOptions, LocalVolume,
 };
-#[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 pub use facade::{MemoryAuthorityBackend, MemoryFs, MemoryObjectBackend};
 pub use foundation::{
     AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES, AuthorityId, CheckoutId, Digest, DurableCommit, Epoch,
@@ -260,7 +260,6 @@ pub use git_compat::{
     git_paths_preserving_reserved, git_restore_paths, git_tracked_paths_after, grep_git_generation,
     parse_git_public_command, walk_git_tree,
 };
-#[cfg(feature = "distributed")]
 pub use git_compat::{StreamGitCompatStore, StreamGitCompatStoreError};
 
 pub use kernel::{
@@ -291,11 +290,7 @@ pub use materializer::{
     NativeStageUncertainty, NativeTreeMaterializationBackend, NativeTreeMaterializationError,
     NativeWorkReservation, validate_native_preparation_location,
 };
-#[cfg(all(
-    any(test, feature = "local"),
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{
     NativeWorkspacePublication, NativeWorkspacePublicationError,
     load_native_materialization_journal, prepare_native_generation_transition,
@@ -325,7 +320,7 @@ pub use multi_root::{
     MultiRootPublicationStore, MultiRootPublishRoot, MultiRootPublisher, Publication,
     WorkspaceMultiRootPublisher, WorkspaceMultiRootPublisherError, WorkspaceResolver,
 };
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use native_capture::{
     CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, HeldRoot, NativeDurability,
     SearchRoot, WatchCaptureReceipt, capture_baseline, capture_held_paths, capture_paths,
@@ -334,7 +329,7 @@ pub use native_capture::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_identity::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use native_mount::{
     CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,
     MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
@@ -358,9 +353,9 @@ pub use native_mount::{
     seal_checkout_with_permit, shared_view_namespace_contains, shared_view_root,
     shared_view_root_in,
 };
-#[cfg(all(feature = "native-mount", target_os = "macos"))]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
 pub use native_mount::{DarwinRetirementFailure, DarwinTeardownFailure};
-#[cfg(all(feature = "native-mount", target_os = "linux"))]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
 pub use native_mount::{
     recover_disconnected_native_mount_destination, recover_disconnected_native_mount_destination_in,
 };
@@ -370,7 +365,6 @@ pub use operation_window::{
     OperationWindowPhase, OperationWindowReconcile, OperationWindowSnapshot, OperationWindowStore,
     WorkspaceOperationFinish,
 };
-#[cfg(any(test, feature = "distributed"))]
 pub use operation_window::{StreamOperationWindowStore, StreamOperationWindowStoreError};
 pub use performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
@@ -379,19 +373,18 @@ pub use s3::{
     S3Error, S3List, S3ListCursor, S3ListOptions, S3MultipartOptions, S3MultipartUpload, S3Object,
     S3ObjectHead, S3Workspace,
 };
-#[cfg(all(feature = "s3-http", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use s3_http::{
     FilesystemS3Adapter, FilesystemS3Authentication, FilesystemS3Limits, FilesystemS3Principal,
     FilesystemS3Resolver, S3MultipartRetentionLimits, active_s3_multipart_objects,
 };
-#[cfg(any(test, feature = "memory"))]
 pub use simulation::{
     ScheduledSimulationFault, SimulatedStore, Simulation, SimulationError, SimulationFault,
     SimulationOperation, SimulationOptions, SimulationTrace,
 };
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use source::{ReconcileOutcome, Source, SourceError, SourceMode, SourceOptions, SourceState};
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use source_watch::HeldRootWatch;
 pub use speculation::{
     ObjectResidency, PromotionAdmission, PromotionCandidate, PromotionDestination,
@@ -414,12 +407,12 @@ pub use streams_record::{
     STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,
     StreamsDurableRecord,
 };
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use watch::{
     NativeWatch, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions, NativeWatchRescan,
     WatchBatch, WatchChange, WatchInvalidationReason, native_watch_capabilities,
 };
-#[cfg(all(feature = "native-watch", target_os = "windows"))]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
 pub use windows_usn::{
     WindowsUsnCheckpoint, WindowsUsnContinuity, WindowsUsnDiscontinuity, WindowsUsnError,
     capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
@@ -446,3 +439,21 @@ pub mod browser;
 /// Shared backend qualification and checked on-demand filesystem workloads.
 #[cfg(feature = "conformance")]
 pub mod conformance;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native_future;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_future::NativeFutureBundle;
+
+/// Optional original native work; `None` is unbounded.
+#[cfg(not(target_arch = "wasm32"))]
+pub type NativeWork<'a> = Option<&'a NativeMaterializationWork>;
+/// Browser work has no native allocation ledger.
+#[cfg(target_arch = "wasm32")]
+pub type NativeWork<'a> = Option<&'a ()>;
+/// Optional original native allocation custody.
+#[cfg(not(target_arch = "wasm32"))]
+pub type NativeCustody = Option<NativeAllocation>;
+/// Browser work has no native allocation custody.
+#[cfg(target_arch = "wasm32")]
+pub type NativeCustody = Option<()>;

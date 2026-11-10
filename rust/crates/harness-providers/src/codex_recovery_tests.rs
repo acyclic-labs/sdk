@@ -260,7 +260,9 @@ impl HttpTransport for CancelRefresh {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
+    ) -> acyclic_harness_core::Result<
+        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
+    > {
         crate::fixtures::native_delay(wait, work)
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -273,8 +275,8 @@ impl HttpTransport for CancelRefresh {
         &'a self,
         request: HttpRequest,
         work: &'a NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
-        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             if request.url.ends_with("/oauth/token") {
                 self.cancel.cancel();
                 std::future::pending().await

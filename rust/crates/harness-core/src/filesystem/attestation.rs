@@ -78,7 +78,7 @@ pub trait AttestedProvider: crate::store::JournalProvider + Sized {
 }
 
 impl AttestedProvider for acyclic_stream::MemoryStream {}
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl AttestedProvider for acyclic_stream::LocalStream {}
 
 /// The placement stream with each write attested; reads pass through.

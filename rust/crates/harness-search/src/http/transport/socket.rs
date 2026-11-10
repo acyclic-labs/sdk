@@ -1,4 +1,4 @@
-use crate::{Error, NativeCustody, NativeWork, Result};
+use crate::{Error, Result};
 use std::{
     pin::Pin,
     task::{Context, Poll},
@@ -9,16 +9,16 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 // The failure slot is borrowed by this connection, without another shared store.
 pub(crate) struct Socket<'a, I> {
     inner: I,
-    work: NativeWork<'a>,
+    work: acyclic_fs::NativeWork<'a>,
     failure: &'a mut Option<Error>,
-    held: NativeCustody,
+    held: acyclic_fs::NativeCustody,
     received: u64,
 }
 
 impl<'a, I> Socket<'a, I> {
     pub(crate) fn new(
         inner: I,
-        work: NativeWork<'a>,
+        work: acyclic_fs::NativeWork<'a>,
         failure: &'a mut Option<Error>,
     ) -> Result<Self> {
         Ok(Self {
@@ -46,7 +46,7 @@ impl<I: AsyncRead + Unpin> AsyncRead for Socket<'_, I> {
         if maximum == 0 {
             return Poll::Ready(Ok(()));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let reserved = if let Some(work) = this.work {
             let remaining = match work.remaining() {
                 Ok(remaining) => remaining,
@@ -80,7 +80,7 @@ impl<I: AsyncRead + Unpin> AsyncRead for Socket<'_, I> {
         };
         let initialized = buffer.initialized().len() - buffer.filled().len();
         let zeroed = maximum.saturating_sub(initialized);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = this.work
             && let Err(error) = work.charge(acyclic_fs::WorkCounters {
                 bytes_copied: zeroed as u64,
@@ -95,7 +95,7 @@ impl<I: AsyncRead + Unpin> AsyncRead for Socket<'_, I> {
         let count = limited.filled().len();
         buffer.advance(count);
         this.received += count as u64;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(reserved) = reserved
             && let Err(error) = reserved.record_completed(acyclic_fs::WorkCounters {
                 source_bytes_read: count as u64,
@@ -124,5 +124,4 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for Socket<'_, I> {
 }
 
 #[cfg(test)]
-#[cfg(feature = "filesystem")]
 mod tests;

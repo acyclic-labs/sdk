@@ -156,12 +156,12 @@ impl Cancelled<'_> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Cancelled<'static> {
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn cleanup_items(&self) -> u64 {
         u64::from(self.waiter.is_some())
     }
 
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn retire_waker(&mut self) {
         let waker = self.waiter.as_ref().and_then(|waiter| {
             waiter
@@ -173,7 +173,7 @@ impl Cancelled<'static> {
         drop(waker);
     }
 
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn finish(
         mut self,
         allocations: &mut crate::kernel::allocation::AllocationLedger,

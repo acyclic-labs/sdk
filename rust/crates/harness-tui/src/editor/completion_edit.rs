@@ -17,7 +17,7 @@ impl Editor {
     }
 }
 
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 impl Editor {
     pub(crate) fn completion_version(&self) -> (std::rc::Rc<()>, usize, usize) {
         (self.buffer.revision.clone(), self.cursor(), self.anchor())

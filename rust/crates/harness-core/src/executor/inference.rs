@@ -32,7 +32,6 @@ impl InferenceResult<'_> {
                 "inference result exceeds render bound",
             ));
         }
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             let (value, hold) = io.decode(
                 std::marker::PhantomData::<T>,
@@ -57,7 +56,7 @@ impl StockExecutor {
         io: Option<&'io PreparationIo>,
     ) -> Result<InferenceResult<'io>> {
         validate_journal(journal, io)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work)
             && !self.supports_native_execution(work)?
         {
@@ -73,7 +72,6 @@ impl StockExecutor {
         let events = execution.model_step(journal, input, 0, &[]).await?;
         let super::turn::CollectedStep { text, metadata, .. } =
             execution.collect_step_events(input, 0, events, &mut Vec::new())?;
-        #[cfg(feature = "filesystem")]
         let custody = io
             .map(|io| {
                 let bytes = (text.capacity() as u64)
@@ -90,8 +88,6 @@ impl StockExecutor {
                 io.guard_owned(bytes)
             })
             .transpose()?;
-        #[cfg(not(feature = "filesystem"))]
-        let custody = None;
         Ok(InferenceResult {
             text,
             metadata,

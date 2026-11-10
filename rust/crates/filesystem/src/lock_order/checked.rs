@@ -1,6 +1,6 @@
 #[cfg(any(
     all(test, not(target_arch = "wasm32")),
-    all(feature = "native-mount", target_os = "linux")
+    all(not(target_arch = "wasm32"), target_os = "linux")
 ))]
 use crate::sync::Condvar as RawCondvar;
 use crate::sync::{Mutex as RawMutex, MutexGuard as RawMutexGuard};
@@ -105,22 +105,10 @@ pub(crate) fn lock<T, const RANK: u16>(mutex: &RawMutex<T>) -> LockResult<MutexG
 }
 
 #[derive(Debug, Default)]
-#[cfg(any(
-    test,
-    all(
-        any(feature = "local", feature = "native-watch"),
-        not(target_arch = "wasm32")
-    )
-))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) struct Mutex<T, const RANK: u16>(RawMutex<T>);
 
-#[cfg(any(
-    test,
-    all(
-        any(feature = "local", feature = "native-watch"),
-        not(target_arch = "wasm32")
-    )
-))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 impl<T, const RANK: u16> Mutex<T, RANK> {
     #[cfg(not(loom))]
     pub(crate) const fn new(value: T) -> Self {
@@ -140,13 +128,13 @@ impl<T, const RANK: u16> Mutex<T, RANK> {
 #[derive(Default)]
 #[cfg(any(
     all(test, not(target_arch = "wasm32")),
-    all(feature = "native-mount", target_os = "linux")
+    all(not(target_arch = "wasm32"), target_os = "linux")
 ))]
 pub(crate) struct Condvar(RawCondvar);
 
 #[cfg(any(
     all(test, not(target_arch = "wasm32")),
-    all(feature = "native-mount", target_os = "linux")
+    all(not(target_arch = "wasm32"), target_os = "linux")
 ))]
 impl Condvar {
     #[cfg(not(loom))]
@@ -171,7 +159,7 @@ impl Condvar {
 #[track_caller]
 #[cfg(any(
     all(test, not(target_arch = "wasm32")),
-    all(feature = "native-mount", target_os = "linux")
+    all(not(target_arch = "wasm32"), target_os = "linux")
 ))]
 fn wait_plain<G>(
     guard: TrackedGuard<G>,

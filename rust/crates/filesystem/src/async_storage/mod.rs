@@ -18,7 +18,7 @@ use std::sync::Arc;
 mod contract;
 mod cache;
 pub(crate) use cache::DecodedCacheOrigin;
-#[cfg(all(any(test, feature = "distributed"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use cache::owned_read;
 pub use cache::{
     DecodedCacheAdmission, DecodedCacheKey, DecodedCacheLookup, DecodedCacheMiss, DecodedCacheValue,
@@ -30,7 +30,6 @@ mod work;
 pub(crate) use work::AuthorityFrame;
 #[cfg(not(target_arch = "wasm32"))]
 pub use work::NativeAuthorityGuard;
-#[cfg(any(test, feature = "distributed"))]
 pub(crate) use work::authority_error;
 pub(crate) use work::authority_parts;
 pub use work::{AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork};

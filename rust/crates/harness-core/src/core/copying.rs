@@ -42,7 +42,6 @@ pub(crate) fn copy_provider(
     crate::resources::ProviderRef::new(namespace, family, version, quota.work())
 }
 
-#[cfg(feature = "filesystem")]
 pub(crate) fn copy_resource(
     source: &crate::resources::ResourceRef,
     quota: &mut CodecQuota<'_, '_>,
@@ -158,11 +157,11 @@ pub(in crate::core) fn retain_entry<T>(quota: &mut CodecQuota<'_, '_>) -> Result
 }
 
 pub(in crate::core) fn is_native(io: &dyn HistoryIo) -> bool {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         io.original_native_work().is_some()
     }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     {
         let _ = io;
         false

@@ -198,6 +198,5 @@ pub enum AttributeLookupError {
 }
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "tests/attribute_access.rs"]
 mod tests;

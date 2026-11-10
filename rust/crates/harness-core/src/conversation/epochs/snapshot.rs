@@ -5,7 +5,6 @@ use super::{
     Epoch, InvalidEpoch, SummaryRef,
     protocol::{Completion, Pending, Refusal, State},
 };
-#[cfg(feature = "filesystem")]
 use acyclic_stream::{CommitCondition, OwnedBytes};
 use acyclic_stream::{CommitId, Record, StreamPath};
 use serde::{Deserialize, Serialize};
@@ -21,7 +20,6 @@ pub struct Snapshot {
 
 /// One encoded contribution to the original conditional publication.
 /// Keep this owner alive until that publication has retired its borrowed bytes.
-#[cfg(feature = "filesystem")]
 pub struct EncodedSnapshot<'io> {
     condition: CommitCondition,
     record: OwnedBytes,
@@ -29,7 +27,6 @@ pub struct EncodedSnapshot<'io> {
     _hold: Option<crate::conversation::ContentHold<'io>>,
 }
 
-#[cfg(feature = "filesystem")]
 impl EncodedSnapshot<'_> {
     /// Original optimistic fence and already-encoded record. The shared
     /// publication builder admits its own request storage, without reencoding.
@@ -250,7 +247,6 @@ impl Snapshot {
     /// ledger. Native bytes retain their own custody; standalone bytes retain
     /// the original reservation here. The path is moved, never reconstructed.
     /// No request, submission, head lookup or durability barrier is created.
-    #[cfg(feature = "filesystem")]
     pub fn encode<'io>(
         &self,
         path: StreamPath,

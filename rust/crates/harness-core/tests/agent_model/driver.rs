@@ -437,7 +437,7 @@ async fn definitive_failures_settle_the_turn_and_uncertain_ones_retry() -> Resul
             settles,
         ));
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     cases.push((
         CoreError::NativeBoundary {
             code: acyclic_harness_core::wire::ErrorCode::Unavailable,

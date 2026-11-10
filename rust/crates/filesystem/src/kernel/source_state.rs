@@ -1,6 +1,6 @@
 //! Canonical durable facts for one workspace-attached native source.
 
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 use super::codec::Encoder;
 use super::codec::{CanonicalDecodeError, Decoder};
 use crate::foundation::{AuthorityId, Digest, GenerationId, VolumeId};
@@ -66,7 +66,7 @@ pub(crate) fn source_authority_id(volume_id: VolumeId) -> AuthorityId {
     AuthorityId::from_bytes(bytes)
 }
 
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn encode_source_fact(value: SourceFact) -> Result<Vec<u8>, SourceFactError> {
     validate(value)?;
     let mut encoder = Encoder::new(DOMAIN, VERSION);
@@ -140,7 +140,7 @@ pub(crate) fn decode_source_fact(
     Ok(value)
 }
 
-#[cfg(any(test, feature = "local"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) fn decode_source_volume(
     bytes: &[u8],
     maximum_payload_bytes: u64,
@@ -158,7 +158,7 @@ fn validate(value: SourceFact) -> Result<(), SourceFactError> {
     Ok(())
 }
 
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 const fn reason_tag(reason: SourceInvalidation) -> u8 {
     match reason {
         SourceInvalidation::InitialSnapshotRequired => 1,

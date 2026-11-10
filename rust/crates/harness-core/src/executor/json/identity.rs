@@ -49,11 +49,7 @@ pub fn serialized_json_digest<T: Serialize + ?Sized>(value: &T) -> Result<[u8; 3
         buffer: arrayvec::ArrayVec::new(),
         hasher: None,
     };
-    #[cfg(all(
-        any(test, feature = "test-support"),
-        feature = "filesystem",
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
     super::record_serialization::<T>();
     serde_json::to_writer(&mut writer, value).map_err(|error| Error::Invalid(error.to_string()))?;
     Ok(*match writer.hasher {
@@ -116,11 +112,11 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
             Ok(maximum - budget.0)
         };
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let native_code = observer
         .original_native_work()
         .map(|_| crate::wire::ErrorCode::Invalid);
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let native_code = None;
     observer.check_cancellation()?;
     const CONTEXT_LABEL_BYTES: u64 = 484;
@@ -130,7 +126,7 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
     )?;
     observer.admit_owned(diagnostic)?;
     observer.retain_owned(diagnostic)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let mut custody = if native_code.is_some() {
         Some(observer.take_native_custody(diagnostic)?)
     } else {
@@ -146,7 +142,7 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
         native_code,
         &mut |charge| observer.codec_charge(charge),
     );
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Err(Error::NativeJson {
         code,
         source,

@@ -90,7 +90,7 @@ fn decode_interaction_json_inner<'loan, 'io, T: serde::de::DeserializeOwned + cr
             &mut charge,
         )
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let decoded = decoded.map_err(|error| custody.json_error(error));
     let value = decoded?;
     Ok((value, custody))

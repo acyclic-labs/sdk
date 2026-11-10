@@ -8,11 +8,7 @@ use serde_json::Value;
 /// Byte decoding and resident-value conversion stay distinct: converting a
 /// Value does not constitute an encoded-document round trip. The observer
 /// uses the shared differential trace and adds no code to ordinary builds.
-#[cfg(all(
-    any(test, feature = "test-support"),
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CodecOperation {
@@ -25,19 +21,11 @@ pub enum CodecOperation {
 }
 
 /// Input type of an actual serialization pass, independent of its sink.
-#[cfg(all(
-    any(test, feature = "test-support"),
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SerializedType(pub &'static str);
 
-#[cfg(all(
-    any(test, feature = "test-support"),
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 fn record_serialization<T: ?Sized>() {
     acyclic_differential::record(CodecOperation::Serialize);
     acyclic_differential::record(SerializedType(
@@ -72,21 +60,17 @@ pub use identity::{
 pub(crate) const RECORD_MAXIMUM_DEPTH: u32 = 128;
 mod diagnostics;
 pub(crate) use diagnostics::audited_serde_diagnostic_bytes;
-#[cfg(feature = "filesystem")]
 pub(crate) use diagnostics::json_typed_diagnostic_source_owned_bytes;
 pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,
 };
-#[cfg(feature = "filesystem")]
 pub(crate) use serialization::canonical_digest_with_work;
 pub(crate) use serialization::count_json_bytes_trusted;
 pub(crate) use serialization::json_bytes_match;
-#[cfg(any(feature = "filesystem", test))]
 pub(crate) use serialization::json_bytes_match_bounded;
 mod copy;
 mod decode;
 pub(crate) mod layout;
-#[cfg(feature = "filesystem")]
 pub(crate) use layout::LayoutCost;
 mod schema;
 mod shape;
@@ -98,7 +82,7 @@ pub(crate) use admission::assert_layout_covers_decode;
 pub(crate) use admission::json_owned_value_shape_bounded;
 #[cfg(test)]
 pub(crate) use admission::layout_reservation;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use admission::lexical_json_diagnostic_bytes;
 pub use records::json_value_logical_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
@@ -125,7 +109,7 @@ pub enum JsonInputError {
 }
 
 fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(code) = code {
         return Error::NativeJsonAdmission { code, kind };
     }
@@ -263,7 +247,7 @@ pub enum JsonCodecCharge {
 }
 
 fn boundary(reason: &'static str, code: Option<crate::wire::ErrorCode>) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(code) = code {
         return Error::NativeBoundary { code, reason };
     }
@@ -341,8 +325,8 @@ mod tests;
 mod value_shape_tests;
 
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod baseline;
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod differential_properties;

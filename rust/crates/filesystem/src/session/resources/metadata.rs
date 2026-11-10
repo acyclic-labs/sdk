@@ -144,7 +144,7 @@ pub(super) fn canonical_resource(
     Ok(result)
 }
 
-#[cfg(all(test, feature = "memory", not(loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
 

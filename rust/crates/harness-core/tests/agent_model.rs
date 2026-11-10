@@ -22,7 +22,7 @@ mod corpus;
 mod driver;
 #[path = "agent_model/failed_publication.rs"]
 mod failed_publication;
-#[cfg(all(feature = "filesystem", feature = "test-support"))]
+#[cfg(feature = "test-support")]
 #[path = "agent_model/hosting.rs"]
 mod hosting;
 #[path = "agent_model/reply.rs"]
@@ -33,7 +33,7 @@ mod runtime;
 mod slot_schedules;
 #[path = "agent_model/steering.rs"]
 mod steering;
-#[cfg(all(feature = "filesystem", feature = "test-support"))]
+#[cfg(feature = "test-support")]
 #[path = "agent_model/wired.rs"]
 mod wired;
 

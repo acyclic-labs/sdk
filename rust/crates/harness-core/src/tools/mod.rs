@@ -22,14 +22,11 @@ pub(crate) use bounds::prefix as json_string_prefix;
 mod command;
 pub(crate) mod fs_command;
 /// Pinned public tool contracts for each model family's native tool surface.
-#[cfg(feature = "filesystem")]
 pub mod native;
 mod workspace_executor;
 pub use command::parse_command;
-#[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub use fs_command::{FsCommand, parse_fs_command};
-#[cfg(feature = "filesystem")]
 pub mod git;
 
 /// The one conversion of a rejected fs/shell operand into a model-visible

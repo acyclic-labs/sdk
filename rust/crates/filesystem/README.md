@@ -23,7 +23,7 @@ time fork.
 
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.
 
-With the `session` feature, `session::ChangeProvider::follow_subtree` follows
+On native targets, `session::ChangeProvider::follow_subtree` follows
 changes equal to or below a canonical `NamespacePath`. It takes the original
 verified `ResourceFollowRequest` and returns the same `ResourceSubscription` used
 by authorized filesystem follows. Its indexed path selection intersects the
@@ -290,10 +290,10 @@ refusals, cancellation, fork isolation and removal. The checked benchmark reads
 one exact immutable 4-KiB value after warmup and rejects head, metadata, list,
 lease or token probes. Mount qualification additionally exercises the real mounted
 interface through the existing mount qualifier. Run the memory and durable local
-adapters on demand (the default features include local storage):
+adapters on demand:
 
 ```sh
-cargo test --locked -p acyclic-fs --features conformance,memory --test main public_conformance
+cargo test --locked -p acyclic-fs --features conformance --test main public_conformance
 ```
 
 The Postgres/MinIO adapter runs the same public suite and retains the independent
@@ -302,7 +302,7 @@ The browser adapter uses real `BrowserStream` and `IndexedDbObjectStore` provide
 
 ```sh
 bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs \
-  --no-default-features --features browser,memory,conformance \
+  --no-default-features --features browser,conformance \
   --target wasm32-unknown-unknown --test browser_commit conformance::browser_public_conformance_benchmark
 ```
 

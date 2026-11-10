@@ -75,7 +75,7 @@ proptest! {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn immutable_wire_item_uses_original_journal_load_and_releases_custody() -> crate::Result<()>
 {

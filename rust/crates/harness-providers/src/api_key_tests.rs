@@ -83,7 +83,9 @@ impl HttpTransport for Responses {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
+    ) -> acyclic_harness_core::Result<
+        acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
+    > {
         crate::fixtures::native_delay(wait, work)
     }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -97,8 +99,8 @@ impl HttpTransport for Responses {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
-        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let response = self.exchange(request)?;
             HttpResponse::with_native_body(response.status, response.body, work)
         })

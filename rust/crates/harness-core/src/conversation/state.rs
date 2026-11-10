@@ -40,7 +40,7 @@ impl ConversationState {
             &mut state.prefix_digests,
             state.messages.len(),
             cache.work(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             &mut state.native_custody.digests,
         )?;
         cache.adopt(retained)?;

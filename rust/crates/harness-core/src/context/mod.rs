@@ -17,29 +17,17 @@ mod discovery;
 #[doc(hidden)]
 pub use discovery::frontmatter_end;
 pub use discovery::*;
-#[cfg(feature = "filesystem-local")]
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub use discovery::{DiscoveryWork, discover_skills_at};
 mod compaction;
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod native_discovery;
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod native_skills;
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 mod skill_materializer;
 pub(crate) use compaction::mandatory_messages;
 pub use compaction::*;
@@ -70,7 +58,7 @@ pub use source::*;
 mod allocations;
 use allocations::append_context_messages;
 use allocations::context_contract;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use allocations::reserve_context_vec_native;
 use validation::{validate_context_refs, validate_source_messages};
 use value::{BorrowedContext, ContextMessages};

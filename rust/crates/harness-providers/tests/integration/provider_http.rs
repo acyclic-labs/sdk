@@ -1,5 +1,5 @@
 use super::provider_case::{Protocol, ProviderCase};
-use acyclic_harness::{Error, NativeFutureBundle, Result, context::ModelContextCapacity};
+use acyclic_harness::{Error, Result, context::ModelContextCapacity};
 use acyclic_harness_providers::{
     Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
     ModelSpec, ProviderSpec, Registry, ResolvedModel, TokenCountField, TokenCounterSpec,
@@ -147,9 +147,9 @@ impl HttpTransport for Recorded {
         &self,
         wait: Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'static, ()>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
         let clock = self.clock.clone();
-        NativeFutureBundle::new(work, move || async move {
+        acyclic_fs::NativeFutureBundle::new(work, move || async move {
             elapse(clock, wait).await;
             Ok(())
         })
@@ -173,8 +173,8 @@ impl HttpTransport for Recorded {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
-        NativeFutureBundle::new(work, || async move {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let (status, bytes, stall) = self.reply(request, true)?;
             HttpResponse::with_native_body(status, self.chunks(bytes, stall), work)
         })

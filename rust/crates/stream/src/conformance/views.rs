@@ -332,7 +332,7 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
 pub(super) async fn selected_child_tails_preserve_missing_empty_and_original_record_cut()
 -> Result<(), Box<dyn std::error::Error>> {
     selected_child_tails(&crate::MemoryStream::default()).await?;
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let directory = tempfile::tempdir()?;
         let provider = crate::LocalStream::open(directory.path(), Default::default()).await?;

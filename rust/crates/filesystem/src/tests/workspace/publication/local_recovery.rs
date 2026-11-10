@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(feature = "local", any(unix, windows)))]
+#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
 fn cut_journal(root: &std::path::Path, journal: &[u8], length: usize) -> std::io::Result<()> {
     std::fs::write(
         root.join("stream").join("stream.journal"),
@@ -8,7 +8,7 @@ fn cut_journal(root: &std::path::Path, journal: &[u8], length: usize) -> std::io
     )
 }
 
-#[cfg(all(feature = "local", any(unix, windows)))]
+#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;

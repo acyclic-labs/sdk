@@ -31,7 +31,7 @@ impl HeldRoot {
     /// native notification service. Event paths are relative to this directory;
     /// registration never reopens its original label. Source loss reports an
     /// error, and dropping the watch retires its registration.
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn watch_changes(
         &self,
         changed: impl Fn(notify::Result<notify::Event>) + Send + Sync + 'static,
@@ -65,7 +65,7 @@ impl HeldRoot {
     }
 
     /// Removes a leaf relative to this held directory without following links.
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn remove_file(
         &self,
         leaf: &Path,
@@ -78,7 +78,7 @@ impl HeldRoot {
     /// Publishes complete immutable bytes without replacing a name or following
     /// links. Replacing this root's path cannot redirect the publication.
     /// `durability` selects atomic visibility or persistence of bytes and name.
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn publish_immutable(
         &self,
         leaf: &Path,
@@ -106,7 +106,7 @@ impl HeldRoot {
 
     /// Opens a regular leaf relative to this held directory. A writable
     /// open creates an absent leaf and never follows a link.
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn open_file(&self, leaf: &Path, writable: bool) -> Result<std::fs::File, DemandError> {
         self.root
             .open_record_file(leaf, writable, &mut crate::native_host::ordinary_work())
@@ -173,7 +173,7 @@ impl HeldRoot {
     /// and every concurrent publisher returns the same record. The candidate
     /// function is called only after a read observes no record; reading an
     /// existing publication never depends on candidate generation.
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn read_or_publish<const N: usize>(
         &self,
         leaf: &Path,
@@ -186,7 +186,7 @@ impl HeldRoot {
     /// Reads two immutable records previously written by `read_or_publish`.
     /// Returns `None` if either is absent. Both names cross one shared
     /// directory barrier before either record is returned.
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn read_published_pair<const A: usize, const B: usize>(
         &self,
         first: &Path,
@@ -281,7 +281,7 @@ impl SearchRoot {
     }
 
     /// Opens an existing regular leaf for reading, never through a link.
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub fn open_file(&self, leaf: &Path) -> Result<std::fs::File, DemandError> {
         self.root
             .open_record_file(leaf, false, &mut crate::native_host::ordinary_work())
@@ -449,7 +449,7 @@ async fn capture_paths_in<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(receipt)
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     paths: &[NamespacePath],

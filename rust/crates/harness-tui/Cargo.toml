@@ -10,31 +10,29 @@ description = "Renderer-independent prompt editor and ratatui input widget"
 
 [features]
 model-checking = ["dep:loom"]
-default = []
-tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:nix", "dep:signal-hook", "dep:acyclic-native-runtime", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless", "dep:serde", "dep:acyclic-markdown", "dep:zeroize"]
 
 [build-dependencies]
 serde_json.workspace = true
 
 [dependencies]
 loom = { version = "0.7.3", optional = true }
-acyclic-markdown = { version = "=0.2.0", path = "../markdown", optional = true }
-serde = { workspace = true, optional = true }
-vte = { version = "0.15", optional = true }
-caseless = { version = "0.2.2", optional = true }
-arrayvec = { version = "0.7", optional = true }
+acyclic-markdown = { version = "=0.2.0", path = "../markdown" }
+serde = { workspace = true }
+vte = { version = "0.15" }
+caseless = { version = "0.2.2" }
+arrayvec = { version = "0.7" }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
-zeroize = { workspace = true, optional = true }
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"], optional = true }
-crossterm = { version = "0.29", features = ["event-stream"], optional = true }
-serde_json = { workspace = true, optional = true }
-shell-words = { version = "1.1", optional = true }
-tempfile = { version = "3.27", optional = true }
+zeroize = { workspace = true }
+serde_json = { workspace = true }
+shell-words = { version = "1.1" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
-image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+tempfile = { version = "3.27" }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
@@ -44,11 +42,11 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["event", "fs", "termios"], optional = true }
-signal-hook = { version = "0.4", optional = true }
+rustix = { workspace = true, features = ["event", "fs", "termios"] }
+signal-hook = { version = "0.4" }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["event"], optional = true }
+nix = { version = "0.31", default-features = false, features = ["event"] }
 
 
 [target.'cfg(unix)'.dev-dependencies]
@@ -65,13 +63,11 @@ path = "tests/main.rs"
 
 # These suites acquire the process-wide terminal owner, including asserted
 # real-device costs. Keep them isolated from the ordinary tests.
+
 [[test]]
 name = "terminal_negotiation"
 path = "tests/terminal_negotiation.rs"
-required-features = ["tui"]
-
 
 [[test]]
 name = "terminal_frames"
 path = "tests/terminal_frames.rs"
-required-features = ["tui"]

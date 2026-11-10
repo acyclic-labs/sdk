@@ -27,7 +27,6 @@ pub use acyclic_harness_search as search;
 /// Credential-free, bounded HTTP source retrieval.
 pub use acyclic_harness_search::url_fetch;
 
-#[cfg(all(feature = "filesystem", any(feature = "grpc", feature = "hosting")))]
 pub mod hosting;
 
 pub mod client;
@@ -35,14 +34,14 @@ pub mod client;
 pub mod completion;
 #[cfg(feature = "conformance")]
 pub mod conformance;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod local;
 pub mod preset;
-#[cfg(feature = "serve")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod tui;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
@@ -51,18 +50,10 @@ pub use wasm::BrowserContentReader;
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
 pub use wasm::{WasmAgentProviders, WasmAgentRegistry, WasmMachinesWorkspace, WasmObjects};
 
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use local::{LocalHarness, LocalHarnessConfig};
 
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod host_hooks;
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use local::host_workspace;

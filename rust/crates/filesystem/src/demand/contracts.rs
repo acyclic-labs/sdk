@@ -50,24 +50,24 @@ pub enum DemandError {
     #[error("source buffer allocation failed: {0}")]
     Allocation(#[source] std::collections::TryReserveError),
     /// A started native watcher remains owned until measured cleanup succeeds.
-    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     SourceWatchStartup(#[source] std::sync::Arc<crate::source_watch::SourceWatchStartupFailure>),
     /// Native or remote source failed.
     #[error("source failed: {0}")]
     Io(std::io::Error),
     /// Demand-driven native observation could not be admitted exactly.
-    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Observation(Box<crate::watch::NativeWatchError>),
     /// Canonical mounted-source delivery failed with its original typed cause.
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Mount(Box<crate::native_mount::MountSourceError>),
     /// A held native metadata mutation failed with its typed cause.
     #[cfg(all(
         any(target_os = "linux", target_os = "macos", windows),
-        any(feature = "native-mount", test)
+        any(not(target_arch = "wasm32"), test)
     ))]
     #[error(transparent)]
     NativeMetadata(#[from] crate::native_host::NativeMetadataError),
@@ -76,7 +76,7 @@ pub enum DemandError {
 impl From<std::io::Error> for DemandError {
     fn from(error: std::io::Error) -> Self {
         // A file that gave way to a rename or delete changed under the read.
-        #[cfg(all(windows, feature = "native-watch"))]
+        #[cfg(all(windows, not(target_arch = "wasm32")))]
         if error
             .get_ref()
             .is_some_and(|inner| inner.is::<crate::native_host::Yielded>())
@@ -385,7 +385,7 @@ pub trait DemandFile: Send + Sync {
 }
 
 /// Synchronous admission hook for directories reached by a native lazy source.
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub trait DemandDirectoryObserver: Send + Sync {
     /// Admits one exact directory on the caller's accounting context.
     fn observe_directory(
@@ -418,14 +418,14 @@ pub(crate) fn merge_source_work(
     Ok(work.verify(budget)?)
 }
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl From<crate::watch::NativeWatchError> for DemandError {
     fn from(error: crate::watch::NativeWatchError) -> Self {
         Self::Observation(Box::new(error))
     }
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 impl From<crate::native_mount::MountSourceError> for DemandError {
     fn from(error: crate::native_mount::MountSourceError) -> Self {
         use crate::native_mount::MountSourceError;

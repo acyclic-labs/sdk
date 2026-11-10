@@ -21,10 +21,10 @@ mod composition;
 pub use composition::apply_context_projection;
 pub(super) use composition::{place_context, place_snapshot};
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 fn boundary(work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if work
         .as_deref()
         .is_some_and(|io| io.original_native_work().is_some())
@@ -38,7 +38,7 @@ fn boundary(work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Error {
     Error::Invalid(reason.into())
 }
 fn observe_value(value: &Value, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = work
         .as_deref_mut()
         .filter(|io| io.original_native_work().is_some())

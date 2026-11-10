@@ -27,7 +27,7 @@ async fn minimal_generation_has_a_complete_authenticated_closure()
         let mut native = crate::AuthorityWork::native(&original, &cancellation);
         original_closure_custody(&traced, generation, &mut native, false).await?;
     }
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         crate::initialize_test_native_io();
         let directory = tempfile::tempdir()?;

@@ -25,7 +25,7 @@ use std::{
 pub mod agent_conversation;
 mod agent_settings;
 mod agents;
-#[cfg(any(test, feature = "native-execution"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod checkout_tools;
 mod compaction;
 mod config;
@@ -33,13 +33,13 @@ pub(crate) mod context;
 pub mod continuation;
 mod endpoint;
 mod files;
-#[cfg(feature = "native-execution")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod host_files;
-#[cfg(feature = "native-execution")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod host_owner;
-#[cfg(feature = "native-execution")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod host_process;
-#[cfg(feature = "native-execution")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod host_workspace;
 pub use endpoint::Connection;
 mod observer;
@@ -47,31 +47,31 @@ pub(crate) mod open;
 pub(crate) mod owner;
 mod owner_record;
 mod preflight;
-#[cfg(feature = "serve")]
+#[cfg(not(target_arch = "wasm32"))]
 mod serve;
-#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod settings;
 pub mod study;
 #[cfg(test)]
 mod tests;
-#[cfg(any(test, feature = "native-execution"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod tool_metadata;
 mod tool_output;
 mod verifier;
 pub use verifier::{Custody, KeyFileVerifier, Observation, RootCredential, Verifier};
-#[cfg(feature = "search-http")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod web;
-#[cfg(any(test, feature = "native-execution"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod workspace;
 pub use agents::{LocalAgents, LocalTurns};
 use config::LocalProject;
-#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub use config::ModelResolver;
 pub use config::{LocalHarnessConfig, WorkspaceMounting};
 
 pub use observer::{Event, Observer};
 pub use tool_output::LiveKind;
-#[cfg(any(test, feature = "native-execution"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub use workspace::LocalWorkspace;
 
 /// Local durable filesystem host.
@@ -80,7 +80,7 @@ pub type LocalFilesystem<A = LocalAuthorityBackend, O = LocalObjectBackend> = Fi
 /// A checkout or volume, durable authority, and the agents hosted on it.
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
-    #[cfg(all(target_os = "linux", feature = "native-execution"))]
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
     volume_filesystem: acyclic_fs::LocalFs,
     /// Tools, scope and content bindings every agent turn's context starts from.
     harness: Arc<AgentHarness>,
@@ -116,33 +116,33 @@ pub struct LocalHarness {
     served: Option<Arc<dyn Verifier>>,
     active_directory: String,
     skill_cache: context::skills::Cache,
-    #[cfg(any(test, feature = "hooks"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     settings: Option<Arc<crate::native_settings::SettingsConfig>>,
     /// The before-hook rules of the plugins `plugins.ts` enabled at session
     /// start, judged after the imported host hooks.
-    #[cfg(any(test, feature = "hooks"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     plugin_hooks: crate::hooks::Hooks,
     #[cfg(test)]
     context_read_observer:
         Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
     limits: Limits,
     compaction: crate::context::CompactionPolicy,
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(not(target_arch = "wasm32"))]
     mcp_diagnostics: Vec<crate::mcp::McpServerFailure>,
     goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     checkout_context: bool,
     #[cfg(test)]
     environment_reads: std::sync::atomic::AtomicUsize,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     environment_platform: crate::native_environment::PlatformPolicy,
 }
 
 impl LocalHarness {
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn agent(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
         self.agent.as_ref().ok_or_else(|| {
             Error::Unsupported("native hosts own their agent loop and tool execution".into())
@@ -191,14 +191,14 @@ impl LocalHarness {
     }
 
     /// Optional configured servers that failed startup; required failures reject opening.
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn mcp_diagnostics(&self) -> &[crate::mcp::McpServerFailure] {
         &self.mcp_diagnostics
     }
 
     /// Canonical checkout path, absent for a configured volume.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     #[must_use]
     pub fn workspace_path(&self) -> Option<&Path> {
         self.workspace
@@ -206,7 +206,7 @@ impl LocalHarness {
             .map(|workspace| workspace.path.as_path())
     }
     /// Source-backed checkout view, absent for configured volumes.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     #[must_use]
     pub fn workspace(&self) -> Option<&Arc<LocalWorkspace>> {
         self.workspace.as_ref()
@@ -216,14 +216,14 @@ impl LocalHarness {
     /// Consuming the host excludes live borrows; callers must first join
     /// active agent turns and drop their observations.
     pub async fn disconnect(self) -> Result<()> {
-        #[cfg(any(test, feature = "native-execution"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         let retired = if let Some(workspace) = &self.workspace {
             workspace.shutdown.cancel();
             workspace::volumes::retire(&workspace.mounts).await
         } else {
             Ok(())
         };
-        #[cfg(not(any(test, feature = "native-execution")))]
+        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
         let retired = Ok(());
         // Native view destructors join callbacks. They must not occupy the
         // coordination thread that those callbacks may still need to finish.

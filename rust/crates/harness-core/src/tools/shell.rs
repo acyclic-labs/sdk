@@ -82,8 +82,8 @@ impl crate::tool::ToolProjection for ShellProjection {
         &self,
         _invocation: &crate::tool::ToolInvocation,
         result: &crate::tool::ToolResult,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(serde_json::Value, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(serde_json::Value, acyclic_fs::NativeCustody)> {
         let text = result
             .value
             .get("text")
@@ -98,8 +98,8 @@ impl crate::tool::ToolProjection for ShellProjection {
         crate::tool::schema::project_text(text, work)
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_projection(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
         if let Some(work) = work {
             work.remaining()?;
         }

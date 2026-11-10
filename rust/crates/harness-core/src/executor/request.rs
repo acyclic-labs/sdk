@@ -308,12 +308,8 @@ impl StockExecution<'_> {
         prepared: &crate::model::PreparedModelRequest,
     ) -> Result<()> {
         let request = prepared.request();
-        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
-        #[cfg(feature = "filesystem")]
         let io = scope.io();
-        #[cfg(not(feature = "filesystem"))]
-        let io = self.io;
         let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
         if request.summary != self.summary.is_some()
             || request.model != self.stock.model

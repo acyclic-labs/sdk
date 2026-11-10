@@ -1,7 +1,7 @@
 //! The single durable projection codec retains main's inline context schema.
 use super::*;
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
+#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 mod tests;
 
 impl ResponseProjection {
@@ -10,12 +10,8 @@ impl ResponseProjection {
         reference: &FileRef,
         original: Option<&PreparationIo>,
     ) -> Result<Self> {
-        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(original)?;
-        #[cfg(feature = "filesystem")]
         let io = scope.io();
-        #[cfg(not(feature = "filesystem"))]
-        let io = original;
         let stored = retain_preparation(load_json::<Self>(journal, reference, io).await?)?;
         let projection = Self {
             context: crate::context::Context {
@@ -36,7 +32,6 @@ impl ResponseProjection {
             stored.checkpoint,
             stored.accounting,
         ));
-        #[cfg(feature = "filesystem")]
         {
             let retained = projection
                 .decoded_owned_bytes()?
@@ -56,26 +51,18 @@ pub(crate) async fn load_projection<'a>(
     ResponseProjection,
     Option<crate::conversation::ContentHold<'a>>,
 )> {
-    #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(original)?;
-    #[cfg(feature = "filesystem")]
     let io = scope.io();
-    #[cfg(not(feature = "filesystem"))]
-    let io = original;
     let projection =
         retain_preparation(load_json::<ResponseProjection>(journal, reference, io).await?)?;
-    #[cfg(feature = "filesystem")]
     let retained = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
     crate::context::validate_projected_context(&projection.context, limits, io)?;
-    #[cfg(feature = "filesystem")]
     let hold = {
         // The decoder already inventoried this graph. Transfer its original
         // storage; only validation scratch belongs to the temporary scope.
         scope.finish(retained)?;
         original.map(|io| io.guard_owned(retained)).transpose()?
     };
-    #[cfg(not(feature = "filesystem"))]
-    let hold = None;
     Ok((projection, hold))
 }
 

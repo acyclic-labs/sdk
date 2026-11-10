@@ -30,7 +30,7 @@ impl Default for ThresholdCompaction {
 
 impl ThresholdCompaction {
     /// Reserves the selected output capacity before splitting remaining input.
-    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "filesystem-local")))]
+    #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
     #[doc(hidden)]
     pub fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;

@@ -161,7 +161,7 @@ impl From<crate::NativeTreeMaterializationError> for WorkspaceError {
     }
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl From<crate::MaterializeError> for WorkspaceError {
     fn from(error: crate::MaterializeError) -> Self {
         match error {
@@ -228,7 +228,7 @@ pub(crate) fn workspace_bounded_error(
     {
         return workspace_bounded_error(cause);
     }
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(cause) = error.downcast_ref::<crate::native_mount::NativeMountError>() {
         match cause {
             crate::native_mount::NativeMountError::Work(cause) => {
@@ -271,9 +271,9 @@ pub(crate) fn workspace_bounded_error(
     bounded!(crate::kernel::CheckpointError; [Storage]; []);
     bounded!(crate::kernel::ClosureError; [Storage]; []);
     bounded!(crate::kernel::PublicationError; [Closure, Objects, Authority, ProjectionValidation]; []);
-    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     bounded!(crate::DemandError; []; [Cancelled]);
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(error) = error.downcast_ref::<crate::native_mount::MountSourceError>() {
         use crate::native_mount::MountSourceError as Cause;
         return match error.semantic_error() {

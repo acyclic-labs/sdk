@@ -55,9 +55,9 @@ pub(super) fn observe_envelope(
         slots += records.capacity() * std::mem::size_of::<acyclic_stream::Record>();
         for record in records {
             let bytes = record.payload_bytes() as u64;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             let received = observer.receive_native_record(bytes);
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            #[cfg(target_arch = "wasm32")]
             let received = observer.receive_record(bytes);
             if received.is_ok() && !native {
                 retained += bytes;

@@ -11,7 +11,7 @@ and temporary buffers. Apply it with
 `git apply rust/crates/filesystem/fuzz/mutations/logical_read_scratch.patch`, then run:
 
 ```sh
-cargo test --locked -p acyclic-fs --no-default-features --features local,memory,distributed --lib logical_objects::sealing::tests::ordinary_opening_retains_original_work_and_live_backing_on_every_exit -- --exact
+cargo test --locked -p acyclic-fs --no-default-features --lib logical_objects::sealing::tests::ordinary_opening_retains_original_work_and_live_backing_on_every_exit -- --exact
 ```
 
 The mutated source must fail `opening scratch did not retire`. Restore with

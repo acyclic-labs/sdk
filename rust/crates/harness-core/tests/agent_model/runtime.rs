@@ -1109,7 +1109,7 @@ async fn pending_request_host<P: acyclic_harness_core::store::JournalProvider + 
 
 #[tokio::test]
 async fn reply_waits_require_original_committed_requests() -> Result {
-    #[cfg(feature = "filesystem-local")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let directory = Arc::new(tempfile::tempdir()?);
         let provider = acyclic_stream::LocalStream::open_with_ownership_anchor(

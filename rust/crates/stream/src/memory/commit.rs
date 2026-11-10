@@ -251,7 +251,7 @@ impl MemoryStream {
                         .as_ref()
                         .map_or_else(KeyTree::default, |source| source.keys().cap(fork.forked_at)),
                     source,
-                    #[cfg(any(test, feature = "local"))]
+                    #[cfg(any(test, not(target_arch = "wasm32")))]
                     tail: fork.forked_at,
                     _allocation: self.allocate(std::mem::size_of::<History>())?,
                 }))
@@ -519,7 +519,7 @@ impl MemoryStream {
             check_deadline()?;
             let result = CommitOutcome::Conflict(conflicts);
             // Old behaviour, for negative controls only: the conflict spends the key.
-            #[cfg(all(loom, feature = "local"))]
+            #[cfg(all(loom, not(target_arch = "wasm32")))]
             if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
                 admit_replay(state, self.limits)?;
                 retain(
@@ -828,14 +828,14 @@ fn stage_namespace(
                     .node(&fork.source)
                     .ok_or(StreamError::NotFound)?
                     .clone();
-                #[cfg(all(loom, feature = "local"))]
+                #[cfg(all(loom, not(target_arch = "wasm32")))]
                 let subtree =
                     if crate::verification::fault_is(crate::verification::Fault::RootOnlyFork) {
                         build.node(subtree.data.clone(), None, subtree.origin.clone())?
                     } else {
                         subtree
                     };
-                #[cfg(all(loom, feature = "local"))]
+                #[cfg(all(loom, not(target_arch = "wasm32")))]
                 let excludes = if crate::verification::fault_is(
                     crate::verification::Fault::IgnoreForkExclusions,
                 ) {
@@ -843,7 +843,7 @@ fn stage_namespace(
                 } else {
                     &fork.exclude[..]
                 };
-                #[cfg(not(all(loom, feature = "local")))]
+                #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
                 let excludes = &fork.exclude[..];
                 let subtree = Namespace::excluded(&subtree, excludes, build)?;
                 origin = Some(ForkMarker {
@@ -921,9 +921,9 @@ fn install_namespace(
             CommittedMutation::Append(append) => (&append.path, append.tail),
             CommittedMutation::Fork(fork) => (&fork.destination, fork.tail),
         };
-        #[cfg(all(loom, feature = "local"))]
+        #[cfg(all(loom, not(target_arch = "wasm32")))]
         let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
-        #[cfg(not(all(loom, feature = "local")))]
+        #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
         let notify = true;
         if notify && let Some(signals) = state.signals.get(path)? {
             signals.changed.send_replace(tail);

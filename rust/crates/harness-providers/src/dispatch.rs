@@ -83,7 +83,7 @@ pub(crate) async fn send(
     dispatch: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
-    work: acyclic_harness_core::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<HttpResponse> {
     #[cfg(not(target_arch = "wasm32"))]
     let mut allocation = work
@@ -237,7 +237,7 @@ impl GenerationAttempt {
         auth: &mut (Option<Cow<'_, str>>, Option<String>),
         mut response: Result<HttpResponse>,
         #[cfg(not(target_arch = "wasm32"))] mut custody: Option<&mut acyclic_fs::NativeAllocation>,
-        work: acyclic_harness_core::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<HttpResponse> {
         loop {
             let (error, retry_after) = match response {
@@ -290,7 +290,7 @@ impl GenerationAttempt {
         error: acyclic_harness_core::Error,
         retry_after: Option<std::time::Duration>,
         #[cfg(not(target_arch = "wasm32"))] custody: Option<&mut acyclic_fs::NativeAllocation>,
-        work: acyclic_harness_core::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(login) = &provider.codex_login

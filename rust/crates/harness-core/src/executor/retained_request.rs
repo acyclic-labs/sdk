@@ -42,13 +42,10 @@ impl<'a> StockExecution<'a> {
             return Ok(());
         }
         let prior = self.absolute_prior_count(prior).await?;
-        #[cfg(feature = "filesystem")]
         let hold = self
             .io
             .map(|io| io.guard_owned(request.preparation_owned_bytes(io)?))
             .transpose()?;
-        #[cfg(not(feature = "filesystem"))]
-        let hold = None;
         cache.retained = Some(RetainedRequest {
             operation: input.operation_id,
             journal: identity,
@@ -109,12 +106,9 @@ impl<'a> StockExecution<'a> {
             return Err(self.invalid_working_cut());
         }
         let RetainedRequest { request, hold, .. } = retained;
-        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
-        #[cfg(not(feature = "filesystem"))]
-        let _ = hold;
         let mut continued = request.into_continuation();
         *continued.messages() = crate::model::clone_messages(suffix, self.io)?;
         Ok(Some((

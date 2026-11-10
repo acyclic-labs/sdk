@@ -128,7 +128,7 @@ impl<'io> StockExecution<'io> {
         if let Some(context) = &mut context {
             context.model_turn = (operation_id, step);
         }
-        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let (invocation, mut pre_hook, target) = {
             let mut target = target;
             let mut output = match self
@@ -200,7 +200,7 @@ impl<'io> StockExecution<'io> {
                 ));
             }
         }
-        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(reason) = pre_hook.take_block_reason() {
             let content = self
                 .settle_tool_refusal(
@@ -214,9 +214,9 @@ impl<'io> StockExecution<'io> {
             self.append_hook_context(_hook_context, pre_hook)?;
             return self.push_tool_result(&invocation, content, None, prior_messages);
         }
-        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let hook_approval = pre_hook.approval.take();
-        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         self.append_hook_context(_hook_context, pre_hook)?;
         // One match over every record state: a settlement replays whether or not it has a
         // start, so the turn's scan never stops at a settled call.
@@ -302,7 +302,7 @@ impl<'io> StockExecution<'io> {
                         }
                     }
                 }
-                #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(prompt) = hook_approval
                     && let Some(stop) = self
                         .hook_approval(
@@ -494,7 +494,7 @@ impl<'io> StockExecution<'io> {
                 // A declaration refusal is settled by admission. Resource and
                 // cancellation failures must retain the original typed error.
                 Err(Error::Invalid(_)) => None,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 Err(Error::ToolRejected {
                     code: crate::wire::ErrorCode::Invalid,
                     ..
@@ -566,7 +566,7 @@ impl<'io> StockExecution<'io> {
         target: Option<Arc<crate::runtime::Target>>,
     ) -> Result<std::result::Result<(Option<crate::runtime::ToolContext>, String), ToolCallRejection>>
     {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.native_work() {
             tool.executor.supports_native_execution(work)?;
             tool.projection.supports_native_projection(Some(work))?;
@@ -646,7 +646,7 @@ impl<'io> StockExecution<'io> {
             };
         };
         let identity_matches = || -> Result<bool> {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = self.native_work() {
                 let (identity, custody) = policy.identity_with_native_work(work)?;
                 let matches = self.stock.policy_identity.as_ref() == Some(&identity);
@@ -828,7 +828,7 @@ async fn cancel_call<T>(
 }
 
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod refusal_admission_tests {
     use super::*;
 

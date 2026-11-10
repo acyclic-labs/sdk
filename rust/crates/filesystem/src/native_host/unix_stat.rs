@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(any(test, feature = "native-watch"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) fn root_path_identity<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
@@ -102,7 +102,7 @@ pub(super) fn stat_at<W: NativeHostWork>(
     }
 }
 
-#[cfg(all(target_os = "linux", any(test, feature = "native-watch")))]
+#[cfg(all(target_os = "linux", any(test, not(target_arch = "wasm32"))))]
 pub(crate) fn stat_file_metadata<W: NativeHostWork>(
     file: &File,
     work: &mut W,

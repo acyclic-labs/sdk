@@ -228,7 +228,7 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
 
 /// Transport callers keep this allocation instead of copying a domain wrapper.
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 fn new_identity_bytes() -> bytes::Bytes {
