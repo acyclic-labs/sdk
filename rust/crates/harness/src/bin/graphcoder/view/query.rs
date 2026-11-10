@@ -1,18 +1,21 @@
 //! One visible page on the selected conversation's authenticated connection.
 use super::{Conversation, Failure, Line, diff};
-use acyclic_harness::{client::AgentPageRequest, tui::QueryPage};
+use acyclic_harness::{agent::AgentPath, client::AgentPageRequest, tui::QueryPage};
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub(super) enum Source {
     Diff(Option<String>),
     History(Option<String>),
+    AgentDiff(AgentPath, Option<String>),
+    Wait(AgentPath),
 }
 
 impl Source {
     pub(super) fn title(&self) -> &'static str {
         match self {
-            Self::Diff(_) => "Diff",
+            Self::Diff(_) | Self::AgentDiff(..) => "Diff",
+            Self::Wait(_) => "Wait",
             Self::History(_) => "History",
         }
     }
@@ -20,12 +23,17 @@ impl Source {
     pub(super) fn newest(&self) -> Self {
         match self {
             Self::Diff(_) => Self::Diff(None),
+            Self::AgentDiff(agent, _) => Self::AgentDiff(agent.clone(), None),
+            Self::Wait(agent) => Self::Wait(agent.clone()),
             Self::History(_) => Self::History(None),
         }
     }
 
     pub(super) fn follows_tail(&self) -> bool {
-        matches!(self, Self::Diff(None) | Self::History(None))
+        matches!(
+            self,
+            Self::Diff(None) | Self::AgentDiff(_, None) | Self::History(None)
+        )
     }
 }
 
@@ -35,11 +43,28 @@ pub(super) type Panel = QueryPage<Source>;
 /// drops that consumer; input and redraw keep the same pending future.
 pub(super) async fn load(
     conversation: Arc<Conversation>,
+    root: Arc<Conversation>,
     rows: u32,
     source: Source,
 ) -> Result<Panel, Failure> {
     match source {
-        Source::Diff(cursor) => diff::query(conversation, rows, cursor).await,
+        Source::Diff(cursor) => diff::query(conversation, rows, cursor, None).await,
+        Source::AgentDiff(agent, cursor) => {
+            let selected = root.select(agent.clone()).await?;
+            diff::query(selected, rows, cursor, Some(agent)).await
+        }
+        Source::Wait(agent) => {
+            let selected = root.select(agent).await?;
+            let phase = selected.wait_current_input().await?;
+            Ok(Panel::new(
+                vec![
+                    Line::raw(format!("Captured inputs settled · {phase:?}")),
+                    Line::raw("Esc: close"),
+                ],
+                None,
+                false,
+            ))
+        }
         Source::History(cursor) => {
             let continued = cursor.is_some();
             let history = conversation
@@ -82,6 +107,10 @@ mod tests {
         let next = match source {
             Source::Diff(_) => Source::Diff(Some("original-diff-cut".into())),
             Source::History(_) => Source::History(Some("original-history-cut".into())),
+            Source::AgentDiff(agent, _) => {
+                Source::AgentDiff(agent.clone(), Some("original-diff-cut".into()))
+            }
+            Source::Wait(_) => return Panel::new(vec![], None, false),
         };
         Panel::new(vec![Line::raw("original source row")], Some(next), false)
     }

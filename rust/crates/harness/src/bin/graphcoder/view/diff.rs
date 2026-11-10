@@ -15,6 +15,7 @@ pub(super) async fn query(
     conversation: Arc<Conversation>,
     rows: u32,
     cursor: Option<String>,
+    agent: Option<acyclic_harness::agent::AgentPath>,
 ) -> Result<Panel, Failure> {
     let continued = cursor.is_some();
     let page = AgentPageRequest::new(rows, 64 * 1024, cursor)?;
@@ -38,7 +39,10 @@ pub(super) async fn query(
     }
     Ok(Panel::new(
         lines,
-        next.map(|cursor| Source::Diff(Some(cursor))),
+        next.map(|cursor| match agent {
+            Some(agent) => Source::AgentDiff(agent, Some(cursor)),
+            None => Source::Diff(Some(cursor)),
+        }),
         continued,
     ))
 }

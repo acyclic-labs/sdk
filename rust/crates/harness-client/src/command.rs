@@ -429,6 +429,10 @@ pub enum AgentCommand {
         /// Agent whose conversation is read.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
+        /// Capture the current inbox tail and wait for its original actor
+        /// settlement fence. Later inputs do not extend this wait.
+        #[serde(default)]
+        wait: bool,
     },
     /// One visible page of the agent's authorized workspace diff query.
     /// The host pins the initial cut; continuations retain that exact projection.
@@ -759,7 +763,7 @@ impl AgentCommand {
             | Self::Approvals { agent, .. }
             | Self::Decide { agent, .. }
             | Self::Reply { agent, .. }
-            | Self::Settlement { agent }
+            | Self::Settlement { agent, .. }
             | Self::Usage { agent, .. }
             | Self::Events { agent, .. }
             | Self::AgentFilePreviews { agent, .. }
@@ -1109,7 +1113,7 @@ mod tests {
             PreparedCommand::decode(&vec![b' '; MAX_COMMAND_BYTES + 1]),
             Err(CommandError::Capacity)
         ));
-        let small = PreparedCommand::new(&AgentCommand::Settlement { agent })?;
+        let small = PreparedCommand::new(&AgentCommand::Settlement { agent, wait: false })?;
         assert!(small.frames().eq([small.command()]));
         Ok(())
     }

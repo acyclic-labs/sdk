@@ -951,7 +951,12 @@ async fn run_current(
         // a collapsed panel waits for the existing resize/input event.
         let credit = u32::from(areas.overlay_rows(1)).min(128);
         queries.start(credit, query_future.as_mut(), |source, rows| {
-            query::load(Arc::clone(&conversation), rows, source.clone())
+            query::load(
+                Arc::clone(&conversation),
+                Arc::clone(&root),
+                rows,
+                source.clone(),
+            )
         });
         // Older turns page in as the view nears them: one read at a time,
         // started by the frame that showed the need, never retried.
@@ -1124,6 +1129,14 @@ async fn run_current(
                             tree::Intent::History(direction) => sidebar.history_target(direction),
                             tree::Intent::Sibling(forward) => {
                                 sidebar.sibling(conversation.agent(), forward);
+                                None
+                            }
+                            tree::Intent::Diff(agent) => {
+                                queries.select(query::Source::AgentDiff(agent, None), query_future.as_mut());
+                                None
+                            }
+                            tree::Intent::Wait(agent) => {
+                                queries.select(query::Source::Wait(agent), query_future.as_mut());
                                 None
                             }
                             tree::Intent::Input | tree::Intent::Consumed => None,

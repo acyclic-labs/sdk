@@ -26,6 +26,8 @@ pub(super) enum Intent {
     Toggle,
     Input,
     Attach(AgentPath),
+    Diff(AgentPath),
+    Wait(AgentPath),
     Parent,
     History(isize),
     Sibling(bool),
@@ -334,7 +336,9 @@ impl Sidebar {
                 first_line(&search.text)
             )));
         }
-        rows.push(Line::raw("Enter attach · ←/→ fold · Esc input"));
+        rows.push(Line::raw(
+            "Enter attach · d diff · w wait · ←/→ fold · Esc input",
+        ));
         rows
     }
 
@@ -478,6 +482,13 @@ impl Sidebar {
                 Row::Agent { path, .. } => Some(path.clone()),
                 Row::Loading { .. } => None,
             });
+        if key.modifiers.is_empty() && !self.search.as_ref().is_some_and(|search| search.editing) {
+            match key.code {
+                KeyCode::Char('d') => return selected.map(Intent::Diff).or(Some(Intent::Consumed)),
+                KeyCode::Char('w') => return selected.map(Intent::Wait).or(Some(Intent::Consumed)),
+                _ => {}
+            }
+        }
         match decoded {
             Some(DecodedKey::Action {
                 action: Action::Submit,

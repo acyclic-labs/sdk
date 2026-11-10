@@ -712,8 +712,14 @@ where
                 };
                 Ok(AgentReply::Root { agent })
             }
-            AgentCommand::Settlement { agent } => {
+            AgentCommand::Settlement { agent, wait } => {
                 let agent = self.within_tree(agent)?;
+                if *wait {
+                    let tail = crate::agent::inbox_tail(&**agents.provider(), agent).await?;
+                    if let Some(input) = tail.checked_sub(1) {
+                        agents.wait_for_input(agent, input).await?;
+                    }
+                }
                 let state = agents.state(agent).await?;
                 Ok(AgentReply::Settlement {
                     settled: state.conversation_tail,

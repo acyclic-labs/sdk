@@ -413,7 +413,7 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn phase(&self) -> Result<Phase> {
-        Ok(self.settlement().await?.2)
+        Ok(self.settlement(false).await?.2)
     }
 
     /// Reads all of `target` on `agent`, one bounded range at a time.
@@ -570,11 +570,19 @@ impl Conversation {
         serde_json::from_str(&output).map_err(failed)
     }
 
-    async fn settlement(&self) -> Result<(u64, u64, Phase)> {
+    /// Wait for all inputs committed before this request, including queued or
+    /// paused work. Inputs arriving later do not extend the captured fence.
+    /// Dropping the request cancels observation without changing the agent.
+    pub async fn wait_current_input(&self) -> Result<Phase> {
+        Ok(self.settlement(true).await?.2)
+    }
+
+    async fn settlement(&self, wait: bool) -> Result<(u64, u64, Phase)> {
         match self
             .connection
             .execute(&AgentCommand::Settlement {
                 agent: self.agent().clone(),
+                wait,
             })
             .await?
         {
@@ -663,7 +671,7 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn dropped(&self) -> Result<String> {
-        let (_, _, phase) = self.settlement().await?;
+        let (_, _, phase) = self.settlement(false).await?;
         Ok(finished(&phase).unwrap_or_else(|| "the prompt was cancelled".into()))
     }
 
@@ -672,7 +680,7 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn settled(&self) -> Result<u64> {
-        Ok(self.settlement().await?.0)
+        Ok(self.settlement(false).await?.0)
     }
 
     /// Every settled turn from conversation sequence `from`, or from the current
@@ -684,7 +692,7 @@ impl Conversation {
     /// # Errors
     /// Session or host failures, or refused follows.
     pub async fn observe(&self, from: Option<u64>) -> Result<super::Observer> {
-        let (settled, statuses, _) = self.settlement().await?;
+        let (settled, statuses, _) = self.settlement(false).await?;
         super::Observer::open(
             &self.connection,
             from.unwrap_or(settled),
@@ -705,7 +713,7 @@ impl Conversation {
             return Ok(entries);
         }
         // The status follow starts at its tail: only the turns are read.
-        let (_, statuses, _) = self.settlement().await?;
+        let (_, statuses, _) = self.settlement(false).await?;
         let mut turns = self
             .connection
             .controls

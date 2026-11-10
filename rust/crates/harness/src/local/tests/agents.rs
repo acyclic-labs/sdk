@@ -495,20 +495,10 @@ pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Re
         let inbox = crate::agent::inbox_tail(&**agents.provider(), root)
             .await
             .map_err(agent)?;
-        loop {
-            let (settled, cut) = agents
-                .input_progress(root, inbox.saturating_sub(1))
-                .await
-                .map_err(agent)?;
-            if settled {
-                return records(&**agents.provider(), root.conversation().map_err(agent)?).await;
-            }
-            let mut changes =
-                acyclic_stream::records_only(agents.provider().follow(cut).await.map_err(agent)?);
-            changes.try_next().await.map_err(agent)?.ok_or_else(|| {
-                Error::Storage("agent state follow ended before settlement".into())
-            })?;
+        if let Some(input) = inbox.checked_sub(1) {
+            agents.wait_for_input(root, input).await.map_err(agent)?;
         }
+        records(&**agents.provider(), root.conversation().map_err(agent)?).await
     };
     tokio::select! {
         biased;
@@ -1024,6 +1014,12 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     assert_eq!(usage.totals().calls, 2);
     assert_eq!(usage.totals().completed, 1);
     let before = usage.totals().clone();
+    let fenced = client.wait_current_input();
+    tokio::pin!(fenced);
+    assert!(
+        futures::poll!(&mut fenced).is_pending(),
+        "captured input must remain pending while its producer is live"
+    );
     let waiting = client.settle("lost-producer", inbox, &mut events);
     tokio::pin!(waiting);
     assert!(
@@ -1050,6 +1046,11 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     assert!(
         matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
         "usage lost the runtime cause: {usage_result:?}"
+    );
+    let fenced = fenced.await;
+    assert!(
+        matches!(&fenced, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "input fence lost the runtime cause: {fenced:?}"
     );
     let admitted = futures::poll!(&mut admission);
     assert!(
@@ -2235,6 +2236,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         let observed = connection
             .execute(&AgentCommand::Settlement {
                 agent: owner.clone(),
+                wait: false,
             })
             .await?;
         let observed_heads = head_reads.load(Ordering::Relaxed) - before;

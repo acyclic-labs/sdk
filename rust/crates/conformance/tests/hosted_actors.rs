@@ -49,7 +49,9 @@ impl acyclic_harness::hosting::Platform for Owner {
         command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, Result<PolicyDecision, StreamError>> {
         let kind = match command {
-            AgentCommand::Settlement { agent } if agent.id_bytes() != ROOT => "foreign_settlement",
+            AgentCommand::Settlement { agent, .. } if agent.id_bytes() != ROOT => {
+                "foreign_settlement"
+            }
             _ => command.kind(),
         };
         let gate = self.0.as_ref().and_then(|gate| {

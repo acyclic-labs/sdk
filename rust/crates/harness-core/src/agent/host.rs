@@ -290,6 +290,23 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         Ok((settled, snapshot.follow_request()))
     }
 
+    /// Wait until every input through `input` has settled or been disposed.
+    /// Queued work and a paused turn are included; an idle phase alone is not
+    /// a settlement fence. Each recheck follows an original actor publication.
+    pub async fn wait_for_input(&self, agent: &AgentPath, input: u64) -> Result<(), Error> {
+        loop {
+            let (settled, cut) = self.input_progress(agent, input).await?;
+            if settled {
+                return Ok(());
+            }
+            acyclic_stream::records_only(self.provider.follow(cut).await.map_err(Error::Stream)?)
+                .try_next()
+                .await
+                .map_err(Error::Stream)?
+                .ok_or(Error::Stream(StreamError::Unavailable))?;
+        }
+    }
+
     /// Replays and follows conversation, including before its first turn.
     /// First publication is observed through the original actor checkpoint;
     /// same-phase turns need no extra status record. A terminal checkpoint with

@@ -413,7 +413,7 @@ mod tests {
                 let selected = connection.select(agent.clone()).await?;
                 assert_eq!(selected.root(), &agent);
                 let AgentReply::Settlement { .. } = selected
-                    .execute(&AgentCommand::Settlement { agent })
+                    .execute(&AgentCommand::Settlement { agent, wait: false })
                     .await?
                 else {
                     return Err(Error::Invalid("selected session unavailable".into()));
