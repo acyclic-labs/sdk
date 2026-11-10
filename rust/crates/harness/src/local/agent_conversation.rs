@@ -35,7 +35,7 @@ pub use acyclic_harness_client::ExecutionQuery;
 use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
-pub use history::HistoryPage;
+pub use history::{HistoryPage, PreparedHistoryAction};
 use std::sync::Arc;
 pub use usage_query::UsageQuery;
 

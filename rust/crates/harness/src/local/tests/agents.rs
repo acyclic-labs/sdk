@@ -2846,9 +2846,18 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     );
     let older = next.ok_or_else(|| Error::Invalid("older continuation missing".into()))?;
     let expected = client.project_heads().await?;
-    let inbox = client
-        .restore("apply", 0, RestoreMode::Both, expected)
-        .await?;
+    let mut prepared = client.prepare_restore("apply", 0, RestoreMode::Both, expected)?;
+    let receipt = prepared.execute().await.map_err(agent)?;
+    let crate::client::AgentReply::Delivered {
+        delivery: Delivered::Committed { inbox },
+    } = receipt
+    else {
+        return Err(Error::Invalid("prepared restore did not commit".into()));
+    };
+    let replay = prepared.execute().await.map_err(agent)?;
+    assert!(
+        matches!(replay, crate::client::AgentReply::Delivered { delivery: Delivered::Committed { inbox: repeated } } if repeated == inbox)
+    );
     settlement(&mut observed, inbox).await?;
     let entries = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
     assert_eq!(entries.len(), 3);
