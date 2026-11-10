@@ -204,7 +204,6 @@ pub struct CustomTool {
 }
 
 /// Last user/tool content, consistently across the four supported APIs.
-/// Standalone harness notices do not replace the user's conversation input.
 pub fn last_content(body: &Value, tool: bool) -> String {
     let Some(messages) = body
         .get("input")
@@ -215,18 +214,6 @@ pub fn last_content(body: &Value, tool: bool) -> String {
         return String::new();
     };
     for message in messages.iter().rev() {
-        if !tool && message["role"] == "user" {
-            let text = content_text(
-                message
-                    .get("content")
-                    .or_else(|| message.get("parts"))
-                    .unwrap_or(&Value::Null),
-            );
-            let text = text.trim();
-            if text.starts_with("<notice source=") && text.ends_with("</notice>") {
-                continue;
-            }
-        }
         if let Some(parts) = message["parts"].as_array() {
             if tool {
                 if let Some(response) = parts.iter().rev().find_map(|part| {

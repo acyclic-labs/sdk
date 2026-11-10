@@ -201,33 +201,6 @@ fn guards_use_last_content_and_mismatch_never_consumes() {
         json!({"messages":[{"role":"user","content":"new"},{"role":"tool","content":"result"}]});
     assert_eq!(last_content(&chat, false), "new");
     assert_eq!(last_content(&chat, true), "result");
-    // The harness publishes tool-table changes on the provider's user channel.
-    // That original source event must not hide the latest conversation input.
-    let notice = "<notice source=\"tools\" kind=\"tools.changed\">{&quot;complete&quot;:true,&quot;json&quot;:&quot;[]&quot;}</notice>\n";
-    for (mut request, field, part) in [
-        (body, "input", json!({"type":"input_text","text":notice})),
-        (anthropic, "messages", json!({"type":"text","text":notice})),
-        (chat, "messages", json!(notice)),
-    ] {
-        let content = if part.is_object() {
-            json!([part])
-        } else {
-            part
-        };
-        request[field]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"role":"user","content":content}));
-        assert_eq!(last_content(&request, false), "new");
-        assert_eq!(last_content(&request, true), "result");
-        let mut guarded = Engine::new(
-            serde_json::from_value(json!({"cases":{"notice":{"steps":[{
-                "when":{"user":"new","tool_result":"result"},"text":["matched"]
-            }]}}}))
-            .unwrap(),
-        );
-        assert!(guarded.take("notice", "messages", &request).is_some());
-    }
 }
 
 #[test]

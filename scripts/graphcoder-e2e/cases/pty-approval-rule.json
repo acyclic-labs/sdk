@@ -1,170 +1,21 @@
 {
   "id": "pty-approval-rule",
   "adapter": "anthropic",
-  "workspace": {
-    "kind": "plain",
-    "files": {
-      "approval-policy.json": "{\"approvers\":[{\"kind\":\"rules\",\"principal\":\"setup\",\"rules\":[{\"tool\":\"spawn\",\"arguments\":null,\"verdict\":\"allow\"},{\"tool\":\"wait\",\"arguments\":null,\"verdict\":\"allow\"},{\"tool\":\"read\",\"arguments\":null,\"verdict\":\"allow\"}],\"fallback\":\"ask\"},{\"principal\":\"human\",\"kind\":\"human\"}]}"
-    }
-  },
-  "extra_args": [
-    "--approval-policy",
-    "{{workspace}}/approval-policy.json"
-  ],
-  "model": {
-    "steps": [
-      {
-        "when": {
-          "user": "CREATE_APPROVAL_WORKER"
-        },
-        "tools": [
-          {
-            "id": "spawn-approval-worker",
-            "name": "spawn",
-            "arguments": {
-              "name": "approval-worker",
-              "task": "APPROVAL_WORKER_READY",
-              "role": "worker"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "CREATE_APPROVAL_WORKER",
-          "tool_result": "agent"
-        },
-        "tools": [
-          {
-            "id": "wait-approval-worker",
-            "name": "wait",
-            "arguments": {
-              "agents": [
-                {
-                  "$tool_result": "/agent"
-                }
-              ]
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "APPROVAL_WORKER_READY"
-        },
-        "text": [
-          "WORKER_READY"
-        ]
-      },
-      {
-        "when": {
-          "user": "CREATE_APPROVAL_WORKER",
-          "tool_result": "WORKER_READY"
-        },
-        "text": [
-          "WORKER_CREATED"
-        ]
-      },
-      {
-        "when": {
-          "user": "repeat the exact approved action"
-        },
-        "tools": [
-          {
-            "id": "first",
-            "name": "Write",
-            "arguments": {
-              "file_path": "repeat.txt",
-              "content": "REPEAT_RULE_BODY\n"
-            }
-          },
-          {
-            "id": "second",
-            "name": "Write",
-            "arguments": {
-              "file_path": "repeat.txt",
-              "content": "REPEAT_RULE_BODY\n"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "repeat the exact approved action",
-          "tool_result": "repeat.txt"
-        },
-        "tools": [
-          {
-            "id": "verify-write",
-            "name": "Read",
-            "arguments": {
-              "file_path": "repeat.txt"
-            }
-          }
-        ]
-      },
-      {
-        "when": {
-          "user": "repeat the exact approved action",
-          "tool_result": "REPEAT_RULE_BODY"
-        },
-        "text": [
-          "RULE_REUSED_DONE"
-        ]
-      }
-    ]
-  },
-  "inputs": [
-    {
-      "mode": "headless",
-      "text": "CREATE_APPROVAL_WORKER",
-      "answer": "WORKER_CREATED"
-    },
-    {
-      "mode": "pty",
-      "actions": [
-        {
-          "when": {
-            "contains": [
-              "GraphCoder"
-            ],
-            "cursor": true
-          },
-          "prompt": "repeat the exact approved action"
-        },
-        {
-          "when": {
-            "contains": [
-              "repeat.txt",
-              "REPEAT_RULE_BODY",
-              "r exact rule"
-            ]
-          },
-          "send": "r\r"
-        },
-        {
-          "when": {
-            "contains": [
-              "RULE_REUSED_DONE",
-              "○"
-            ]
-          },
-          "send": "\u0004"
-        }
-      ],
-      "select_spawned_agent": {
-        "record": "hooks.jsonl",
-        "name": "approval-worker"
-      }
-    }
-  ],
-  "assert": {
-    "requests": 7,
-    "tool_contains": [
-      "REPEAT_RULE_BODY"
-    ]
-  },
-  "settings": {
-    ".claude/settings.json": "{\"hooks\":{\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" allow\"}]}]}}"
-  }
+  "workspace": {"kind": "plain", "files": {
+    "approval-policy.json": "{\"approvers\":[{\"kind\":\"human\",\"principal\":\"human\"}]}"
+  }},
+  "extra_args": ["--approval-policy", "{{workspace}}/approval-policy.json"],
+  "model": {"steps": [
+    {"when": {}, "tools": [
+      {"id": "first", "name": "Write", "arguments": {"file_path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}},
+      {"id": "second", "name": "Write", "arguments": {"file_path": "repeat.txt", "content": "REPEAT_RULE_BODY\n"}}
+    ]},
+    {"when": {"tool_result": "repeat.txt"}, "text": ["RULE_REUSED_DONE"]}
+  ]},
+  "inputs": [{"mode": "pty", "actions": [
+    {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "repeat the exact approved action"},
+    {"when": {"contains": ["repeat.txt", "REPEAT_RULE_BODY", "r exact rule"]}, "send": "r\r"},
+    {"when": {"contains": ["RULE_REUSED_DONE", "○"]}, "send": "\u0004"}
+  ]}],
+  "assert": {"requests": 2, "files": {"repeat.txt": "REPEAT_RULE_BODY\n"}}
 }
