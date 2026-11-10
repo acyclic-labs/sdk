@@ -7,7 +7,7 @@ use super::{LocalHarness, LocalStream, storage};
 use crate::{
     Error, OperationId, Result,
     agent::{AgentHost, AgentPath, AgentState, IntentId, VolumeBinding},
-    conversation::{ContentAccess, ContentPublisher},
+    conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemTurnHost, HOME_VOLUME, PRIVATE_VOLUME, Tasks, TurnAuthority, TurnContext,

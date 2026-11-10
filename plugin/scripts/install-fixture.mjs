@@ -5,7 +5,7 @@ import { chmodSync, copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, 
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Processes } from "../../scripts/graphcoder-e2e/process.mjs";
-import { environment } from "../../scripts/graphcoder-e2e/scratch.mjs";
+import { environment, nativeEnvironment } from "../../scripts/graphcoder-e2e/scratch.mjs";
 const plugin = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(import.meta.url);
 const { hostTarget, sha256File } = require("../bin/verify.js");
@@ -23,9 +23,7 @@ mkdirSync(scratch, { recursive: true });
 function scope(prefix) {
   const root = mkdtempSync(join(scratch, prefix));
   const processes = new Processes();
-  const inherited = Object.fromEntries(["PATH", "SystemRoot", "ComSpec", "PATHEXT", "E2E_PROCESS_HOST"]
-    .filter(key => process.env[key]).map(key => [key, process.env[key]]));
-  const env = { ...environment(join(root, "profile"), inherited), NODE_ENV: "test",
+  const env = { ...environment(join(root, "profile"), nativeEnvironment()), NODE_ENV: "test",
     npm_config_cache: join(root, "profile", "npm-cache"), npm_config_update_notifier: "false",
     npm_config_audit: "false", npm_config_fund: "false", npm_config_offline: "true",
     BUN_INSTALL_CACHE_DIR: join(root, "profile", "bun-cache") };

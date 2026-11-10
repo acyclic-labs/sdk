@@ -5,7 +5,7 @@
      ) -> Result<[u8; N], DemandError> {
          loop {
 +            let candidate = candidate()?;
-             match read_record(&self.directory, leaf, work) {
+             match read_record(&self.directory(), leaf, work) {
                  Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {}
                  Ok(record) => {
 @@ -279,7 +280,6 @@

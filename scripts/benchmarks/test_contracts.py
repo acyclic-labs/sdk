@@ -84,7 +84,15 @@ class BenchmarkContracts(unittest.TestCase):
             with self.assertRaises(ValueError):
                 catalog("openai/fixture", "http://localhost/v1", context, output)
         self.assertEqual(catalog("openai/fixture", "http://localhost/v1", 100, 10)
-                         ["benchmark"]["authentication"], "optional")
+                         ["openai"]["authentication"], "optional")
+
+    def test_conflicting_provider_or_duplicate_model_cannot_replace_an_endpoint(self):
+        root = dict(model_name="openai/root", base_url="http://127.0.0.1:9/v1",
+                    context_tokens=100, output_tokens=10, adapter="responses")
+        for changed in ({"model_name": "openai/worker", "base_url": "http://127.0.0.1:9/other"},
+                        {"model_name": "openai/worker", "adapter": "chat"}, {}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                catalog(**root, providers=[{**root, **changed}])
 
     def test_bootstrap_rejects_unpinned_bytes_before_archive_parsing(self):
         with patch("scripts.benchmarks.bootstrap.zipfile.ZipFile",

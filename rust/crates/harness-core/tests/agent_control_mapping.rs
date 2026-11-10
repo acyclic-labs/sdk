@@ -532,8 +532,8 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
     trace_call_sites(shell, &inventory)?;
     for (before, after, action) in [
         (
-            "Decision::Until(need, reachable, sleep, deadline, wait)",
-            "Decision::Until(need, reachable, sleep, deadline, deadline)",
+            "Decision::Until(need, reachable, sleep, deadline, input, wait)",
+            "Decision::Until(need, reachable, sleep, deadline, input, deadline)",
             "until",
         ),
         (

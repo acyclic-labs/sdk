@@ -96,12 +96,16 @@ pub struct ArchiveAgentInput {
 #[serde(deny_unknown_fields)]
 pub struct WaitAgentInput {
     /// Child names or agent paths, as spawn returned them.
+    #[serde(default)]
     pub agents: Vec<String>,
     /// How many of them must settle before the wait returns: all of them by
     /// default, 1 for the first, or any quorum in between.
     pub need: Option<u32>,
     /// Return after this many milliseconds even if fewer settled.
     pub timeout_ms: Option<u64>,
+    /// Also resume on inbox input. With no agents, wait for input or the alarm.
+    #[serde(default)]
+    pub input: bool,
 }
 
 /// What one turn's agent tools act for.
@@ -399,13 +403,40 @@ impl AgentTool {
         arguments: &Value,
         released: bool,
     ) -> Result<ToolPreparation> {
+        let input: WaitAgentInput = match WaitAgentInput::deserialize(arguments) {
+            Ok(input) => input,
+            Err(error) => return Ok(ToolPreparation::Ready(rejected(error.to_string()))),
+        };
+        if input.agents.is_empty() {
+            if input.need.is_some() {
+                return Ok(ToolPreparation::Ready(rejected(
+                    "need requires named children",
+                )));
+            }
+            let until = if input.input {
+                crate::agent::Until::input(input.timeout_ms)
+            } else if let Some(timeout) = input.timeout_ms {
+                crate::agent::Until::sleep(timeout)
+            } else {
+                return Ok(ToolPreparation::Ready(rejected(
+                    "wait needs children, input or an alarm",
+                )));
+            };
+            return Ok(if released {
+                ToolPreparation::Ready(ToolResult {
+                    value: json!({"settled": [], "unsettled": []}),
+                })
+            } else {
+                ToolPreparation::Deferred(until)
+            });
+        }
+        let on_input = input.input;
         let Some(observer) = &self.turn.observer else {
             return Ok(ToolPreparation::Ready(rejected(
                 "this host observes no children",
             )));
         };
-        let (children, mut need, timeout_ms) = match waited(&**observer, operation, arguments).await
-        {
+        let (children, mut need, timeout_ms) = match waited(&**observer, operation, input).await {
             Ok(waited) => waited,
             Err(error @ Error::Invalid(_)) => {
                 return Ok(ToolPreparation::Ready(super::rejected_input(error)));
@@ -473,9 +504,10 @@ impl AgentTool {
             ))));
         }
         if !released && need != 0 {
-            return Ok(ToolPreparation::Deferred(
-                crate::agent::Until::quorum(pending, need).within(timeout_ms),
-            ));
+            return Ok(ToolPreparation::Deferred(crate::agent::Until {
+                input: on_input,
+                ..crate::agent::Until::quorum(pending, need).within(timeout_ms)
+            }));
         }
         let settled = futures::future::try_join_all(children.iter().zip(observations).filter_map(
             |((name, child), observed)| {
@@ -537,13 +569,11 @@ fn peer_grants(
 /// naming it, how many must settle and its timeout; the model's error when
 /// the input names none, names a non-child, or needs none or more than it
 /// names.
-async fn waited<'de>(
+async fn waited(
     observer: &dyn TurnChildren,
     operation: crate::OperationId,
-    arguments: impl serde::Deserializer<'de, Error = serde_json::Error>,
+    input: WaitAgentInput,
 ) -> Result<(Vec<(String, AgentPath)>, u32, Option<u64>)> {
-    let input: WaitAgentInput = WaitAgentInput::deserialize(arguments)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
     let children = observer.select(operation, &input.agents).await?;
     if children.is_empty() {
         return Err(Error::Invalid("wait names no child".into()));
@@ -726,7 +756,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait for subagents (children) to finish their current work and messages. Returns each settled child's phase and last answer, its error as failed when that turn failed, plus its branch when addressed by spawn name, and lists the rest as unsettled with their phase; a wait its open children cannot meet fails naming each child that cannot settle. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
+                "Wait for subagents (children) to finish their current work and messages. Returns each settled child's phase and last answer, its error as failed when that turn failed, plus its branch when addressed by spawn name, and lists the rest as unsettled with their phase; a wait its open children cannot meet fails naming each child that cannot settle. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. With no agents, set timeout_ms for one actor alarm, input=true to wait for inbox input, or both to resume on whichever arrives first; input=true also interrupts a child wait. No timer runs per waiting agent. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
             )?,
         ),
     ] {

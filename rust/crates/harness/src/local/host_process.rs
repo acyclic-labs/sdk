@@ -62,7 +62,7 @@ pub fn run_root_session(
             .env("ACYCLIC_TASK", task.to_string());
         let model = launch::selected_model(host, arguments);
         let context = native_context(&task, cwd, model)?;
-        run_headless(&mut command, &mut std::io::stdout().lock(), &context, model)
+        run_headless(&mut command, &mut std::io::stdout().lock(), &context, model)?
     } else {
         let mut command = resolved;
         command
@@ -73,7 +73,8 @@ pub fn run_root_session(
             .env("ACYCLIC_TASK", task.to_string());
         command.status().map_err(storage)
     };
-    // The root's own failure outranks capture's, but never skips it.
+    // Capture only a quiescent tree. Once retirement is proved, preserve the
+    // original output/exit error while still capturing its completed writes.
     let captured = super::host_files::request(cwd, HostAction::Capture { task });
     let status = status?;
     captured?;
@@ -82,14 +83,14 @@ pub fn run_root_session(
 
 /// Runs a headless root in an owned process tree and forwards its events to
 /// `output`. The whole tree, tools included, is stopped and joined before
-/// this returns, so a failed copy cannot leave tools changing the checkout
-/// while the caller captures it.
+/// the outer result succeeds. The inner result preserves output/exit failure;
+/// the caller may capture only after retirement has been proved.
 fn run_headless(
     command: &mut ProcessCommand,
     output: &mut impl std::io::Write,
     context: &[u8],
     model: Option<&str>,
-) -> Result<std::process::ExitStatus> {
+) -> Result<Result<std::process::ExitStatus>> {
     command
         .stdin(acyclic_native_runtime::ProcessStdio::null())
         .stdout(acyclic_native_runtime::ProcessStdio::piped());
@@ -114,9 +115,7 @@ fn run_headless(
         Err(error) => Err(error),
     };
     // Descendants that outlive the root (or a failed copy) are stopped here.
-    let stopped = tree.terminate(None).map_err(storage);
-    let status = status?;
-    stopped?;
+    tree.terminate(None).map_err(storage)?;
     Ok(status)
 }
 
@@ -580,6 +579,14 @@ impl HostSessionProcess {
         Ok(drained)
     }
 
+    /// Stops descendants after root exit and fixes the original pipe boundary.
+    /// Both operations share the terminal observation's funding window.
+    pub fn seal_output(&mut self) -> Result<()> {
+        let mut owner = self.live_io()?;
+        owner.terminate_descendants().map_err(storage)?;
+        owner.seal_output().map_err(storage)
+    }
+
     /// Arms one wait for this child's next pipe data, writable stdin or exit,
     /// served by the shared process-event hub without a thread or timer.
     pub fn readiness(&mut self) -> Result<acyclic_native_runtime::ProcessReadiness> {
@@ -719,6 +726,7 @@ mod tests {
             .arg(&pid_file)
             .current_dir(root.path());
         let error = run_headless(&mut command, &mut ClosedAfterContext(false), b"{}", None)
+            .expect("the failed copy still proves tree retirement")
             .expect_err("a closed caller fails the copy");
         assert!(matches!(error, Error::Storage(_)), "{error}");
         let tool = std::fs::read_to_string(&pid_file).map_err(storage)?;
@@ -739,7 +747,7 @@ mod tests {
         let mut command = ProcessCommand::new("/bin/sh");
         command.args(["-c", "sleep 1000 & printf '%s\\n' '{\"type\":\"done\"}'"]);
         let mut output = Vec::new();
-        let status = run_headless(&mut command, &mut output, b"{}", None)?;
+        let status = run_headless(&mut command, &mut output, b"{}", None)??;
         assert!(status.success());
         assert!(String::from_utf8(output).map_err(storage)?.contains("done"));
         Ok(())

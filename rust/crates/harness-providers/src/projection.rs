@@ -26,15 +26,23 @@ use serde_json::{Value, json};
 use wire::{Item, Message, Request};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
-    let mut base = validate_url(&provider.config.base_url)?;
+    endpoint_for(
+        provider.config.adapter,
+        &provider.config.base_url,
+        &provider.model.name,
+    )
+}
+
+pub(crate) fn endpoint_for(adapter: Adapter, base: &str, model: &str) -> Result<String> {
+    let mut base = validate_url(base)?;
     let path = format!("{}/", base.path().trim_end_matches('/'));
     base.set_path(&path);
-    let suffix = match provider.config.adapter {
+    let suffix = match adapter {
         Adapter::Anthropic => "messages".into(),
         Adapter::Responses => "responses".into(),
         Adapter::Chat => "chat/completions".into(),
         Adapter::Gemini => {
-            let name = &provider.model.name;
+            let name = model;
             #[cfg(all(test, not(target_arch = "wasm32")))]
             let name = if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL
                 .with(std::cell::Cell::get)

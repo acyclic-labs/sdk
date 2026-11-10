@@ -6,7 +6,7 @@ use super::{
     windows_path,
 };
 use crate::kernel::KernelAccounting;
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn stopped_projection_cannot_publish_a_late_open_writer()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -62,7 +62,7 @@ async fn stopped_projection_cannot_publish_a_late_open_writer()
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn write_through_a_handle_opened_before_a_rename_lands_at_the_new_name()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -92,7 +92,7 @@ async fn write_through_a_handle_opened_before_a_rename_lands_at_the_new_name()
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -114,7 +114,7 @@ async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -138,7 +138,7 @@ async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -224,6 +224,21 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
     std::fs::create_dir_all(source_root.join("pkg").join("sub"))?;
     std::fs::write(source_root.join("pkg").join("shared.rs"), b"shared")?;
     std::fs::write(source_root.join("pkg").join("sub").join("deep.rs"), b"deep")?;
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_HIDDEN, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
+        FILE_WRITE_ATTRIBUTES,
+    };
+    let source_directory = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES.0 | FILE_WRITE_ATTRIBUTES.0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+        .open(source_root.join("pkg/sub"))?;
+    let mut information = super::super::placeholders::basic_information(&source_directory, None)?;
+    information.FileAttributes |= FILE_ATTRIBUTE_HIDDEN.0;
+    information.CreationTime = 132_000_000_000_000_000;
+    super::super::placeholders::basic_information(&source_directory, Some(&information))?;
+    drop(source_directory);
+    let expected_creation = std::fs::metadata(source_root.join("pkg/sub"))?.creation_time();
     let demand = windows_demand_source(&source_root, work.cancellation()).await?;
     let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
     let (lazy, _) = crate::LazyWorkspace::attach(
@@ -248,6 +263,12 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
         sorted_names(&destination.join("pkg"))?,
         ["shared.rs", "sub"]
     );
+    let metadata = std::fs::metadata(destination.join("pkg/sub"))?;
+    assert_eq!(
+        metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN.0,
+        FILE_ATTRIBUTE_HIDDEN.0
+    );
+    assert_eq!(metadata.creation_time(), expected_creation);
     let moved = acyclic_native_runtime::process_output(
         acyclic_native_runtime::ProcessCommand::new("cmd.exe")
             .args(["/D", "/C", "move pkg lib"])
@@ -265,6 +286,12 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
         std::fs::read(&destination.join("lib").join("sub").join("deep.rs"))?,
         b"deep"
     );
+    let metadata = std::fs::metadata(destination.join("lib/sub"))?;
+    assert_eq!(
+        metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN.0,
+        FILE_ATTRIBUTE_HIDDEN.0
+    );
+    assert_eq!(metadata.creation_time(), expected_creation);
     mount.sync().await?;
     assert!(
         lazy.lookup(

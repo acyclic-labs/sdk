@@ -85,6 +85,8 @@ impl<I> Instances<I> {
             .canonicalize()
             .map_err(|_| NativeMountError::InvalidDestination)?
             .join(name);
+        #[cfg(target_os = "linux")]
+        let root = physical_root(&root)?;
         loop {
             let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(slot) = slots.get(&root) {
@@ -132,6 +134,36 @@ impl<I> Instances<I> {
             state.changed.notify_all();
             return Ok(instance);
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn physical_root(root: &Path) -> Result<PathBuf, NativeMountError> {
+    use std::os::fd::AsRawFd as _;
+    // O_PATH resolves aliases without invoking the mounted provider, even
+    // before INIT or after disconnect. Keep the kernel's physical name as
+    // the registry key, so replacing an input alias cannot redirect recovery.
+    match rustix::fs::open(
+        root,
+        rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    ) {
+        Ok(file) => {
+            std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|error| {
+                NativeMountError::host_operation(
+                    "read held shared mount root identity",
+                    root,
+                    error,
+                )
+            })
+        }
+        // A factory may create its root; preserve that original contract.
+        Err(rustix::io::Errno::NOENT) => Ok(root.to_owned()),
+        Err(error) => Err(NativeMountError::host_operation(
+            "open shared mount root identity",
+            root,
+            error.into(),
+        )),
     }
 }
 

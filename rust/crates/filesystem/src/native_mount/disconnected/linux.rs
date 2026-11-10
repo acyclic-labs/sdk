@@ -57,12 +57,17 @@ fn metadata(
 impl Pinned {
     pub(super) fn open(path: &Path) -> Result<Option<Self>, NativeMountError> {
         let parent = path.parent().ok_or(NativeMountError::InvalidDestination)?;
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
         let leaf = path
             .file_name()
             .ok_or(NativeMountError::InvalidDestination)?;
         let parent = rustix::fs::open(
             parent,
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
             rustix::fs::Mode::empty(),
         )
         .map_err(std::io::Error::from)?;
@@ -90,14 +95,17 @@ impl Pinned {
         let file = match rustix::fs::openat(
             &parent,
             leaf,
-            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             rustix::fs::Mode::empty(),
         ) {
             Ok(file) => file,
             Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
+                return Err(NativeMountError::InvalidDestination);
+            }
             Err(error) => return Err(std::io::Error::from(error).into()),
         };
-        let metadata = stat(&file, AtFlags::STATX_DONT_SYNC)?;
+        let metadata = pinned_identity(&file, stat(&file, AtFlags::STATX_DONT_SYNC))?;
         if metadata.0 != FileType::Directory {
             return Err(NativeMountError::InvalidDestination);
         }
@@ -109,6 +117,31 @@ impl Pinned {
             path,
             mount: metadata.1,
         }))
+    }
+}
+
+// A dead FUSE root can refuse even DONT_SYNC statx. O_PATH|DIRECTORY already
+// proves the type without calling its provider; fdinfo names this exact held
+// mount in the kernel. No lexical path or helper interpretation is involved.
+fn pinned_identity(
+    file: &OwnedFd,
+    metadata: std::io::Result<(FileType, Option<u64>)>,
+) -> std::io::Result<(FileType, Option<u64>)> {
+    match metadata {
+        Err(error) if error.raw_os_error() == Some(libc::ENOTCONN) => {
+            let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))?;
+            let mount = info
+                .lines()
+                .find_map(|line| line.strip_prefix("mnt_id:")?.trim().parse().ok())
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "O_PATH fdinfo has no mount identity",
+                    )
+                })?;
+            Ok((FileType::Directory, Some(mount)))
+        }
+        result => result,
     }
 }
 
@@ -135,6 +168,18 @@ impl Pinned {
         let metadata = match self.current_stat() {
             Ok(metadata) => metadata,
             Err(rustix::io::Errno::NOENT) => return Ok(false),
+            Err(rustix::io::Errno::NOTCONN) => {
+                let Some(current) = Self::open_in(
+                    &self.parent,
+                    self.path
+                        .file_name()
+                        .ok_or(NativeMountError::InvalidDestination)?,
+                )?
+                else {
+                    return Ok(false);
+                };
+                return Ok(current.mount == self.mount);
+            }
             Err(error) => return Err(std::io::Error::from(error).into()),
         };
         if FileType::from_raw_mode(metadata.stx_mode.into()) != FileType::Directory {

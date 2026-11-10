@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Processes } from "../../scripts/graphcoder-e2e/process.mjs";
 import { hostFixtureDirectory } from "../../scripts/graphcoder-e2e/fixture-directory.mjs";
+import { nativeEnvironment } from "../../scripts/graphcoder-e2e/scratch.mjs";
 
 const plugin = fileURLToPath(new URL("../", import.meta.url));
 const binary = process.env.ACYCLIC_TEST_BINARY;
@@ -22,12 +23,9 @@ test("universal package certification delegates complete artifact policy to the 
   try {
     const home = join(root, "home"), temporary = join(root, "tmp");
     mkdirSync(home); mkdirSync(temporary);
-    const env = { PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home,
+    const env = { ...nativeEnvironment(), HOME: home, USERPROFILE: home,
       CODEX_HOME: join(home, "unused-codex-profile"), TMPDIR: temporary, TEMP: temporary, TMP: temporary,
       LANG: "C.UTF-8" };
-    for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "E2E_PROCESS_HOST"]) {
-      if (process.env[key]) env[key] = process.env[key];
-    }
     const run = argv => processes.runOwned(process.execPath, argv, { cwd: root, env });
     const version = await processes.runOwned(binary, ["--version"], { cwd: root, env });
     assert.equal(version.code, 0, version.stderr);

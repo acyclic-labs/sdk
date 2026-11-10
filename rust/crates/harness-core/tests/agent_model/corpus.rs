@@ -124,6 +124,15 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
             "status-alarm",
             Phase::Waiting {
                 deadline_unix_ms: Some(1_700_000_000_000),
+                input: false,
+            },
+            3,
+        ),
+        (
+            "status-input-wait",
+            Phase::Waiting {
+                deadline_unix_ms: None,
+                input: true,
             },
             3,
         ),

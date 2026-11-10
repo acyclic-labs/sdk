@@ -56,6 +56,9 @@ mod portable_projection_tests;
 pub(crate) mod tool_name_tests;
 #[path = "transport_tests.rs"]
 mod transport_tests;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "usage_lifecycle_tests.rs"]
+mod usage_lifecycle_tests;
 
 #[path = "ordered_parts_tests.rs"]
 mod ordered_parts_tests;

@@ -115,4 +115,8 @@ proxy endpoints are supported on loopback hosts (`localhost`, `127.0.0.1`,
 or `[::1]`); other proxy hosts require HTTPS. No credentials enter the task.
 Native token counters come from the Rust catalog's `token_counters.json`:
 Anthropic, Gemini and Responses use their own count endpoints; Chat has none.
+For catalogs without a counter, Harbor supplies `--no-compaction` to both
+doctor and execution. This selects the harness's existing disabled-compaction
+policy: ordinary turns have no input-count preflight, and the provider enforces
+its context window. Use a GraphCoder artifact built with this flag.
 The offline Rust catalog test covers all four adapters and malformed negatives.

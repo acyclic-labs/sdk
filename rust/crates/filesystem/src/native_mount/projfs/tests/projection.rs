@@ -130,15 +130,24 @@ async fn a_failed_relist_retains_its_deferred_creations() -> Result<(), Box<dyn 
             .get_mut(&MountPath::root())
             .ok_or("missing materialized root")?
             .basis = Some(basis);
-        state.unplaced.insert(name);
+        state.unplaced.insert(name.clone());
         basis
     };
-    let refused = session.revalidate(&denied);
-    drop(scope);
+    // Wait for both source mutations before consuming the projector's result.
+    // Re-entering revalidate with the exhausted meter would refuse admission
+    // before settle can consume the failed pass, leaving its error for recovery.
+    source.fence_changes_with_meter(&work)?;
+    let refused = runtime.projector.settle();
     assert!(
         refused.is_err(),
         "the deferred write exceeded its allowance"
     );
+    {
+        let state = lock_recover(&runtime.projector.state);
+        assert!(!state.relisting, "the failed pass must return its custody");
+        assert!(state.unplaced.contains(&name));
+    }
+    drop(scope);
     session.revalidate(&work)?;
     assert_eq!(
         std::fs::read(destination.join("deferred.txt"))?,
@@ -467,14 +476,20 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
                 );
                 assert!(!state.pending.contains_key(&name));
             }
-            match replacement {
-                Replacement::Removed => assert!(sorted_names(&destination)?.is_empty()),
-                Replacement::File => assert_eq!(std::fs::read(&projected)?, b"newer"),
-                Replacement::Directory => {
-                    assert!(std::fs::symlink_metadata(&projected)?.is_dir());
-                    assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+            let observed = || -> std::io::Result<()> {
+                match replacement {
+                    Replacement::Removed => assert!(sorted_names(&destination)?.is_empty()),
+                    Replacement::File => assert_eq!(std::fs::read(&projected)?, b"newer"),
+                    Replacement::Directory => {
+                        assert!(std::fs::symlink_metadata(&projected)?.is_dir());
+                        assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+                    }
                 }
-            }
+                Ok(())
+            };
+            observed().map_err(|error| {
+                format!("observe settled entry, link={link}, {replacement:?}: {error}")
+            })?;
             session.stop().map_err(|error| {
                 format!("stop settled entry, link={link}, {replacement:?}: {error}")
             })?;

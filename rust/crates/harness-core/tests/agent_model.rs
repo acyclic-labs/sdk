@@ -1041,6 +1041,7 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
     // Cross the former 256-child ceiling using the actual step protocol.
     let (root, mut state) = populated_parent(255).await?;
     state.queued.push_back(Queued {
+        steering: false,
         inbox: 1,
         input: TurnInput::Approval { id: intent("q") },
     });
@@ -1199,7 +1200,8 @@ async fn quorum_wait() -> Result {
     assert_eq!(
         waiting.state.phase,
         Phase::Waiting {
-            deadline_unix_ms: Some(6_000)
+            deadline_unix_ms: Some(6_000),
+            input: false,
         }
     );
     assert_eq!(waiting.alarm, Alarm::At(6_000));
@@ -1269,7 +1271,8 @@ async fn quorum_wait() -> Result {
     assert_eq!(
         again.state.phase,
         Phase::Waiting {
-            deadline_unix_ms: Some(6_400)
+            deadline_unix_ms: Some(6_400),
+            input: false,
         }
     );
     assert_eq!(again.state.need, 2);
@@ -1351,6 +1354,128 @@ async fn a_wait_parks_only_on_children_that_can_settle() -> Result {
             "{awaited}: {:?}",
             stepped.state.phase
         );
+    }
+    Ok(())
+}
+
+/// Reply-or-alarm waits share the original actor wait and retain all arrivals.
+/// A status-only event must not become the human's answer or reset the alarm.
+#[tokio::test]
+async fn attention_alarm_default_resumes_on_input_or_original_deadline() -> Result {
+    for timeout in [None, Some(1_000)] {
+        let root = AgentPath::root(&id(1));
+        let initial = AgentState::adopted(root.clone(), &adopted(id(1)))?;
+        let parked = || TurnStep {
+            checkpoint: Some(b"waiting-for-reply".to_vec()),
+            reserved_children: 0,
+            outs: Vec::new(),
+            wait: Wait::Until(Until::input(timeout)),
+            drops: None,
+        };
+        let done = || TurnStep {
+            checkpoint: None,
+            reserved_children: 0,
+            outs: Vec::new(),
+            wait: Wait::Input,
+            drops: None,
+        };
+        let driver = script(vec![parked(), done()]);
+        let stop = acyclic_actors::guest::CancellationToken::new;
+        let body = driver::file("reply.txt")?;
+        let record = |sequence, id| Wake::Inbox {
+            sequence,
+            record: InboxRecord::Message(Message {
+                from: user(),
+                id: intent(id),
+                body: Box::new(body.clone()),
+                attachments: None,
+            }),
+        };
+        let waiting = step(
+            &driver,
+            &root,
+            Some(initial),
+            (1, 5_000),
+            record(0, "start"),
+            stop(),
+        )
+        .await?;
+        assert_eq!(
+            waiting.state.phase,
+            Phase::Waiting {
+                deadline_unix_ms: timeout.map(|t| 5_000 + t),
+                input: true,
+            }
+        );
+        assert!(waiting.state.phase.attention());
+        assert_eq!(
+            waiting.alarm,
+            timeout.map_or(Alarm::Clear, |t| Alarm::At(5_000 + t))
+        );
+        let progress = waiting.state.turn.as_ref().ok_or("retained turn")?;
+        assert_eq!(progress.checkpoint, b"waiting-for-reply");
+        let notified = step(
+            &driver,
+            &root,
+            Some(waiting.state.clone()),
+            (2, 5_050),
+            Wake::Inbox {
+                sequence: 1,
+                record: InboxRecord::Awaited,
+            },
+            stop(),
+        )
+        .await?;
+        assert_eq!(notified.state.phase, waiting.state.phase);
+        assert_eq!(notified.alarm, waiting.alarm);
+        assert_eq!(
+            driver.0.lock().unwrap().len(),
+            1,
+            "notification must not run the turn"
+        );
+        let saved = notified.state;
+        let replied = step(
+            &driver,
+            &root,
+            Some(saved.clone()),
+            (3, 5_100),
+            record(2, "reply"),
+            stop(),
+        )
+        .await?;
+        assert!(
+            replied.state.turn.is_none(),
+            "input must resume the parked turn"
+        );
+        assert_eq!(
+            replied.state.queued.len(),
+            1,
+            "resume must retain input for its model boundary"
+        );
+        assert_eq!(
+            replied.state.queued.front().ok_or("retained reply")?.inbox,
+            2
+        );
+        assert!(driver.0.lock().unwrap().is_empty());
+        if let Some(timeout) = timeout {
+            let driver = script(vec![done()]);
+            let expired = step(
+                &driver,
+                &root,
+                Some(saved),
+                (2, 5_000 + timeout),
+                Wake::Alarm,
+                stop(),
+            )
+            .await?;
+            assert!(
+                expired.state.turn.is_none(),
+                "original deadline must resume without a reply"
+            );
+            assert!(expired.state.queued.is_empty());
+            assert_eq!(expired.alarm, Alarm::Clear);
+            assert!(driver.0.lock().unwrap().is_empty());
+        }
     }
     Ok(())
 }

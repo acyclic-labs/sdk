@@ -1033,20 +1033,42 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let end = crate::agent::inbox_tail(&*stream, &root).await?;
     assert!(
         matches!(
-            call(&client, "agents", &AgentCommand::Usage {
-                agent: root.clone(), input: end, after: 0, wait: true,
-            }).await?,
-            Err(AgentControlFailure::Refused { code, reason })
-                if code == "invalid_agent_record" && reason.contains("usage input source is closed")
+            call(
+                &client,
+                "agents",
+                &AgentCommand::Usage {
+                    agent: root.clone(),
+                    input: end,
+                    after: 0,
+                    wait: true,
+                }
+            )
+            .await?,
+            Ok(AgentReply::Usage {
+                page: None,
+                settled: true,
+                ..
+            })
         ),
         "a closed input producer cannot leave the live query pending"
     );
     assert!(matches!(
-        call(&client, "agents", &AgentCommand::Events {
-            agent: root.clone(), input: end, after: 0, wait: true,
-        }).await?,
-        Err(AgentControlFailure::Refused { code, reason })
-            if code == "invalid_agent_record" && reason.contains("usage input source is closed")
+        call(
+            &client,
+            "agents",
+            &AgentCommand::Events {
+                agent: root.clone(),
+                input: end,
+                after: 0,
+                wait: true,
+            }
+        )
+        .await?,
+        Ok(AgentReply::Events {
+            page: None,
+            settled: true,
+            ..
+        })
     ));
     owner.denied.store(true, Ordering::SeqCst);
     assert!(

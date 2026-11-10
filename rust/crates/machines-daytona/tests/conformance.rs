@@ -316,9 +316,27 @@ fn access(deadline: u64) -> FileAccess {
 }
 
 #[tokio::test]
-async fn protected_http_adapter_passes_shared_capability_and_file_conformance() {
+async fn protected_http_adapter_passes_shared_capability_and_file_conformance()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     let server = Server::start("https://proxy.app.daytona.io/toolbox", false).await;
     let provider = server.provider();
+    let mut selected = request();
+    selected.secrets.insert(
+        "TOKEN".into(),
+        acyclic_auth::secrets::SecretRef::new("models".into(), "credential".into(), 1)?,
+    );
+    assert!(matches!(
+        provider.create(selected).await,
+        Err(ProviderError::Unsupported(_))
+    ));
+    assert!(
+        server
+            .state
+            .lock()
+            .map_err(|_| "fixture state poisoned")?
+            .requests
+            .is_empty()
+    );
     conformance::verify(&conformance::Fixture::new(provider, image(), [19; 32]))
         .await
         .unwrap();
@@ -343,6 +361,7 @@ async fn protected_http_adapter_passes_shared_capability_and_file_conformance() 
         Err(ProviderError::Unsupported(_))
     ));
     server.all_authorized();
+    Ok(())
 }
 
 #[tokio::test]

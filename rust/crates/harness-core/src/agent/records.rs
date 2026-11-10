@@ -46,7 +46,10 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 18 settles a definitive turn failure as a failed conversation entry.
 /// Version 19 (retired) scoped status addresses by complete ancestry.
 /// Version 20 carries child settlement-to-wake measurements in status records.
-pub const RECORD_VERSION: u32 = 21;
+/// Version 21 retains child completion facts and pending wake ranges.
+/// Version 22 indexes admitted replies across queued independent turns.
+/// Version 23 combines those facts with input selection on actor waits.
+pub const RECORD_VERSION: u32 = 23;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -578,6 +581,8 @@ pub enum Phase {
     Waiting {
         /// Unix milliseconds.
         deadline_unix_ms: Option<u64>,
+        /// Resume the retained turn on inbox input as well as an alarm.
+        input: bool,
     },
     /// Terminal.
     Done {
@@ -592,7 +597,8 @@ impl Phase {
     pub const fn attention(&self) -> bool {
         matches!(
             self,
-            Self::WaitingApproval { .. }
+            Self::Waiting { input: true, .. }
+                | Self::WaitingApproval { .. }
                 | Self::WaitingHost { .. }
                 | Self::WaitingUser { .. }
                 | Self::Done { .. }

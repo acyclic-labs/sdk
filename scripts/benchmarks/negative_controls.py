@@ -9,6 +9,19 @@ from pathlib import Path
 
 
 CONTROLS = [
+    ("worker providers omitted from the catalog", "graphcoder_harbor.py",
+     "adapter=adapter, providers=providers", "adapter=adapter, providers=None",
+     "test_harbor.HarborContracts.test_mixed_providers_reach_install_doctor_and_execution"),
+    ("root provider identity rewritten", "contracts.py",
+     '"--model", model,', '"--model", "benchmark/" + model.split("/", 1)[1],',
+     "test_harbor.HarborContracts.test_mixed_providers_reach_install_doctor_and_execution"),
+    ("doctor loses counterless execution policy", "graphcoder_harbor.py",
+     "self.binary, self.state, self.model_name, compaction=self.compaction",
+     "self.binary, self.state, self.model_name",
+     "test_harbor.HarborContracts.test_counterless_catalog_controls_doctor_and_execution"),
+    ("execution loses counterless policy", "graphcoder_harbor.py",
+     "instruction,\n            compaction=self.compaction", "instruction",
+     "test_harbor.HarborContracts.test_counterless_catalog_controls_doctor_and_execution"),
     ("task skills omitted from the project", "graphcoder_harbor.py",
      "if self.skills_dir:", "if False:",
      "test_harbor.HarborContracts.test_task_skills_are_project_files_and_copy_failure_revokes_execution"),

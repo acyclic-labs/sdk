@@ -23,6 +23,8 @@ use acyclic_stream::{
 };
 use std::sync::Arc;
 
+#[path = "wired/input_wait.rs"]
+mod input_wait;
 #[path = "wired/preparation.rs"]
 mod preparation;
 #[path = "wired/settlement.rs"]
@@ -373,6 +375,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
                     &state,
                     2,
                     Some(Queued {
+                        steering: false,
                         inbox: 1,
                         input: TurnInput::ApprovalRequested {
                             child: parent.clone(),

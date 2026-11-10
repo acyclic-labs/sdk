@@ -9,6 +9,44 @@ fn components(path: &str) -> impl Iterator<Item = &str> {
 }
 
 impl NamespacePath {
+    pub(crate) fn prepend_with_accounting(
+        &self,
+        prefix: &LogicalName,
+        limits: VolumeLimits,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
+        let names = std::iter::once(prefix).chain(self.components.iter());
+        let encoded = Self::validate_component_lengths(
+            names.clone().map(|name| name.as_bytes().len()),
+            limits,
+        )?;
+        copy_names(names, self.depth() + 1, encoded, accounting, cancellation)
+    }
+    pub(crate) fn strip_first_with_accounting(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
+        let names = self
+            .components
+            .get(1..)
+            .ok_or(NamespacePathError::TooDeep)?;
+        let encoded = if names.is_empty() {
+            1
+        } else {
+            names.iter().try_fold(0u32, |total, name| {
+                total
+                    .checked_add(
+                        u32::try_from(name.as_bytes().len())
+                            .map_err(|_| crate::WorkError::Overflow)?,
+                    )
+                    .and_then(|total| total.checked_add(1))
+                    .ok_or(crate::WorkError::Overflow)
+            })?
+        };
+        copy_names(names.iter(), names.len(), encoded, accounting, cancellation)
+    }
     /// Appends to a path already admitted under the same volume limits, moving
     /// its original component backing rather than copying the parent names.
     pub(crate) fn child_from_owned(

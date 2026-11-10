@@ -81,6 +81,10 @@ pub struct Args {
     /// custody uses private files in this run's state directory.
     #[arg(long, conflicts_with = "endpoint")]
     pub default_config: bool,
+    /// Send ordinary turns without automatic compaction or input-token preflight.
+    /// The provider enforces its context window.
+    #[arg(long, conflicts_with_all = ["endpoint", "host_workspace"])]
+    pub no_compaction: bool,
     /// Export committed call usage for this conversation tree after headless
     /// settlement. A path is replaced with this snapshot; '-' writes JSONL to
     /// stdout and sends ordinary answers to stderr. Missing metrics stay null.

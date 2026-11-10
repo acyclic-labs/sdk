@@ -3,6 +3,8 @@
 import asyncio
 import hashlib
 import importlib.metadata
+import json
+import shlex
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +48,44 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
         self.kwargs = dict(logs_dir=self.root / "logs", model_name="openai/fixture",
             graphcoder_binary=str(self.binary), graphcoder_sha256=hashlib.sha256(self.original).hexdigest(),
             source_sha="a" * 40, base_url="http://127.0.0.1:9999/v1", context_tokens=100, output_tokens=10)
+
+    async def test_counterless_catalog_controls_doctor_and_execution(self):
+        for provider, path, counterless in (("deepseek", "/deepseek/v1", True),
+                                           ("openai", "/v1", False)):
+            with self.subTest(provider=provider):
+                agent = GraphCoder(**{**self.kwargs, "model_name": provider + "/fixture",
+                    "base_url": "http://127.0.0.1:9999" + path})
+                environment = Environment()
+                await agent.setup(environment)
+                uploaded = json.loads(environment.uploads[agent.state + "/catalog.json"])
+                self.assertEqual(uploaded[provider]["token_counter"] is None, counterless)
+                self.assertEqual("--no-compaction" in environment.commands[-1], counterless)
+                self.assertIn("doctor", environment.commands[-1])
+                await agent.run("hello", environment, None)
+                self.assertEqual("--no-compaction" in environment.commands[-1], counterless)
+
+    async def test_mixed_providers_reach_install_doctor_and_execution(self):
+        workers = [dict(model_name="deepseek/fixture", adapter="chat",
+                        base_url="http://127.0.0.1:9999/deepseek/v1",
+                        context_tokens=200, output_tokens=20),
+                   dict(model_name="deepseek/reviewer", adapter="chat",
+                        base_url="http://127.0.0.1:9999/deepseek/v1",
+                        context_tokens=300, output_tokens=30)]
+        agent = GraphCoder(**self.kwargs, providers=workers)
+        environment = Environment()
+        await agent.setup(environment)
+        uploaded = json.loads(environment.uploads[agent.state + "/catalog.json"])
+        self.assertEqual(set(uploaded), {"openai", "deepseek"})
+        self.assertEqual(uploaded["openai"]["adapter"], "responses")
+        self.assertEqual(uploaded["deepseek"]["adapter"], "chat")
+        self.assertEqual(set(uploaded["deepseek"]["models"]), {"fixture", "reviewer"})
+        self.assertEqual(uploaded["deepseek"]["models"]["reviewer"]["capacity"]["context_tokens"], 300)
+        doctor = environment.commands[-1]
+        await agent.run("use worker roles", environment, None)
+        for command in (doctor, environment.commands[-1]):
+            arguments = shlex.split(command)
+            self.assertEqual(arguments[arguments.index("--model") + 1], "openai/fixture")
+            self.assertIn("--no-compaction", arguments)
 
     async def test_install_run_and_failed_reinstall_fence_execution(self):
         self.assertEqual(importlib.metadata.version("harbor"), "0.24.0")

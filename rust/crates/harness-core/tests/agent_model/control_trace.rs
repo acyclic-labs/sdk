@@ -97,9 +97,12 @@ fn check(events: &[Event], agents: &[AgentPath], required: &[&str]) -> Result {
                 };
             }
             Decision::Satisfy(_, result) => result.closed = !result.closed,
-            Decision::Until(_, _, _, _, result) => {
+            Decision::Until(_, _, _, _, _, result) => {
                 *result = if *result == Wait::Continue {
-                    Wait::Await(None)
+                    Wait::Await {
+                        deadline: None,
+                        input: false,
+                    }
                 } else {
                     Wait::Continue
                 };

@@ -154,6 +154,7 @@ pub enum AgentReply {
         /// Exact original inbox sequence, at or after this agent's fork cut.
         input: u64,
         /// One fixed journal page; None marks the current committed inbox tail.
+        /// At that tail, `settled` means the agent has been archived.
         page: Option<acyclic_harness_core::executor::ModelUsagePage>,
         /// The original actor checkpoint consumed this input and retains no
         /// paused, queued or overflowed work at or before it. A short page or
@@ -168,6 +169,7 @@ pub enum AgentReply {
         /// A finite export freezes this cut; later inputs cannot extend it.
         inbox_tail: u64,
         /// One bounded source page. None marks the current committed inbox tail.
+        /// At that tail, `settled` means the agent has been archived.
         page: Option<acyclic_harness_core::executor::ExecutionEventPage>,
         /// Original consumed-input fence, with no retained work at or before it.
         settled: bool,
@@ -643,7 +645,7 @@ fn validate_reply(
                 ..
             },
         ) => {
-            return if input >= requested && *after == 0 && !wait && !settled {
+            return if input >= requested && *after == 0 && (!wait || *settled) {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
@@ -696,7 +698,10 @@ fn validate_reply(
                 ..
             },
         ) => {
-            return if input >= requested && input == inbox_tail && *after == 0 && !wait && !settled
+            return if input >= requested
+                && input == inbox_tail
+                && *after == 0
+                && (!wait || *settled)
             {
                 Ok(())
             } else {
@@ -1421,6 +1426,7 @@ mod tests {
             &mut None,
         )?;
         let origin = ConversationEntry {
+            observed_through: 0,
             inbox: 1,
             input: TurnInput::Message {
                 from: Sender::User {
@@ -1439,6 +1445,7 @@ mod tests {
             notices: None,
         };
         let terminal = ConversationEntry {
+            observed_through: 0,
             inbox: 3,
             input: TurnInput::Message {
                 from: Sender::Agent {
@@ -1530,6 +1537,7 @@ mod tests {
             Err(CommandError::Invalid)
         ));
         let ordinary = ConversationEntry {
+            observed_through: 0,
             goal: None,
             ..origin
         };

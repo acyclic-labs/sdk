@@ -308,7 +308,28 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
                 "count endpoint must accept the provider input dialect",
             ));
         }
-        crate::counting::wire::endpoint(&config.base_url, "model", counter)?;
+        // A count projection deliberately omits generation/stream controls.
+        // Sending it to generation can run a billable, unaccounted model call.
+        for name in std::iter::once("model").chain(config.models.keys().map(String::as_str)) {
+            let count = validate_url(&crate::counting::wire::endpoint(
+                &config.base_url,
+                name,
+                counter,
+            )?)?;
+            let generation = url::Url::parse(&crate::projection::endpoint_for(
+                config.adapter,
+                &config.base_url,
+                name,
+            )?)
+            .map_err(|_| invalid("invalid generation endpoint"))?;
+            if count.origin() == generation.origin()
+                && count.path().trim_end_matches('/') == generation.path().trim_end_matches('/')
+            {
+                return Err(invalid(
+                    "token counter must not use the generation endpoint",
+                ));
+            }
+        }
     }
     for (name, model) in &config.models {
         #[cfg(all(test, not(target_arch = "wasm32")))]

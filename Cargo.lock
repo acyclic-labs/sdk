@@ -1049,6 +1049,7 @@ dependencies = [
 name = "acyclic-machines-wasm"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth",
  "acyclic-machines",
  "acyclic-stream",
  "futures",
@@ -1188,6 +1189,7 @@ dependencies = [
  "compio-buf",
  "compio-driver",
  "dirs",
+ "flatbuffers",
  "futures-core",
  "futures-util",
  "getrandom 0.3.4",
@@ -7200,9 +7202,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.7.0"
+version = "3.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ece64e19631fc38758181e637c15509a2c2709ee53bfde1e1d58f9dc991f919e"
+checksum = "d24a7e92f4bcaa36b97fa93c4fa7ca8f3e669eced949345b3462dba333c7f909"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7214,6 +7216,7 @@ dependencies = [
  "reqwest 0.13.5",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",

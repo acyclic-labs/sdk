@@ -147,6 +147,8 @@ mod wait_tests;
 
 /// One child and descendants that remain in its operating-system containment.
 pub struct ProcessTree {
+    #[cfg(windows)]
+    _execution_policy: Option<std::sync::Arc<crate::execution::windows::Policy>>,
     child: Option<Child>,
     guard: platform::Guard,
     output_taken: bool,
@@ -393,7 +395,7 @@ impl ProcessTree {
                 let boundary = command.boundary.take();
                 #[cfg(target_os = "macos")]
                 if let Some(boundary) = &boundary {
-                    boundary.wrap_command(command)?;
+                    boundary.validate_command(command)?;
                 }
                 if boundary.is_some() {
                     // The boundary installs its held directory in the child.
@@ -402,7 +404,7 @@ impl ProcessTree {
                 }
                 let mut native = command.to_std()?;
                 if let Some(boundary) = boundary {
-                    boundary.install(&mut native)?;
+                    boundary.install(&mut native, command.unix.arg0.as_deref())?;
                 }
                 platform::spawn_controlled(&mut native, meter, slot)
             }
@@ -807,6 +809,17 @@ impl ProcessTree {
         meter: Option<&dyn crate::NativeReadMeter>,
         stderr: bool,
     ) -> io::Result<Option<usize>> {
+        let (read, recorded) = self.read_output_attempt(buffer, meter, stderr)?;
+        recorded?;
+        Ok(read)
+    }
+
+    fn read_output_attempt(
+        &mut self,
+        buffer: &mut [u8],
+        meter: Option<&dyn crate::NativeReadMeter>,
+        stderr: bool,
+    ) -> io::Result<(Option<usize>, io::Result<()>)> {
         if buffer.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -814,7 +827,7 @@ impl ProcessTree {
             ));
         }
         let Some(child) = self.child.as_mut() else {
-            return Ok(Some(0));
+            return Ok((Some(0), Ok(())));
         };
         // SAFETY: initialized bytes can be borrowed as MaybeUninit bytes.
         let buffer =
@@ -831,7 +844,7 @@ impl ProcessTree {
                 .map(|pipe| platform::read_pipe(pipe, buffer, meter))
         };
         let Some(result) = result else {
-            return Ok(Some(0));
+            return Ok((Some(0), Ok(())));
         };
         let (read, recorded) = result?;
         // A pipe at end of file is released, so no later readiness wait
@@ -843,8 +856,7 @@ impl ProcessTree {
                 drop(child.stdout.take());
             }
         }
-        recorded?;
-        Ok(read)
+        Ok((read, recorded))
     }
 
     fn close_stdin(&mut self) {

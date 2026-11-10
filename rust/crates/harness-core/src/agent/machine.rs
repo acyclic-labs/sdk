@@ -97,6 +97,8 @@ pub struct AgentState {
     /// Exclusive inbox cursor included at an admitted model boundary. Payloads
     /// remain in the original inbox; checkpoint cost is constant per agent.
     pub steered_through: u64,
+    /// Latest committed steerable input, including records outside the queue window.
+    pub steering_tail: u64,
     /// Cancelled inputs before this sequence, including goal continuations.
     #[serde(default)]
     pub dropped_before: u64,
@@ -200,10 +202,12 @@ impl AgentState {
             || self
                 .overflow
                 .is_some_and(|first| sequence >= first && !self.taken.contains(&sequence))
-            || self
-                .turn
-                .as_ref()
-                .is_some_and(|turn| turn.inbox == sequence)
+            || self.turn.as_ref().is_some_and(|turn| {
+                turn.inbox == sequence
+                    || (sequence >= self.dropped_before
+                        && turn.inbox < sequence
+                        && sequence < self.steered_through)
+            })
     }
 
     /// Exclusive inbox prefix with no remaining turn or queued work, at the
@@ -239,6 +243,7 @@ impl AgentState {
             conversation_tail: adopted.conversation_tail,
             pending_notices: None,
             steered_through: 0,
+            steering_tail: 0,
             dropped_before: 0,
             conversation_base: adopted.conversation_tail,
             committed_actions: false,
@@ -447,8 +452,7 @@ pub enum Wait {
     /// hook is taken ahead of the input queued behind the turn.
     Host(String),
     /// Wait, holding no delivery, until a monotone condition holds or its
-    /// timeout passes (see [`Until`]). Arrivals meanwhile queue without a
-    /// turn step.
+    /// timeout passes (see [`Until`]). Input can also resume it when selected.
     Until(Until),
     /// The turn finished; wait for more input.
     Input,
@@ -476,6 +480,8 @@ pub struct Until {
     /// Milliseconds after the committing step at which the turn resumes
     /// regardless; `None` waits for the condition alone.
     pub timeout_ms: Option<u64>,
+    /// Also resume on inbox input; used by reply-or-alarm waits.
+    pub input: bool,
 }
 
 impl Until {
@@ -499,6 +505,7 @@ impl Until {
             awaited,
             need,
             timeout_ms: None,
+            input: false,
         }
     }
 
@@ -509,6 +516,18 @@ impl Until {
             awaited: BTreeSet::new(),
             need: 1,
             timeout_ms: Some(timeout_ms),
+            input: false,
+        }
+    }
+
+    /// Wait for inbox input, with an optional actor alarm.
+    #[must_use]
+    pub fn input(timeout_ms: Option<u64>) -> Self {
+        Self {
+            awaited: BTreeSet::new(),
+            need: 1,
+            timeout_ms,
+            input: true,
         }
     }
 
@@ -689,6 +708,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             }
             let mut state = AgentState::adopted(path.clone(), &adopted)?;
             state.queued.extend(adopted.brief.map(|brief| Queued {
+                steering: false,
                 inbox: adopted.forked_at,
                 input: TurnInput::Brief {
                     brief: Box::new(brief),
@@ -837,6 +857,24 @@ pub(super) async fn failed_step(
     Ok(PreparedStep { step, checkpoint })
 }
 
+// A parked turn can ingest messages/notices at its next model boundary. Other
+// queued inputs retain their own turn and cannot release an input wait.
+fn wake_input(state: &AgentState) -> bool {
+    if control(state).input {
+        // Starting input belongs to the retained turn even when a custom
+        // driver has no stock model boundary or steering journal.
+        let through = state.steered_through.max(state.dropped_before).max(
+            state
+                .turn
+                .as_ref()
+                .map_or(0, |turn| turn.inbox.saturating_add(1)),
+        );
+        state.steering_tail > through
+    } else {
+        !state.queued.is_empty()
+    }
+}
+
 fn finalize_step(
     mut state: AgentState,
     mut outs: Vec<Out>,
@@ -845,7 +883,16 @@ fn finalize_step(
     child_wakes: Option<ChildWakes>,
     child_settlement: Option<ChildSettlement>,
 ) -> Result<Step, Error> {
-    let queued = !state.queued.is_empty() || state.overflow.is_some();
+    // Retire admitted boundary input before choosing the next actor alarm.
+    for out in &outs {
+        if let Out::Steered(through) = out {
+            state.steered_through = state.steered_through.max(*through);
+            state
+                .queued
+                .retain(|input| input.inbox >= *through || !input.steering);
+        }
+    }
+    let queued = wake_input(&state) || (!control(&state).input && state.overflow.is_some());
     let approval_ready = approval_position(&state).is_some();
     let pending = state.archive_pending.len();
     let before = control(&state);
@@ -896,22 +943,6 @@ fn finalize_step(
     let mut sequence = state.conversation_tail;
     for out in &outs {
         match out {
-            Out::Steered(through) => {
-                state.steered_through = state.steered_through.max(*through);
-                state.queued.retain(|input| {
-                    input.inbox >= *through
-                        || !matches!(
-                            input.input,
-                            TurnInput::Message { .. } | TurnInput::Notice { .. }
-                        )
-                });
-                if let Some(range) = &mut state.pending_notices {
-                    range.start = range.start.max(*through);
-                    if range.start >= range.end {
-                        state.pending_notices = None;
-                    }
-                }
-            }
             Out::Conversation(_) => {
                 sequence = sequence
                     .checked_add(1)
@@ -924,9 +955,25 @@ fn finalize_step(
             Out::Roster(digest) => state.roster = Some(*digest),
             Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
+            | Out::Steered(_)
             | Out::Archive { .. }
             | Out::Spawn { .. }
             | Out::GoalCompleted { .. } => {}
+        }
+    }
+    // Frozen initial notices remain valid while a turn is parked. At its
+    // settlement, consume that exact selection first, then retire any later
+    // notices already admitted at model boundaries.
+    if state.turn.is_none() {
+        for out in &outs {
+            if let Out::Steered(through) = out
+                && let Some(range) = &mut state.pending_notices
+            {
+                range.start = range.start.max(*through);
+                if range.start >= range.end {
+                    state.pending_notices = None;
+                }
+            }
         }
     }
     state.conversation_tail = state
@@ -971,9 +1018,12 @@ fn control(state: &AgentState) -> Control {
             Phase::Idle | Phase::WaitingUser { .. } => Mode::Idle,
             Phase::Running => Mode::Running,
             Phase::WaitingApproval { .. } | Phase::WaitingHost { .. } => Mode::Approval,
-            Phase::Waiting { deadline_unix_ms } => Mode::Await(*deadline_unix_ms),
+            Phase::Waiting {
+                deadline_unix_ms, ..
+            } => Mode::Await(*deadline_unix_ms),
             Phase::Done { .. } => Mode::Done,
         },
+        input: matches!(state.phase, Phase::Waiting { input: true, .. }),
         closed: state.closed,
         archive_refused: state.archive_refused,
         reported: state.reported,
@@ -1057,6 +1107,9 @@ async fn admit(
         _ => {}
     }
     if let Some(input) = input(sequence, record).filter(|_| admitted.enqueue) {
+        if input.steering {
+            state.steering_tail = state.steering_tail.max(sequence.saturating_add(1));
+        }
         // The response the waiting turn needs is taken now, out of order;
         // this step consumes it. Any other input joins the window, or, once
         // the window is full or already overflowed, stays in the inbox to be
@@ -1135,7 +1188,7 @@ async fn run<T: TurnDriver + ?Sized>(
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<(), Error> {
     let approval = approval_position(state);
-    let queued = !state.queued.is_empty();
+    let queued = wake_input(state);
     let approval_ready = approval.is_some();
     let before = control(state);
     let picked = kernel::pick(before, alarm_wake, queued, approval_ready);
@@ -1242,13 +1295,14 @@ async fn run<T: TurnDriver + ?Sized>(
                 .map(|timeout| now_unix_ms.saturating_add(timeout));
             let sleep = until.awaited.is_empty();
             let reachable = open.len();
-            let wait = kernel::until(need, reachable, sleep, deadline);
+            let input = until.input;
+            let wait = kernel::until(need, reachable, sleep, deadline, input);
             #[cfg(feature = "test-support")]
             control_trace::record(
                 state,
-                Decision::Until(need, reachable, sleep, deadline, wait),
+                Decision::Until(need, reachable, sleep, deadline, input, wait),
             );
-            if matches!(wait, kernel::Wait::Await(_)) {
+            if matches!(wait, kernel::Wait::Await { .. }) {
                 outs.extend(open.iter().map(|child| Out::Send {
                     to: (**child).clone(),
                     record: InboxRecord::Awaited,
@@ -1281,7 +1335,10 @@ async fn run<T: TurnDriver + ?Sized>(
     state.phase = match (next.mode, approval, outcome) {
         (Mode::Running, ..) => Phase::Running,
         (Mode::Approval, Some(waiting), _) => waiting,
-        (Mode::Await(deadline_unix_ms), ..) => Phase::Waiting { deadline_unix_ms },
+        (Mode::Await(deadline_unix_ms), ..) => Phase::Waiting {
+            deadline_unix_ms,
+            input: next.input,
+        },
         (Mode::Idle, Some(waiting @ Phase::WaitingUser { .. }), _) => waiting,
         (Mode::Done, _, Some(outcome)) => {
             state.drop_queue();

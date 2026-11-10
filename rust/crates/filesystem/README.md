@@ -10,6 +10,16 @@ cargo add acyclic-fs
 
 Choose the backend for your deployment: embedded storage for local durability, hosted authority and Objects for a remote workspace, or embedded native mount integration. Transactions stage edits before commit; forks branch from a generation. The provider determines persistence, isolation, and mount guarantees.
 
+For GraphCoder in stock Docker or an RL sandbox without native mount authority,
+select plain directories explicitly with `--workspace-mounting physical`; run
+`graphcoder --workspace-mounting physical doctor` with the same provider flags
+as the task. Native mode refuses unavailable FUSE and startup failures remain
+errors; they never switch a running task to physical directories. On Linux,
+direct mounts need `/dev/fuse` and mount authority. Their stale-mount recovery
+uses `umount2(MNT_DETACH)`; owner-exit cleanup uses `umount -i -l` (internal
+kernel unmount, with filesystem helpers disabled). Neither requires fusermount.
+Only an unprivileged mount denied by the kernel uses the setuid FUSE helper.
+
 Streams-backed generation locators use the versioned
 `acyclic-fs-stream-generation-locator-v1` record: two little-endian `u64`
 offsets identify the original lineage record and its same-commit changes cut.

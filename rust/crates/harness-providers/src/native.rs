@@ -265,7 +265,7 @@ fn parse_response<'a>(
                 retain(&mut parser.allocation, parser.state.logical_owned_bytes()?)?;
             }
             drop(response.request_id);
-            let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
+            let frames = sse::frames(response.body, maximum, sse::decoder(adapter, sse::Decoder::native(work)?));
             let mut frames = core::pin::pin!(frames);
             while let Some(frame) = frames.next().await {
                 work.remaining()?;

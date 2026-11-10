@@ -2,6 +2,20 @@
 use super::*;
 use crate::executor::{ExecutionEventPage, ExecutionJournal, ModelUsagePage};
 
+type OriginalInput<P, O> = (
+    u64,
+    u64,
+    Option<(
+        super::super::FilesystemExecutionJournal<P, StreamAuthorityStore<P>, O>,
+        OperationId,
+    )>,
+    bool,
+);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "journal_tests.rs"]
+mod tests;
+
 trait Projection {
     type Page: acyclic_stream::ProviderTask;
 
@@ -157,7 +171,7 @@ where
             .ok_or(Error::Record("journal observations are one-based"))?;
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        let (selected, _, journal) = self.journal_input(&state, input, after, false).await?;
+        let (selected, _, journal, _) = self.journal_input(&state, input, after, false).await?;
         if selected != input {
             return Err(Error::Record(
                 "payload input precedes this agent's adoption",
@@ -227,14 +241,15 @@ where
     ) -> Result<(u64, u64, Option<Q::Page>, bool), Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        let (input, tail, journal) = self.journal_input(&state, input, after, wait).await?;
+        let (input, tail, journal, closed) = self.journal_input(&state, input, after, wait).await?;
         if input == tail {
-            return Ok((input, tail, None, false));
+            return Ok((input, tail, None, closed));
         }
         loop {
             // Observe settlement before the journal page: a settled actor can
             // only name an execution whose original journal writes preceded it.
-            let (settled, actor_cut) = self.agents.input_progress(agent, input).await?;
+            let progress = self.agents.input_progress(agent, input).await?;
+            let settled = progress.settled;
             let page = if let Some((journal, operation)) = &journal {
                 Q::read(journal, *operation, agent.as_str(), after)
                     .await
@@ -248,7 +263,7 @@ where
             // Both continuations start at their original observations, so an
             // append between the page and this wait remains visible. No task,
             // timer or status recheck produces readiness.
-            let actor_changed = self.journal_record(actor_cut);
+            let actor_changed = self.journal_record(progress.follow);
             if let Some((journal, operation)) = &journal {
                 let journal_changed =
                     self.journal_record(journal.follow(*operation, Q::end(&page)).map_err(turn)?);
@@ -271,17 +286,7 @@ where
         input: u64,
         after: u64,
         wait: bool,
-    ) -> Result<
-        (
-            u64,
-            u64,
-            Option<(
-                super::super::FilesystemExecutionJournal<P, StreamAuthorityStore<P>, O>,
-                OperationId,
-            )>,
-        ),
-        Error,
-    > {
+    ) -> Result<OriginalInput<P, O>, Error> {
         let agent = &state.path;
         use crate::agent::AgentRecord as _;
         use futures::TryStreamExt as _;
@@ -315,20 +320,50 @@ where
                 "journal input cursor is past the committed tail",
             ));
         }
+        self.journal_from_input(state, input, tail, adopted, after, wait)
+            .await
+    }
+
+    /// Consume the selected input after its original inbox cut. Settlement
+    /// and archive may advance while that cut is retained across an await.
+    async fn journal_from_input(
+        &self,
+        state: &crate::agent::AgentState,
+        input: u64,
+        mut tail: u64,
+        adopted: u64,
+        after: u64,
+        wait: bool,
+    ) -> Result<OriginalInput<P, O>, Error> {
+        use crate::agent::AgentRecord as _;
+        use futures::TryStreamExt as _;
+        let agent = &state.path;
+        let provider = self.agents.provider();
         let record = if input == tail {
             if after != 0 {
                 return Err(Error::Record("journal cursor names an absent input"));
             }
-            if !wait {
-                return Ok((input, tail, None));
+            if !wait || state.closed {
+                // The actor observation preceded the inbox cut. If archived,
+                // its closing fence excludes every later input publication.
+                return Ok((input, tail, None, state.closed));
             }
             let mut request = acyclic_stream::FollowRequest::new(agent.inbox()?, input);
             request.when_absent = acyclic_stream::WhenAbsent::Wait;
             loop {
-                let (_, actor_cut) = self.agents.input_progress(agent, input).await?;
+                let progress = self.agents.input_progress(agent, input).await?;
+                if progress.closed {
+                    // Closure may follow both a new input and its settlement.
+                    // Re-read after that fence before certifying an empty tail.
+                    tail = crate::agent::inbox_tail(&**provider, agent).await?;
+                    if input == tail {
+                        return Ok((input, tail, None, true));
+                    }
+                    break Some(self.journal_record(request.clone()).await?);
+                }
                 tokio::select! {
                     record = self.journal_record(request.clone()) => break Some(record?),
-                    changed = self.journal_record(actor_cut) => { changed?; }
+                    changed = self.journal_record(progress.follow) => { changed?; }
                 }
             }
         } else {
@@ -365,6 +400,7 @@ where
                     return Err(Error::Record("journal adoption differs"));
                 }
                 adoption.brief.map(|brief| crate::agent::Queued {
+                    steering: false,
                     inbox: input,
                     input: crate::agent::TurnInput::Brief {
                         brief: Box::new(brief),
@@ -386,7 +422,7 @@ where
             }
             None
         };
-        Ok((input, tail, journal))
+        Ok((input, tail, journal, false))
     }
 
     /// Every query wait names an original producer. A closed producer cannot

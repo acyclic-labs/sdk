@@ -6,6 +6,86 @@ use std::process::Command;
 
 const MODE: &str = "ACYCLIC_FS_ABORT_CONTROL_CASE";
 const CONNECTIONS: &str = "/sys/fs/fuse/connections";
+const STALE_CHILD: &str = "ACYCLIC_FS_STALE_MOUNT_TEST_CHILD";
+const REQUIRE_DIRECT: &str = "ACYCLIC_FS_TEST_DIRECT_FUSE";
+
+#[test]
+fn linux_dead_mountpoint_is_reclaimed_without_fusermount_with_negative_control()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::MetadataExt as _;
+    if std::env::var_os(STALE_CHILD).is_none() {
+        let temporary = tempfile::tempdir()?;
+        let output = Command::new(std::env::current_exe()?)
+            .args(["native_mount::fuse::tests::connection::linux_dead_mountpoint_is_reclaimed_without_fusermount_with_negative_control", "--exact", "--nocapture"])
+            .current_dir(temporary.path())
+            .env(STALE_CHILD, "1")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Ok(());
+    }
+    crate::initialize_native_mount_services()?;
+    // The child owns its cwd, so the empty-parent relative path is exercised
+    // without changing the cwd of any concurrent test.
+    let root = std::path::PathBuf::from("mount");
+    std::fs::create_dir(&root)?;
+    let before = std::fs::metadata(&root)?;
+    let work = fuse_fixture_work();
+    let mut mount = super::super::mount::Mount::default();
+    let mut device = None;
+    let fence = std::fs::File::open("/dev/null")?;
+    mount.open_into(
+        &root,
+        true,
+        || {
+            assert!(
+                std::env::var_os(REQUIRE_DIRECT).is_none(),
+                "qualified direct mount must not discover fusermount"
+            );
+            super::super::lifecycle::fuse_recovery_helper(&work)
+        },
+        &mut device,
+        &fence,
+        &work,
+    )?;
+    // Closing the only device descriptor is the exact kernel disconnect event;
+    // the mount remains in the namespace, but has no FUSE server.
+    drop(device.take());
+    let failed = std::fs::metadata(&root).unwrap_err();
+    assert_eq!(
+        failed.raw_os_error(),
+        Some(libc::ENOTCONN),
+        "old startup stat negative control"
+    );
+    // The first owner is gone. Restart through the public startup entry, so
+    // recovery must happen before its first stat, not just inside a helper.
+    mount.cancel_exit_action()?;
+    let (source, _) = shared_sources(posix_config())?;
+    let volume_id = source.volume_id()?;
+    let mut session = crate::mount_native(
+        crate::NativeMountRequest {
+            mount_id: crate::MountId::new(),
+            volume_id,
+            destination: root.clone(),
+            writable: true,
+            shared: false,
+        },
+        Arc::new(source),
+    )?;
+    std::fs::write(root.join("child"), b"restarted")?;
+    assert_eq!(std::fs::read(root.join("child"))?, b"restarted");
+    assert!(session.stop()?);
+    let after = std::fs::metadata(&root)?;
+    assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+    assert!(!crate::recover_disconnected_native_mount_destination(
+        &root
+    )?);
+    Ok(())
+}
 
 #[test]
 #[ignore = "requires a live Linux FUSE mount and mount namespace privileges"]
@@ -99,7 +179,12 @@ fn isolated_case(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
             let Err(NativeMountError::StartupFailed(mut failure)) = result else {
                 panic!("{mode} fusectl did not reject mount startup");
             };
-            let NativeMountError::Io(error) = failure.error() else {
+            let NativeMountError::HostOperation {
+                operation: "open FUSE abort control",
+                source: error,
+                ..
+            } = failure.error()
+            else {
                 panic!("unexpected startup failure: {failure}");
             };
             assert_eq!(

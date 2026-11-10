@@ -1,6 +1,112 @@
 use super::*;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use crate::{ProcessCommand as Command, ProcessStdio as Stdio, ProcessTree};
+
+#[cfg(windows)]
+#[test]
+fn windows_refuses_unrepresentable_network_grants() {
+    let root = tempfile::tempdir().unwrap();
+    for network in [
+        ExecutionNetwork::Off,
+        ExecutionNetwork::TcpPorts([443].into()),
+        ExecutionNetwork::TcpPorts([].into()),
+    ] {
+        let grant =
+            ExecutionGrant::new(root.path(), ExecutionAccess::WorkspaceWrite, [], network).unwrap();
+        assert_eq!(
+            grant.compile_native().unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn sandbox_denies_outside_write_windows() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace with spaces");
+    let volume = root.path().join("volume");
+    let outside = root.path().join("outside");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&volume).unwrap();
+    // Admission compares the bound absolute spelling. Windows canonical paths
+    // include a verbatim prefix; the native launch owner handles that prefix.
+    let workspace = workspace.canonicalize().unwrap();
+    let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    let shell = std::env::var_os("COMSPEC").expect("Windows supplies its command interpreter");
+    let command = |target: &Path| {
+        let mut command = Command::new(&shell);
+        command
+            .args(["/d", "/c"])
+            .raw_arg("echo changed>\"%TARGET%\"")
+            .env_clear()
+            .env("SystemRoot", std::env::var_os("SystemRoot").unwrap())
+            .env("TARGET", target)
+            .current_dir(&workspace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    };
+    // The identical real command must write outside without a grant. This
+    // rules out malformed quoting, interpreter errors and host ACL denials.
+    assert!(
+        ProcessTree::spawn(&mut command(&outside))
+            .unwrap()
+            .wait(crate::CaptureSchedule::Unbounded)
+            .unwrap()
+            .success()
+    );
+    assert_eq!(std::fs::read(&outside).unwrap(), b"changed\r\n");
+    std::fs::write(&outside, "original").unwrap();
+    for (access, primary_write, volume_write) in [
+        (ExecutionAccess::WorkspaceWrite, true, true),
+        (ExecutionAccess::ReadOnly, false, true),
+        (ExecutionAccess::ReadOnly, false, false),
+    ] {
+        let grant = ExecutionGrant::composed(
+            &workspace,
+            access,
+            [volume.clone()],
+            ambient_read_roots().unwrap(),
+            ExecutionNetwork::On,
+        )
+        .unwrap();
+        let grant = if volume_write {
+            grant
+        } else {
+            grant.into_read_only()
+        }
+        .compile_native()
+        .expect(windows::REQUIRED_CAPABILITY);
+        for custodied in [false, true] {
+            for (target, allowed) in [
+                (&outside, false),
+                (&workspace.join("inside"), primary_write),
+                (&volume.join("inside"), volume_write),
+            ] {
+                let mut tree = ProcessTree::spawn_granted(
+                    command(target),
+                    &grant,
+                    custodied.then_some(&custody),
+                )
+                .unwrap();
+                assert_eq!(
+                    tree.wait(crate::CaptureSchedule::Unbounded)
+                        .unwrap()
+                        .success(),
+                    allowed,
+                    "target {target:?}, custody {custodied}, access {access:?}"
+                );
+                if allowed {
+                    assert_eq!(std::fs::read(target).unwrap(), b"changed\r\n");
+                    std::fs::remove_file(target).unwrap();
+                }
+            }
+            assert_eq!(std::fs::read_to_string(&outside).unwrap(), "original");
+        }
+    }
+}
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
@@ -146,6 +252,91 @@ fn sandbox_denies_outside_write() {
             std::fs::remove_file(volume.join("written")).unwrap();
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn confined_commands_preserve_custom_arg0_and_original_arguments() {
+    use std::{io::Read, os::unix::ffi::OsStrExt};
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let workspace = workspace.canonicalize().unwrap();
+    let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    let grant = ExecutionGrant::new(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [PathBuf::from("/")],
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    let arg0 = std::ffi::OsStr::from_bytes(b"custom \xff ' $(never)");
+    let command = |program, renamed| {
+        let mut command = Command::new(program);
+        command
+            .args(["-c", "printf '%s|' \"$0\" \"$@\" \"$VISIBLE\""])
+            .env_clear()
+            .env("PATH", "/bin:/usr/bin")
+            .env("VISIBLE", "literal ' $(never)")
+            .current_dir(&workspace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if renamed {
+            command.arg0(arg0);
+        }
+        command
+    };
+    let output = |mut command: Command, retained, confined| {
+        let mut tree = if confined {
+            ProcessTree::spawn_granted(command, &grant, retained).unwrap()
+        } else if let Some(custody) = retained {
+            ProcessTree::spawn_in_custody(&mut command, custody).unwrap()
+        } else {
+            ProcessTree::spawn(&mut command).unwrap()
+        };
+        let mut output = Vec::new();
+        tree.take_stdout()
+            .unwrap()
+            .read_to_end(&mut output)
+            .unwrap();
+        assert!(
+            tree.wait(crate::CaptureSchedule::Unbounded)
+                .unwrap()
+                .success()
+        );
+        output
+    };
+    let mut expected = arg0.as_bytes().to_vec();
+    expected.extend_from_slice(b"|literal ' $(never)|");
+    for program in ["/bin/sh", "sh"] {
+        for retained in [None, Some(&custody)] {
+            // Both original native owners preserve the requested argv[0].
+            assert_eq!(output(command(program, true), retained, false), expected);
+            // Negative control: removing the override changes observable argv[0].
+            assert_ne!(output(command(program, false), retained, true), expected);
+            assert_eq!(output(command(program, true), retained, true), expected);
+            // Positional arguments after -c replace the shell's $0, so test
+            // their exact bytes independently from the invocation name.
+            let mut arguments = command(program, true);
+            arguments.args(["positional-zero", "a b", "", "$(never)"]);
+            assert_eq!(
+                output(arguments, retained, true),
+                b"positional-zero|a b||$(never)|literal ' $(never)|",
+            );
+        }
+    }
+    // Removing the wrapper must also retain execvp's headerless-script path.
+    let script = workspace.join("plain");
+    std::fs::write(&script, b"printf '%s|' \"$0\" \"$@\" \"$VISIBLE\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let original = output(command(script.to_str().unwrap(), true), None, false);
+    assert!(original.ends_with(b"literal ' $(never)|"));
+    assert_eq!(
+        output(command(script.to_str().unwrap(), true), None, true),
+        original
+    );
 }
 
 #[cfg(target_os = "linux")]

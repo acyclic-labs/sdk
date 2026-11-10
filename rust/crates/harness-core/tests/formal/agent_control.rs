@@ -49,6 +49,7 @@ fn released_generation_is_terminal_and_has_no_committed_turn() {
         archive_refused: kani::any(),
         reported: kani::any(),
         turn: false,
+        input: false,
     };
     for kind in [Admit::Input, Admit::Cancel, Admit::Archive] {
         let admitted = production::admit(before, kind);
@@ -65,6 +66,11 @@ fn released_generation_is_terminal_and_has_no_committed_turn() {
 #[kani::proof]
 fn a_condition_wait_parks_only_when_its_open_children_can_meet_it() {
     parks_only_on_a_reachable_condition(PRODUCTION);
+}
+
+#[kani::proof]
+fn input_wait_wakes_on_input_without_a_timer() {
+    input_wait_has_an_original_wake(PRODUCTION);
 }
 
 fn main() {}

@@ -24,7 +24,7 @@ async function dependencies(directory, artifact) {
   const files = (await readdir(directory)).filter(name => /\.(?:rlib|rmeta)$/.test(name)
     && !name.startsWith(`lib${artifact}-`)).sort();
   assert.ok(files.length > 0, "the real build must populate its dependency cache");
-  return new Map(await Promise.all(files.map(async name => [name, await identity(join(directory, name))])));
+  return new Map(await Promise.all(files.map(async name => /** @type {const} */ ([name, await identity(join(directory, name))]))));
 }
 
 for (const name of ["actors", "stream"]) {

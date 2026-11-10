@@ -39,7 +39,6 @@ pub(super) struct FilesystemBoundary<P: ?Sized, A: 'static, O: 'static> {
     pub agent: AgentState,
     operation: OperationId,
     pub inbox: u64,
-    pub cursor: u64,
     pub files: Arc<AgentInternalFiles<A, O>>,
     pub writer: Arc<dyn ContentPublisher>,
     maximum: Option<u64>,
@@ -65,7 +64,6 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
         agent: AgentState,
         operation: OperationId,
         inbox: u64,
-        cursor: u64,
         files: Arc<AgentInternalFiles<A, O>>,
         writer: Arc<dyn ContentPublisher>,
         maximum: Option<u64>,
@@ -78,7 +76,6 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
             agent,
             operation,
             inbox,
-            cursor,
             files,
             writer,
             maximum,
@@ -134,10 +131,8 @@ where
         }
         let selection = crate::agent::select_boundary(
             &*self.stream,
-            &self.agent,
-            self.cursor,
+            &self.agent.path,
             from,
-            self.inbox,
             frozen.map(|cut| cut.through),
         )
         .await

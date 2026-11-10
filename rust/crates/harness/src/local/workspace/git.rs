@@ -54,6 +54,7 @@ impl Commands<'_> {
     where
         F: std::future::Future<Output = Result<()>> + Send + 'a,
     {
+        let before: acyclic_stream::BoxProviderFuture<'a, Result<()>> = Box::pin(before);
         Box::pin(async move {
             context.owner.verify().await?;
             let parsed = self.fs_arguments(command, context.scope)?;

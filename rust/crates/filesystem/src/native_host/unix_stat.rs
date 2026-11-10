@@ -286,11 +286,6 @@ pub(super) fn root_file_handle<W: NativeHostWork>(
             Ok(()) => return Ok(handle),
             Err(error) => error,
         };
-        #[cfg(test)]
-        if stat_probe::fold_errors() {
-            handle.handle_bytes = 0;
-            return Ok(handle);
-        }
         Err(if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
             io::Error::new(
                 io::ErrorKind::Unsupported,

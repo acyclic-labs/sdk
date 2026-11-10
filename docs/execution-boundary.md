@@ -2,12 +2,29 @@
 
 The native process launch owner accepts explicit execution capabilities.
 The shared launch core enforces grants on supported Linux kernels and returns
-typed refusals on unsupported platforms. On Linux and macOS, stock workspace shell calls and lifecycle hooks default to
+typed refusals on unsupported platforms. On Linux, macOS and supported Windows, stock workspace shell calls and lifecycle hooks default to
 workspace-write confinement, independently of the approval policy (including
 GraphCoder's accept-all default). An explicitly authenticated execution grant
 continues to select its own boundary. Tool arguments cannot remove confinement.
-The Windows adapter remains pending; that platform retains its inherited host
-boundary and explicit native grants still refuse as unsupported.
+Windows requires the native Process Security Environment 1.1 API from
+`processmodel.dll`. Missing API or schema support refuses before launching the
+command; there is no unconfined fallback. The adapter translates the same grant
+into Microsoft's PSEC specification and attaches it to the existing suspended
+process launch. The original Job owner retains policy lifetime and descendant
+custody. It changes no host ACLs and scans no directories. Workspace defaults
+read configured drive roots and set `TEMP` and `TMP` to the writable view as well
+as `TMPDIR`. Windows native execution tests require a host exposing this API.
+The named qualification requirement is `windows-psec-1.1`: the actual Windows
+execution host must expose the native API and report support for major version
+1, minor version 1 or later. The outside-write test fails with that requirement
+name when native compilation is unavailable; it is never silently skipped.
+The Windows qualification leg must use a host satisfying this requirement.
+A Windows build number or the DLL's presence alone does not prove enforcement;
+the leg must still execute the real outside-write regression.
+PSEC cannot represent the shared socket-free `Off` or outbound-only `TcpPorts`
+contracts: its egress filters leave intra-container loopback available, and
+private-network capability also enables inbound traffic. Those explicit grants
+refuse as unsupported on Windows. The workspace default uses `On`.
 
 The default binds the selected primary workspace and its visible volume roots.
 Writable volumes can live outside the primary directory; read-only volume roots
@@ -79,7 +96,7 @@ unauthorized or unsupported instead of becoming an unknown process outcome.
 The original signed scope, volume access checks and approval path still apply.
 This input neither grants volume authority nor restricts the executor's file
 facade or publication tools. It is not a read-only role preset. Stock root and
-child bindings use the default Linux workspace boundary when no explicit grant
+child bindings use the default OS workspace boundary when no explicit grant
 is selected; an embedded host must bind each executor under its own approved
 ceiling. No configuration file or tool argument can populate this input.
 
@@ -332,7 +349,12 @@ the linear per-syscall comparison chain without an additional runtime table,
 allocation, syscall, descriptor, barrier or round trip.
 
 macOS translates the same composed grant into a deny-by-default Seatbelt
-profile, applied by Apple's `/usr/bin/sandbox-exec` before guest execution.
+profile. The parent compiles it with the installed native compiler, and the
+fork child applies that bytecode through the native MAC syscall before sealed
+exec. The original executable, custom `argv[0]`, arguments and explicit
+environment reach the guest without a command-line wrapper. Policy compilation
+and heap allocation finish before fork; the child uses native calls and the
+system's executable lookup and script fallback.
 Preparation verifies every bound root and resolves cwd component-by-component
 with rooted `openat`, refusing symlinks. Paths are quoted as Scheme strings;
 control characters and non-UTF-8 paths refuse before launch. Seatbelt enforces
@@ -350,16 +372,22 @@ exercises an actual non-CLOEXEC outside-file descriptor as an escape control.
 Read-only attenuation removes mutation rules for every writable root together.
 Networking translates to no rules, all networking, or outbound TCP port rules.
 The macOS default preserves host reads and uses the primary workspace as TMPDIR.
-Windows still returns a typed unsupported refusal for explicit confined grants.
+Windows compiles filesystem grants into a native PSEC 1.1 environment and
+attaches it to the existing suspended launch, retaining its lifetime with the
+original Job owner. Bound handles fence root identity and reparse traversal;
+inherited standard streams must be pipes or the null device. Stock workspace
+commands receive this boundary by default, independently of approval mode.
+Unavailable ambient drive roots are omitted from optional host reads; explicitly
+selected grant roots retain strict binding and failure semantics. Explicit
+`Off` and `TcpPorts` network grants refuse because PSEC cannot represent their
+socket-free and outbound-only contracts.
 
-Follow-up work: Windows AppContainer integration at the native
-launch seam; Windows inherited-handle and root-identity race fencing;
-authenticated approval/role grants at all shell, executable-tool and process
+Follow-up work: authenticated approval/role grants at all shell, executable-tool and process
 entry points; complete active-resource accounting; the shared OS-backed
-conformance suite and qualification of all affected targets. The current Windows
-adapter refuses confined execution. Windows default stock policy selects no grant.
-No cross-platform confinement or runtime performance qualification is
-claimed by this milestone.
+conformance suite and qualification of all affected targets. Native Windows
+runtime qualification requires a reachable PSEC-capable test host and remains
+outstanding; no completed three-platform qualification or runtime performance
+qualification is claimed by this milestone.
 
 Native capture invocations can carry a host-selected `execution_grant` through
 the existing owned completion, output retention and process custody. A selected
@@ -367,8 +395,8 @@ grant reaches the same consuming native launch; capture never retries a refusal
 without it. Recorded output substitution cannot establish kernel enforcement,
 so granted invocations always reach the native owner. This transport does not
 issue authority: the authenticated host must select the grant after approval.
-Stock Linux and macOS policy admission supply that grant independently of
-approval mode; Windows integration remains outstanding.
+Stock Linux, macOS and supported Windows policy admission supply that grant
+independently of approval mode.
 
 Idle grants share immutable policy and one native handle per declared root.
 The handles pin object identities across deletion and numeric identity reuse;

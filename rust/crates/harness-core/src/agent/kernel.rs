@@ -23,7 +23,7 @@ pub enum Mode {
     Approval,
     /// A turn waits, holding no delivery, until its monotone condition holds
     /// (see [`satisfy`]) or, when set, this Unix millisecond deadline passes.
-    /// Arrivals meanwhile queue without a turn step.
+    /// Arrivals queue; `Control::input` can resume this wait on input.
     Await(Option<u64>),
     /// The agent's task is complete.
     Done,
@@ -42,6 +42,8 @@ pub struct Control {
     pub reported: bool,
     /// A turn is in progress (its driver checkpoint is retained).
     pub turn: bool,
+    /// A parked condition also resumes when inbox input is queued.
+    pub input: bool,
 }
 
 impl Control {
@@ -52,6 +54,7 @@ impl Control {
         archive_refused: false,
         reported: false,
         turn: false,
+        input: false,
     };
 }
 
@@ -139,10 +142,10 @@ pub const fn pick(control: Control, alarm_wake: bool, queued: bool, approval_rea
             }
         }
         Mode::Running if control.turn => Pick::Resume,
-        // Only the deadline resumes it here; its condition resumes it by
-        // [`satisfy`], and queued arrivals never start a step.
+        // The original deadline or explicitly selected input arm resumes
+        // this turn; a child condition resumes it through `satisfy`.
         Mode::Await(deadline) if control.turn => {
-            if alarm_wake && deadline.is_some() {
+            if (control.input && queued) || (alarm_wake && deadline.is_some()) {
                 Pick::Resume
             } else {
                 Pick::Nothing
@@ -166,7 +169,12 @@ pub enum Wait {
     /// Wait for the approval response.
     Approval,
     /// Wait for a condition, and at most until this deadline when set.
-    Await(Option<u64>),
+    Await {
+        /// Original absolute actor deadline.
+        deadline: Option<u64>,
+        /// Inbox input may resume this wait before its deadline.
+        input: bool,
+    },
     /// Turn finished; wait for input.
     Input,
     /// Task complete.
@@ -180,21 +188,25 @@ pub const fn settle(control: Control, wait: Wait) -> (Control, bool) {
         Control {
             mode,
             turn,
+            input: false,
             ..control
         }
     }
     match wait {
         Wait::Continue => (next(control, Mode::Running, true), false),
         Wait::Approval => (next(control, Mode::Approval, true), false),
-        Wait::Await(deadline) => (
-            next(
-                control,
-                Mode::Await(match deadline {
-                    Some(deadline) if deadline < CONTINUE_NOW => Some(CONTINUE_NOW),
-                    deadline => deadline,
-                }),
-                true,
-            ),
+        Wait::Await { deadline, input } => (
+            Control {
+                input,
+                ..next(
+                    control,
+                    Mode::Await(match deadline {
+                        Some(deadline) if deadline < CONTINUE_NOW => Some(CONTINUE_NOW),
+                        deadline => deadline,
+                    }),
+                    true,
+                )
+            },
             false,
         ),
         Wait::Input => (next(control, Mode::Idle, false), false),
@@ -207,12 +219,18 @@ pub const fn settle(control: Control, wait: Wait) -> (Control, bool) {
 /// A condition parks the turn only while its open children can meet it; one
 /// already met, or one they can no longer meet, continues at once and its
 /// call reports why. So a parked wait on children always has a child that
-/// will wake it, and only a sleep parks on its deadline alone.
+/// will wake it. A wait without children must select input or an alarm.
 #[must_use]
-pub const fn until(need: u32, open: usize, sleep: bool, deadline: Option<u64>) -> Wait {
+pub const fn until(
+    need: u32,
+    open: usize,
+    sleep: bool,
+    deadline: Option<u64>,
+    input: bool,
+) -> Wait {
     let reachable = need > 0 && need as usize <= open;
-    if reachable || (sleep && deadline.is_some()) {
-        Wait::Await(deadline)
+    if reachable || (sleep && (deadline.is_some() || input)) {
+        Wait::Await { deadline, input }
     } else {
         Wait::Continue
     }
@@ -319,6 +337,7 @@ pub const fn alarm(
             }
         }
         Mode::Running => Some(CONTINUE_NOW),
+        Mode::Await(_) if control.input && queued => Some(CONTINUE_NOW),
         Mode::Await(deadline) => deadline,
         Mode::Idle => {
             if queued {

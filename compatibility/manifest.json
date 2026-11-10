@@ -44,8 +44,8 @@
     },
     "machines": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:207caede3e4a27635dcf80c3c5744270aafb22a9794b546e371a820f3da95512",
-      "descriptorDigest": "sha256:c81dd76eda846a4e02b711b3290e47dd07bfa52389ff0169ca01b03878219659",
+      "schemaDigest": "sha256:55ac56ca88f62d351da1f8b3334456c26c08320ca709f2190a162cbc0c2a7f5f",
+      "descriptorDigest": "sha256:e78206399cf77cf4ac55091e1aef57acd5ee8b8cc56157ace1f881491ce65ae8",
       "conformanceDigest": "sha256:607266d2c608460ae9d6a14409007fd91a33d78e7acabb52989881920a782dca"
     },
     "inference": {

@@ -43,6 +43,16 @@ pub enum Delivered {
     Closed,
 }
 
+/// Input settlement and producer lifetime from one original actor observation.
+pub struct InputProgress {
+    /// The input has settled, or archive has retired its remaining work.
+    pub settled: bool,
+    /// Archive closed the producer. Consuming an input never closes it.
+    pub closed: bool,
+    /// Wait for a change after this same observation.
+    pub follow: acyclic_stream::FollowRequest,
+}
+
 /// One runtime for every agent in one account and namespace.
 pub struct AgentHost<P: crate::store::JournalProvider + ?Sized + 'static> {
     provider: Arc<P>,
@@ -259,7 +269,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         &self,
         agent: &AgentPath,
         input: u64,
-    ) -> Result<(bool, acyclic_stream::FollowRequest), Error> {
+    ) -> Result<InputProgress, Error> {
         let snapshot = self
             .runtime
             .store()
@@ -273,21 +283,27 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .get(INBOX)
             .filter(|subscription| subscription.path == inbox)
             .ok_or(Error::Record("agent inbox subscription differs"))?;
-        let settled = if let Some(checkpoint) = state.checkpoint() {
+        let (settled, closed) = if let Some(checkpoint) = state.checkpoint() {
             let observed = super::checkpoint_state(checkpoint)?;
             if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
                 return Err(Error::Record("agent state binding differs"));
             }
-            if observed.closed && input >= subscription.cursor {
-                return Err(Error::Record("usage input source is closed"));
-            }
-            input < observed.settled_before(subscription.cursor)
+            // Archive retires the producer, not its durable observations. At
+            // its tail this is an ordinary terminal frontier for every query.
+            (
+                observed.closed || input < observed.settled_before(subscription.cursor),
+                observed.closed,
+            )
         } else if subscription.cursor > input {
             return Err(Error::Record("consumed input has no agent checkpoint"));
         } else {
-            false
+            (false, false)
         };
-        Ok((settled, snapshot.follow_request()))
+        Ok(InputProgress {
+            settled,
+            closed,
+            follow: snapshot.follow_request(),
+        })
     }
 
     /// Wait until every input through `input` has settled or been disposed.
@@ -295,15 +311,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// a settlement fence. Each recheck follows an original actor publication.
     pub async fn wait_for_input(&self, agent: &AgentPath, input: u64) -> Result<(), Error> {
         loop {
-            let (settled, cut) = self.input_progress(agent, input).await?;
-            if settled {
+            let progress = self.input_progress(agent, input).await?;
+            if progress.settled {
                 return Ok(());
             }
-            acyclic_stream::records_only(self.provider.follow(cut).await.map_err(Error::Stream)?)
-                .try_next()
-                .await
-                .map_err(Error::Stream)?
-                .ok_or(Error::Stream(StreamError::Unavailable))?;
+            acyclic_stream::records_only(
+                self.provider
+                    .follow(progress.follow)
+                    .await
+                    .map_err(Error::Stream)?,
+            )
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .ok_or(Error::Stream(StreamError::Unavailable))?;
         }
     }
 

@@ -33,6 +33,10 @@ impl Output {
 }
 
 pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<ModelEvent>> {
+    if value["object"] == "response" {
+        complete(state, value, Some(data), false)?;
+        return Ok(Vec::new());
+    }
     let mut events = Vec::new();
     match value["type"].as_str() {
         Some("response.output_text.delta" | "response.refusal.delta") => {
@@ -109,52 +113,90 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             )?;
         }
         Some("response.completed" | "response.incomplete") => {
-            let response = &value["response"];
-            if response["status"]
-                .as_str()
-                .is_some_and(|status| !matches!(status, "completed" | "incomplete"))
-            {
-                return Err(invalid("Responses generation did not complete"));
-            }
-            if let Some(output) = crate::protocol::present(response.get("output")) {
-                let output = output
-                    .as_array()
-                    .ok_or_else(|| invalid("response output must be an array"))?;
-                if let Some((_, text)) = &mut state.completed_message {
-                    state.budget.string(text, "")?;
-                }
-                state.completed_message = Some((0, String::new()));
-                let mut calls = 0usize;
-                for (position, item) in output.iter().enumerate() {
-                    let kind = Output::admit(item)?;
-                    let position = u64::try_from(position)
-                        .map_err(|_| invalid("response output index overflow"))?;
-                    match kind {
-                        Output::Message => state.complete_message(position, item)?,
-                        Output::Function | Output::Freeform => {
-                            admit_call(state, position, item, kind, true)?;
-                            calls += 1;
-                        }
-                        Output::Reasoning => {}
-                    }
-                }
-                if calls != state.calls.len() {
-                    return Err(invalid("Responses terminal output omitted a staged call"));
-                }
-            }
-            state.identity(response)?;
-            state.usage(&response["usage"])?;
-            if value["type"] == "response.incomplete" || response["status"] == "incomplete" {
-                if response["incomplete_details"]["reason"] != "max_output_tokens" {
-                    return Err(invalid("Responses generation was incomplete"));
-                }
-                state.finish_reason("length")?;
-            }
-            state.terminal = true;
+            complete(
+                state,
+                &value["response"],
+                None,
+                value["type"] == "response.incomplete",
+            )?;
         }
         _ => {}
     }
     Ok(events)
+}
+
+/// One terminal admission for both streamed events and complete JSON responses.
+fn complete(
+    state: &mut State,
+    response: &Value,
+    raw: Option<&str>,
+    incomplete: bool,
+) -> Result<()> {
+    if raw.is_some()
+        && !matches!(
+            response["status"].as_str(),
+            Some("completed" | "incomplete")
+        )
+    {
+        return Err(invalid("Responses generation did not complete"));
+    }
+    #[derive(serde::Deserialize)]
+    struct Response<'a> {
+        #[serde(borrow)]
+        output: Vec<&'a serde_json::value::RawValue>,
+    }
+    let raw = raw
+        .map(|raw| {
+            serde_json::from_str::<Response<'_>>(raw)
+                .map_err(|_| invalid("invalid Responses output"))
+        })
+        .transpose()?;
+    if response["status"]
+        .as_str()
+        .is_some_and(|status| !matches!(status, "completed" | "incomplete"))
+    {
+        return Err(invalid("Responses generation did not complete"));
+    }
+    if let Some(output) = crate::protocol::present(response.get("output")) {
+        let output = output
+            .as_array()
+            .ok_or_else(|| invalid("response output must be an array"))?;
+        if let Some((_, text)) = &mut state.completed_message {
+            state.budget.string(text, "")?;
+        }
+        state.completed_message = Some((0, String::new()));
+        let mut calls = 0usize;
+        for (ordinal, item) in output.iter().enumerate() {
+            let kind = Output::admit(item)?;
+            let position =
+                u64::try_from(ordinal).map_err(|_| invalid("response output index overflow"))?;
+            match kind {
+                Output::Message => state.complete_message(position, item)?,
+                Output::Function | Output::Freeform => {
+                    admit_call(state, position, item, kind, true)?;
+                    calls += 1;
+                }
+                Output::Reasoning => {
+                    if let Some(raw) = raw.as_ref().and_then(|raw| raw.output.get(ordinal)) {
+                        state.raw_part(position, item, Some(raw.get()))?;
+                    }
+                }
+            }
+        }
+        if calls != state.calls.len() {
+            return Err(invalid("Responses terminal output omitted a staged call"));
+        }
+    }
+    state.identity(response)?;
+    state.usage(&response["usage"])?;
+    if incomplete || response["status"] == "incomplete" {
+        if response["incomplete_details"]["reason"] != "max_output_tokens" {
+            return Err(invalid("Responses generation was incomplete"));
+        }
+        state.finish_reason("length")?;
+    }
+    state.terminal = true;
+    Ok(())
 }
 
 fn validate_item_id(call: &super::Call, value: Option<&Value>) -> Result<()> {

@@ -116,6 +116,7 @@ async fn ui_default_projection() -> TestResult {
         )?;
         files.insert(reference.path().to_owned(), output);
         let entry = ConversationEntry {
+            observed_through: 0,
             inbox: n,
             input: TurnInput::Brief {
                 brief: Box::new(reference.clone()),
@@ -450,6 +451,7 @@ async fn ui_lazy_cost() -> TestResult {
             "application/json",
         )?;
         let entry = ConversationEntry {
+            observed_through: 0,
             inbox: 0,
             input: TurnInput::Brief {
                 brief: Box::new(reference.clone()),

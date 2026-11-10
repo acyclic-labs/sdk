@@ -76,6 +76,17 @@ pub enum NativeMountError {
     /// A native lifecycle leaf failed with its original OS kind and cause.
     #[error("native mount I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    /// Exact host operation, destination and OS cause observed during startup.
+    #[error("{operation} at {path:?}: {source}")]
+    HostOperation {
+        /// Operation that returned the original error.
+        operation: &'static str,
+        /// Host path used by that operation.
+        path: PathBuf,
+        /// Original OS error, including its errno.
+        #[source]
+        source: std::io::Error,
+    },
     /// Original native materialization cause, moved without a new error box.
     #[error(transparent)]
     Materialization(#[from] crate::NativeTreeMaterializationError),
@@ -122,8 +133,10 @@ pub enum NativeMountError {
     #[error("native mount startup failed: {0}")]
     StartupFailed(#[source] Box<NativeMountStartupFailure>),
     /// No admitted startup-storage allocation exists yet.
-    #[error("native mount startup admission failed: {cause}")]
+    #[error("native mount startup admission at {destination:?} failed: {cause}")]
     StartupAdmissionFailed {
+        /// Destination whose startup could not be admitted.
+        destination: PathBuf,
         /// Exact original pre-storage admission cause.
         #[source]
         cause: NativeMountStartupAdmissionError,
@@ -167,6 +180,30 @@ pub enum NativeMountError {
     #[cfg(target_os = "linux")]
     #[error("FUSE rejected capabilities {0:?}")]
     FuseUnsupportedCapabilities(fuser::InitFlags),
+}
+
+impl NativeMountError {
+    pub(super) fn during(self, operation: &'static str, path: &Path) -> Self {
+        match self {
+            Self::Io(source)
+            | Self::Materialization(crate::NativeTreeMaterializationError::Io(source)) => {
+                Self::host_operation(operation, path, source)
+            }
+            error => error,
+        }
+    }
+
+    pub(super) fn host_operation(
+        operation: &'static str,
+        path: &Path,
+        source: std::io::Error,
+    ) -> Self {
+        Self::HostOperation {
+            operation,
+            path: path.to_owned(),
+            source,
+        }
+    }
 }
 
 impl std::fmt::Debug for NativeMountError {

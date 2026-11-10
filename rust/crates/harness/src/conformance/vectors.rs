@@ -101,7 +101,7 @@ pub(crate) async fn controls(backend: &dyn Backend) -> Result {
     };
     host.drain(&root).await?;
     let statuses = values(&*provider, root.status()?).await?;
-    if statuses.len() != 1 || !host.input_progress(&root, inbox).await?.0 {
+    if statuses.len() != 1 || !host.input_progress(&root, inbox).await?.settled {
         return Err(
             "unchanged phase appended status or failed to settle the original input".into(),
         );
