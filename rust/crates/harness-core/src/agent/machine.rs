@@ -44,8 +44,6 @@ pub const OVERSIZED_OUTCOME: &str = "agent outcome exceeds MAX_OUTCOME_BYTES";
 pub enum SpawnRefusal {
     /// The agent is archived.
     Archived,
-    /// The child would exceed [`super::MAX_DEPTH`].
-    Depth,
     /// The agent already has [`MAX_OPEN_CHILDREN`] open children.
     Limit,
     /// The host runs no children, so it creates none to wait forever.
@@ -307,11 +305,7 @@ impl AgentState {
     /// outcome is a function of that state, and no state records outcomes.
     #[must_use]
     pub fn spawn_outcome(&self, intent: &IntentId) -> SpawnOutcome {
-        let Ok(child) = self.spawned(intent) else {
-            return SpawnOutcome::Refused {
-                reason: SpawnRefusal::Depth,
-            };
-        };
+        let child = self.spawned(intent).expect("canonical child path");
         if self.open_children.contains(&child) {
             SpawnOutcome::Spawned { child }
         } else if self.closed {

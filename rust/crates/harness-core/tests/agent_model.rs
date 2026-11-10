@@ -113,7 +113,7 @@ async fn create(provider: &MemoryStream, agent: AgentId) -> Result<AgentPath> {
 }
 
 #[test]
-fn layout_round_trips_and_bounds_depth() -> Result {
+fn layout_round_trips_beyond_the_former_depth_cap() -> Result {
     let root = AgentPath::root(&id(1));
     let child = root.child(&id(2))?;
     assert_eq!(child.parent().as_ref(), Some(&root));
@@ -122,11 +122,12 @@ fn layout_round_trips_and_bounds_depth() -> Result {
     assert!(AgentPath::try_from(format!("{}/status", root.as_str())).is_err());
     assert!(AgentId::try_from("A".repeat(32)).is_err());
     let mut deep = root;
-    for _ in 0..MAX_DEPTH {
+    for _ in 0..128 {
         deep = deep.child(&id(3))?;
     }
-    assert!(deep.child(&id(3)).is_err());
-    assert!(AgentPath::try_from(format!("{deep}/children/{}", id(3))).is_err());
+    let child = deep.child(&id(3))?;
+    assert_eq!(child.depth(), 129);
+    assert_eq!(AgentPath::try_from(child.as_str().to_owned())?, child);
     Ok(())
 }
 

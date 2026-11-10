@@ -9,7 +9,7 @@
 //! payload.
 //!
 //! Every part of every agent record is bounded at admission: paths by
-//! [`super::MAX_DEPTH`], file and volume references by the conversation
+//! the primitive record envelope, file and volume references by the conversation
 //! maxima ([`crate::conversation::MAX_PATH_BYTES`] and
 //! [`crate::conversation::MAX_LABEL_BYTES`], enforced wherever a reference is
 //! built or decoded), and texts by their own limits. `tests` builds the worst
@@ -282,31 +282,27 @@ pub(super) fn check_wire(bytes: &[u8]) {
         refuses(changed, "checkpoint admitted a short awaited bitmap");
     }
     if let Some(child) = encoded.open_children.first() {
-        // The payload path can be valid while reconstructing its children
-        // exceeds the same public path boundary. Keep that typed path error,
-        // distinct from malformed checkpoint ownership or bitmap fields.
+        // Reconstruct children beyond the former depth cap. The record's byte
+        // envelope remains protective; nesting itself has no admission bound.
         let root = super::AgentPath::root(&state.path.id());
-        let nested = root.child(&state.path.id()).expect("one child path");
-        let segment = nested
-            .as_str()
-            .strip_prefix(root.as_str())
-            .expect("child path suffix");
+        let nested = root.child(&state.path.id()).expect("canonical child");
+        let suffix = nested.as_str().strip_prefix(root.as_str()).expect("suffix");
         let mut changed = rest.clone();
-        changed.path = super::AgentPath::try_from(format!(
-            "{}{}",
-            root.as_str(),
-            segment.repeat(super::MAX_DEPTH)
-        ))
-        .expect("path at the public depth boundary");
+        changed.path = super::AgentPath::try_from(format!("{root}{}", suffix.repeat(128)))
+            .expect("deep canonical path");
         let mut wire = encoded.clone();
         wire.state = super::records::encode_payload(&changed).expect("checkpoint state writer");
-        assert!(
-            matches!(
-                decode(&wire.encode_to_vec()),
-                Err(Error::Path("agent nesting exceeds MAX_DEPTH"))
-            ),
-            "checkpoint reconstructed a child beyond its path boundary"
-        );
+        let bytes = wire.encode_to_vec();
+        if bytes.len() <= MAX_CHECKPOINT_BYTES {
+            let decoded = decode(&bytes).expect("checkpoint reconstructs deep children");
+            assert_eq!(decoded.path, changed.path);
+            assert!(
+                decoded
+                    .open_children
+                    .iter()
+                    .all(|child| child.is_child_of(&decoded.path))
+            );
+        }
         for oversized in [false, true] {
             let mut changed = encoded.clone();
             let id = &mut changed.open_children[0];
@@ -337,12 +333,13 @@ pub(super) fn check_wire(bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // A deep fixture, not an admission bound.
+    const FIXTURE_DEPTH: usize = 64;
     use crate::agent::{
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
-        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH, MAX_INTENT_BYTES,
-        MAX_MESSAGE_BYTES, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
-        Message, NoticePayload, Phase, Sender, SpawnRequest, StatusRecord, TurnInput,
-        VolumeBinding,
+        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
+        MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message,
+        NoticePayload, Phase, Sender, SpawnRequest, StatusRecord, TurnInput, VolumeBinding,
     };
     use crate::conversation::{
         FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES,
@@ -389,7 +386,7 @@ mod tests {
     fn agent(depth: usize) -> AgentPath {
         let mut path = AgentPath::root(&id(0));
         for level in 1..=depth {
-            path = path.child(&id(level as u64)).expect("within MAX_DEPTH");
+            path = path.child(&id(level as u64)).expect("within FIXTURE_DEPTH");
         }
         path
     }
@@ -435,7 +432,7 @@ mod tests {
     fn senders() -> Vec<Sender> {
         vec![
             Sender::Agent {
-                path: agent(MAX_DEPTH),
+                path: agent(FIXTURE_DEPTH),
             },
             Sender::User {
                 principal: widest(MAX_INTENT_BYTES),
@@ -477,7 +474,7 @@ mod tests {
                 peers: Default::default(),
             }),
             agent: id(u64::MAX),
-            parent: Some(agent(MAX_DEPTH - 1)),
+            parent: Some(agent(FIXTURE_DEPTH - 1)),
             forked_at: u64::MAX,
             conversation_tail: u64::MAX,
             checkpoint: Some(u64::MAX),
@@ -494,7 +491,7 @@ mod tests {
 
     /// Every record kind a step sends, each at its widest.
     fn inbox_records() -> Vec<InboxRecord> {
-        let deepest = agent(MAX_DEPTH);
+        let deepest = agent(FIXTURE_DEPTH);
         let mut records = vec![
             InboxRecord::ForkAdopted(Box::new(adoption())),
             InboxRecord::Approval(crate::agent::Approval { id: intent() }),
@@ -620,7 +617,7 @@ mod tests {
             .encode()
             .is_err()
         );
-        let deepest = agent(MAX_DEPTH);
+        let deepest = agent(FIXTURE_DEPTH);
         // Sends, adoptions (host-bound volumes included), reports, archives.
         for record in inbox_records() {
             record.encode().expect("every inbox record fits");
@@ -689,15 +686,15 @@ mod tests {
         // every child open and to archive, the widest adoption, settled with
         // the widest outcome, counters at their widest, every child awaited.
         let adopted = adoption();
-        for depth in [MAX_DEPTH - 1, MAX_DEPTH] {
+        for depth in [FIXTURE_DEPTH - 1, FIXTURE_DEPTH] {
             let path = agent(depth);
-            let children = if depth < MAX_DEPTH {
+            let children = if depth < FIXTURE_DEPTH {
                 MAX_OPEN_CHILDREN
             } else {
                 0
             };
             let open_children: BTreeSet<_> = (0..children as u64)
-                .map(|n| path.child(&id(n)).expect("below MAX_DEPTH"))
+                .map(|n| path.child(&id(n)).expect("below FIXTURE_DEPTH"))
                 .collect();
             for outcome in outcomes() {
                 let state = AgentState {
