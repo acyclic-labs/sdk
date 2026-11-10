@@ -237,8 +237,22 @@ pub trait SourceWatch: Send + Sync {
     fn is_exact(&self) -> bool;
 }
 
+/// How authored files compose over one source path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceOverlay {
+    /// Authored aliases preserve source identity; deletion hides that binding.
+    CopyOnWrite,
+    /// Independent authored overrides; removing one reveals the default.
+    /// Deleting a source-only path still creates a tombstone.
+    Defaults,
+}
+
 /// Provider contract for exact lookup, bounded pages, ranges, and metadata.
 pub trait DemandSource: Send + Sync {
+    /// Static composition policy; performs no IO or content computation.
+    fn overlay(&self, _components: &[crate::kernel::LogicalName]) -> SourceOverlay {
+        SourceOverlay::CopyOnWrite
+    }
     /// Current opaque source reference.
     fn reference(&self) -> SourceReference;
 
