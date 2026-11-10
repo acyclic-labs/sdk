@@ -27,7 +27,6 @@ mod agent_settings;
 mod agents;
 #[cfg(any(test, feature = "native-execution"))]
 mod checkout_tools;
-mod compaction;
 mod config;
 pub(crate) mod context;
 pub mod continuation;
@@ -127,7 +126,7 @@ pub struct LocalHarness {
     context_read_observer:
         Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
     limits: Limits,
-    compaction: crate::context::CompactionPolicy,
+    compaction: Option<crate::context::CompactionPolicy>,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     mcp_diagnostics: Vec<crate::mcp::McpServerFailure>,
     goal_continuations: Option<crate::goal::GoalContinuationPolicy>,

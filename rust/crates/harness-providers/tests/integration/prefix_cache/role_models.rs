@@ -29,7 +29,7 @@ fn scripted(path: &'static str, steps: Vec<Step>) -> Arc<Scripted> {
     })
 }
 
-async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
+async fn run_roles(adapter: Adapter, misroute: bool, copy_root_budgets: bool) -> TestResult<bool> {
     let parent = scripted(
         "messages",
         vec![
@@ -73,8 +73,11 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
         .ok_or("catalog")?
         .as_ref()
         .clone();
-    let model = spec.models.remove("model").ok_or("model")?;
+    let mut model = spec.models.remove("model").ok_or("model")?;
     spec.models.insert("replacement".into(), model.clone());
+    // Smaller than the root's automatic 20k recent suffix. Synthetic provider
+    // units count wire bytes, so this still admits the full real tool prefix.
+    model.capacity.context_tokens = 16_384;
     spec.models.insert("luna".into(), model);
     catalog.register("workers".into(), spec)?;
     let routes = Arc::new(Routes {
@@ -87,8 +90,13 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
         let tools = acyclic_harness::tools::registry(&selected, |_| false, Vec::new())?;
         let limits = Limits::default();
         let grants = acyclic_harness::tools::call_grants(&tools, selected.iter().map(String::as_str))?;
+        let compaction = if copy_root_budgets {
+            Some(CompactionPolicy::for_model(None, root_model.model(), root_model.as_ref())?)
+        } else {
+            None
+        };
         Ok(Arc::new(acyclic_harness::filesystem::StockExecutors::new(
-            (root.model().clone(), root), tools, (limits, CompactionPolicy::Disabled),
+            (root.model().clone(), root), tools, (limits, compaction),
             Arc::new(acyclic_harness::filesystem::Grants(grants)),
         ).with_models(Arc::new(ModelResolver::new("recorded/model", {
             let routes = routes.clone();
@@ -405,11 +413,20 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
 
 #[tokio::test]
 async fn role_models_route_across_providers_and_resume_with_stable_prefixes() -> TestResult {
-    assert!(run_roles(Adapter::Responses, false).await?);
-    assert!(run_roles(Adapter::Gemini, false).await?);
+    assert!(run_roles(Adapter::Responses, false, false).await?);
+    assert!(run_roles(Adapter::Gemini, false, false).await?);
     assert!(
-        run_roles(Adapter::Responses, true).await?,
+        run_roles(Adapter::Responses, true, false).await?,
         "negative control did not expose forced parent routing"
+    );
+    let refusal = run_roles(Adapter::Responses, false, true)
+        .await
+        .expect_err("copying the large root's compaction budgets must reject the smaller worker");
+    assert!(
+        refusal
+            .to_string()
+            .contains("compaction budgets exceed selected model capacity"),
+        "unexpected negative-control refusal: {refusal}"
     );
     Ok(())
 }

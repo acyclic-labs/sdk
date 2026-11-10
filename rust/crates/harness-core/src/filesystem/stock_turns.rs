@@ -152,7 +152,7 @@ pub struct StockExecutors {
     native: crate::tools::native::Cache,
     models: Option<Arc<crate::model::ModelResolver>>,
     limits: Limits,
-    compaction: CompactionPolicy,
+    compaction: Option<CompactionPolicy>,
     agent_tools: Vec<String>,
     templates: bool,
     /// Settings sampling (`agent.ts`) for every model call.
@@ -194,12 +194,13 @@ impl StockExecutors {
     }
 
     /// Stock turns over `model` served by `provider`, with `tools` under
-    /// `limits`, `compaction` and `context`, binding no agent tools.
+    /// `limits`, `compaction` and `context`, binding no agent tools. `None`
+    /// selects automatic compaction budgets separately for each selected model.
     #[must_use]
     pub fn new(
         (model, provider): (Model, Arc<dyn ModelProvider>),
         tools: ToolRegistry,
-        (limits, compaction): (Limits, CompactionPolicy),
+        (limits, compaction): (Limits, impl Into<Option<CompactionPolicy>>),
         context: Arc<dyn TurnContext>,
     ) -> Self {
         Self {
@@ -209,7 +210,7 @@ impl StockExecutors {
             native: Default::default(),
             models: None,
             limits,
-            compaction,
+            compaction: compaction.into(),
             agent_tools: Vec::new(),
             templates: false,
             sampling: None,
@@ -290,6 +291,8 @@ impl TurnExecutors for StockExecutors {
     ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
         Box::pin(async move {
             let (model, provider) = self.selected(agent)?;
+            let compaction =
+                CompactionPolicy::for_model(self.compaction.clone(), &model, provider.as_ref())?;
             let native = self.native.get(&model, || provider.native_tools(&model))?;
             let provider = provider
                 .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
@@ -315,7 +318,7 @@ impl TurnExecutors for StockExecutors {
             }
             let executor = StockExecutor::new(model, provider, ContextPipeline::default(), tools)
                 .with_limits(self.limits)
-                .with_compaction_policy(self.compaction.clone());
+                .with_compaction_policy(compaction);
             let executor = match self.sampling {
                 Some(sampling) => Self::sample(executor, sampling)?,
                 None => executor,

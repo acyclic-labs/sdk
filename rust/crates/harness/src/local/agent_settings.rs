@@ -11,7 +11,6 @@ use crate::layers::{Layer, is_off};
 pub(super) struct Settings {
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) sampling: Option<Sampling>,
-    pub(super) compaction: crate::context::CompactionPolicy,
 }
 
 /// Resolves a model selection the settings name.
@@ -380,8 +379,12 @@ async fn settle(
     let compaction = if unchanged_model {
         compaction.0.clone()
     } else {
-        super::compaction::select(compaction.1.clone(), &model.0, model.1.as_ref())
-            .map_err(Refused::selection)?
+        crate::context::CompactionPolicy::for_model(
+            compaction.1.clone(),
+            &model.0,
+            model.1.as_ref(),
+        )
+        .map_err(Refused::selection)?
     };
     if let Some(output) = settings
         .sampling
@@ -402,7 +405,6 @@ async fn settle(
         }
     }
     Ok(Settings {
-        compaction,
         model,
         sampling: settings.sampling,
     })

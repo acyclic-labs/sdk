@@ -30,7 +30,6 @@ impl Default for ThresholdCompaction {
 
 impl ThresholdCompaction {
     /// Reserves the selected output capacity before splitting remaining input.
-    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "filesystem-local")))]
     #[doc(hidden)]
     pub fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;
@@ -109,6 +108,38 @@ pub enum CompactionPolicy {
     /// Admit each request against the selected model's window, evicting into
     /// the backstop's marker at overflow.
     Threshold(ThresholdCompaction),
+}
+
+impl CompactionPolicy {
+    /// Selects automatic budgets for this model, or validates an explicit
+    /// policy without changing its budgets. `None` selects automatic budgets.
+    pub fn for_model(
+        selected: Option<Self>,
+        model: &crate::model::Model,
+        provider: &dyn crate::model::ModelProvider,
+    ) -> Result<Self> {
+        if matches!(selected, Some(Self::Disabled)) {
+            return Ok(Self::Disabled);
+        }
+        let capacity = provider.context_capacity(model)?;
+        let output = provider
+            .model_profile(model)?
+            .and_then(|profile| profile.max_output_tokens());
+        let reservation = capacity.output_reservation(output)?;
+        match selected {
+            Some(Self::Threshold(policy)) => {
+                policy.validate(capacity, output)?;
+                Ok(Self::Threshold(policy))
+            }
+            _ => Ok(Self::Threshold(ThresholdCompaction::for_capacity(
+                ModelContextCapacity {
+                    output_tokens: Some(reservation),
+                    ..capacity
+                },
+                0,
+            )?)),
+        }
+    }
 }
 
 impl Default for CompactionPolicy {
