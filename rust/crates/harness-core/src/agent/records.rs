@@ -261,11 +261,6 @@ pub struct CreationConfig {
 
 /// A host's original template reader, shared by direct and model spawns.
 pub trait SpawnTemplates: acyclic_stream::ProviderPlatform {
-    /// Pins the host's root model in its creation record.
-    fn root(&self) -> crate::Result<CreationConfig> {
-        crate::templates::root()
-    }
-
     /// Reads one child template using the parent's original authority.
     fn child<'a>(
         &'a self,

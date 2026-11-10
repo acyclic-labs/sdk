@@ -560,21 +560,20 @@ impl WasmAgents {
             Arc::new(SystemClock),
             Some(composer),
         )
-        .map_err(agent_error)?;
-        // Both spawn entrances use the same admitted template reader.
-        let agents = Arc::new(if options.children {
-            let model = registry
+        .map_err(agent_error)?
+        .with_model(
+            registry
                 .model
                 .as_ref()
-                .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
-            agents.with_templates(Arc::new(
-                crate::filesystem::Templates::new(
-                    Arc::clone(&filesystem),
-                    owner.issuer.clone(),
-                    owner.admission()?,
-                )
-                .with_model(Some(format!("{}/{}", model.0.provider, model.0.name))),
-            ))
+                .map(|model| format!("{}/{}", model.0.provider, model.0.name)),
+        );
+        // Both spawn entrances use the same admitted template reader.
+        let agents = Arc::new(if options.children {
+            agents.with_templates(Arc::new(crate::filesystem::Templates::new(
+                Arc::clone(&filesystem),
+                owner.issuer.clone(),
+                owner.admission()?,
+            )))
         } else {
             agents
         });

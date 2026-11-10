@@ -52,6 +52,7 @@ pub struct AgentHost<P: crate::store::JournalProvider + ?Sized + 'static> {
     /// The creation reader shared with this host's turns; `None` disables
     /// template creation.
     templates: Option<Arc<dyn SpawnTemplates>>,
+    model: Option<String>,
 }
 
 /// The agents' actor store in `provider`'s domain, under [`super::ACTORS`].
@@ -153,6 +154,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             within,
             lifecycle: None,
             templates: None,
+            model: None,
         })
     }
 
@@ -177,7 +179,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         )?;
         host.lifecycle.clone_from(&self.lifecycle);
         host.templates.clone_from(&self.templates);
+        host.model.clone_from(&self.model);
         Ok(host)
+    }
+
+    /// Pins the root model even when the host enables no child templates.
+    #[must_use]
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
     }
 
     /// Uses the host's original admitted template reader for child creation.
@@ -424,7 +434,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// `adopted.agent` in this host's account and namespace (see
     /// [`AgentHandler::prepare_root`](super::AgentHandler::prepare_root)).
     /// [`Self::create`] is exactly this request submitted once. The root's
-    /// creation config is this host's ([`Self::with_templates`]): `adopted.profile` must
+    /// creation config is this host's model and templates: `adopted.profile` must
     /// be `None`, and the host pins it.
     ///
     /// # Errors
@@ -439,12 +449,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 "a root's creation config is admitted by its host",
             ));
         }
-        adopted.profile = self
-            .templates
-            .as_ref()
-            .map(|templates| templates.root())
-            .transpose()
-            .map_err(|error| Error::Turn(Box::new(error)))?;
+        if self.templates.is_some() || self.model.is_some() {
+            let mut profile =
+                crate::templates::root().map_err(|error| Error::Turn(Box::new(error)))?;
+            profile.model.clone_from(&self.model);
+            adopted.profile = Some(profile);
+        }
         self.agents.prepare_root(&self.within, intent, adopted)
     }
 

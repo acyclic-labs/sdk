@@ -518,10 +518,11 @@ where
         policy: crate::approvals::ApprovalPolicy,
     ) -> Self {
         let issuer = issuer.into();
-        let templates = Arc::new(
-            super::Templates::new(Arc::clone(&host), issuer.clone(), admission.clone())
-                .with_model(executors.model_selection()),
-        );
+        let templates = Arc::new(super::Templates::new(
+            Arc::clone(&host),
+            issuer.clone(),
+            admission.clone(),
+        ));
         Self {
             stream,
             within,
