@@ -230,7 +230,7 @@ async fn a_wait_holding_its_delivery_deadlocks_the_same_schedule() -> Result {
 async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     use acyclic_actors::local::ControlledClock;
 
-    const CHILDREN: usize = 18;
+    const CHILDREN: usize = 1_000;
     const NOW: u64 = 5_000;
     const TIMEOUT: u64 = 200_000;
 
@@ -422,14 +422,29 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
         CHILDREN,
         "every child must have a wake measurement"
     );
+    let mut samples = Vec::new();
+    let mut after = None;
+    loop {
+        let page = wake
+            .child_wakes
+            .page(provider.clone(), after.as_ref(), 31)
+            .await?;
+        assert!(page.len() <= 31);
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|sample| sample.child.clone());
+        samples.extend(page);
+    }
+    assert_eq!(samples.len(), CHILDREN);
     assert_eq!(
-        wake.child_wakes
+        samples
             .iter()
             .map(|sample| sample.child.clone())
             .collect::<BTreeSet<_>>(),
         children.iter().map(AgentPath::id).collect()
     );
-    for sample in &wake.child_wakes {
+    for sample in &samples {
         assert_eq!(sample.settled_at_micros, NOW * 1_000);
         assert_eq!(sample.woke_at_micros, NOW * 1_000);
         assert!(

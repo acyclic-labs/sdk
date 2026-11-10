@@ -24,7 +24,7 @@ fn agent(n: u128) -> AgentPath {
 }
 fn status(phase: Phase) -> StatusRecord {
     StatusRecord {
-        child_wakes: Vec::new(),
+        child_wakes: Default::default(),
         phase,
         cursor: 1,
         conversation: 0,

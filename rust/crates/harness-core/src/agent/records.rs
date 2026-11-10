@@ -645,10 +645,10 @@ pub struct ChildWake {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct StatusRecord {
-    /// One measurement per observed child, published only when its wait returns.
+    /// Immutable paged measurements, published only when the wait returns.
     /// Travels through the existing status/SessionFrame telemetry projection.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub child_wakes: Vec<ChildWake>,
+    #[serde(default, skip_serializing_if = "super::ChildWakes::is_empty")]
+    pub child_wakes: super::ChildWakes,
     /// Phase after the transition that wrote it.
     pub phase: Phase,
     /// Inbox cursor consumed by that transition.

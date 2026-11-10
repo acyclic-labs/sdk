@@ -19,7 +19,7 @@ type Digest = [u8; 32];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Node {
-    Leaf([u8; 16]),
+    Leaf([u8; 16], Option<u64>),
     Branch {
         bit: u8,
         left: Digest,
@@ -237,7 +237,7 @@ impl Children {
         let mut next = self.root;
         while let Some(digest) = next {
             match self.node(digest).await? {
-                Node::Leaf(found) => return Ok(Some((found, digest))),
+                Node::Leaf(found, _) => return Ok(Some((found, digest))),
                 Node::Branch {
                     bit,
                     left,
@@ -266,7 +266,7 @@ impl Children {
     }
     async fn branch(&self, bit: u8, left: Digest, right: Digest) -> Result<Digest, Error> {
         let max = match self.node(right).await? {
-            Node::Leaf(id) | Node::Branch { max: id, .. } => id,
+            Node::Leaf(id, _) | Node::Branch { max: id, .. } => id,
         };
         self.stage(Node::Branch {
             bit,
@@ -289,13 +289,28 @@ impl Children {
     }
     /// Inserts one child and stages only the nodes on its changed path.
     pub async fn insert(&mut self, child: &AgentPath) -> Result<bool, Error> {
+        self.insert_entry(child, None).await
+    }
+    /// Retain an original completion time in the same immutable child index.
+    pub async fn record_settlement(
+        &mut self,
+        child: &AgentPath,
+        settled_at_micros: u64,
+    ) -> Result<bool, Error> {
+        self.insert_entry(child, Some(settled_at_micros)).await
+    }
+    async fn insert_entry(
+        &mut self,
+        child: &AgentPath,
+        settled_at_micros: Option<u64>,
+    ) -> Result<bool, Error> {
         let id = child.id_bytes();
         let mut branches = Vec::new();
         let found = self.walk(id, |branch| branches.push(branch)).await?;
         if found.is_some_and(|(found, _)| found == id) {
             return Ok(false);
         }
-        let leaf = self.stage(Node::Leaf(id)).await?;
+        let leaf = self.stage(Node::Leaf(id, settled_at_micros)).await?;
         let root = if let Some((found, old_leaf)) = found {
             let bit = (0u8..128)
                 .find(|bit| right(id, *bit) != right(found, *bit))
@@ -352,7 +367,7 @@ impl Children {
         let mut previous = None;
         while let Some(digest) = next {
             match self.node(digest).await? {
-                Node::Leaf(id) => return Ok(Some(AgentId::from_bytes(id))),
+                Node::Leaf(id, _) => return Ok(Some(AgentId::from_bytes(id))),
                 Node::Branch { bit, left, .. } => {
                     if bit >= 128 || previous.is_some_and(|previous| previous >= bit) {
                         return Err(Error::Record("child index branch order is invalid"));
@@ -367,6 +382,18 @@ impl Children {
     /// Up to `limit` child identities after `after`, in identity order. A
     /// caller continues from the last returned identity until the page empties.
     pub async fn page(&self, after: Option<&AgentId>, limit: usize) -> Result<Vec<AgentId>, Error> {
+        Ok(self
+            .entries_page(after, limit)
+            .await?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect())
+    }
+    pub(crate) async fn entries_page(
+        &self,
+        after: Option<&AgentId>,
+        limit: usize,
+    ) -> Result<Vec<(AgentId, Option<u64>)>, Error> {
         let after = after.map(AgentId::to_bytes);
         let mut pending = self
             .root
@@ -379,10 +406,10 @@ impl Children {
                 break;
             };
             match self.node(digest).await? {
-                Node::Leaf(id) if after.is_none_or(|after| id > after) => {
-                    page.push(AgentId::from_bytes(id))
+                Node::Leaf(id, settled_at) if after.is_none_or(|after| id > after) => {
+                    page.push((AgentId::from_bytes(id), settled_at))
                 }
-                Node::Leaf(_) => {}
+                Node::Leaf(_, _) => {}
                 Node::Branch {
                     bit,
                     left,

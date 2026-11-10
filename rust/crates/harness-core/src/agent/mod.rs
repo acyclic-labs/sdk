@@ -94,6 +94,8 @@ pub use machine::{
     OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome, SpawnRefusal, Step,
     TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait, Wake, requested_child, step,
 };
+mod child_wakes;
+pub use child_wakes::ChildWakes;
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, ChildWake,
     Closed, ContextAction, ContextRequest, Control, CreationConfig, ForkAdopted, Hook, InboxRecord,

@@ -235,13 +235,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
             return Err(Error::Record("agent state binding differs"));
         }
-        observed
-            .open_children
-            .bind(Arc::clone(self.store.provider()));
-        observed
-            .archive_pending
-            .bind(Arc::clone(self.store.provider()));
-        observed.awaiting.bind(Arc::clone(self.store.provider()));
+        observed.bind_children(Arc::clone(self.store.provider()));
         Ok((observed, cursor))
     }
 
@@ -355,15 +349,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             }
         }
         if let Some(state) = state.as_mut() {
-            state
-                .open_children
-                .bind(Arc::clone(self.agents.store.provider()));
-            state
-                .archive_pending
-                .bind(Arc::clone(self.agents.store.provider()));
-            state
-                .awaiting
-                .bind(Arc::clone(self.agents.store.provider()));
+            state.bind_children(Arc::clone(self.agents.store.provider()));
         }
         let mut prepared = if let Some(failure) = failure {
             super::machine::failed_step(&path, state, wake, cursor, failure).await?

@@ -150,7 +150,7 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
     assert!(matches!(call.command(), AgentCommand::Cancel {agent: target, ..} if target == &agent));
 
     let outcome = StatusRecord {
-        child_wakes: Vec::new(),
+        child_wakes: Default::default(),
         phase: Phase::Running,
         cursor: 1,
         conversation: 0,
@@ -168,7 +168,7 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
     drop(editor);
     let mut editor = attachment(memory.clone(), agent.clone(), 1)?;
     let next = StatusRecord {
-        child_wakes: Vec::new(),
+        child_wakes: Default::default(),
         phase: Phase::Idle,
         cursor: 2,
         conversation: 0,
@@ -222,7 +222,7 @@ async fn pending_context(
     let mut prepared = core::pin::pin!(prepared);
     assert!(futures::poll!(&mut prepared).is_pending());
     let running = StatusRecord {
-        child_wakes: Vec::new(),
+        child_wakes: Default::default(),
         phase: Phase::Running,
         cursor: 3,
         conversation: 0,
