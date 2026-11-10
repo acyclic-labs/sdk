@@ -93,7 +93,9 @@ impl crate::tool::ToolSource for Configured {
 #[tokio::test]
 async fn live_mcp_tools_append_deltas_preserve_prefix_and_refuse_removed_calls() -> Result<()> {
     for compose in [false, true] {
-        live_mcp_case(compose).await?;
+        for pinned in [false, true] {
+            live_mcp_case(compose, pinned).await?;
+        }
     }
     Ok(())
 }
@@ -114,7 +116,7 @@ impl crate::tool::ToolSource for Nested {
     }
 }
 
-async fn live_mcp_case(compose: bool) -> Result<()> {
+async fn live_mcp_case(compose: bool, pinned: bool) -> Result<()> {
     let remote = Arc::new(Remote {
         change_schema: false,
         changed: AtomicU64::new(0),
@@ -189,11 +191,25 @@ async fn live_mcp_case(compose: bool) -> Result<()> {
         tools.register((code, None), &mut None, None)?;
         grants.0.insert("tool:call:code".into());
     }
+    let original = tools
+        .definitions(None)?
+        .into_iter()
+        .find(|tool| tool.name == "mcp.watched.old")
+        .expect("original admitted schema");
+    let first_name = if pinned {
+        format!("{}@{}", original.name, original.revision)
+    } else {
+        original.name
+    };
     let call = |id: &str| {
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                 id.into(),
-                "mcp.watched.old".into(),
+                if id == "first" {
+                    first_name.clone()
+                } else {
+                    "mcp.watched.old".into()
+                },
                 json!({}),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
@@ -430,7 +446,11 @@ async fn changed_schema_case(granted: bool) -> Result<()> {
             ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                     "changed".into(),
-                    "mcp.watched.old".into(),
+                    if id == "first" {
+                        first_name.clone()
+                    } else {
+                        "mcp.watched.old".into()
+                    },
                     json!({}),
                 ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
