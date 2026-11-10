@@ -18,7 +18,7 @@ pub(super) fn validate_journal(
     Ok(())
 }
 
-/// Selection from one complete authenticated execution step, with optional admission bounds.
+/// Bounded selection from one complete authenticated execution step.
 pub struct ExecutionRecordQuery<'a> {
     /// Exact operation whose authenticated step is selected.
     pub operation: OperationId,
@@ -28,10 +28,10 @@ pub struct ExecutionRecordQuery<'a> {
     pub call_id: Option<&'a str>,
     /// Includes the operation's initial binding in the selection.
     pub include_started: bool,
-    /// Optional bound on observations admitted for the selected chain, including summary work.
-    pub maximum_step_records: Option<usize>,
-    /// Optional bound on the selected output records. `None` is unbounded.
-    pub maximum: Option<usize>,
+    /// Bound on observations admitted for the selected chain, including summary work.
+    pub maximum_step_records: usize,
+    /// Bound on the selected output records.
+    pub maximum: usize,
     /// Selection applied only after authenticating each indexed observation.
     pub select: &'a (dyn Fn(&ExecutionEvent) -> bool + Send + Sync),
 }
@@ -43,10 +43,11 @@ pub type IndexedExecutionFuture<'a> =
     crate::conversation::BoundedContentFuture<'a, Option<IndexedExecutionRecords>>;
 
 impl ExecutionRecordQuery<'_> {
-    pub(crate) fn step_bound(limits: Limits) -> Option<usize> {
+    pub(crate) fn step_bound(limits: Limits) -> usize {
         limits
             .model_events_per_step
-            .map(|maximum| maximum.get().saturating_mul(2).saturating_add(7))
+            .saturating_mul(2)
+            .saturating_add(7)
     }
 }
 

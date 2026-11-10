@@ -152,16 +152,8 @@ impl RuntimeScope {
             && limits.path_bytes <= self.limits.path_bytes
             && limits.attachments <= self.limits.attachments
             && limits.render_bytes <= self.limits.render_bytes
-            && self.limits.model_events_per_step.is_none_or(|maximum| {
-                limits
-                    .model_events_per_step
-                    .is_some_and(|limit| limit <= maximum)
-            })
-            && self.limits.tool_calls_per_step.is_none_or(|maximum| {
-                limits
-                    .tool_calls_per_step
-                    .is_some_and(|limit| limit <= maximum)
-            })
+            && limits.model_events_per_step <= self.limits.model_events_per_step
+            && limits.tool_calls_per_step <= self.limits.tool_calls_per_step
             && limits.context_messages <= self.limits.context_messages
     }
 

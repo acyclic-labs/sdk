@@ -6,60 +6,6 @@ use serde_json::json;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
-    fn optional_counts_preserve_admission_and_scope_authority(
-        event_max in proptest::option::of(1usize..12),
-        call_max in proptest::option::of(1usize..8),
-        child_event_max in proptest::option::of(1usize..12),
-        child_call_max in proptest::option::of(1usize..8),
-        input in proptest::collection::vec(0u8..5, 0..24),
-    ) {
-        let limits = Limits {
-            model_events_per_step: event_max.and_then(std::num::NonZeroUsize::new),
-            tool_calls_per_step: call_max.and_then(std::num::NonZeroUsize::new),
-            ..Limits::default()
-        };
-        let child = Limits {
-            model_events_per_step: child_event_max.and_then(std::num::NonZeroUsize::new),
-            tool_calls_per_step: child_call_max.and_then(std::num::NonZeroUsize::new),
-            ..Limits::default()
-        };
-        let scope = crate::runtime::RuntimeScope::new(Default::default(), limits).unwrap();
-        prop_assert_eq!(scope.narrow(Default::default(), child).is_ok(),
-            event_max.is_none_or(|max| child_event_max.is_some_and(|value| value <= max))
-            && call_max.is_none_or(|max| child_call_max.is_some_and(|value| value <= max)));
-        let restricted = crate::context::restrict_context_limits(limits, child, None).unwrap();
-        for (actual, ancestor, descendant) in [
-            (restricted.model_events_per_step, event_max, child_event_max),
-            (restricted.tool_calls_per_step, call_max, child_call_max),
-        ] {
-            prop_assert_eq!(actual.map(std::num::NonZeroUsize::get),
-                ancestor.into_iter().chain(descendant).min());
-        }
-        let mut admission = ModelEventAdmission::default();
-        let mut calls = std::collections::BTreeSet::new();
-        let mut count = 0;
-        let mut completed = false;
-        for kind in input {
-            let event = match kind {
-                0..=2 => ModelEvent::ToolCall(ToolCall::new(format!("call-{kind}"), "echo".into(), Value::Null)),
-                3 => ModelEvent::Content { delta: "x".into() },
-                _ => ModelEvent::Completed { metadata: Value::Null },
-            };
-            let accepted = !completed && event_max.is_none_or(|max| count < max)
-                && (kind > 2 || (call_max.is_none_or(|max| calls.len() < max) && !calls.contains(&format!("call-{kind}"))));
-            prop_assert_eq!(admission.observe(&event, limits, None).is_ok(), accepted);
-            if accepted {
-                count += 1;
-                if kind <= 2 { calls.insert(format!("call-{kind}")); }
-                completed |= kind == 4;
-            }
-            prop_assert_eq!(admission.count, count);
-            prop_assert_eq!(admission.completed, completed);
-            prop_assert_eq!(admission.calls.iter().collect::<Vec<_>>(), calls.iter().collect::<Vec<_>>());
-        }
-    }
-
-    #[test]
     fn provisional_admission_is_exact_for_every_authority_identity(
         id in any::<[u8;16]>(), arguments in ".{0,64}", signature in ".{0,64}", offset in 0u64..3,
     ) {

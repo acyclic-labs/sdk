@@ -66,10 +66,10 @@ pub struct Limits {
     pub attachments: usize,
     /// Maximum bytes rendered directly into one model context part.
     pub render_bytes: u64,
-    /// Optional maximum streamed observations in one model round trip; `None` is unbounded.
-    pub model_events_per_step: Option<std::num::NonZeroUsize>,
-    /// Optional maximum distinct tool calls in one model round trip; `None` is unbounded.
-    pub tool_calls_per_step: Option<std::num::NonZeroUsize>,
+    /// Maximum streamed observations admitted in one model round trip.
+    pub model_events_per_step: usize,
+    /// Maximum distinct tool calls admitted in one model round trip.
+    pub tool_calls_per_step: usize,
     /// Maximum canonical messages selected into one model request.
     pub context_messages: usize,
 }
@@ -81,8 +81,8 @@ impl Default for Limits {
             path_bytes: u32::MAX as usize,
             attachments: u32::MAX as usize,
             render_bytes: MAX_EXACT_JS_INTEGER,
-            model_events_per_step: None,
-            tool_calls_per_step: None,
+            model_events_per_step: u32::MAX as usize,
+            tool_calls_per_step: u32::MAX as usize,
             context_messages: u32::MAX as usize,
         }
     }
@@ -100,11 +100,15 @@ impl Limits {
         if [self.file_bytes, self.render_bytes]
             .into_iter()
             .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
-            || [self.path_bytes, self.attachments, self.context_messages]
-                .into_iter()
-                .chain(self.model_events_per_step.map(std::num::NonZeroUsize::get))
-                .chain(self.tool_calls_per_step.map(std::num::NonZeroUsize::get))
-                .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64)
+            || [
+                self.path_bytes,
+                self.attachments,
+                self.model_events_per_step,
+                self.tool_calls_per_step,
+                self.context_messages,
+            ]
+            .into_iter()
+            .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64)
         {
             return Err(conversation_error(
                 work,

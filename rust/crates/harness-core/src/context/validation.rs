@@ -186,14 +186,8 @@ pub(crate) fn restrict_context_limits(
         render_bytes: pinned.render_bytes.min(admitted.render_bytes),
         model_events_per_step: pinned
             .model_events_per_step
-            .into_iter()
-            .chain(admitted.model_events_per_step)
-            .min(),
-        tool_calls_per_step: pinned
-            .tool_calls_per_step
-            .into_iter()
-            .chain(admitted.tool_calls_per_step)
-            .min(),
+            .min(admitted.model_events_per_step),
+        tool_calls_per_step: pinned.tool_calls_per_step.min(admitted.tool_calls_per_step),
         context_messages: pinned.context_messages.min(admitted.context_messages),
     })
 }

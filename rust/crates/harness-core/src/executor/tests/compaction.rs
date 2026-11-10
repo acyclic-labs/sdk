@@ -1000,7 +1000,7 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
     let (_, admissions, _) = replay_execution(
         &journal,
         parent.operation_id,
-        Some(3),
+        3,
         |event| {
             matches!(
                 event,

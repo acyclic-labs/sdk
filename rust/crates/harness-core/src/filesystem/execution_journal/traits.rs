@@ -97,7 +97,7 @@ where
                         maximum_step_records: crate::executor::ExecutionRecordQuery::step_bound(
                             Limits::default(),
                         ),
-                        maximum: Some(2),
+                        maximum: 2,
                         select: &select,
                     },
                     None,

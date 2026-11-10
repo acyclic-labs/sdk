@@ -420,8 +420,8 @@ message RuntimeLimits {
   uint64 render_bytes = 4;
   reserved 5;
   reserved "model_steps";
-  optional uint64 model_events_per_step = 6;
-  optional uint64 tool_calls_per_step = 7;
+  uint64 model_events_per_step = 6;
+  uint64 tool_calls_per_step = 7;
   uint64 context_messages = 8;
 }
 

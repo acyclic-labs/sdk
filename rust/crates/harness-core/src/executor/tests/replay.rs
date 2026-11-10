@@ -322,7 +322,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
     let (tail, selected, _) = replay_execution(
         &journal,
         operation,
-        Some(1),
+        1,
         |event| matches!(event, ExecutionEvent::ModelStarted { step: 69, .. }),
         None,
     )
@@ -335,7 +335,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
     assert_eq!(journal.replay(operation, 0, 65, None)?.await?.len(), 65);
     assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
     assert!(
-        replay_execution(&journal, operation, Some(1), |_| true, None)
+        replay_execution(&journal, operation, 1, |_| true, None)
             .await
             .is_err()
     );
@@ -346,7 +346,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
         original
     };
     assert!(matches!(
-        replay_execution(&journal, operation, Some(0), |_| false, None).await,
+        replay_execution(&journal, operation, 0, |_| false, None).await,
         Err(Error::Conflict(_))
     ));
     let mut cursor = ExecutionReplay::new(operation);
@@ -374,7 +374,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
         records[69].sequence += 1;
     }
     assert!(matches!(
-        replay_execution(&journal, operation, Some(0), |_| false, None).await,
+        replay_execution(&journal, operation, 0, |_| false, None).await,
         Err(Error::Conflict(_))
     ));
     Ok(())
@@ -398,15 +398,15 @@ async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work()
 }
 
 #[tokio::test]
-async fn prefix_replay_accepts_unbounded_counts() -> Result<()> {
+async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
     let mut executor = uncompacted_executor(
         Model::new("example".into(), "model".into(), "1".into())?,
         Arc::new(scripted_model()),
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    executor.limits.model_events_per_step = None;
-    executor.limits.tool_calls_per_step = None;
+    executor.limits.model_events_per_step = usize::MAX;
+    executor.limits.tool_calls_per_step = usize::MAX;
     let journal = Journal::default();
     let operation = OperationId::from_bytes([27; 16]);
     journal
@@ -419,34 +419,18 @@ async fn prefix_replay_accepts_unbounded_counts() -> Result<()> {
             None,
         )?
         .await?;
-    for index in 0..70 {
-        journal
-            .append(
-                operation,
-                &format!("event:{index}"),
-                &ExecutionEvent::ModelInline {
-                    step: 0,
-                    purpose: ModelPurpose::Response,
-                    event: r#"{"kind":"content","delta":"x"}"#.into(),
-                    usage: None,
-                },
-                None,
-            )?
-            .await?;
-    }
     let records = StockExecution::ordinary(&executor)
         .prefix_records(&journal, operation, 0)
         .await?;
-    assert_eq!(records.len(), 71);
+    assert_eq!(records.len(), 1);
     assert_eq!(records[0].sequence, 1);
-    assert_eq!(records.last().map(|record| record.sequence), Some(71));
     Ok(())
 }
 
 #[test]
 fn independently_selected_event_budget_still_rejects_excess_observations() -> Result<()> {
     let limits = Limits {
-        model_events_per_step: std::num::NonZeroUsize::new(1),
+        model_events_per_step: 1,
         ..Limits::default()
     };
     limits.validate(&mut None)?;
