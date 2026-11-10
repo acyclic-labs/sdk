@@ -103,10 +103,7 @@ fn agent_approvals(
         Default::default(),
         limits,
     )?;
-    Ok(Arc::new(AgentApprovals::new(
-        files,
-        Arc::new(policy),
-    )))
+    Ok(Arc::new(AgentApprovals::new(files, Arc::new(policy))))
 }
 
 /// A fully bound journal and owner-private file volume.
