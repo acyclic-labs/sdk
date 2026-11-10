@@ -101,8 +101,8 @@ node scripts/qualify-docker-no-fuse.mjs node:24-trixie \
   /absolute/graphcoder /absolute/harness-mock-model /fresh/absolute/evidence
 ```
 
-The qualifier runs a non-root user with Docker's default capabilities, seccomp
-and AppArmor configuration, no devices and no external network. It verifies
+The qualifier runs with the caller's user ID, Docker's default capabilities,
+seccomp and AppArmor configuration, no devices and no external network. It verifies
 the actual kernel's seccomp filter, absent `/dev/fuse` and mount helpers, and
 absence of `CAP_SYS_ADMIN` in both the effective and bounding sets. No provider
 keys enter the container; the ordinary loopback scripted provider runs inside

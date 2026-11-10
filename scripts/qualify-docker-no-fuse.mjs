@@ -121,8 +121,8 @@ async function outside(image, binary, mock, output) {
       assert.equal(code, "0", "Docker container failed");
       const report = JSON.parse(await readFile(join(output, "container.json")));
       assert.equal(report.status, "PASS");
-      console.log(`docker-no-fuse PASS ${JSON.stringify({ cases, output })}`);
     } });
+    console.log(`docker-no-fuse PASS ${JSON.stringify({ cases, output })}`);
   } finally { cancellation.dispose(); }
 }
 
