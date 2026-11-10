@@ -551,15 +551,7 @@ impl Opening {
                 .collect(),
             approval_models: self.config.approval_models,
             agent,
-            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             models: self.models,
-            #[cfg(not(any(
-                test,
-                feature = "hooks",
-                feature = "mcp-stdio",
-                feature = "mcp-http"
-            )))]
-            models: None,
             sampling,
             served: self.config.served,
             active_directory: self.config.active_directory,
