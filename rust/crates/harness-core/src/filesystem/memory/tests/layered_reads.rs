@@ -15,7 +15,18 @@ struct ReplaceAfterProbe {
     unpinned_reads: AtomicUsize,
 }
 
-fn task(home: ContentBindings, seed: Option<ContentBindings>) -> Result<Arc<TaskContext>> {
+async fn task(
+    home: ContentBindings,
+    seed: Option<&MemoryHarnessStorage>,
+) -> Result<Arc<TaskContext>> {
+    let pinned = match seed {
+        Some(seed) => Some(crate::layers::PinnedLayer {
+            volume: seed.volume.clone(),
+            generation: seed.list_private_directory("", None, None, 1).await?.0,
+        }),
+        None => None,
+    };
+    let seed = seed.map(MemoryHarnessStorage::content_bindings);
     let mut grants = vec![
         home.volume.capability(VolumeOperation::Read, &mut None)?,
         home.volume.capability(VolumeOperation::Write, &mut None)?,
@@ -33,7 +44,7 @@ fn task(home: ContentBindings, seed: Option<ContentBindings>) -> Result<Arc<Task
                     ..Limits::default()
                 },
             )?,
-            seed: seed.as_ref().map(|seed| seed.volume.clone()),
+            seed: pinned,
             content: Some(seed.unwrap_or_else(|| home.clone())),
             ..Bindings::local()
         }
@@ -232,7 +243,7 @@ async fn every_effective_projection_keeps_the_original_probe_generation() -> Res
         });
         let mut binding = storage.content_bindings();
         binding.reader = reader.clone();
-        let task = task(binding, None)?;
+        let task = task(binding, None).await?;
         let mut arguments = json!({"path":format!("{}{path}", crate::layers::EFFECTIVE_PATH)});
         if let Some(selection) = selection {
             arguments["selection"] = selection;
@@ -297,7 +308,7 @@ async fn explicit_versions_keep_their_selection_across_a_new_home_probe() -> Res
         });
         let mut binding = storage.content_bindings();
         binding.reader = reader.clone();
-        let task = task(binding, None)?;
+        let task = task(binding, None).await?;
         let mut arguments = json!({"path":format!("{}text.txt", crate::layers::HOME_PATH)});
         if let Some(selection) = selection {
             arguments["selection"] = selection;
@@ -376,7 +387,7 @@ async fn seed_fallback_and_off_markers_keep_the_original_layer_decision() -> Res
         });
         let mut binding = home.content_bindings();
         binding.reader = reader.clone();
-        let task = task(binding, Some(seed.content_bindings()))?;
+        let task = task(binding, Some(&seed)).await?;
         let result = read(
             &task,
             json!({"path":format!("{}{path}", crate::layers::EFFECTIVE_PATH)}),
@@ -444,7 +455,7 @@ async fn effective_reads_preserve_the_selected_layers_authority() -> Result<()> 
     });
     let mut binding = home.content_bindings();
     binding.reader = reader.clone();
-    let task = task(binding, Some(seed.content_bindings()))?;
+    let task = task(binding, Some(&seed)).await?;
     let denied = Arc::new(task.scoped(
         Capabilities::new([
             home.write_capability.clone(),
