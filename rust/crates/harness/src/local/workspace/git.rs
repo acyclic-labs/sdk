@@ -38,6 +38,7 @@ struct Invocation<'a> {
     lease: &'a acyclic_fs::OperationWindowLease,
     watcher: &'a mut Option<capture::Cursor>,
     access: &'a crate::filesystem::WorkspaceAccess,
+    capture_cut: acyclic_fs::GenerationId,
 }
 
 impl Commands<'_> {
@@ -217,6 +218,7 @@ impl Commands<'_> {
                     lease: &lease,
                     watcher,
                     access: &access,
+                    capture_cut: parent.id(),
                 },
             )
             .await;
@@ -312,15 +314,21 @@ impl Commands<'_> {
             lease,
             watcher,
             access,
+            capture_cut,
         } = invocation;
         let owner = context.owner;
         owner.verify().await?;
         if source.is_none() {
+            // A conflict continuation retains the Git request, but captures a
+            // new checkout transition. Its selected cut distinguishes that
+            // publication from an earlier capture under the same request.
+            let capture_operation =
+                reconciliation_operation(context.operation, b"capture", capture_cut, capture_cut);
             capture::capture(
                 (self.capture_options, self.capture_policy),
                 (workspace, checkout),
                 watcher,
-                (context.operation, 0),
+                (OperationId::from_bytes(capture_operation.into_bytes()), 0),
                 lease.publication_permit(),
             )
             .await?;
