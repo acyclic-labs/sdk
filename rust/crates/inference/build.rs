@@ -4,7 +4,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiler = acyclic_proto_build::Compiler::new()?;
     let grpc = std::env::var_os("CARGO_FEATURE_HOST").is_some();
     compiler.compile(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
         compiler.config(),
         acyclic_proto_build::services(grpc),
         &["proto/inference/v1/inference.proto"],
