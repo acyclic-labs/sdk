@@ -4,7 +4,7 @@
   "workspace": {
     "kind": "plain",
     "files": {
-      "approval-policy.json": "{\"approvers\":[{\"kind\":\"human\",\"principal\":\"human\"}]}"
+      "approval-policy.json": "{\"approvers\":[{\"kind\":\"rules\",\"principal\":\"setup\",\"rules\":[{\"tool\":\"spawn\",\"arguments\":null,\"verdict\":\"allow\"},{\"tool\":\"wait\",\"arguments\":null,\"verdict\":\"allow\"},{\"tool\":\"read\",\"arguments\":null,\"verdict\":\"allow\"}],\"fallback\":\"ask\"},{\"principal\":\"human\",\"kind\":\"human\"}]}"
     }
   },
   "extra_args": [

@@ -48,9 +48,12 @@ test("ConPTY launch contract carries the shared terminal arguments and refuses o
     ["--diagnostic-records", "16", "--diagnostic-record-bytes", "4096"]);
   assert.deepEqual(conptyArgs("B", [...args, "--approval-policy", "P"]).slice(5), ["--approval-policy", "P"]);
   assert.deepEqual(conptyArgs("B", [...args, "--prices", "P"]).slice(5), ["--prices", "P"]);
+  assert.deepEqual(conptyArgs("B", [...args, "--agent", "/root/children/worker"]).slice(5), ["--agent", "/root/children/worker"]);
   // Negative controls: the native host has no channel for these.
   assert.throws(() => conptyArgs("B", [...args, "--operation", "a", "--operation", "b"]), /cannot launch argument --operation/);
   assert.throws(() => conptyArgs("B", [...args, "--operation"]), /cannot launch argument --operation/);
+  assert.throws(() => conptyArgs("B", [...args, "--agent", "a", "--agent", "b"]), /cannot launch argument --agent/);
+  assert.throws(() => conptyArgs("B", [...args, "--agent"]), /cannot launch argument --agent/);
   assert.throws(() => conptyArgs("B", [...args, "-p", "x"]), /cannot launch argument -p/);
   assert.throws(() => conptyArgs("B", args.slice(2)), /requires --workspace/);
   assert.throws(() => conptyArgs("B", [...args, "--model", "n/y"]), /cannot launch argument --model/);
@@ -66,14 +69,14 @@ const launch = ["--workspace", process.cwd(), "--settings-root", process.cwd(), 
 test("real ConPTY carries typed options, raw input, output and the exit code", conpty, async t => {
   const processes = new Processes();
   try {
-    const running = await processes.startTerminal(cmd, [...launch, "--resume", "--operation", "op 1",
+    const running = await processes.startTerminal(cmd, [...launch, "--resume", "--operation", "op 1", "--agent", "/root/children/worker",
       "--diagnostic-records", "0", "--diagnostic-record-bytes", "0"]);
     await shown(running, ">");
     running.child.stdin.write("echo po^ng %CMDCMDLINE%\r\nexit 7\r\n");
     const result = await bounded(t, running.closed);
     assert.equal(result.code, 7, result.stderr);
     assert.match(result.stdout.replace(/\x1b\[[0-9;?]*[A-Za-z]|\r|\n/g, ""),
-      /pong .*--resume --operation "op 1" --diagnostic-records 0 --diagnostic-record-bytes 0/);
+      /pong .*--resume --operation "op 1" --agent "\/root\/children\/worker" --diagnostic-records 0 --diagnostic-record-bytes 0/);
   } finally { await processes.close(); }
 });
 
@@ -89,6 +92,12 @@ test("ConPTY refuses launches outside admitted native custody", conpty, async t 
     const untyped = await bounded(t, untypedLaunch.closed);
     assert.equal(untyped.code, 125);
     assert.match(untyped.stderr, /step=conpty-arguments/);
+    for (const extra of [["--agent"], ["--agent", "a", "--agent", "b"]]) {
+      const invalidAgent = await processes.startOwned(host, [...conptyArgs(cmd, launch), ...extra], { scopeInheritInput: true });
+      const refused = await bounded(t, invalidAgent.closed);
+      assert.equal(refused.code, 125);
+      assert.match(refused.stderr, /step=conpty-arguments/);
+    }
     const binaryLaunch = await processes.startTerminal(`${host}.missing.exe`, launch);
     const binary = await bounded(t, binaryLaunch.closed);
     assert.equal(binary.code, 125);
