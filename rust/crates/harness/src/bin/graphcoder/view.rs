@@ -762,9 +762,14 @@ pub async fn run(
         }
         let (areas, page) = {
             let status = Line::raw(view.status());
+            let header = view.header();
+            view.rows(size.width.saturating_sub(1));
+            let (transcript, links, code) = view.transcript.presentation();
             let mut screen = Screen {
-                header: view.header(),
-                transcript: view.rows(size.width.saturating_sub(1)),
+                header,
+                transcript,
+                links,
+                code,
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
                 usage: if usage_stopped.is_some() {
@@ -806,8 +811,9 @@ pub async fn run(
                 overlay_top = overlay_top.min(areas.overlay_tail(screen.overlay.len()));
                 screen.overlay_scroll = overlay_top;
             }
-            terminal.draw(size, |frame| {
+            terminal.draw_linked(size, None, |frame| {
                 areas = screen.render(frame, &input, &mut viewport, scroll, now);
+                screen.hyperlinks(&areas, scroll)
             })?;
             if overlay.is_none()
                 && let Some(status) = query::reviewed(&queries, overlay_top, areas.overlay_rows(0))

@@ -140,7 +140,7 @@ impl CheckoutTools {
             let mut result = ToolResult {
                 value: serde_json::json!({
                     "background": true, "output_directory": directory, "cancel": cancel,
-                    "text": format!("Background shell started. Complete stdout, stderr and result.json: {directory}. Write {cancel} to cancel this job.")
+                    "text": format!("Background shell started. Read complete stdout, stderr and result.json under {}{directory}. Write {cancel} to cancel this job.", crate::layers::OUTPUT_PATH)
                 }),
             };
             let bytes = serde_json::to_vec(&result.value).map_err(storage)?;

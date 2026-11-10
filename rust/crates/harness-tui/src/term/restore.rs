@@ -245,7 +245,8 @@ const BEGIN_SYNCHRONIZED: &[u8] = b"[?2026h";
 /// mode; 0 is no mode number, so the key cannot collide with one.
 const RESET_MARGINS: (u16, &'static [u8]) = (0, b"\x1b[r");
 /// Undo records scoped to one frame: undone when the frame is cut short.
-const FRAME_SCOPED: [u16; 2] = [END_SYNCHRONIZED.0, RESET_MARGINS.0];
+const CLOSE_LINK: (u16, &'static [u8]) = (u16::MAX, b"\x1b]8;;\x1b\\");
+const FRAME_SCOPED: [u16; 3] = [END_SYNCHRONIZED.0, RESET_MARGINS.0, CLOSE_LINK.0];
 
 /// Frame presentation under the restoration journal: a synchronized update's
 /// close, a hidden cursor's show and set margins' reset are journaled before
@@ -266,6 +267,9 @@ impl<W: Write> RestoreGuard<W> {
         }
         if effects.margins {
             self.journal(RESET_MARGINS);
+        }
+        if effects.hyperlinks {
+            self.journal(CLOSE_LINK);
         }
         let synchronized = self
             .modes
@@ -311,6 +315,8 @@ impl<W: Write> RestoreGuard<W> {
                 false
             } else if *mode == RESET_MARGINS.0 {
                 !effects.margins
+            } else if *mode == CLOSE_LINK.0 {
+                !effects.hyperlinks
             } else {
                 effects.cursor_hidden || *mode != SHOW_CURSOR.0
             }

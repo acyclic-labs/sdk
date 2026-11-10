@@ -105,6 +105,7 @@ fn a_failed_part_is_closed_by_the_abort() {
                 FrameEffects {
                     cursor_hidden: true,
                     margins: false,
+                    hyperlinks: false,
                 },
             )
         });

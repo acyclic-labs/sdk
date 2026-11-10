@@ -144,7 +144,8 @@ fn model(during_render: bool) {
                     &mut Vec::new(),
                     FrameEffects {
                         cursor_hidden: true,
-                        margins: false
+                        margins: false,
+                        hyperlinks: false
                     },
                     count
                 )

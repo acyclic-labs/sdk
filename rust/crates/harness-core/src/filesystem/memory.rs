@@ -41,6 +41,7 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     agent: AgentId,
     maximum_file_bytes: u64,
     filesystem: Fs<A, O>,
+    changes: Arc<dyn StreamProvider>,
 ) -> Result<(Arc<FilesystemHost<A, O>>, VolumeRef)> {
     if maximum_file_bytes == 0 {
         return Err(Error::Invalid(
@@ -48,7 +49,14 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
         ));
     }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let shared_owner = filesystem.operation_claims().owner_identity()
+        == changes.context().operation_claims().owner_identity();
     let host = FilesystemHost::new(filesystem, &provider, None)?;
+    let host = if shared_owner {
+        host.with_changes(changes)?
+    } else {
+        host
+    };
     let random_key = || crate::identity::fresh_uuid().to_string();
     #[cfg(test)]
     let key = MEMORY_VOLUME_KEY
@@ -230,7 +238,8 @@ impl<
         // One cold owner keeps filesystem initialization out of every caller's
         // future layout. Established operations need no such allocation.
         Box::pin(async move {
-            let (host, volume) = new_memory_content(agent, maximum_file_bytes, filesystem).await?;
+            let (host, volume) =
+                new_memory_content(agent, maximum_file_bytes, filesystem, stream.clone()).await?;
             let conversation = Authority {
                 kind: AggregateKind::Conversation,
                 id: ConversationId::new().to_string(),
