@@ -276,6 +276,10 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     );
     assert_eq!(work.receipt().object_bytes_written, before);
     drop(store);
+    // Run the real native transaction inline so its completion owner retires
+    // before the alias assertions; background completion headers have their
+    // own physical lifetime independent of the returned record's backing.
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let restarted = LocalCoreStateStore::new(directory.path());
     let decoded_work = crate::materializer::NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
