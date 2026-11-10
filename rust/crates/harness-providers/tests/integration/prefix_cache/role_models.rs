@@ -33,6 +33,7 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
     let parent = scripted(
         "messages",
         vec![
+            text("root prelude"),
             program(
                 "spawn",
                 "await tools.spawn({task:'Count',name:'kid',role:'worker'}); await tools.spawn({task:'Override',name:'explicit',role:'worker',model:'recorded/model'}); await tools.spawn({task:'Inherit',name:'inherited',role:'advisor'})",
@@ -192,6 +193,29 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
     writer.stage(acyclic_harness::OperationId::new(),"templates/worker/AGENT.md",
         b"---\nversion: 1\ncontext: fork\nmay_spawn: [worker]\nmodel: workers/luna\n---\nCount carefully.",
         "text/markdown","AGENT.md",ContentAccess::default())?.await?;
+    let prepare = bound
+        .stage_text(
+            &root,
+            "message",
+            &user(),
+            &intent("prepare"),
+            ("Prepare", "Prepare"),
+        )
+        .await?;
+    bound
+        .agents()
+        .send(
+            &root,
+            &user(),
+            &InboxRecord::Message(Message {
+                from: user(),
+                id: intent("prepare"),
+                body: Box::new(prepare),
+                attachments: None,
+            }),
+        )
+        .await?;
+    bound.agents().drain(&root).await?;
     let body = bound
         .stage_text(
             &root,
@@ -261,6 +285,12 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
             ContentAccess::default(),
         )?
         .await?;
+    let parent_calls = parent
+        .state
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .2
+        .len();
     drop(bound);
     let resumed = make_bound(make_executors(Arc::new(
         catalog.resolve("workers/replacement")?,
@@ -294,13 +324,28 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
         )
         .await?;
     resumed.agents().drain(&kid).await?;
+    assert!(matches!(
+        resumed.agents().state(&kid).await?.phase,
+        acyclic_harness::agent::Phase::Idle
+    ));
     let sent = child.state.lock().unwrap_or_else(|p| p.into_inner());
     // The negative control binds every child to the root provider. It completes
     // the same lifecycle but cannot satisfy this HTTP-boundary routing oracle.
     if misroute {
-        return Ok(sent.2.is_empty());
+        let misrouted = parent
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .2
+            .len()
+            > parent_calls;
+        return Ok(sent.2.is_empty() && misrouted);
     }
     assert!(sent.2.len() >= 3, "child never used its own provider");
+    assert!(
+        holds(&sent.2[0].body, b"root prelude"),
+        "child did not fork the parent's settled history"
+    );
     for request in &sent.2 {
         let body: Value = serde_json::from_slice(&request.body)?;
         if adapter == Adapter::Gemini {
@@ -337,6 +382,18 @@ async fn run_roles(adapter: Adapter, misroute: bool) -> TestResult<bool> {
         }
     }
     let parent = parent.state.lock().unwrap_or_else(|p| p.into_inner());
+    extends(
+        "anthropic",
+        "root second turn",
+        &parent.2[0].body,
+        &parent.2[1].body,
+    )?;
+    extends(
+        "anthropic",
+        "root spawn continuation",
+        &parent.2[1].body,
+        &parent.2[2].body,
+    )?;
     for request in &parent.2 {
         let body: Value = serde_json::from_slice(&request.body)?;
         assert_eq!(body["model"], "model");

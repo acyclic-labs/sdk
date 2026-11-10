@@ -176,7 +176,7 @@ impl LocalHarnessConfig {
                 .map(crate::native_settings::SettingsConfig::configured_model)
                 .transpose()?
                 .flatten()
-                .unwrap_or_else(|| models.default.clone()),
+                .unwrap_or_else(|| models.default_model().to_owned()),
         };
         self.model = Some(models.resolve(&selection)?);
         for model in self.approval_policy.models() {
