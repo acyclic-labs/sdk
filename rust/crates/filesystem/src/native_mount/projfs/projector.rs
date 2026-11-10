@@ -771,6 +771,34 @@ impl Projector {
             }
             state.notified
         };
+        let settled = |state: &mut ProjectorState| -> Option<Result<(), NativeMountError>> {
+            if state.stopping {
+                return Some(Err(
+                    std::io::Error::from(std::io::ErrorKind::NotConnected).into()
+                ));
+            }
+            // Preserve the original accepted-pass failure after physical
+            // path custody returns, including concurrent control observers.
+            if !state.relisting
+                && state.processed >= target
+                && let Some(failure) = state.report_failure()
+            {
+                return Some(Err(NativeMountError::Driver(failure)));
+            }
+            let pending = state.startup.is_some()
+                || state.processed < target
+                || state.relisting
+                || !state.stale.is_empty()
+                || !state.pending.is_empty()
+                || !state.unplaced.is_empty()
+                || state.negative_cache_dirty
+                || !state.vacated.is_empty();
+            (!pending).then_some(Ok(()))
+        };
+        // A settled control needs no wake allocation or cancellation registration.
+        if let Some(result) = settled(&mut lock_recover(&self.state)) {
+            return result;
+        }
         let cancellation = work.cancellation_wait()?;
         let mut cancellation = std::pin::pin!(cancellation);
         acyclic_native_runtime::wait_native_future(
@@ -780,32 +808,8 @@ impl Projector {
                     let mut changed = std::pin::pin!(changed);
                     changed.as_mut().enable();
                     work.remaining()?;
-                    {
-                        let mut state = lock_recover(&self.state);
-                        if state.stopping {
-                            return Err(
-                                std::io::Error::from(std::io::ErrorKind::NotConnected).into()
-                            );
-                        }
-                        // Report only after the accepted pass has returned its
-                        // physical path custody, retaining the original failure.
-                        if !state.relisting
-                            && state.processed >= target
-                            && let Some(failure) = state.report_failure()
-                        {
-                            return Err(NativeMountError::Driver(failure));
-                        }
-                        let pending = state.startup.is_some()
-                            || state.processed < target
-                            || state.relisting
-                            || !state.stale.is_empty()
-                            || !state.pending.is_empty()
-                            || !state.unplaced.is_empty()
-                            || state.negative_cache_dirty
-                            || !state.vacated.is_empty();
-                        if !pending {
-                            return Ok(());
-                        }
+                    if let Some(result) = settled(&mut lock_recover(&self.state)) {
+                        return result;
                     }
                     let _ = futures::future::select(changed, cancellation.as_mut()).await;
                 }
