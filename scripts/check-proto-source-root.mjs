@@ -6,6 +6,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const configuration = readFileSync(join(root, ".cargo/config.toml"), "utf8");
+const workspaceEnvironment = configuration.match(/^\[env\]\r?\n[\s\S]*?(?=^\[|(?![\s\S]))/m)?.[0] ?? "";
+assert.match(workspaceEnvironment, /^ACYCLIC_BUILD_SOURCE_ROOT\s*=/m,
+  "production Cargo configuration must provide the workspace source witness");
 const parent = resolve(process.env.SDK_TEMP_DIR ?? tmpdir());
 const temporary = mkdtempSync(join(parent, "sdk-proto-source-"));
 const environment = {
@@ -44,16 +48,11 @@ try {
         "crate/main.rs": `include!(concat!(env!("OUT_DIR"), "/relocation.rs"));\nfn main() { let marker = Marker { ${field}: ${value} }; println!("{}", marker.${field}); }\n`,
       };
       mkdirSync(join(directory, ".cargo"));
-      const configuration = join(directory, ".cargo/config.toml");
-      copyFileSync(join(root, ".cargo/config.toml"), configuration);
-      if (!tracked) {
-        writeFileSync(configuration, readFileSync(configuration, "utf8")
-          .replace(/^ACYCLIC_BUILD_SOURCE_ROOT\s*=.*\r?\n?/gm, ""));
-      }
-      utimesSync(configuration, oldTime, oldTime);
-      // The production configuration selects this workspace-relative linker.
-      mkdirSync(join(directory, "scripts"));
-      copyFileSync(join(root, "scripts/mold-linker.sh"), join(directory, "scripts/mold-linker.sh"));
+      // Exercise the actual production environment policy. Other Cargo tables
+      // include a relative linker, which independently distinguishes roots and
+      // would hide a missing source witness from the negative control.
+      files[".cargo/config.toml"] = tracked ? workspaceEnvironment
+        : workspaceEnvironment.replace(/^ACYCLIC_BUILD_SOURCE_ROOT\s*=.*\r?\n?/gm, "");
       for (const [relative, contents] of Object.entries(files)) {
         const file = join(directory, relative);
         writeFileSync(file, contents);
