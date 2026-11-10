@@ -23,8 +23,11 @@ pub trait ViewProvider: Send + Sync {
     type Record: Send + Sync;
     /// Stable namespace identity, without capturing a cut or doing IO.
     fn identity(&self) -> [u8; 16];
-    /// Stable provider identity and current stream position.
-    fn reference(&self) -> SourceReference;
+    /// Captures the complete provider cut on the caller's original ledger.
+    fn reference(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError>;
     /// Resolves the requested cut without enumerating unrelated records.
     fn snapshot(
         &self,
@@ -192,7 +195,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
         ctx.check()?;
         Ok(SourceReference {
             identity: self.identity(),
-            ..self.provider.reference()
+            ..self.provider.reference(ctx)?
         })
     }
 

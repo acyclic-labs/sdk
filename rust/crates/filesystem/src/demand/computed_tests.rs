@@ -54,12 +54,9 @@ impl ViewProvider for Provider {
     fn identity(&self) -> [u8; 16] {
         [7; 16]
     }
-    fn reference(&self) -> SourceReference {
-        SourceReference {
-            identity: [7; 16],
-            epoch: self.epoch.load(Ordering::SeqCst),
-            components: acyclic_stream::OwnedBytes::new(),
-        }
+    fn reference(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceReference, DemandError> {
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        SourceReference::opaque(self.identity(), epoch, &epoch.to_le_bytes(), ctx)
     }
     fn snapshot(
         &self,
@@ -67,7 +64,7 @@ impl ViewProvider for Provider {
         _: &mut KernelAccounting<'_>,
     ) -> Result<(ViewCut, Bytes), DemandError> {
         self.counts.snapshots.fetch_add(1, Ordering::SeqCst);
-        if source.identity != [7; 16] {
+        if source.identity != self.identity() || source.payload()? != source.epoch.to_le_bytes() {
             return Err(DemandError::StaleSource);
         }
         let bytes = self

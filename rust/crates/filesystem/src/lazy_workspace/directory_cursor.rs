@@ -156,13 +156,10 @@ fn decode_fields(
     let source = SourceReference::decode(&mut decoder, observe)?;
     let overlay = LazyOverlayId::from_bytes(decoder.fixed::<32, crate::FsError>(observe)?);
     let shadows = LazyShadowId::from_bytes(decoder.fixed::<32, crate::FsError>(observe)?);
-    observe(ReadAllocationStep::BeforeHash(LazySnapshotRef::hash_bytes(
-        generation, &source,
-    )))?;
-    let cut = LazySnapshotRef::new(workspace, generation, source.clone(), overlay, shadows);
-    observe(ReadAllocationStep::Hashed(LazySnapshotRef::hash_bytes(
-        generation, &source,
-    )))?;
+    let hash_bytes = LazySnapshotRef::hash_bytes(generation, &source);
+    observe(ReadAllocationStep::BeforeHash(hash_bytes))?;
+    let cut = LazySnapshotRef::new(workspace, generation, source, overlay, shadows);
+    observe(ReadAllocationStep::Hashed(hash_bytes))?;
     let directory = String::from_utf8(decoder.bounded_bytes(limits.maximum_path_bytes, observe)?)
         .map_err(|_| {
         CanonicalDecodeError::Invariant(CanonicalInvariant::Static("cursor directory is not UTF-8"))
