@@ -180,6 +180,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                     continue;
                 }
                 AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path: path.value,
                     metadata: FileMetadata::default(),
                 }
@@ -398,6 +399,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                         &mut operations,
                         crate::kernel::Owned::new(
                             AuthoredMutation::CreateDirectory {
+                                file_id: None,
                                 path: path.value,
                                 metadata: FileMetadata::default(),
                             },

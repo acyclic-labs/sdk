@@ -23,6 +23,7 @@ impl NativeCheckout {
         let receipt = checkout_mutation!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path,
                 metadata: acyclic_fs::kernel::FileMetadata::default(),
             },)

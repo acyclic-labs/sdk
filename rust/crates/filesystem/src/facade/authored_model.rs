@@ -38,6 +38,8 @@ pub enum AuthoredMutation {
         path: NamespacePath,
         /// Exact cross-profile metadata.
         metadata: FileMetadata,
+        /// Optional stable source identity; the engine rejects an existing ID.
+        file_id: Option<FileId>,
     },
     /// Creates one symbolic link with opaque target bytes.
     CreateSymbolicLink {

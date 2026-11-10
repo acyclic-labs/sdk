@@ -905,7 +905,7 @@ mod tests {
             // Use the same lazy writer as tools: an overwrite preserves the
             // native source identity rather than adding an unrelated file to
             // the authored-only generation underneath that source.
-            for path in [format!("/{name}"), "/shared.txt".into()] {
+            for path in [format!("/nested/{name}"), "/shared.txt".into()] {
                 view.write(
                     &path,
                     acyclic_stream::OwnedBytes::copy_from_slice(text),
@@ -933,7 +933,7 @@ mod tests {
             b"native untouched\n"
         );
         assert_eq!(
-            std::fs::read(checkout.path().join("first.txt")).map_err(storage)?,
+            std::fs::read(checkout.path().join("nested/first.txt")).map_err(storage)?,
             b"first\n"
         );
         assert_eq!(
@@ -957,7 +957,7 @@ mod tests {
             "merge conflicts must remain ordinary checkout files: {conflicted}"
         );
         assert_eq!(
-            std::fs::read(checkout.path().join("first.txt")).map_err(storage)?,
+            std::fs::read(checkout.path().join("nested/first.txt")).map_err(storage)?,
             b"first\n"
         );
         std::fs::write(checkout.path().join("shared.txt"), b"resolved\n").map_err(storage)?;
@@ -970,7 +970,7 @@ mod tests {
             b"resolved\n"
         );
         assert_eq!(
-            std::fs::read(checkout.path().join("second.txt")).map_err(storage)?,
+            std::fs::read(checkout.path().join("nested/second.txt")).map_err(storage)?,
             b"second\n"
         );
         assert_eq!(

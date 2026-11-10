@@ -183,6 +183,7 @@ pub(in crate::bindings) fn authored_transaction(
             metadata,
         },
         TransactionOperation::CreateDirectory { path } => AuthoredMutation::CreateDirectory {
+            file_id: None,
             path: browser_path(&path, config)?,
             metadata,
         },

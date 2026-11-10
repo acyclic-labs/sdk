@@ -56,6 +56,7 @@ pub(super) fn kernel_bench(args: &[String]) -> Result<(), Failure> {
         checkout
             .apply_authored_transaction(
                 vec![AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path: NamespacePath::new(vec![name("d".to_owned())?], config.limits)?,
                     metadata: FileMetadata::default(),
                 }],

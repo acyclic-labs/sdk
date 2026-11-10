@@ -8,6 +8,7 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions() -> Test
         .apply_authored_transaction(
             vec![
                 AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path: path("workspace")?,
                     metadata: FileMetadata::default(),
                 },
@@ -605,6 +606,7 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
     let transaction = (checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path("directory")?,
                 metadata: FileMetadata::default(),
             },

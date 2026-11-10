@@ -12,6 +12,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             path,
             |path| {
                 Ok(AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path,
                     metadata: FileMetadata::default(),
                 })

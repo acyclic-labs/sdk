@@ -465,6 +465,7 @@ async fn facade_kind_and_read_bounds_fail_without_creating_files() -> TestResult
     checkout
         .create(
             AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path("directory")?,
                 metadata: FileMetadata::default(),
             },

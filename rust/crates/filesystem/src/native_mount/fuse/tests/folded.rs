@@ -37,6 +37,7 @@ pub(super) fn folded_projection(
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok::<_, Box<dyn std::error::Error>>(
                     crate::facade::AuthoredMutation::CreateDirectory {
+                        file_id: None,
                         path: crate::kernel::NamespacePath::new(names, config.limits)?,
                         metadata: FileMetadata::default(),
                     },
@@ -323,6 +324,7 @@ fn folded_collisions_leave_unrelated_files_and_descendants_accessible() -> TestR
     runtime.block_on(checkout.apply_authored_transaction(
         vec![
             crate::AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path("/Nested")?,
                 metadata: FileMetadata::default(),
             },

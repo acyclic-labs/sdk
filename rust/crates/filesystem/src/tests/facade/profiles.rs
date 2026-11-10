@@ -59,10 +59,12 @@ async fn profile_folded_admission_covers_directories_links_and_renames() -> Test
     for (original, collision) in [
         (
             AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path("Directory")?,
                 metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path("directory")?,
                 metadata: FileMetadata::default(),
             },
@@ -181,6 +183,7 @@ async fn profile_folded_authored_batches_reject_intra_batch_collisions() -> Test
             .apply_authored_transaction(
                 vec![
                     AuthoredMutation::CreateDirectory {
+                        file_id: None,
                         path: path("Batch")?,
                         metadata: FileMetadata::default()
                     },
@@ -242,6 +245,7 @@ async fn profile_folded_authored_batches_reject_intra_batch_collisions() -> Test
         .apply_authored_transaction(
             vec![
                 AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path: path("Nested")?,
                     metadata: FileMetadata::default(),
                 },
@@ -382,6 +386,7 @@ async fn nested_alias_listing_preserves_directory_observations() -> TestResult {
     for components in [vec!["Stra\u{df}e"], vec!["Stra\u{df}e", "\u{39f}\u{3a3}"]] {
         seed.create(
             AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path_parts(&components)?,
                 metadata: FileMetadata::default(),
             },
