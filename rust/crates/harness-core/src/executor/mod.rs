@@ -66,8 +66,8 @@ pub use model_cache::{
 };
 mod model_observation;
 pub use model_cost::{
-    ModelCostEstimate, ModelPriceError, ModelPriceRecord, ModelUsageProjection, ModelUsageTotals,
-    TokenPrice, UsageTotal,
+    ModelCostEstimate, ModelPriceError, ModelPriceRecord, ModelPrices, ModelUsageProjection,
+    ModelUsageTotals, TokenPrice, UsageTotal,
 };
 #[cfg(feature = "metrics-export")]
 pub mod metrics;
@@ -79,7 +79,9 @@ pub use model_usage::codec_fuzz as model_usage_codec_fuzz;
 pub mod read_set;
 #[cfg(feature = "filesystem")]
 pub(crate) use model_usage::validate as validate_model_usage;
-pub use model_usage::{ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page};
+pub use model_usage::{
+    ContextUsage, ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page,
+};
 pub(crate) mod phase;
 #[cfg(test)]
 pub(crate) use model_observation::append as append_model_event;

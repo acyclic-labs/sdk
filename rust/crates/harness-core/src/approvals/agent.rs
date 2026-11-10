@@ -14,7 +14,9 @@ use crate::{
     Error, InteractionId, Result,
     agent::AgentId,
     conversation::Limits,
-    interaction::{ApprovalBinding, ApprovalDecisionFile, Interaction, InteractionOutcome},
+    interaction::{
+        ApprovalBinding, ApprovalDecisionFile, ApprovalVerdict, Interaction, InteractionOutcome,
+    },
 };
 use std::sync::{
     Arc, Mutex,
@@ -54,6 +56,7 @@ fn decision_path(id: &str, principal: &str) -> String {
 /// agent has none), the parent that answers parent stages, and the independent
 /// models of automatic stages.
 pub struct AgentApprovalPolicy {
+    owner: AgentId,
     policy: ApprovalPolicy,
     digest: [u8; 32],
     parent: Option<AgentId>,
@@ -67,6 +70,7 @@ impl AgentApprovalPolicy {
     /// policy to retain, so every action is denied. It never selects the host's
     /// preset or suspends the agent on a configuration error.
     pub(crate) fn from_file(
+        owner: AgentId,
         bytes: &[u8],
         parent: Option<AgentId>,
         models: super::ApproverModels,
@@ -86,6 +90,7 @@ impl AgentApprovalPolicy {
             Err(error) => return Err(error),
         };
         Ok(Self {
+            owner,
             policy,
             digest,
             parent,
@@ -101,6 +106,7 @@ impl AgentApprovalPolicy {
 
     /// Pins `policy` for an agent spawned by `parent`.
     pub fn new(
+        owner: AgentId,
         policy: ApprovalPolicy,
         parent: Option<AgentId>,
         models: super::ApproverModels,
@@ -109,6 +115,7 @@ impl AgentApprovalPolicy {
         use crate::runtime::ToolPolicy as _;
         let digest = policy.bind()?.identity().digest;
         Ok(Self {
+            owner,
             policy,
             digest,
             parent,
@@ -278,7 +285,7 @@ impl AgentApprovals {
                 0,
             )
             .await?;
-            let (approver, expected, binding) = match stage {
+            let (approver, expected, binding, standing_rule) = match stage {
                 NextStage::Decided(review) => {
                     self.wait(None)?;
                     return Ok(Some(if review.verdict == RuleVerdict::Allow {
@@ -291,8 +298,9 @@ impl AgentApprovals {
                     approver,
                     expected,
                     binding,
+                    standing_rule,
                     ..
-                } => (approver, expected, binding),
+                } => (approver, expected, binding, standing_rule),
             };
             if matches!(approver, Approver::Rules { .. } | Approver::Llm { .. }) {
                 let Some(execution) = execution else {
@@ -312,6 +320,21 @@ impl AgentApprovals {
             }
             let path = decision_path(view.id(), &expected.principal);
             let Some(decided) = self.files.read(&path, policy.limits.file_bytes).await? else {
+                // A retained individual denial/approval always wins for its
+                // original request. Standing rules apply only to undecided ones.
+                if let Some(rule) = standing_rule
+                    && super::grants::Grant::new(
+                        &policy.owner,
+                        policy.digest,
+                        &expected.principal,
+                        &rule,
+                    )?
+                    .present(&*self.files, policy.limits.file_bytes)
+                    .await?
+                {
+                    self.wait(None)?;
+                    return Ok(Some(InteractionOutcome::Approved {}));
+                }
                 self.wait(Some((
                     view.id().to_owned(),
                     matches!(approver, Approver::Parent),
@@ -325,6 +348,20 @@ impl AgentApprovals {
                 || decision.expected_version != VERSION
             {
                 return Err(Error::Conflict("approval decision binding differs".into()));
+            }
+            if decision.verdict == ApprovalVerdict::ApproveRule {
+                let rule = standing_rule.ok_or_else(|| {
+                    Error::Unauthorized("retained rule is not an eligible human action".into())
+                })?;
+                let grant = super::grants::Grant::new(
+                    &policy.owner,
+                    policy.digest,
+                    &expected.principal,
+                    &rule,
+                )?;
+                if decision.rule_digest != Some(grant.digest()) {
+                    return Err(Error::Conflict("approval rule scope differs".into()));
+                }
             }
             self.wait(None)?;
             return Ok(Some(if decision.approved() {
@@ -342,7 +379,7 @@ impl AgentApprovals {
         &self,
         id: InteractionId,
         responder: super::ApprovalResponder<'_>,
-        approved: bool,
+        verdict: ApprovalVerdict,
         reason: Option<String>,
     ) -> Result<()> {
         decide(
@@ -350,7 +387,7 @@ impl AgentApprovals {
             &self.policy,
             &request_id(id),
             responder,
-            approved,
+            verdict,
             reason,
         )
         .await
@@ -424,7 +461,7 @@ pub async fn decide(
     policy: &AgentApprovalPolicy,
     id: &str,
     responder: ApprovalResponder<'_>,
-    approved: bool,
+    verdict: ApprovalVerdict,
     reason: Option<String>,
 ) -> Result<()> {
     let bytes = policy.request(files, id).await?;
@@ -436,32 +473,69 @@ pub async fn decide(
         ApprovalResponder::Parent(parent) => format!("parent:{parent}"),
         ApprovalResponder::Policy => "policy:exhausted".into(),
     };
+    let grant = if verdict == ApprovalVerdict::ApproveRule {
+        if !matches!(responder, ApprovalResponder::Human(_)) {
+            return Err(Error::Unauthorized(
+                "only a human may retain an approval rule".into(),
+            ));
+        }
+        let Interaction::Approval { subject, .. } = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+        else {
+            return Err(Error::Invalid("not an approval request".into()));
+        };
+        let rule = super::grants::exact(subject).ok_or_else(|| {
+            Error::Invalid(
+                "explicit human guards and opaque actions require an individual decision".into(),
+            )
+        })?;
+        Some(super::grants::Grant::new(
+            &policy.owner,
+            policy.digest,
+            &principal,
+            &rule,
+        )?)
+    } else {
+        None
+    };
     let descriptor =
         crate::conversation::FileDescriptor::from_bytes(&bytes, "application/json", &mut None)?;
-    let decision =
-        ApprovalDecisionFile::new(&principal, descriptor.sha256(), VERSION, approved, reason)?;
+    let mut decision = ApprovalDecisionFile::new(
+        &principal,
+        descriptor.sha256(),
+        VERSION,
+        verdict.approved(),
+        reason,
+    )?;
+    decision.verdict = verdict;
+    decision.rule_digest = grant.as_ref().map(super::grants::Grant::digest);
     let path = decision_path(id, &principal);
     let encoded =
         serde_json::to_vec(&decision).map_err(|error| Error::Storage(error.to_string()))?;
     if let Some(existing) = files.read(&path, policy.limits.file_bytes).await? {
-        return if existing == encoded {
-            Ok(())
-        } else {
-            Err(Error::Conflict("approval file binding changed".into()))
-        };
+        if existing != encoded {
+            return Err(Error::Conflict("approval file binding changed".into()));
+        }
+    } else {
+        super::validate_agent_decision(
+            &policy.policy,
+            policy.digest,
+            policy.parent.clone(),
+            &view,
+            files,
+            responder,
+            VERSION,
+            &decision,
+        )
+        .await?;
+        // This create-once decision arbitrates once/rule/deny races before a
+        // standing permission can publish. An exact replay completes either
+        // interrupted publication before the caller sends the ordinary wake.
+        super::files::create_exact(files, &path, encoded, policy.limits.file_bytes).await?;
     }
-    super::validate_agent_decision(
-        &policy.policy,
-        policy.digest,
-        policy.parent.clone(),
-        &view,
-        files,
-        responder,
-        VERSION,
-        &decision,
-    )
-    .await?;
-    super::files::create_exact(files, &path, encoded, policy.limits.file_bytes).await?;
+    if let Some(grant) = grant {
+        grant.publish(files, policy.limits.file_bytes).await?;
+    }
     Ok(())
 }
 

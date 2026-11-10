@@ -1,0 +1,10 @@
+{
+  "id": "pty-status-line",
+  "workspace": {"kind": "plain", "files": {}},
+  "model": {"steps": [{"when": {}, "text": ["STATUS_LINE_DONE"]}]},
+  "inputs": [{"mode": "pty", "actions": [
+    {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "show status"},
+    {"when": {"contains": ["STATUS_LINE_DONE", "○", "model ", "/tiny", "context ", "% (", "/32768)", "children 0", "estimated token charge: ?"]}, "send": "\u0004"}
+  ]}],
+  "assert": {"requests": 1}
+}

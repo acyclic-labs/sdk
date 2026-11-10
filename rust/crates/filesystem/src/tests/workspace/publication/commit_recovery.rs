@@ -43,7 +43,7 @@ fn run_child(
     let mut process = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
     let output = process
         .wait_with_output(
-            std::time::Duration::from_secs(2),
+            acyclic_native_runtime::CaptureSchedule::Unbounded,
             4096,
             None,
             || Ok(()),

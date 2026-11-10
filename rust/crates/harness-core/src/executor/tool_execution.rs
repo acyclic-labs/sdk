@@ -374,21 +374,27 @@ impl<'io> StockExecution<'io> {
             }
         }
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(reason) = pre_hook.take_block_reason() {
-            let content = self
-                .settle_tool_refusal(
-                    journal,
-                    operation_id,
-                    step,
-                    &invocation,
-                    ToolCallRejection::Failed(Error::Unauthorized(reason)),
-                )
-                .await?;
-            self.append_hook_context(_hook_context, pre_hook)?;
-            return self.push_tool_result(&invocation, content, None, prior_messages);
-        }
+        let hook_decision = match pre_hook.take_tool_decision() {
+            Ok(decision) => decision,
+            Err(error) => {
+                let content = self
+                    .settle_tool_refusal(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation,
+                        ToolCallRejection::Failed(error),
+                    )
+                    .await?;
+                self.append_hook_context(_hook_context, pre_hook)?;
+                return self.push_tool_result(&invocation, content, None, prior_messages);
+            }
+        };
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-        let hook_approval = pre_hook.approval.take();
+        let hook_approval = match hook_decision {
+            crate::hooks::ToolHookDecision::Allow => None,
+            crate::hooks::ToolHookDecision::RequireApproval { prompt } => Some(prompt),
+        };
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         self.append_hook_context(_hook_context, pre_hook)?;
         // One match over every record state: a settlement replays whether or not it has a

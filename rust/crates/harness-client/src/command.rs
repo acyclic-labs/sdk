@@ -309,7 +309,7 @@ pub enum AgentCommand {
         /// Prevents a decision from authorizing a different action.
         binding: ApprovalBinding,
         /// Human decision; the responder is derived from verified authority.
-        approved: bool,
+        verdict: acyclic_harness_core::interaction::ApprovalVerdict,
         /// Optional explanation.
         reason: Option<String>,
     },
@@ -370,6 +370,9 @@ pub enum AgentCommand {
         /// Wait for original source progress or committed input settlement
         /// when the selected page is quiet. False takes a bounded snapshot.
         wait: bool,
+        /// Last observed direct open-child count. A waiting query also returns
+        /// when the original actor checkpoint changes this value.
+        observed_children: Option<u64>,
     },
     /// Original execution observations through the same authorized input query
     /// as Usage. Payloads retain their immutable references for bounded Read.

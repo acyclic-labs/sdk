@@ -132,7 +132,8 @@ async function prepare(test, gitOrigin) {
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
   fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog,
     ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`]),
-    ...(test.variant === "physical" ? ["--workspace-mounting", "physical"] : [])];
+    ...(test.variant === "physical" ? ["--workspace-mounting", "physical"] : []),
+    ...expand(test.extra_args ?? [], fixture)];
   // Tracing owns explicit text storage, including through the native PTY host.
   for (const option of ["diagnostic-records", "diagnostic-record-bytes"]) {
     const value = process.env[`E2E_${option.toUpperCase().replaceAll("-", "_")}`];
@@ -241,6 +242,33 @@ function verify(result, records) {
     for (const [path, expected] of Object.entries(test.assert.jsonl ?? {})) {
       const rows = readFileSync(join(fixture.workspace, path), "utf8").trim().split("\n").map(JSON.parse);
       for (const expectedRow of expected) assert.ok(rows.some(row => subset(row, expectedRow)), `missing JSONL ${JSON.stringify(expectedRow)} in ${path}`);
+    }
+    if (test.assert.usage_rollup) {
+      const expected = test.assert.usage_rollup;
+      const rows = readFileSync(join(fixture.workspace, expected.path), "utf8").trim().split("\n").map(JSON.parse);
+      const agents = new Map();
+      for (const row of rows) {
+        assert.equal(row.version, 2);
+        assert.equal(typeof row.usage.agent_path, "string");
+        const calls = agents.get(row.usage.agent_path) ?? [];
+        calls.push(row); agents.set(row.usage.agent_path, calls);
+      }
+      assert.equal(agents.size, expected.agents);
+      const root = rows[0].usage.agent_path;
+      for (const agent of agents.keys()) assert.ok(agent === root || agent.startsWith(`${root}/children/`));
+      for (const [selection, calls] of [["root", agents.get(root)], ["subtree", rows]]) {
+        const wanted = expected[selection];
+        assert.equal(calls.length, wanted.calls, `${selection} calls`);
+        assert.equal(calls.filter(row => row.usage.completed).length, wanted.completed, `${selection} completed`);
+        const known = calls.filter(row => row.estimated_cost.token_nano_units !== null);
+        const subtotal = known.reduce((sum, row) => sum + row.estimated_cost.token_nano_units, 0);
+        assert.equal(known.length === calls.length ? subtotal : null, wanted.token_nano_units, `${selection} charge`);
+        if (wanted.known_nano_units !== undefined) assert.equal(subtotal, wanted.known_nano_units, `${selection} partial facts`);
+        for (const row of calls) {
+          assert.equal(row.estimated_cost.currency, wanted.currency);
+          assert.equal(row.estimated_cost.price_revision, wanted.price_revision);
+        }
+      }
     }
     return result;
   } catch (error) {

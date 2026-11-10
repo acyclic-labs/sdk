@@ -3,12 +3,13 @@ use super::{Conversation, Failure, Line, diff};
 use acyclic_harness::{agent::IntentId, interaction::ApprovalBinding};
 use acyclic_harness::{
     client::AgentPageRequest,
-    tui::{QueryPage, display_text, display_text_prefix},
+    tui::{QueryController, QueryPage, display_text, display_text_prefix},
 };
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub(super) enum Source {
+    Cost,
     Diff(Option<String>),
     History(Option<String>),
     Approval {
@@ -22,6 +23,7 @@ pub(super) enum Source {
 impl Source {
     pub(super) fn title(&self) -> &'static str {
         match self {
+            Self::Cost => "Subtree cost",
             Self::Diff(_) => "Diff",
             Self::History(_) => "History",
             Self::Approval { .. } => "Approval request",
@@ -30,6 +32,7 @@ impl Source {
 
     pub(super) fn newest(&self) -> Self {
         match self {
+            Self::Cost => Self::Cost,
             Self::Diff(_) => Self::Diff(None),
             Self::History(_) => Self::History(None),
             Self::Approval {
@@ -47,7 +50,7 @@ impl Source {
     }
 
     pub(super) fn follows_tail(&self) -> bool {
-        matches!(self, Self::Diff(None) | Self::History(None))
+        matches!(self, Self::Cost | Self::Diff(None) | Self::History(None))
     }
 }
 
@@ -69,12 +72,54 @@ impl Context {
     }
 }
 
+/// Call only after painting the selected panel. Loading the final source
+/// range is insufficient: its wrapped rows must reach the visible bottom.
+pub(super) fn reviewed(
+    queries: &QueryController<Source, Context>,
+    top: usize,
+    height: u16,
+) -> Option<u64> {
+    let Source::Approval { .. } = queries.source()? else {
+        return None;
+    };
+    let page = queries.page.as_ref()?;
+    (height != 0
+        && page.next.is_none()
+        && top.saturating_add(usize::from(height)) >= page.lines.len())
+    .then_some(page.context.approval_status)
+    .flatten()
+}
+
 pub(super) async fn load(
     conversation: Arc<Conversation>,
     rows: u32,
     source: Source,
+    prices: Arc<acyclic_harness::executor::ModelPrices>,
 ) -> Result<Panel, Failure> {
     match source {
+        Source::Cost => {
+            let totals = conversation
+                .usage_totals(
+                    acyclic_harness::local::agent_conversation::UsageScope::Tree(&|_| false),
+                    &prices,
+                )
+                .await?;
+            Ok(QueryPage::new(
+                vec![
+                    Line::raw("This agent and descendants · observed original calls"),
+                    Line::raw(format!(
+                        "{} calls · {} completed",
+                        totals.calls, totals.completed
+                    )),
+                    acyclic_harness::tui::usage_summary(&totals),
+                    Line::raw("/cost refreshes · Esc closes"),
+                ],
+                None,
+                false,
+            )
+            .with_context(Context::default()))
+        }
+
         Source::Diff(cursor) => Ok(diff::query(conversation, rows, cursor)
             .await?
             .with_context(Context::default())),
@@ -137,7 +182,10 @@ pub(super) async fn load(
             if end == offset && end < length {
                 return Err("Approval range made no progress.".into());
             }
-            let mut lines = Vec::new();
+            let mut lines = vec![
+                Line::raw("Original action · y once · r exact rule · n deny · Esc cancels"),
+                Line::raw("r: same tool, arguments and target in this agent and policy"),
+            ];
             lines.push(Line::raw(format!(
                 "Request {} · bytes {offset}–{end} of {length}",
                 display_text(request.as_str())
@@ -146,9 +194,7 @@ pub(super) async fn load(
                 text.lines()
                     .map(|line| Line::raw(display_text(line).into_owned())),
             );
-            lines.push(Line::raw(
-                "PgDn: more · PgUp: start · y: approve · n: decline · Esc: close",
-            ));
+            lines.push(Line::raw("PgDn: more · PgUp: start"));
             Ok(QueryPage::new(
                 lines,
                 (end < length).then_some(Source::Approval {
@@ -174,6 +220,91 @@ mod tests {
     use std::{cell::Cell, task::Poll};
     use tokio::sync::oneshot;
 
+    #[test]
+    fn approval_review_waits_for_the_last_wrapped_rows_to_be_painted() -> Result<(), Failure> {
+        use acyclic_harness::tui::{
+            PromptInput, Screen, Viewport,
+            ratatui::{Terminal, backend::TestBackend, layout::Rect},
+        };
+        let mut queries = QueryController::default();
+        let mut pending = std::pin::pin!(None::<std::future::Ready<()>>);
+        queries.select(
+            Source::Approval {
+                request: IntentId::try_from("approval")?,
+                binding: acyclic_harness::interaction::ApprovalBinding {
+                    operation_id: acyclic_harness::OperationId::from_bytes([3; 16]),
+                    action_digest: [4; 32],
+                },
+                status: Some(7),
+                offset: 0,
+            },
+            pending.as_mut(),
+        );
+        queries.page = Some(
+            QueryPage::new(
+                vec![
+                    Line::raw("original action ".repeat(50)),
+                    Line::raw("ACTION_END"),
+                ],
+                None,
+                false,
+            )
+            .with_context(Context {
+                approval_status: Some(7),
+                history: Vec::new(),
+            }),
+        );
+        let input = PromptInput::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 20))?;
+        let area = Rect::new(0, 0, 40, 20);
+        let areas = Screen::default().areas(area, &input);
+        queries.page.as_mut().unwrap().wrap(areas.overlay_columns());
+        let height = areas.overlay_rows(0);
+        let mut top = 0;
+        loop {
+            let page = queries.page.as_ref().unwrap();
+            terminal.draw(|frame| {
+                Screen {
+                    overlay: &page.lines,
+                    overlay_scroll: top,
+                    overlay_title: "Approval",
+                    ..Screen::default()
+                }
+                .render(frame, &input, &mut Viewport::default(), 0, 0);
+            })?;
+            let painted_end = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("ACTION_END");
+            assert_eq!(reviewed(&queries, top, height), painted_end.then_some(7));
+            assert_eq!(reviewed(&queries, top, 0), None);
+            if painted_end {
+                break;
+            }
+            assert!(!queries.page.as_ref().unwrap().page_boundary(
+                &mut top,
+                -isize::try_from(height)?,
+                height
+            ));
+        }
+        // The end of a range with more source bytes cannot finish review.
+        queries.page.as_mut().unwrap().next = Some(Source::Approval {
+            request: IntentId::try_from("approval")?,
+            binding: ApprovalBinding {
+                operation_id: acyclic_harness::OperationId::from_bytes([3; 16]),
+                action_digest: [4; 32],
+            },
+            status: Some(7),
+            offset: 32,
+        });
+        assert_eq!(reviewed(&queries, top, height), None);
+        Ok(())
+    }
+
     // A real channel supplies reply readiness, cancellation and producer loss.
     // This async wrapper also makes the original read !Unpin, like load().
     async fn read(receiver: oneshot::Receiver<Panel>) -> Result<Panel, oneshot::error::RecvError> {
@@ -182,6 +313,7 @@ mod tests {
 
     fn page(source: &Source) -> Panel {
         let next = match source {
+            Source::Cost => Source::Cost,
             Source::Diff(_) => Source::Diff(Some("original-diff-cut".into())),
             Source::History(_) => Source::History(Some("original-history-cut".into())),
             Source::Approval { .. } => source.clone(),

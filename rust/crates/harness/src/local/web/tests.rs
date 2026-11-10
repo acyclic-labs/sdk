@@ -33,6 +33,32 @@ async fn run(local: &Arc<LocalHarness>, prompt: &str) -> Result<String> {
     }
 }
 
+// Validate the original tool outcome before joining a server that the tool
+// must have contacted. A refused capability cannot produce that connection.
+fn tool_result(provider: &ScriptedModelProvider, call: &str, name: &str) -> Value {
+    let request = provider.last_request().expect("model continuation absent");
+    let mut results = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            ModelContentPart::ToolResult {
+                call_id,
+                name: actual,
+                content,
+            } if call_id == call && actual == name => Some(content),
+            _ => None,
+        });
+    let result = results
+        .next()
+        .expect("original tool result did not reach the continuation");
+    assert!(results.next().is_none(), "original tool result duplicated");
+    match result {
+        ToolResultContent::Json { value } => value.clone(),
+        other => panic!("{name} did not produce its expected result: {other:?}"),
+    }
+}
+
 fn published_web_contract(name: &str) -> Result<impl Fn(&Value)> {
     let definition = crate::search::web::definitions(true)?
         .into_iter()
@@ -286,7 +312,7 @@ async fn expected_fetch_refusals_continue_the_model_turn() -> Result<()> {
     .without_default_tools()
     .web_tools();
     let local = Arc::new(LocalHarness::open(config).await?);
-    for (index, (_, _, server)) in cases.iter_mut().enumerate() {
+    for (index, (_, reason, server)) in cases.iter_mut().enumerate() {
         assert_eq!(
             run(&local, "consult the source, or adapt to its refusal").await?,
             "adapted after the refusal"
@@ -296,6 +322,19 @@ async fn expected_fetch_refusals_continue_the_model_turn() -> Result<()> {
             (index + 1) * 2,
             "expected failure terminated the session or retried the model"
         );
+        let result = tool_result(&provider, &format!("refused-fetch-{index}"), "url_fetch");
+        assert_eq!(
+            result,
+            json!({"status":"rejected","code":"invalid","reason":reason})
+        );
+        assert_contract(&result);
+        let encoded = serde_json::to_string(&result).unwrap();
+        for private in ["private-input", "private-provider-body", "private-redirect"] {
+            assert!(
+                !encoded.contains(private),
+                "tool refusal exposed raw provider/input data"
+            );
+        }
         if let Some(server) = server.take() {
             server
                 .await
@@ -315,34 +354,6 @@ async fn expected_fetch_refusals_continue_the_model_turn() -> Result<()> {
             !request.tools.iter().any(|tool| tool.name == "web_search"),
             "unconfigured search was advertised"
         );
-    }
-    for (index, (_, reason, _)) in cases.iter().enumerate() {
-        let call = format!("refused-fetch-{index}");
-        let results: Vec<_> = requests[index * 2 + 1]
-            .messages
-            .iter()
-            .flat_map(|message| message.content.parts())
-            .filter_map(|part| match part {
-                ModelContentPart::ToolResult {
-                    call_id,
-                    name,
-                    content: ToolResultContent::Json { value },
-                } if call_id == &call && name == "url_fetch" => Some(value),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            results,
-            [&json!({"status":"rejected","code":"invalid","reason":reason})]
-        );
-        assert_contract(results[0]);
-        let encoded = serde_json::to_string(results[0]).unwrap();
-        for private in ["private-input", "private-provider-body", "private-redirect"] {
-            assert!(
-                !encoded.contains(private),
-                "tool refusal exposed raw provider/input data"
-            );
-        }
     }
     Ok(())
 }
@@ -385,9 +396,18 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
     .without_default_tools()
     .web_tools();
     let local = Arc::new(LocalHarness::open(config).await?);
-    for (index, (_, _, server)) in cases.iter_mut().enumerate() {
+    for (index, (url, final_url, server)) in cases.iter_mut().enumerate() {
         assert_eq!(run(&local, "read the exact source").await?, "source read");
         assert_eq!(provider.request_count(), (index + 1) * 2);
+        let value = tool_result(&provider, &format!("exact-fetch-{index}"), "url_fetch");
+        assert_eq!(
+            value["content"].as_str().unwrap().as_bytes(),
+            body.as_bytes()
+        );
+        assert_eq!(value["source_url"], url.as_str());
+        assert_eq!(value["final_url"], final_url.as_str());
+        assert_eq!(value["status"], 200);
+        assert_contract(&value);
         server
             .take()
             .expect("fetch server")
@@ -400,30 +420,6 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
         assert_eq!(request.tools.len(), 1);
         assert!(request.tools.iter().any(|tool| tool.name == "url_fetch"));
         assert!(!request.tools.iter().any(|tool| tool.name == "web_search"));
-    }
-    for (index, (url, final_url, _)) in cases.iter().enumerate() {
-        let call = format!("exact-fetch-{index}");
-        let value = requests[index * 2 + 1]
-            .messages
-            .iter()
-            .flat_map(|message| message.content.parts())
-            .find_map(|part| match part {
-                ModelContentPart::ToolResult {
-                    call_id,
-                    name,
-                    content: ToolResultContent::Json { value },
-                } if call_id == &call && name == "url_fetch" => Some(value),
-                _ => None,
-            })
-            .expect("exact fetch result did not reach the next model");
-        assert_eq!(
-            value["content"].as_str().unwrap().as_bytes(),
-            body.as_bytes()
-        );
-        assert_eq!(value["source_url"], url.as_str());
-        assert_eq!(value["final_url"], final_url.as_str());
-        assert_eq!(value["status"], 200);
-        assert_contract(value);
     }
     Ok(())
 }

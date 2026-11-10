@@ -721,6 +721,9 @@ fn notified_operations(
 }
 
 fn discover(cwd: &Path) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
+    // The owner publishes its canonical workspace; compare ancestors in that
+    // one spelling, whatever form the caller's directory takes.
+    let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
     for ancestor in cwd.ancestors() {
         let candidate = (|| {
             let workspace = acyclic_fs::hold_root(ancestor).map_err(native_file_error)?;

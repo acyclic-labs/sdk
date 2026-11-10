@@ -1546,10 +1546,11 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     })
     .await
     .map_err(storage)??;
+    // Hosts receive the workspace in their ordinary spelling, never verbatim.
+    let workspace = std::fs::canonicalize(checkout.path()).map_err(storage)?;
     assert_eq!(
         result.get("cwd").unwrap_or(&Value::Null),
-        std::fs::canonicalize(checkout.path())
-            .map_err(storage)?
+        acyclic_host_platform::paths::strip_verbatim(&workspace)
             .to_string_lossy()
             .as_ref()
     );

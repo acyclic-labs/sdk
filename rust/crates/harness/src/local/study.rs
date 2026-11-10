@@ -19,7 +19,7 @@ use super::{
 use crate::{
     Error, Result,
     agent::{AgentPath, IntentId, Phase, Reply, TurnInput},
-    executor::{ModelPriceRecord, ModelUsageRecord},
+    executor::{ModelPriceRecord, ModelPrices, ModelUsageRecord},
     experiments::{
         Observation,
         analysis::Contrast,
@@ -96,7 +96,7 @@ pub struct Study {
     file: ArmsFile,
     digest: [u8; 32],
     scorer: Scorer,
-    prices: Vec<ModelPriceRecord>,
+    prices: ModelPrices,
     replicates: u64,
     models: Vec<String>,
 }
@@ -125,12 +125,8 @@ impl Study {
         let file: ArmsFile = serde_json::from_slice(&bytes).map_err(invalid)?;
         let scorer = Scorer::decode(&read(&file.scorer)?).map_err(invalid)?;
         let prices = match &file.prices {
-            Some(name) => read(name)?
-                .split(|byte| *byte == b'\n')
-                .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
-                .map(|line| serde_json::from_slice::<ModelPriceRecord>(line).map_err(invalid))
-                .collect::<Result<Vec<_>>>()?,
-            None => Vec::new(),
+            Some(name) => ModelPrices::from_jsonl(&read(name)?).map_err(invalid)?,
+            None => ModelPrices::default(),
         };
         Self::admit(file, blake3::hash(&bytes).into(), scorer, prices)
     }
@@ -139,7 +135,7 @@ impl Study {
         file: ArmsFile,
         digest: [u8; 32],
         scorer: Scorer,
-        prices: Vec<ModelPriceRecord>,
+        prices: ModelPrices,
     ) -> Result<Self> {
         if file.version != 1 {
             return Err(invalid("unsupported version; use version 1"));
@@ -158,13 +154,8 @@ impl Study {
                 return Err(invalid("arm names must be nonempty and distinct"));
             }
         }
-        if let Some(price) = prices.iter().find(|price| {
-            price.version != 1 || price.revision.is_empty() || price.currency != "USD"
-        }) {
-            return Err(invalid(format!(
-                "price {:?} for {}/{} is not a version-1 USD record; supply USD price records",
-                price.revision, price.provider, price.model
-            )));
+        if prices.currency().is_some_and(|currency| currency != "USD") {
+            return Err(invalid("study prices require USD records"));
         }
         let approved = file
             .approval
@@ -236,9 +227,7 @@ impl Study {
     }
 
     fn price(&self, row: &ModelUsageRecord) -> Option<&ModelPriceRecord> {
-        self.prices
-            .iter()
-            .find(|price| price.provider == row.provider && price.model == row.model)
+        self.prices.price(row)
     }
 
     fn plan(&self) -> Result<AssignmentPlan> {
@@ -678,7 +667,7 @@ mod tests {
         let file: ArmsFile = serde_json::from_value(json).map_err(invalid)?;
         let scorer =
             Scorer::decode(br#"{"version":1,"expected":47,"injected":52}"#).map_err(invalid)?;
-        Study::admit(file, [0; 32], scorer, Vec::new())
+        Study::admit(file, [0; 32], scorer, ModelPrices::default())
     }
 
     #[test]

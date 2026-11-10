@@ -2,4 +2,4 @@
 pub use acyclic_harness_tui::*;
 
 mod usage;
-pub use usage::usage_summary;
+pub use usage::{context_summary, usage_summary};
