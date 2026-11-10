@@ -124,6 +124,7 @@ impl<
         let lazy = Self {
             workspace,
             source,
+            retained_source: state.fork_origin.map(|origin| origin.snapshot.source),
             store,
             #[cfg(not(target_arch = "wasm32"))]
             _allocation: None,
@@ -153,6 +154,9 @@ impl<
         sink: Arc<dyn crate::demand::SourceChangeSink>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<Box<dyn crate::demand::SourceWatch>>, LazyWorkspaceError> {
+        if self.retained_source.is_some() {
+            return Ok(None);
+        }
         let cancel = cancellation(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = ctx.native_work() {
@@ -162,9 +166,9 @@ impl<
         accept_receipt(result, ctx)
     }
 
-    #[cfg(feature = "native-mount")]
     pub(crate) fn source_reference(&self) -> SourceReference {
-        self.source.reference()
+        self.retained_source
+            .unwrap_or_else(|| self.source.reference())
     }
 
     /// Captures an ordinary complete cut without enumeration.
@@ -241,7 +245,7 @@ impl<
         &self,
         state: &LazyWorkspaceState,
     ) -> Result<SourceReference, LazyWorkspaceError> {
-        let source = self.source.reference();
+        let source = self.source_reference();
         if state.schema_version != LAZY_STATE_SCHEMA
             || state.workspace_id != self.workspace.id()
             || state.source.identity != source.identity
@@ -250,11 +254,7 @@ impl<
             return Err(LazyWorkspaceError::StaleSource);
         }
         state.require_ready_fork()?;
-        Ok(if state.fork_origin.is_some() {
-            state.source
-        } else {
-            source
-        })
+        Ok(source)
     }
 
     /// Selects companion indexes for a retained mounted checkout without mutation.

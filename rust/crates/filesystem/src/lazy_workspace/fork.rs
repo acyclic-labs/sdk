@@ -139,6 +139,7 @@ impl<
             Self {
                 workspace: child,
                 source: Arc::clone(&self.source),
+                retained_source: Some(cut.source),
                 store: self.store.clone(),
                 #[cfg(not(target_arch = "wasm32"))]
                 _allocation: None,
