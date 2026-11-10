@@ -14,8 +14,8 @@ struct BatchPlan<'a> {
     request_allocation: KernelOwnedAllocation,
 }
 
-pub(crate) struct PageBatch<'a, S: AsyncObjectStore, F: Format> {
-    store: &'a S,
+pub(crate) struct PageBatch<'a, F: Format> {
+    store: &'a dyn Source,
     sources: std::vec::IntoIter<BatchSource<'a>>,
     reads: std::vec::IntoIter<ObjectRead>,
     source_bytes: u64,
@@ -32,21 +32,20 @@ pub(crate) struct PageBatch<'a, S: AsyncObjectStore, F: Format> {
     clippy::expect_used,
     reason = "The read boundary already validates and registers the retained container and payload sizes."
 )]
-pub(crate) async fn read_pages_with_accounting<'a, S, F, I>(
-    store: &'a S,
+pub(crate) async fn read_pages_with_accounting<'a, F, I>(
+    store: &'a dyn Source,
     pages: I,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
     data_custody: Option<&'a crate::kernel::ProofDataCustody>,
-) -> Result<PageBatch<'a, S, F>, FsError>
+) -> Result<PageBatch<'a, F>, FsError>
 where
-    S: AsyncObjectStore,
     F: Format,
     I: ExactSizeIterator<Item = ObjectId>,
 {
     cancellation.check()?;
-    let mut plan = plan_page_batch::<S, F, I>(store, pages, limits, accounting)?;
+    let mut plan = plan_page_batch::<F, I>(store, pages, limits, accounting)?;
     let cold = async {
         accounting.charge(WorkCounters {
             page_reads: usize_to_u64(plan.sources.len()),
@@ -59,14 +58,7 @@ where
             });
         }
         let mut owner = crate::heap_future::AdmittedFrame::new(accounting);
-        let mut frame = batch_in_heap(&mut owner, data_custody, |accounting| {
-            crate::kernel::file_read::read_objects_with_accounting(
-                store,
-                &plan.requests,
-                accounting,
-                cancellation,
-            )
-        })?;
+        let mut frame = store.read_many(&plan.requests, &mut owner, cancellation, data_custody)?;
         let result = frame.as_mut().await;
         drop(frame);
         owner.finish(result)
@@ -130,14 +122,13 @@ where
     })
 }
 
-fn plan_page_batch<'a, S, F, I>(
-    store: &'a S,
+fn plan_page_batch<'a, F, I>(
+    store: &'a dyn Source,
     pages: I,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<BatchPlan<'a>, FsError>
 where
-    S: AsyncObjectStore,
     F: Format,
     I: ExactSizeIterator<Item = ObjectId>,
 {
@@ -240,40 +231,7 @@ fn batch_container<T>(
     Ok((values, bytes, allocation))
 }
 
-pub(super) fn batch_in_heap<'a, 'borrow, 'accounting, 'observer, F>(
-    frame: &'a mut crate::heap_future::AdmittedFrame<'borrow, KernelAccounting<'accounting>>,
-    owner: Option<&'observer crate::kernel::ProofDataCustody>,
-    create: impl FnOnce(&'a mut KernelAccounting<'accounting>) -> F,
-) -> Result<
-    crate::heap_future::OwnedFuture<
-        crate::heap_future::TaskFuture<'a, F::Output>,
-        crate::heap_future::FrameObservation<'observer>,
-    >,
-    FsError,
->
-where
-    F: Future + acyclic_stream::ProviderTask + 'a,
-{
-    #[cfg(not(target_arch = "wasm32"))]
-    let owner = if frame.accounting().native_work().is_some() {
-        None
-    } else {
-        owner
-    };
-    let mut observation = crate::heap_future::FrameObservation { owner, bytes: 0 };
-    let (future, _) = crate::heap_future::in_heap_admitted(
-        frame,
-        |frame, bytes| {
-            frame.admit(bytes)?;
-            observation.admitted(bytes)
-        },
-        |frame| create(frame.accounting()),
-    )?;
-    // Erase the original admitted allocation so both single and batched reads
-    // stop propagating provider state into every persistent-tree caller.
-    Ok(future.with_allocation(observation).erase_task())
-}
-impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
+impl<F: Format> PageBatch<'_, F> {
     pub(crate) fn next_with_accounting(
         &mut self,
         limits: DecodeLimits,
