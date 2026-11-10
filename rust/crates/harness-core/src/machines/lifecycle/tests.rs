@@ -469,6 +469,7 @@ async fn original_machine_ownership_survives_missing_binding_and_changed_parent(
 struct DelayedTurn {
     machines: Arc<AgentMachines<MemoryStream>>,
     started: Arc<Semaphore>,
+    completion: Arc<Semaphore>,
     stopped: Arc<Semaphore>,
     cleanup: Arc<Semaphore>,
 }
@@ -484,7 +485,15 @@ impl TurnDriver for DelayedTurn {
         Box::pin(async move {
             if agent.path.id() == AgentId::from_bytes([1; 16]) {
                 self.started.add_permits(1);
-                cancellation.cancelled().await;
+                self.completion
+                    .acquire()
+                    .await
+                    .map_err(|_| crate::agent::Error::Record("completion producer closed"))?
+                    .forget();
+                assert!(
+                    !cancellation.is_cancelled(),
+                    "pause cancelled admitted work"
+                );
                 // An admitted provider completion may arrive after pause was
                 // requested. Pause must join it before suspending resources.
                 self.machines
@@ -528,6 +537,7 @@ async fn original_machine_ownership_pause_joins_pending_work_before_suspending()
     let stream = Arc::new(MemoryStream::default());
     let machines = manager(stream.clone(), SimulatedMachines::default())?;
     let started = Arc::new(Semaphore::new(0));
+    let completion = Arc::new(Semaphore::new(0));
     let stopped = Arc::new(Semaphore::new(0));
     let cleanup = Arc::new(Semaphore::new(0));
     let host = AgentHost::composing(
@@ -535,6 +545,7 @@ async fn original_machine_ownership_pause_joins_pending_work_before_suspending()
         DelayedTurn {
             machines: machines.clone(),
             started: started.clone(),
+            completion: completion.clone(),
             stopped: stopped.clone(),
             cleanup: cleanup.clone(),
         },
@@ -578,6 +589,7 @@ async fn original_machine_ownership_pause_joins_pending_work_before_suspending()
         futures::poll!(&mut pause).is_pending(),
         "pause must join the active delivery"
     );
+    completion.add_permits(1);
     tokio::select! {
         permit = stopped.acquire() => permit?.forget(),
         result = &mut delivery => panic!("delivery ended before pending completion: {result:?}"),

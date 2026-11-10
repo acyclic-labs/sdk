@@ -1385,6 +1385,7 @@ impl Handler for Gated {
                 .await
                 .map_err(|_| crate::guest::GuestError::Handler("test gate closed".into()))?
                 .forget();
+            assert!(!cancellation.is_cancelled(), "admitted work was cancelled");
             self.package
                 .on_record(delivery, checkpoint, cancellation)
                 .await

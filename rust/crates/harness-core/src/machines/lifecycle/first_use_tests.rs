@@ -206,6 +206,10 @@ macro_rules! forward {
                 self.inner.assurance()
             }
 
+            fn capability(&self, capability: acyclic_machines::ProviderCapability) -> acyclic_machines::Support {
+                self.inner.capability(capability)
+            }
+
             async fn create(&self, request: CreateMachine) -> std::result::Result<MutationOutcome, ProviderError> {
                 self.creates.fetch_add(1, Ordering::Relaxed);
                 self.inner.create(request).await

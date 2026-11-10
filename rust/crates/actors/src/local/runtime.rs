@@ -57,21 +57,8 @@ struct Slot {
 #[derive(Default)]
 struct DeliveryControl {
     paused: bool,
-    cancellation: Option<crate::guest::CancellationToken>,
     /// An unread control result retains its original uncertain publication.
     failure: Option<Box<Error>>,
-}
-
-// Registration borrows the original delivery token; Drop clears it before
-// releasing the delivery lock, including caller loss and typed failure.
-struct ActiveDelivery<'a>(&'a SyncMutex<DeliveryControl>);
-impl Drop for ActiveDelivery<'_> {
-    fn drop(&mut self) {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .cancellation = None;
-    }
 }
 
 /// An event retains its placement through cooperative batch boundaries.
@@ -293,10 +280,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
     }
 
-    /// Durably pause or resume. Pause cancels the original active delivery and
-    /// waits for its cleanup before returning. Once admitted, the operation
-    /// outlives its waiter. Its input/unknown publication remains with the same
-    /// slot. Resume reopens admission and wakes it.
+    /// Durably pause or resume. Pause closes admission, lets the active delivery
+    /// finish and settles its retained publication before parking resources.
+    /// Once admitted, the operation outlives its waiter. An uncertain publication
+    /// remains with the same slot. Resume reopens admission and wakes it.
     /// A changed state cut returns [`Error::Conflict`] without another attempt.
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
         self.pause_with(actor, paused, std::future::ready(())).await
@@ -755,37 +742,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Ok(false);
             }
             steps += 1;
-            if let Some((snapshot, publication, subscription)) = inner.pending.take() {
-                match self.submit_delivery(&snapshot, publication).await {
-                    Ok(observed) => {
-                        if subscription.is_some() {
-                            inner.last_input = subscription;
-                        }
-                        inner.refused = None;
-                        inner.observed = Some(Arc::new(
-                            observed.ok_or(Error::Invalid("actor receipt has no state"))?,
-                        ));
-                        continue;
-                    }
-                    Err(Error::Unknown {
-                        publication,
-                        source,
-                    }) => {
-                        inner.pending = Some((snapshot, *publication, subscription));
-                        return Err(Error::Stream(source));
-                    }
-                    Err(Error::PreconditionChanged(conflicts)) => {
-                        inner.refused(conflicts)?;
-                        continue;
-                    }
-                    Err(error) => {
-                        if subscription.is_some() {
-                            inner.last_input = subscription;
-                        }
-                        inner.observed = None;
-                        return Err(error);
-                    }
-                }
+            if settle_pending(&self.store, &mut inner).await? {
+                continue;
             }
             if slot.refresh.swap(false, Ordering::AcqRel) {
                 inner.observed = None;
@@ -891,16 +849,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             let cancellation = crate::guest::CancellationToken::new();
             self.interrupt_follows(&mut inner, state, &trigger).await?;
             {
-                let mut control = slot
+                let control = slot
                     .delivery_control
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if control.paused {
                     return Ok(true);
                 }
-                control.cancellation = Some(cancellation.clone());
             }
-            let _active = ActiveDelivery(&slot.delivery_control);
             // A handler past its manifest timeout (wall time, not the actor
             // clock) is abandoned with its input unconsumed; the actor lock is
             // released for the next attempt.
@@ -988,63 +944,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Trigger::Record { subscription, .. } => Some(subscription),
                 Trigger::Alarm { .. } => None,
             };
-            let (submitted, result) = match publication {
-                Ok(publication) => (true, self.submit_delivery(&snapshot, publication).await),
-                Err(error) => (false, Err(error)),
-            };
-            match result {
-                Ok(observed) => {
-                    if subscription.is_some() {
-                        inner.last_input = subscription;
-                    }
-                    inner.refused = None;
-                    inner.observed = Some(Arc::new(
-                        observed.ok_or(Error::Invalid("actor receipt has no state"))?,
-                    ));
+            match publication {
+                Ok(publication) => {
+                    inner.pending = Some((snapshot, publication, subscription));
+                    settle_pending(&self.store, &mut inner).await?;
                 }
                 Err(Error::PreconditionChanged(conflicts)) => inner.refused(conflicts)?,
-                Err(Error::Unknown {
-                    publication,
-                    source,
-                }) => {
-                    inner.pending = Some((snapshot, *publication, subscription));
-                    return Err(Error::Stream(source));
-                }
                 Err(error) => {
                     if subscription.is_some() {
                         inner.last_input = subscription;
                     }
-                    // Only submission can fail after a successful commit.
-                    // Preparation failures retain their unchanged original cut.
-                    if submitted {
-                        inner.observed = None;
-                    }
                     return Err(error);
                 }
             }
-        }
-    }
-
-    /// The original and unknown-acknowledgement paths share cancellation
-    /// retirement, so neither can leave a settled inline input blocking progress.
-    async fn submit_delivery(
-        &self,
-        snapshot: &Snapshot,
-        publication: PreparedPublish,
-    ) -> Result<Option<Snapshot>, Error> {
-        match self.store.submit_retained(publication).await {
-            Err(Error::CallSettled { call, trigger }) => {
-                let epoch = snapshot.state().ok_or(Error::Conflict)?.epoch();
-                let cancelled = self.store.prepare_settled_input(
-                    snapshot,
-                    epoch,
-                    &trigger,
-                    &call,
-                    key(snapshot, "settled-input")?,
-                )?;
-                self.store.submit_retained(cancelled).await
-            }
-            outcome => outcome,
         }
     }
 
@@ -1114,6 +1026,70 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
         }
         Ok(None)
+    }
+}
+
+/// Delivery and control settle the same retained request before changing its
+/// actor cut. An unavailable producer leaves its original publication in place.
+async fn settle_pending<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    inner: &mut Inner,
+) -> Result<bool, Error> {
+    let Some((snapshot, publication, subscription)) = inner.pending.take() else {
+        return Ok(false);
+    };
+    match submit_delivery(store, &snapshot, publication).await {
+        Ok(observed) => {
+            if subscription.is_some() {
+                inner.last_input = subscription;
+            }
+            inner.refused = None;
+            inner.observed = Some(Arc::new(
+                observed.ok_or(Error::Invalid("actor receipt has no state"))?,
+            ));
+            Ok(true)
+        }
+        Err(Error::Unknown {
+            publication,
+            source,
+        }) => {
+            inner.pending = Some((snapshot, *publication, subscription));
+            Err(Error::Stream(source))
+        }
+        Err(Error::PreconditionChanged(conflicts)) => {
+            inner.refused(conflicts)?;
+            Ok(true)
+        }
+        Err(error) => {
+            if subscription.is_some() {
+                inner.last_input = subscription;
+            }
+            inner.observed = None;
+            Err(error)
+        }
+    }
+}
+
+/// The original and unknown-acknowledgement paths share cancellation
+/// retirement, so neither can leave a settled inline input blocking progress.
+async fn submit_delivery<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    snapshot: &Snapshot,
+    publication: PreparedPublish,
+) -> Result<Option<Snapshot>, Error> {
+    match store.submit_retained(publication).await {
+        Err(Error::CallSettled { call, trigger }) => {
+            let epoch = snapshot.state().ok_or(Error::Conflict)?.epoch();
+            let cancelled = store.prepare_settled_input(
+                snapshot,
+                epoch,
+                &trigger,
+                &call,
+                key(snapshot, "settled-input")?,
+            )?;
+            store.submit_retained(cancelled).await
+        }
+        outcome => outcome,
     }
 }
 
