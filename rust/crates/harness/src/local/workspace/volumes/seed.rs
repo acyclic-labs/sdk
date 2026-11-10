@@ -9,7 +9,7 @@ use acyclic_fs::{
 // This namespace is excluded from every authored project view.
 const SOURCE: &str = ".volumes/agents/.home-seed-v1";
 
-pub(super) async fn adopt_home(
+pub(in crate::local::workspace) async fn adopt_home(
     filesystem: &acyclic_fs::LocalFs,
     home: &VolumeRef,
     root: &acyclic_fs::HeldRoot,
