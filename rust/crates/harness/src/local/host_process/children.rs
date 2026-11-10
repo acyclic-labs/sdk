@@ -18,7 +18,7 @@ use crate::executor::TurnOutput;
 use crate::local::host_files;
 use crate::local::host_owner::{Control, HostAction, SessionAction, TurnClaim};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future as _;
 use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
