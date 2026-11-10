@@ -11,7 +11,7 @@ async fn raw_changed_paths<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, crate::AuthorityAllocation), WorkspaceError> {
     changes
-        .changed_paths(maximum_entries, original, cancellation)
+        .changed_paths(Some(maximum_entries), original, cancellation)
         .await
 }
 
@@ -89,7 +89,7 @@ async fn raw_endpoint_paths_mode<
     };
     let result = crate::workspace::complete_changed_paths(
         endpoints.map(Some),
-        maximum_entries,
+        Some(maximum_entries),
         &mut accounting,
         cancellation,
     )
@@ -422,11 +422,14 @@ async fn changed_directory_bindings_expand_only_their_descendants() -> Result<()
         "/src/deep/file",
     ];
     for _ in 0..2 {
-        assert_eq!(names(unbounded!(diff, changed_paths(6))?.0)?, expected);
+        assert_eq!(
+            names(unbounded!(diff, changed_paths(Some(6)))?.0)?,
+            expected
+        );
         assert_eq!(names(unbounded!(diff, changed_paths(None))?.0)?, expected);
     }
     assert!(matches!(
-        unbounded!(diff, changed_paths(5)),
+        unbounded!(diff, changed_paths(Some(5))),
         Err(WorkspaceError::ChangedPathLimit)
     ));
     // Negative control: discarding changed direct relations loses the moved
@@ -444,7 +447,10 @@ async fn changed_directory_bindings_expand_only_their_descendants() -> Result<()
         changes,
         work: diff.work,
     };
-    assert_ne!(names(unbounded!(broken, changed_paths(64))?.0)?, expected);
+    assert_ne!(
+        names(unbounded!(broken, changed_paths(Some(64)))?.0)?,
+        expected
+    );
     Ok(())
 }
 
@@ -507,13 +513,13 @@ async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<d
 
     let first = unbounded!(workspace, diff(&base, &middle, 32))?;
     let second = unbounded!(workspace, diff(&middle, &end, 32))?;
-    let composed = unbounded!(first, compose(&second, 32))?;
+    let composed = unbounded!(first, compose(&second, Some(32)))?;
     let direct = unbounded!(workspace, diff(&base, &end, 32))?;
     assert_eq!(composed.from().id(), base.id());
     assert_eq!(composed.to().id(), end.id());
     assert_eq!(composed.changes(), direct.changes());
     assert!(matches!(
-        unbounded!(second, compose(&first, 32)),
+        unbounded!(second, compose(&first, Some(32))),
         Err(WorkspaceError::ChangeSetContinuity)
     ));
     Ok(())
@@ -557,7 +563,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
 
     let paths = unbounded!(
         unbounded!(before, diff_to(&after, 64))?.0,
-        changed_paths(64)
+        changed_paths(Some(64))
     )?
     .0;
     let names: Vec<_> = paths
@@ -595,8 +601,11 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         super::namespace_path_text(&change.path).is_ok_and(|path| path == "/linked")
     }));
     assert!(matches!(
-        unbounded!(unbounded!(before, diff_to(&after, 64))?.0, changed_paths(1))
-            .map(|value| value.0),
+        unbounded!(
+            unbounded!(before, diff_to(&after, 64))?.0,
+            changed_paths(Some(1))
+        )
+        .map(|value| value.0),
         Err(WorkspaceError::ChangedPathLimit)
     ));
     let exact = unbounded!(before, diff_to(&after, 64))?.0;
@@ -609,13 +618,16 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         work: exact.work(),
     };
     assert!(matches!(
-        unbounded!(truncated, changed_paths(64)).map(|value| value.0),
+        unbounded!(truncated, changed_paths(Some(64))).map(|value| value.0),
         Err(WorkspaceError::ChangedPathLimit)
     ));
     assert!(
-        unbounded!(unbounded!(after, diff_to(&after, 1))?.0, changed_paths(0))?
-            .0
-            .is_empty()
+        unbounded!(
+            unbounded!(after, diff_to(&after, 1))?.0,
+            changed_paths(Some(0))
+        )?
+        .0
+        .is_empty()
     );
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -626,7 +638,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         let (native_changes, diff_guard) =
             before.diff_to(&after, 64, &original, &cancellation).await?;
         let (native_paths, path_guard) = native_changes
-            .changed_paths(64, &original, &cancellation)
+            .changed_paths(Some(64), &original, &cancellation)
             .await?;
         assert_eq!(native_paths, paths);
         let (raw_paths, raw_guard) =
@@ -645,7 +657,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         drop(path_guard);
         assert!(matches!(
             native_changes
-                .changed_paths(1, &original, &cancellation)
+                .changed_paths(Some(1), &original, &cancellation)
                 .await,
             Err(WorkspaceError::ChangedPathLimit)
         ));
@@ -660,7 +672,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
                 .map_err(|(error, _)| error)?;
             assert!(
                 native_changes
-                    .changed_paths(64, &denied, &cancellation)
+                    .changed_paths(Some(64), &denied, &cancellation)
                     .await
                     .is_err()
             );

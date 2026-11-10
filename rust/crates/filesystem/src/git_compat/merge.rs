@@ -23,7 +23,7 @@ pub async fn git_merge_resolution<
     let aliases = current
         .paths_for_file_ids(
             conflicts.values().filter_map(|id| *id),
-            u32::MAX,
+            Some(u32::MAX),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )

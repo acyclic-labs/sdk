@@ -388,7 +388,7 @@ mod tests {
         .await?;
         assert_eq!(lost, None);
         assert_eq!(stale.generation_id(), generation);
-        let (decision, allocation) = stale.rebase_head(1, &original, &cancellation).await?;
+        let (decision, allocation) = stale.rebase_head(Some(1), &original, &cancellation).await?;
         assert!(matches!(
             decision,
             crate::kernel::RebaseDecision::Safe { .. }

@@ -100,8 +100,8 @@ pub fn check(input: &[u8]) {
     for bound in 0..3 {
         let mut invalid = value;
         match bound {
-            0 => invalid.maximum_paths = 0,
-            1 => invalid.maximum_extent_spans = 0,
+            0 => invalid.maximum_paths = Some(0),
+            1 => invalid.maximum_extent_spans = Some(0),
             _ => invalid.maximum_queued_changes = 0,
         }
         assert!(matches!(

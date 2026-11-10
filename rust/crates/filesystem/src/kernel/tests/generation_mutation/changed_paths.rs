@@ -120,7 +120,8 @@ async fn verify(
             root,
         })
     });
-    let collection = crate::workspace::complete_changed_paths(views, u32::MAX, &mut work, &cancel);
+    let collection =
+        crate::workspace::complete_changed_paths(views, Some(u32::MAX), &mut work, &cancel);
     let collection_bytes = std::mem::size_of_val(&collection);
     // The caller retains endpoints and the funded owner, never the traversal.
     assert!(

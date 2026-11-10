@@ -118,7 +118,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
             )
             .await?;
         commit(&mut remote, &cancel).await?;
-        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
         if safe {
             assert!(matches!(decision, RebaseDecision::Safe { .. }));
             let bytes = read(&mut local, id, 0, 70, &cancel).await?;

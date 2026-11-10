@@ -464,7 +464,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             path,
             offset,
             length,
-            maximum_spans,
+            Some(maximum_spans),
             work,
             cancellation,
         )

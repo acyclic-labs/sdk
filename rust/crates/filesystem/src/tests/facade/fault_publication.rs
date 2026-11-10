@@ -66,7 +66,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     let mut completed = None;
     for cut in 1..=512 {
         control.arm(cut);
-        match (rebasing.rebase_head(8, B, &cancellation)).await {
+        match (rebasing.rebase_head(Some(8), B, &cancellation)).await {
             Ok(receipt) => {
                 completed = Some(receipt);
                 break;

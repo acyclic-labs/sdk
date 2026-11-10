@@ -55,7 +55,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
                 allocation_operations: 1,
                 ..B
             })?;
-            assert!(local.rebase_head(8, &denied, &cancel).await.is_err());
+            assert!(local.rebase_head(Some(8), &denied, &cancel).await.is_err());
             assert_eq!(
                 before,
                 (
@@ -67,11 +67,11 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
         }
         #[cfg(not(target_arch = "wasm32"))]
         let (decision, _allocation) = if native {
-            let result = local.rebase_head(8, &original, &cancel).await?;
+            let result = local.rebase_head(Some(8), &original, &cancel).await?;
             assert!(result.1.work().shares_ledger(&original));
             (result.0, Some(result.1))
         } else {
-            (local.rebase_head(8, B, &cancel).await?.value, None)
+            (local.rebase_head(Some(8), B, &cancel).await?.value, None)
         };
         #[cfg(target_arch = "wasm32")]
         let decision = local.rebase_head(8, B, &cancel).await?.value;

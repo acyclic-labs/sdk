@@ -72,7 +72,7 @@ async fn tracking_reads_capture_only_their_terminal_regions() -> TestResult {
                 .await?;
         }
         commit(&mut writer, &cancel).await?;
-        let rebase = reader.rebase_head(8, B, &cancel).await?.value;
+        let rebase = reader.rebase_head(Some(8), B, &cancel).await?.value;
         if observation == 2 {
             assert!(
                 matches!(rebase, RebaseDecision::Conflicted { conflicts, .. }
@@ -306,7 +306,7 @@ async fn sparse_seek_tracks_local_holes_and_remote_boundary_changes() -> TestRes
         .await?;
     commit(&mut remote, &cancel).await?;
     assert!(matches!(
-        local.rebase_head(8, B, &cancel).await?.value,
+        local.rebase_head(Some(8), B, &cancel).await?.value,
         RebaseDecision::Safe { .. }
     ));
     assert_eq!(
@@ -343,7 +343,7 @@ async fn sparse_seek_tracks_local_holes_and_remote_boundary_changes() -> TestRes
         .await?;
     commit(&mut remote, &cancel).await?;
     assert!(
-        matches!(reader.rebase_head(8, B, &cancel).await?.value, RebaseDecision::Conflicted { conflicts, .. }
+        matches!(reader.rebase_head(Some(8), B, &cancel).await?.value, RebaseDecision::Conflicted { conflicts, .. }
         if conflicts.iter().any(|conflict| matches!(conflict.region,
             DependencyRegion::SparseSeek { offset: 128, target: ExtentSeekTarget::Hole, .. })))
     );
@@ -380,7 +380,7 @@ async fn clipped_identity_read_at_eof_tracks_file_length() -> TestResult {
         .await?;
     commit(&mut writer, &cancel).await?;
     assert!(
-        matches!(reader.rebase_head(8, B, &cancel).await?.value, RebaseDecision::Conflicted { conflicts, .. }
+        matches!(reader.rebase_head(Some(8), B, &cancel).await?.value, RebaseDecision::Conflicted { conflicts, .. }
         if conflicts.iter().any(|conflict| matches!(conflict.region, DependencyRegion::FileLength(actual) if actual == id)))
     );
     Ok(())
@@ -446,7 +446,7 @@ async fn repeated_single_and_batch_lookups_preserve_binding_conflicts() -> TestR
         .await?;
         commit(&mut remote, &cancel).await?;
         assert!(matches!(
-            local.rebase_head(8, B, &cancel).await?.value,
+            local.rebase_head(Some(8), B, &cancel).await?.value,
             RebaseDecision::Conflicted { .. }
         ));
     }
