@@ -6,7 +6,7 @@ use crate::{
     AuthorityStoreError, AuthorityWork, FilesystemCommit, FilesystemCommitOutcome,
     StreamAuthorityStore, WorkspaceLineageRecord, WorkspaceLineageStore,
 };
-use acyclic_stream::{CommitCondition, CommitRequest, StreamPath};
+use acyclic_stream::{CommitCondition, CommitEffect, CommitRequest, StreamPath};
 
 /// Durable command state shared by hosts using the same filesystem provider.
 /// Each lookup reads one stream head and its last record, independent of history.
@@ -177,8 +177,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         };
         let mut commit = FilesystemCommit::new(CommitRequest {
             idempotency_key: key.clone(),
-            conditions: Vec::new(),
-            mutations: Vec::new(),
+            effects: vec![CommitEffect::hard(Vec::new(), Vec::new())],
             deadline_unix_millis: None,
         });
         self.authority.contribute_record(

@@ -279,16 +279,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         if count > maximum {
             return Err(FsError::TooManyPendingMutations);
         }
-        crate::heap_future::in_borrowed_frame!(
-            accounting,
-            |accounting| self.apply_authored_transaction_validated(
-                input,
-                count,
-                accounting,
-                cancellation
-            ),
-            erase_task
-        )
+        crate::heap_future::in_borrowed_frame!(accounting, |accounting| self
+            .apply_authored_transaction_validated(input, count, accounting, cancellation))
     }
 
     async fn apply_authored_transaction_validated(

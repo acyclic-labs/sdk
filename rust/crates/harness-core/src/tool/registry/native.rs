@@ -43,8 +43,10 @@ impl ToolRegistry {
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         io.retain_owned(REGISTRY_BYTES as u64)?;
-        let mut copied = Self::default();
-        copied.source_ceiling = self.source_ceiling.clone();
+        let mut copied = Self {
+            source_ceiling: self.source_ceiling.clone(),
+            ..Self::default()
+        };
         for source in &self.sources {
             crate::executor::stock_vec_push(&mut copied.sources, source.clone(), Some(&io))?;
         }

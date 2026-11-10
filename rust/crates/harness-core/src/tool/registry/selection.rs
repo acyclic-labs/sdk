@@ -237,7 +237,9 @@ impl ToolRegistry {
         )?;
         for source in &self.sources {
             for definition in source.snapshot()?.definitions(io)? {
-                crate::executor::stock_vec_push(&mut definitions, definition, io)?;
+                if self.source_allowed(&definition.name) {
+                    crate::executor::stock_vec_push(&mut definitions, definition, io)?;
+                }
             }
         }
         definitions.sort_unstable_by(|a, b| a.name.cmp(&b.name));

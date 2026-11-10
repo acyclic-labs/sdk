@@ -37,11 +37,13 @@ async fn captured_snapshot_pins_facts_and_namespace_without_retaining_state_guar
         stream
             .commit(crate::CommitRequest {
                 deadline_unix_millis: None,
-                conditions: Vec::new(),
-                mutations: vec![crate::CommitMutation::Append {
-                    path: destination.clone(),
-                    records: vec![Bytes::from_static(b"private").into()],
-                }],
+                effects: vec![crate::CommitEffect::hard(
+                    Vec::new(),
+                    vec![crate::CommitMutation::Append {
+                        path: destination.clone(),
+                        records: vec![Bytes::from_static(b"private").into()],
+                    }],
+                )],
                 idempotency_key: IdempotencyKey::unique(),
             })
             .await?;
@@ -227,14 +229,16 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
     let fork_result = stream.fork(forked.clone()).await?;
     let committed = crate::CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![crate::CommitCondition::Tail {
-            path: destination.clone(),
-            expected: 1,
-        }],
-        mutations: vec![crate::CommitMutation::Append {
-            path: destination.clone(),
-            records: vec![(Bytes::from_static(b"third")).into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![crate::CommitCondition::Tail {
+                path: destination.clone(),
+                expected: 1,
+            }],
+            vec![crate::CommitMutation::Append {
+                path: destination.clone(),
+                records: vec![(Bytes::from_static(b"third")).into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"commit"))?,
     };
     let commit_result = stream.commit(committed.clone()).await?;
@@ -330,28 +334,30 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
         .await?;
     let request = crate::CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            crate::CommitCondition::Tail {
-                path: source.clone(),
-                expected: 1,
-            },
-            crate::CommitCondition::Absent {
-                path: destination.clone(),
-            },
-        ],
-        mutations: vec![
-            crate::CommitMutation::Append {
-                path: source.clone(),
-                records: vec![(Bytes::from_static(b"after")).into()],
-            },
-            crate::CommitMutation::Fork {
-                exclude: Vec::new(),
-                source: source.clone(),
-                destination: destination.clone(),
-                at_tail: 1,
-                records: vec![(Bytes::from_static(b"forked")).into()],
-            },
-        ],
+        effects: vec![crate::CommitEffect::hard(
+            vec![
+                crate::CommitCondition::Tail {
+                    path: source.clone(),
+                    expected: 1,
+                },
+                crate::CommitCondition::Absent {
+                    path: destination.clone(),
+                },
+            ],
+            vec![
+                crate::CommitMutation::Append {
+                    path: source.clone(),
+                    records: vec![(Bytes::from_static(b"after")).into()],
+                },
+                crate::CommitMutation::Fork {
+                    exclude: Vec::new(),
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    at_tail: 1,
+                    records: vec![(Bytes::from_static(b"forked")).into()],
+                },
+            ],
+        )],
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"atomic-fork"))?,
     };
     let outcome = stream.commit(request.clone()).await?;

@@ -377,7 +377,10 @@ mod tests {
         .collect::<Vec<_>>();
         for width in [1, 2, 3, 7, 13, 20] {
             query.wrap(width);
-            for rows in [query.lines.as_slice(), transcript.rows(width)] {
+            for (rows, gutter) in [
+                (query.lines.as_slice(), None),
+                (transcript.rows(width), (width > 1).then_some(('●', false))),
+            ] {
                 let actual = rows
                     .iter()
                     .flat_map(|line| &line.spans)
@@ -389,6 +392,10 @@ mod tests {
                             ))
                         })
                     })
+                    .collect::<Vec<_>>();
+                let expected = gutter
+                    .into_iter()
+                    .chain(expected.iter().copied())
                     .collect::<Vec<_>>();
                 assert_eq!(actual, expected);
             }

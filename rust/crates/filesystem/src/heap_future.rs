@@ -254,10 +254,10 @@ pub(crate) fn in_heap_admitted<C, F: Future, E>(
 // A borrowed operation cannot move its ledger into the box it funds. Keep
 // the owner outside, and lend the same ledger until the whole box is gone.
 // One expansion owns admission, destruction order and retirement for every
-// borrowed phase. A provider boundary may erase this same funded allocation,
-// rather than wrapping it in another box just to stop concrete type growth.
+// borrowed phase. Erase the same funded allocation at the executor boundary,
+// rather than wrapping it in another box to stop concrete type growth.
 macro_rules! in_borrowed_frame {
-    ($context:expr, |$accounting:ident| $future:expr $(, $erase:ident)?) => {{
+    ($context:expr, |$accounting:ident| $future:expr) => {{
         let mut frame = $crate::heap_future::AdmittedFrame::new($context);
         let (future, _) = $crate::heap_future::in_heap_admitted(
             &mut frame,
@@ -267,7 +267,7 @@ macro_rules! in_borrowed_frame {
                 $future
             },
         )?;
-        let mut future = future$(.$erase())?;
+        let mut future = future.erase_task();
         let result = future.as_mut().await;
         drop(future);
         frame.finish(Ok(()))?;
@@ -305,6 +305,7 @@ impl Drop for HeapFutureRelease<'_> {
 
 /// Preserves the short-frame boundary while admitting its actual future body.
 /// The nested permit reserves the live box until the operation has completed.
+/// Its erased poll boundary also keeps the body's concrete type out of callers.
 pub(crate) fn in_heap_measured<F, T, E>(
     create: impl FnOnce(crate::WorkBudget) -> F,
     budget: crate::WorkBudget,
@@ -313,7 +314,8 @@ pub(crate) fn in_heap_measured<F, T, E>(
     observer: Option<HeapFutureObserver<'_>>,
 ) -> impl Future<Output = crate::MeasuredResult<crate::OperationReceipt<T>, E>>
 where
-    F: Future<Output = crate::MeasuredResult<crate::OperationReceipt<T>, E>>,
+    F: Future<Output = crate::MeasuredResult<crate::OperationReceipt<T>, E>>
+        + acyclic_stream::ProviderTask,
     E: From<crate::WorkError>,
 {
     in_heap_measured_with_error(create, budget, cancellation, cancelled, observer, E::from)
@@ -329,7 +331,8 @@ pub(crate) async fn in_heap_measured_with_error<F, T, E>(
     map_work: impl Fn(crate::WorkError) -> E,
 ) -> crate::MeasuredResult<crate::OperationReceipt<T>, E>
 where
-    F: Future<Output = crate::MeasuredResult<crate::OperationReceipt<T>, E>>,
+    F: Future<Output = crate::MeasuredResult<crate::OperationReceipt<T>, E>>
+        + acyclic_stream::ProviderTask,
 {
     let mut work = crate::WorkCounters::default();
     if cancellation.check().is_err() {
@@ -374,7 +377,11 @@ where
         .peak_allocation_bytes
         .checked_sub(bytes)
         .ok_or_else(|| crate::OperationFailure::new(map_work(crate::WorkError::Overflow), work))?;
-    let mut future = in_heap(move || create(remaining)).with_allocation(frame);
+    // Admission still measures F. Erasure reuses its box and leaves the release
+    // owner attached until after the body dies, on every completion path.
+    let mut future = in_heap(move || create(remaining))
+        .with_allocation(frame)
+        .erase_task();
     let result = future.as_mut().await;
     drop(future);
     match result {

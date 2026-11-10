@@ -35,6 +35,11 @@ export function qualified(result, format, minimum) {
 }
 
 export async function qualification(processes, input, fixture, capture) {
+  if (input.format === "shell-jobs") {
+    const { shellJobs } = await import("./shell-jobs.mjs");
+    await shellJobs(processes, input, fixture, capture);
+    return;
+  }
   if (input.format === "workspace-fs") {
     const { workspaceFs } = await import("./workspace-fs.mjs");
     await workspaceFs(processes, input, fixture, capture);

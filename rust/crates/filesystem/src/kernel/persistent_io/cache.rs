@@ -1,7 +1,7 @@
 use super::*;
 
-pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
-    store: &S,
+pub(crate) async fn read_page_with_accounting<F: Format>(
+    store: &dyn Source,
     page: ObjectId,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
@@ -62,8 +62,8 @@ pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
     admit_decoded_with_accounting(store, miss, decoded?, accounting, data_custody)
 }
 
-async fn read_cold_object<S: AsyncObjectStore>(
-    store: &S,
+async fn read_cold_object(
+    store: &dyn Source,
     page: ObjectId,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
@@ -71,16 +71,13 @@ async fn read_cold_object<S: AsyncObjectStore>(
     data_custody: Option<&crate::kernel::ProofDataCustody>,
 ) -> Result<(ObjectRead, u64), FsError> {
     let mut owner = crate::heap_future::AdmittedFrame::new(accounting);
-    let mut frame = super::batch::batch_in_heap(&mut owner, data_custody, |accounting| {
-        crate::kernel::file_read::read_object_observed(
-            store,
-            page,
-            limits.maximum_object_bytes,
-            accounting,
-            cancellation,
-            data_custody,
-        )
-    })?;
+    let mut frame = store.read_one(
+        page,
+        limits.maximum_object_bytes,
+        &mut owner,
+        cancellation,
+        data_custody,
+    )?;
     let read = frame.as_mut().await;
     drop(frame);
     owner.finish(read)
@@ -89,8 +86,8 @@ async fn read_cold_object<S: AsyncObjectStore>(
     clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
-pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
-    store: &S,
+pub(crate) fn admit_decoded_with_accounting<F: Format>(
+    store: &dyn Source,
     miss: crate::async_storage::DecodedCacheMiss<'_>,
     decoded: (OwnedPage<F>, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,

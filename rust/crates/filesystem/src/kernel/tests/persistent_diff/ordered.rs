@@ -83,7 +83,7 @@ async fn compare(
     assert_eq!(observed, expected);
     let paged = accounting.spent();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let (diff, allocation) = diff_with_accounting::<_, FileTableFormat>(
+    let (diff, allocation) = diff_with_accounting::<FileTableFormat>(
         &store,
         Some(roots.0),
         Some(roots.1),

@@ -9,6 +9,11 @@ use super::*;
 pub struct ReadFileInput {
     /// Public path relative to the agent's project volume.
     pub path: String,
+    /// Wait on the provider's change event until the current path exists.
+    /// No default deadline; cancellation releases the interest. Cannot be
+    /// combined with an immutable version.
+    #[serde(default)]
+    pub wait: bool,
     /// Opaque version from a prior read or publication. Omission reads the
     /// current path under the original directory read grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -288,7 +293,7 @@ mod codec_tests {
             let file = FileRef::new(volume, path.clone(), "version".into(),
                 FileDescriptor::new([1; 32], 128, "text/plain".into()).unwrap(), "file".into(), &mut None).unwrap();
             let version = super::super::version::encode_version(&file, None).unwrap().0;
-            round_trip(ReadFileInput { path: path.clone(), version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
+            round_trip(ReadFileInput { path: path.clone(), wait: false, version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
             round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, replace_all: endpoints.is_some(), notebook: None });
             round_trip(WriteFileInput { path, content: text });
         }

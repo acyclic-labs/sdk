@@ -303,13 +303,15 @@ async fn native_manifest_conditions_keep_original_commit_custody()
         let manifest = Manifest::new(std::array::from_fn(|index| &generations[index]));
         let request = |key: u8| -> Result<_, Box<dyn std::error::Error>> {
             Ok(FilesystemCommit::new(CommitRequest {
-                conditions: Vec::new(),
-                mutations: vec![CommitMutation::Append {
-                    path: StreamPath::new(format!("config/native/{key}"))?,
-                    records: vec![AppendRecord::from(acyclic_stream::OwnedBytes::from_static(
-                        b"cut",
-                    ))],
-                }],
+                effects: vec![acyclic_stream::CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: StreamPath::new(format!("config/native/{key}"))?,
+                        records: vec![AppendRecord::from(acyclic_stream::OwnedBytes::from_static(
+                            b"cut",
+                        ))],
+                    }],
+                )],
                 idempotency_key: acyclic_stream::IdempotencyKey::new(vec![key])?,
                 deadline_unix_millis: None,
             }))
@@ -321,7 +323,10 @@ async fn native_manifest_conditions_keep_original_commit_custody()
                 .condition(&fs, &mut commit, &io, &cancellation)
                 .await,
         )?;
-        assert_eq!(commit.request().conditions.len(), super::super::ORDER.len());
+        assert_eq!(
+            commit.request().conditions().count(),
+            super::super::ORDER.len()
+        );
         let original = commit.request().clone();
         let retained = native.live_allocation_bytes();
         let other = acyclic_fs::NativeMaterializationWork::new(
@@ -380,7 +385,7 @@ async fn native_manifest_conditions_keep_original_commit_custody()
             .err()
             .ok_or("cancelled original source condition succeeded")?;
         assert_eq!(refused.code(), crate::wire::ErrorCode::Cancelled);
-        assert!(stopped.request().conditions.is_empty());
+        assert!(stopped.request().conditions().next().is_none());
         assert_eq!(stopped.request().idempotency_key.as_bytes(), &[3]);
     }
     assert_eq!(native.live_allocation_bytes(), baseline);
@@ -511,13 +516,15 @@ async fn every_original_layer_fences_the_same_consuming_commit()
     let request = |key: u8| -> Result<_, Box<dyn std::error::Error>> {
         Ok(FilesystemCommit::new(CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: vec![CommitMutation::Append {
-                path: StreamPath::new(format!("config/activated/{key}"))?,
-                records: vec![AppendRecord::from(acyclic_stream::OwnedBytes::from_static(
-                    b"cut",
-                ))],
-            }],
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: StreamPath::new(format!("config/activated/{key}"))?,
+                    records: vec![AppendRecord::from(acyclic_stream::OwnedBytes::from_static(
+                        b"cut",
+                    ))],
+                }],
+            )],
             idempotency_key: acyclic_stream::IdempotencyKey::new(vec![key])?,
         }))
     };
@@ -526,7 +533,7 @@ async fn every_original_layer_fences_the_same_consuming_commit()
         .condition(&fs, &mut original, budget, &cancellation)
         .await?;
     assert_eq!(
-        original.request().conditions.len(),
+        original.request().conditions().count(),
         super::super::ORDER.len()
     );
     assert!(matches!(

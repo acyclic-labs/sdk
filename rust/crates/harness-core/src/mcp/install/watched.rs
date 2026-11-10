@@ -28,6 +28,7 @@ impl McpConfig {
     ) -> Result<McpInstallation> {
         let watch = InputWatch::new(settings.mcp_paths())?;
         let revision = watch.revision();
+        watch.arm()?;
         let config = NativeSettings::load_mcp(settings.clone()).await?;
         let installed = config
             .clone()

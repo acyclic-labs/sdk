@@ -57,7 +57,7 @@ pub async fn lookup_tree_entries<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Vec<Option<TreeEntry>>>, TreeReadFailure> {
     in_heap(move || async move {
-        persistent_batch::lookup_async::<S, TreeFormat>(
+        persistent_batch::lookup_async::<TreeFormat>(
             store,
             root,
             names,
@@ -92,7 +92,7 @@ pub(crate) async fn lookup_tree_entries_async_with_accounting<S: AsyncObjectStor
     ),
     crate::FsError,
 > {
-    persistent_batch::lookup_async_with_accounting::<S, TreeFormat>(
+    persistent_batch::lookup_async_with_accounting::<TreeFormat>(
         store,
         root,
         names,
@@ -138,7 +138,7 @@ pub async fn lookup_tree_entry<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<Option<TreeEntry>>, TreeReadFailure> {
-    persistent_point::lookup_async::<S, TreeFormat>(
+    persistent_point::lookup_async::<TreeFormat>(
         store,
         root,
         name,
@@ -160,7 +160,7 @@ pub(crate) async fn lookup_tree_entry_async_with_accounting<S: AsyncObjectStore>
     cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(Option<TreeEntry>, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    persistent_point::lookup_async_with_accounting::<S, TreeFormat>(
+    persistent_point::lookup_async_with_accounting::<TreeFormat>(
         store,
         root,
         name,

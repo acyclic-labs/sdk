@@ -1,5 +1,9 @@
 //! Build protobuf bindings from each published crate's own protocol sources.
 
+// This workspace-provided input is tracked across every schema build script.
+// Cargo-provided manifest variables alone do not invalidate reused outputs.
+const _: Option<&str> = option_env!("ACYCLIC_BUILD_SOURCE_ROOT");
+
 use std::path::PathBuf;
 
 mod authorization;

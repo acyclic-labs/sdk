@@ -23,7 +23,7 @@
 use super::{Clock, Error, PreparedPublish, Store};
 use crate::addressing::ActorReference;
 use crate::guest::{
-    Effect, GuestError, GuestEventResult, SocketCloseInitiator, SocketHost, SocketPayload,
+    GuestError, GuestEventResult, SocketCloseInitiator, SocketHost, SocketPayload,
     WebSocketAutoResponse, WebSocketId,
 };
 use crate::sockets::{SocketFrame, SocketInput, SocketOpen, input_record, open_invocation};
@@ -33,9 +33,9 @@ use acyclic_stream::session::{
     CallAuthorization, PreparedSocketOpen, SocketChannel, SocketInbound, SocketProvider,
 };
 use acyclic_stream::{
-    AppendRecord, BoxProviderFuture, BoxProviderStream, CommitCondition, CommitMutation,
-    CommitOutcome, IdempotencyKey, ReadRequest, RevisionCut, StreamError, StreamPath,
-    StreamProvider,
+    AppendRecord, BoxProviderFuture, BoxProviderStream, CommitCondition, CommitEffect,
+    CommitMutation, CommitOutcome, IdempotencyKey, ReadRequest, RevisionCut, StreamError,
+    StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
@@ -226,11 +226,8 @@ fn append(
     path: StreamPath,
     records: Vec<AppendRecord>,
     conditions: Vec<CommitCondition>,
-) -> Effect {
-    Effect {
-        conditions,
-        mutation: CommitMutation::Append { path, records },
-    }
+) -> CommitEffect {
+    acyclic_stream::CommitEffect::hard(conditions, vec![CommitMutation::Append { path, records }])
 }
 
 /// The socket and ledger halves of the Open's joined invocation publication.
@@ -240,7 +237,7 @@ fn open_effects(
     segment: &StreamPath,
     expected_epoch: u64,
     opened: OpenedWire,
-) -> Vec<Effect> {
+) -> Vec<CommitEffect> {
     vec![
         append(
             socket.clone(),
@@ -297,7 +294,7 @@ async fn commit<P: StreamProvider + ?Sized>(
     store: &Store<P>,
     executor: &dyn Executor,
     key: IdempotencyKey,
-    effects: Vec<Effect>,
+    effects: Vec<CommitEffect>,
 ) -> Result<bool, Error> {
     let mut publication = PreparedPublish::foreign(key);
     for effect in effects {

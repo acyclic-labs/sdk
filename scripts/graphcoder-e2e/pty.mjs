@@ -1,23 +1,9 @@
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
-import { Terminal, screenText, screenSnapshot } from "../graphcoder-pty/screen.mjs";
+import { Terminal, screenText, screenSnapshot, styledRun } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory, queryFailure, expectedTaskFailure } from "./frames.mjs";
 import { OutputWatch } from "./process.mjs";
 import { executionSucceeded } from "./assertions.mjs";
-
-function bold(terminal, text) {
-  const buffer = terminal.buffer.active;
-  for (let y = buffer.viewportY; y < buffer.viewportY + terminal.rows; y++) {
-    const line = buffer.getLine(y);
-    if (!line) continue;
-    for (let x = 0; x <= terminal.cols - text.length; x++) {
-      const cells = Array.from(text, (_, index) => line.getCell(x + index));
-      if (cells.map(cell => cell?.getChars() || " ").join("") === text
-          && cells.every((cell, index) => text[index] === " " || cell?.isBold())) return true;
-    }
-  }
-  return false;
-}
 
 export const SHOW_CURSOR = "\x1b[?25h", HIDE_CURSOR = "\x1b[?25l";
 const OVERFLOW = "has overflowed its stack";
@@ -40,7 +26,8 @@ export function matches(screen, raw, condition, visible, diagnostic = visible) {
     && (!condition.task_failure || expectedTaskFailure(diagnostic, condition))
     && (!condition.query_failure || queryFailure(diagnostic)?.startsWith(condition.query_failure))
     && (condition.absent ?? []).every(text => !visible.includes(text))
-    && (!condition.bold || bold(screen, condition.bold))
+    && (!condition.bold || styledRun(screen, { text: condition.bold, bold: true }))
+    && (condition.styles ?? []).every(style => styledRun(screen, style))
     && (condition.raw ?? []).every(text => raw.has(text))
     && (!condition.cursor || raw.later(SHOW_CURSOR, HIDE_CURSOR));
 }

@@ -12,53 +12,64 @@ impl CommitRequest {
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<NativeStreamOutput<Self>> {
         let mut allocation = acyclic_native_runtime::ReadAllocation::empty(meter);
-        let conditions = copy_vector(&self.conditions, meter, &mut allocation)?;
-        let mut mutations = vector(self.mutations.len(), meter, &mut allocation)?;
-        for mutation in &self.mutations {
-            let copied = match mutation {
-                CommitMutation::Append { path, records } => CommitMutation::Append {
-                    path: path.clone(),
-                    records: copy_vector(records, meter, &mut allocation)?,
+        let mut effects = vector(self.effects.len(), meter, &mut allocation)?;
+        for effect in &self.effects {
+            let conditions = copy_vector(&effect.conditions, meter, &mut allocation)?;
+            let mut mutations = vector(effect.mutations.len(), meter, &mut allocation)?;
+            for mutation in &effect.mutations {
+                let copied = match mutation {
+                    CommitMutation::Append { path, records } => CommitMutation::Append {
+                        path: path.clone(),
+                        records: copy_vector(records, meter, &mut allocation)?,
+                    },
+                    CommitMutation::Fork {
+                        exclude,
+                        source,
+                        destination,
+                        at_tail,
+                        records,
+                    } => CommitMutation::Fork {
+                        exclude: copy_vector(exclude, meter, &mut allocation)?,
+                        source: source.clone(),
+                        destination: destination.clone(),
+                        at_tail: *at_tail,
+                        records: copy_vector(records, meter, &mut allocation)?,
+                    },
+                };
+                push(&mut mutations, copied, meter)?;
+            }
+            push(
+                &mut effects,
+                CommitEffect {
+                    conditions,
+                    mutations,
+                    soft: effect.soft,
                 },
-                CommitMutation::SoftAppend {
-                    path,
-                    records,
-                    closed,
-                } => CommitMutation::SoftAppend {
-                    path: path.clone(),
-                    records: copy_vector(records, meter, &mut allocation)?,
-                    closed: closed.clone(),
-                },
-                CommitMutation::Fork {
-                    exclude,
-                    source,
-                    destination,
-                    at_tail,
-                    records,
-                } => CommitMutation::Fork {
-                    exclude: copy_vector(exclude, meter, &mut allocation)?,
-                    source: source.clone(),
-                    destination: destination.clone(),
-                    at_tail: *at_tail,
-                    records: copy_vector(records, meter, &mut allocation)?,
-                },
-            };
-            let bytes = std::mem::size_of::<CommitMutation>() as u64;
-            meter.admit_codec(0, bytes, 0)?;
-            mutations.push(copied);
-            meter.record_codec(0, bytes, 0)?;
+                meter,
+            )?;
         }
         meter.check()?;
         Ok(NativeStreamOutput::new(
             Self {
                 deadline_unix_millis: self.deadline_unix_millis,
-                conditions,
-                mutations,
+                effects,
                 idempotency_key: self.idempotency_key.clone(),
             },
             allocation,
         ))
     }
+}
+
+/// Moves one value into an admitted slot, charging its copy.
+fn push<T>(
+    output: &mut Vec<T>,
+    value: T,
+    meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> std::io::Result<()> {
+    let bytes = std::mem::size_of::<T>() as u64;
+    meter.admit_codec(0, bytes, 0)?;
+    output.push(value);
+    meter.record_codec(0, bytes, 0)
 }
 
 fn copy_vector<T: Clone>(

@@ -1,0 +1,25 @@
+80x24
+«Indexed(8)/Named(Background)/Flags(0x0)/»○ GraphCoder · project · main
+«Indexed(4)/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/»⏺ shell  cargo test -p tui  4.2s  (312 lines)«Indexed(2)/Named(Background)/Flags(0x0)/» ✓«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/»⏺ read  missing.rs«Indexed(1)/Named(Background)/Flags(0x0)/» ✗«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(4)/Named(Background)/Flags(0x0)/»●«Indexed(4)/Named(Background)/Flags(BOLD)/»# Review«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(BOLD)/»Bold«Named(Foreground)/Named(Background)/Flags(0x0)/», «Named(Foreground)/Named(Background)/Flags(ITALIC)/»emphasis«Named(Foreground)/Named(Background)/Flags(0x0)/», «Indexed(8)/Named(Background)/Flags(STRIKEOUT)/»removed«Named(Foreground)/Named(Background)/Flags(0x0)/» and «Indexed(3)/Named(Background)/Flags(0x0)/»code«Named(Foreground)/Named(Background)/Flags(0x0)/».
+«Indexed(8)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/» 1. «Named(Foreground)/Named(Background)/Flags(0x0)/»first
+«Indexed(8)/Named(Background)/Flags(0x0)/» 2. «Named(Foreground)/Named(Background)/Flags(0x0)/»second
+«Indexed(8)/Named(Background)/Flags(0x0)/»    • «Named(Foreground)/Named(Background)/Flags(0x0)/»nested
+«Indexed(8)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/» │ «Indexed(8)/Named(Background)/Flags(ITALIC)/»Read «Indexed(4)/Named(Background)/Flags(ITALIC | UNDERLINE)/https://example.com/docs»the «Indexed(4)/Named(Background)/Flags(BOLD | ITALIC | UNDERLINE)/https://example.com/docs»docs«Indexed(8)/Named(Background)/Flags(ITALIC)/».«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/» ┌───────┬───────────┐«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/» │«Named(Foreground)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(BOLD)/»crate«Named(Foreground)/Named(Background)/Flags(0x0)/» «Indexed(8)/Named(Background)/Flags(0x0)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/»      «Named(Foreground)/Named(Background)/Flags(BOLD)/»note«Named(Foreground)/Named(Background)/Flags(0x0)/» «Indexed(8)/Named(Background)/Flags(0x0)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/» ├───────┼───────────┤«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/» │«Named(Foreground)/Named(Background)/Flags(0x0)/» tui   «Indexed(8)/Named(Background)/Flags(0x0)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/» 界面 👩‍ é «Indexed(8)/Named(Background)/Flags(0x0)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/» └───────┴───────────┘«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/»────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» Follow up
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                   model · 24% (2400/10000) · $0.12 · 2 children
+«Indexed(8)/Named(Background)/Flags(0x0)/»                                         Enter: send · Tab: queue · Ctrl-D: quit

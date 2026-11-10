@@ -160,12 +160,16 @@ fn text(answer: &str) -> Step {
 }
 
 fn program(id: &str, code: &str) -> Step {
+    call(id, "code", json!({ "code": code }))
+}
+
+fn call(id: &str, name: &str, arguments: Value) -> Step {
     Step {
         tools: vec![Tool {
             id: id.into(),
-            name: "code".into(),
+            name: name.into(),
             namespace: None,
-            arguments: json!({ "code": code }),
+            arguments,
         }],
         ..Step::default()
     }
@@ -421,18 +425,20 @@ async fn run(
                 // Turn 2: a waking notice.
                 text("noticed"),
                 // Turn 3: the tool table changed; the parent forks a child.
-                program(
+                call(
                     "call-2",
-                    "await tools.spawn({task: 'Count to two', name: 'kid', role: 'worker'})",
+                    "spawn",
+                    json!({"task":"Count to two","name":"kid","role":"worker"}),
                 ),
                 text("spawned"),
                 // The child continues from the fork with its own tool call.
                 program("call-3", "2 + 2"),
                 text("kid done"),
                 // Asked again, the child forks a grandchild.
-                program(
+                call(
                     "call-4",
-                    "await tools.spawn({task: 'Count to three', name: 'grandkid', role: 'worker'})",
+                    "spawn",
+                    json!({"task":"Count to three","name":"grandkid","role":"worker"}),
                 ),
                 text("spawned again"),
             ]),

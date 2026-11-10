@@ -13,6 +13,21 @@ import type { StreamProvider } from "../src/types.js";
 
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
 const encodedCommitId = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
+const fixtureRevision = { scope: new TextEncoder().encode("stream-http-fixture"), incarnation: new Uint8Array(16), index: 1n };
+const fixtureRevisionJson = { scope: btoa("stream-http-fixture"), incarnation: btoa(String.fromCharCode(...fixtureRevision.incarnation)), index: "1" };
+
+async function selectedMemory(value: Uint8Array) {
+  const provider = new MemoryStreamProvider();
+  await provider.append("events", [value, value, value], { idempotencyKey: key("selected-memory-seed") });
+  const source = provider.read("events", { from: 0n, limit: 1 });
+  try {
+    const first = await source.next();
+    if (first.done) throw new Error("selected provider lost its committed seed");
+    return { provider, record: first.value };
+  } finally {
+    await source.close();
+  }
+}
 
 async function withBrowserDefault<T>(fetcher: typeof fetch, action: () => Promise<T>): Promise<T> {
   const processDescriptor = Object.getOwnPropertyDescriptor(globalThis, "process");
@@ -174,26 +189,22 @@ describe("website Stream contract", () => {
     expect(() => customStream.append(new Uint8Array(), { idempotencyKey: key("stream.test-122"),  ifTail: -1n })).toThrow(RangeError);
     expect(() => customStream.appendBatch([new Uint8Array()], { idempotencyKey: key("stream.test-123"),  ifTail: 0x1_0000_0000_0000_0000n })).toThrow(RangeError);
     expect(customCalls).toBe(0);
-    await expect(customProvider.append("bad path", [new Uint8Array()], { ifTail: -1n })).rejects.toMatchObject({ code: "invalid_path" });
+    await expect(customProvider.append("bad path", [new Uint8Array()], { idempotencyKey: key("stream.test.ts:177:append"), ifTail: -1n })).rejects.toMatchObject({ code: "invalid_path" });
     await expect(customProvider.childrenPage(null as never)).rejects.toMatchObject({ code: "invalid_argument" });
     let hostedCalls = 0;
     const hosted = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => {
       hostedCalls += 1;
       return new Response("null");
     } });
-    await expect(hosted.append("bounded", [])).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(hosted.append("bounded", [], { idempotencyKey: key("hosted-empty-batch") })).rejects.toMatchObject({ code: "limit_exceeded" });
     expect(hostedCalls).toBe(0);
     await expect(stream.read({ from: 0n, limit: 1_025 }).next()).rejects.toThrow();
-    const cursor = client.bytes("cursor-bounds");
-    await cursor.append(new Uint8Array([1]), { idempotencyKey: key("stream.test-136") });
-    await expect(cursor.read({ from: 2n, limit: 1 }).next()).rejects.toMatchObject({ code: "out_of_range" });
-    await expect(cursor.follow({ from: 2n })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "out_of_range" });
     expect(await stream.tail().catch(() => "absent")).toBe("absent");
   });
 
 
 
-  test("rejects oversized commands and invalid cursors before they can change state", async () => {
+  test("rejects oversized commands and finite cursors while future follows wait for their position", async () => {
     const client = StreamClient.memory();
     const wide = client.bytes("a".repeat(65_535));
     await expect(wide.appendBatch(Array(16).fill(new Uint8Array(65_536)), { idempotencyKey: key("stream.test-147") })).rejects.toThrow();
@@ -201,11 +212,22 @@ describe("website Stream contract", () => {
     const stream = client.bytes("cursor");
     await stream.append(new Uint8Array([1]), { idempotencyKey: key("stream.test-150") });
     await expect(stream.read({ from: 2n, limit: 1 }).next()).rejects.toMatchObject({ code: "out_of_range" });
-    await expect(stream.follow({ from: 2n }).next()).rejects.toMatchObject({ code: "out_of_range" });
+    const follow = stream.follow({ from: 2n });
+    await follow.opened;
+    try {
+      const next = follow.next();
+      await stream.appendBatch([new Uint8Array([2]), new Uint8Array([3])], { idempotencyKey: key("future-follow-position") });
+      const observed = await next;
+      expect(observed.done).toBe(false);
+      expect(observed.value?.sequence).toBe(2n);
+      expect(observed.value?.value).toEqual(new Uint8Array([3]));
+    } finally {
+      await follow.close();
+    }
     const body = new Uint8Array(65_536);
     const conditions = Array.from({ length: 17 }, (_, index) => ({ path: `large/${index}`, ifAbsent: true as const }));
     const mutations = conditions.map(condition => ({ append: { stream: client.bytes(condition.path), values: [body] } }));
-    await expect(client.commit({ conditions, mutations }, { idempotencyKey: key("large") })).rejects.toThrow();
+    await expect(client.commit({ effects: [{ conditions: conditions, mutations: mutations, soft: false }] }, { idempotencyKey: key("large") })).rejects.toThrow();
     await expect(client.bytes("large/0").tail()).rejects.toMatchObject({ code: "stream_not_found" });
 
     let hostedCalls = 0;
@@ -213,9 +235,9 @@ describe("website Stream contract", () => {
       hostedCalls += 1;
       return new Response("null");
     } });
-    await expect(hosted.append("a".repeat(65_535), Array(16).fill(new Uint8Array(65_536)))).rejects.toThrow();
+    await expect(hosted.append("a".repeat(65_535), Array(16).fill(new Uint8Array(65_536)), { idempotencyKey: key("stream.test.ts:223:append") })).rejects.toThrow();
     const hostedMutations = conditions.map(condition => ({ append: { path: condition.path, values: [body] } }));
-    await expect(hosted.commit({ conditions, mutations: hostedMutations }, { idempotencyKey: key("hosted-large") })).rejects.toThrow();
+    await expect(hosted.commit({ effects: [{ conditions: conditions, mutations: hostedMutations, soft: false }] }, { idempotencyKey: key("hosted-large") })).rejects.toThrow();
     expect(hostedCalls).toBe(0);
   });
 
@@ -239,46 +261,43 @@ describe("website Stream contract", () => {
     expect(is_stream_error_code("not_a_stream_error")).toBe(false);
   });
 
-  test("requires matching conditions and canonicalizes coordinated retry identity", async () => {
+  test("requires matching fork conditions and canonicalizes coordinated retry identity", async () => {
     const client = StreamClient.memory();
     const first = client.bytes("coordinated/a");
     const second = client.bytes("coordinated/b");
-    await expect(client.commit({ conditions: [{ path: first.path, ifAbsent: true }], mutations: [
-      { append: { stream: second, values: [new Uint8Array([1])] } },
-    ] }, { idempotencyKey: key("missing-condition") })).rejects.toThrow();
+    await expect(client.commit({ effects: [{ conditions: [{ path: first.path, ifAbsent: true }], mutations: [
+      { fork: { source: first, destination: second.path, atTail: 0n } },
+    ], soft: false }] }, { idempotencyKey: key("missing-condition") })).rejects.toThrow();
     const options = { idempotencyKey: key("ordered") };
     const conditions = [{ path: first.path, ifAbsent: true as const }, { path: second.path, ifAbsent: true as const }];
     const mutations = [
       { append: { stream: first, values: [new Uint8Array([1])] } },
       { append: { stream: second, values: [new Uint8Array([2])] } },
     ];
-    const accepted = await client.commit({ conditions, mutations }, options);
-    const replay = await client.commit({ conditions: [...conditions].reverse(), mutations: [...mutations].reverse() }, options);
+    const accepted = await client.commit({ effects: [{ conditions: conditions, mutations: mutations, soft: false }] }, options);
+    const replay = await client.commit({ effects: [{ conditions: [...conditions].reverse(), mutations: [...mutations].reverse(), soft: false }] }, options);
     expect(replay).toEqual(accepted);
     const withExtraProperties = await client.commit({
-      conditions: conditions.map(condition => ({ ...condition, incidental: "ignored" })),
-      mutations: mutations.map(mutation => ({ ...mutation, incidental: "ignored" })),
+      effects: [{ conditions: conditions.map(condition => ({ ...condition, incidental: "ignored" })), mutations: mutations.map(mutation => ({ ...mutation, incidental: "ignored" })), soft: false }]
     }, options);
     expect(withExtraProperties).toEqual(accepted);
-    await expect(client.provider.commit({ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [
+    await expect(client.provider.commit({ effects: [{ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [
       { append: { path: "forged", values: [new Uint8Array([1])] } },
-    ] }, { idempotencyKey: key("forged") })).rejects.toMatchObject({ code: "invalid_argument" });
+    ], soft: false }] }, { idempotencyKey: key("forged") })).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(client.bytes("forged").tail()).rejects.toMatchObject({ code: "stream_not_found" });
 
     await expect(client.provider.commit({
-      conditions: [{ path: "duplicate", ifAbsent: true }, { path: "duplicate", ifAbsent: true }],
-      mutations: [{ append: { path: "duplicate", values: [new Uint8Array([1])] } }],
+      effects: [{ conditions: [{ path: "duplicate", ifAbsent: true }, { path: "duplicate", ifAbsent: true }], mutations: [{ append: { path: "duplicate", values: [new Uint8Array([1])] } }], soft: false }]
     }, { idempotencyKey: key("duplicate-condition") })).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(client.provider.commit({
-      conditions: [{ path: "duplicate-mutation", ifAbsent: true }],
-      mutations: [
+      effects: [{ conditions: [{ path: "duplicate-mutation", ifAbsent: true }], mutations: [
         { append: { path: "duplicate-mutation", values: [new Uint8Array([1])] } },
         { append: { path: "duplicate-mutation", values: [new Uint8Array([2])] } },
-      ],
+      ], soft: false }]
     }, { idempotencyKey: key("duplicate-mutation") })).rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(client.provider.commit({ conditions: null as never, mutations: [] }, { idempotencyKey: key("null-conditions") }))
+    await expect(client.provider.commit({ effects: [{ conditions: null as never, mutations: [], soft: false }] }, { idempotencyKey: key("null-conditions") }))
       .rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(client.provider.commit({ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never] }, { idempotencyKey: key("null-mutation") }))
+    await expect(client.provider.commit({ effects: [{ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never], soft: false }] }, { idempotencyKey: key("null-mutation") }))
       .rejects.toMatchObject({ code: "invalid_argument" });
   });
 
@@ -287,9 +306,9 @@ describe("website Stream contract", () => {
     const provider = { commit: async () => { dispatches += 1; throw new Error("provider must not be called"); } } as unknown as StreamProvider;
     const client = new StreamClient(provider);
     const mutation = { append: { path: "forged", values: [new Uint8Array([1])] } };
-    await expect(client.commit({ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [mutation] }, { idempotencyKey: key("client-forged-false") }))
+    await expect(client.commit({ effects: [{ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [mutation], soft: false }] }, { idempotencyKey: key("client-forged-false") }))
       .rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(client.commit({ conditions: [{ path: "forged" } as never], mutations: [mutation] }, { idempotencyKey: key("client-forged-missing") }))
+    await expect(client.commit({ effects: [{ conditions: [{ path: "forged" } as never], mutations: [mutation], soft: false }] }, { idempotencyKey: key("client-forged-missing") }))
       .rejects.toMatchObject({ code: "invalid_argument" });
     expect(dispatches).toBe(0);
   });
@@ -298,8 +317,7 @@ describe("website Stream contract", () => {
     const client = StreamClient.memory();
     const missing = client.bytes("missing");
     const outcome = await client.commit({
-      conditions: [{ stream: missing, ifTail: 0n }],
-      mutations: [{ append: { stream: missing, values: [new Uint8Array([1])] } }],
+      effects: [{ conditions: [{ stream: missing, ifTail: 0n }], mutations: [{ append: { stream: missing, values: [new Uint8Array([1])] } }], soft: false }]
     }, { idempotencyKey: key("missing-zero") });
     expect(outcome.ok).toBe(true);
     expect(await missing.tail()).toBe(1n);
@@ -328,7 +346,7 @@ describe("website Stream contract", () => {
     for await (const record of experiment.follow({ from: observed, signal: controller.signal })) {
       followed.push(record); controller.abort();
     }
-    expect(followed).toEqual([{ sequence: 1n, value: { type: "strategy.changed" }, keys: [], attributes: [], commitId: expect.any(Uint8Array), committedAtMicros: expect.any(BigInt) }]);
+    expect(followed).toEqual([{ sequence: 1n, value: { type: "strategy.changed" }, keys: [], attributes: [], origin: experiment.path, commitId: expect.any(Uint8Array), committedAtMicros: expect.any(BigInt) }]);
   });
 
   test("keeps the complete committed prefix readable after later appends and a fork", async () => {
@@ -361,16 +379,15 @@ describe("website Stream contract", () => {
     await expect(jobs.append({ job: "different" }, { idempotencyKey: jobKey })).rejects.toMatchObject({ code: "idempotency_mismatch" });
     await workers.append({ worker: "idle" }, { idempotencyKey: key("stream.test-310") });
     const result = await client.commit({
-      conditions: [
+      effects: [{ conditions: [
         { stream: jobs, ifTail: 1n },
         { stream: workers, ifTail: 1n },
         { path: "runs/42/attempt-2", ifAbsent: true },
-      ],
-      mutations: [
+      ], mutations: [
         { append: { stream: jobs, values: [{ job: "two" }] } },
         { append: { stream: workers, values: [{ worker: "busy" }] } },
         { fork: { source: jobs, destination: "runs/42/attempt-2", atTail: 1n } },
-      ],
+      ], soft: false }]
     }, { idempotencyKey: key("assignment-1") });
     expect(result).toMatchObject({ ok: true, appends: [{ path: "runs/42/jobs", tail: 2n }, { path: "runs/42/workers", tail: 2n }], forks: [{ destination: "runs/42/attempt-2", tail: 1n }] });
     if (!result.ok) throw new Error("commit unexpectedly conflicted");
@@ -389,7 +406,7 @@ describe("website Stream contract", () => {
     append.commitId[0] = 99;
     expect((await provider.readCommit(appendId)).commitId).toEqual(appendId);
 
-    const appendConflict = await provider.append("projection/events", [new Uint8Array([3])], { ifTail: 0n });
+    const appendConflict = await provider.append("projection/events", [new Uint8Array([3])], { idempotencyKey: key("stream.test.ts:394:append"), ifTail: 0n });
     expect(appendConflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 1n });
     const forkKey = key("projection-fork");
     const fork = await provider.fork("projection/events", "projection/copy", { idempotencyKey: forkKey });
@@ -397,13 +414,11 @@ describe("website Stream contract", () => {
 
     const commitKey = key("projection-commit");
     const committed = await provider.commit({
-      conditions: [{ path: "projection/events", ifTail: 1n }],
-      mutations: [{ append: { path: "projection/events", values: [new Uint8Array([4])] } }],
+      effects: [{ conditions: [{ path: "projection/events", ifTail: 1n }], mutations: [{ append: { path: "projection/events", values: [new Uint8Array([4])] } }], soft: false }]
     }, { idempotencyKey: commitKey });
     expect(committed).toMatchObject({ ok: true, appends: [{ path: "projection/events", start: 1n, tail: 2n }], forks: [] });
     const commitConflict = await provider.commit({
-      conditions: [{ path: "projection/events", ifTail: 0n }],
-      mutations: [{ append: { path: "projection/events", values: [new Uint8Array([5])] } }],
+      effects: [{ conditions: [{ path: "projection/events", ifTail: 0n }], mutations: [{ append: { path: "projection/events", values: [new Uint8Array([5])] } }], soft: false }]
     }, { idempotencyKey: key("projection-conflict") });
     expect(commitConflict).toEqual({ ok: false, code: "conflict", conflicts: [{ path: "projection/events", expectedTail: 0n, actualTail: 2n }] });
 
@@ -424,13 +439,16 @@ describe("website Stream contract", () => {
   test("Rust memory response projector owns widths, copies, and missing oneofs", () => {
     const sourceCommitId = new Uint8Array(32).fill(9);
     const projected = projectMemoryResponse("append", toBinary(AppendResponseSchema, create(AppendResponseSchema, {
-      outcome: { case: "committed", value: { start: 0xffff_ffff_ffff_ffffn, end: 0xffff_ffff_ffff_ffffn, tail: 0xffff_ffff_ffff_ffffn, commitId: sourceCommitId } },
+      outcome: { case: "committed", value: { start: 0xffff_ffff_ffff_ffffn, end: 0xffff_ffff_ffff_ffffn, tail: 0xffff_ffff_ffff_ffffn, commitId: sourceCommitId, revision: fixtureRevision } },
     }))) as { readonly ok: true; readonly start: bigint; readonly commitId: Uint8Array };
     expect(projected).toMatchObject({ ok: true, start: 0xffff_ffff_ffff_ffffn });
     expect(projected.commitId).toEqual(sourceCommitId);
     expect(projected.commitId).not.toBe(sourceCommitId);
     sourceCommitId[0] = 1;
     expect(projected.commitId[0]).toBe(9);
+    expect(() => projectMemoryResponse("append", toBinary(AppendResponseSchema, create(AppendResponseSchema, {
+      outcome: { case: "committed", value: { start: 0n, end: 1n, tail: 1n, commitId: sourceCommitId } },
+    })))).toThrow();
     expect(() => projectMemoryResponse("append", toBinary(AppendResponseSchema, create(AppendResponseSchema)))).toThrow();
     expect(() => projectMemoryResponse("commit", toBinary(CommitResponseSchema, create(CommitResponseSchema)))).toThrow();
     expect(() => projectMemoryResponse("read_commit", toBinary(CommittedEnvelopeSchema, create(CommittedEnvelopeSchema, { commitId: sourceCommitId, mutations: [{}] })))).toThrow();
@@ -482,8 +500,8 @@ describe("website Stream contract", () => {
   });
 
   test("binds commit identities to request content", async () => {
-    const left = await new MemoryStreamProvider().append("events", [new Uint8Array([1])]);
-    const right = await new MemoryStreamProvider().append("events", [new Uint8Array([2])]);
+    const left = await new MemoryStreamProvider().append("events", [new Uint8Array([1])], { idempotencyKey: key("stream.test.ts:485:append") });
+    const right = await new MemoryStreamProvider().append("events", [new Uint8Array([2])], { idempotencyKey: key("stream.test.ts:486:append") });
     if (!left.ok || !right.ok) throw new Error("unconditional append unexpectedly conflicted");
     expect(left.commitId).not.toEqual(right.commitId);
   });
@@ -491,8 +509,7 @@ describe("website Stream contract", () => {
   test("enforces Rust commit deadlines at the WASM boundary", async () => {
     const provider = new MemoryStreamProvider();
     await expect(provider.commit({
-      conditions: [{ path: "deadline", ifAbsent: true }],
-      mutations: [{ append: { path: "deadline", values: [new Uint8Array([1])] } }],
+      effects: [{ conditions: [{ path: "deadline", ifAbsent: true }], mutations: [{ append: { path: "deadline", values: [new Uint8Array([1])] } }], soft: false }]
     }, { idempotencyKey: key("expired-deadline"), deadlineUnixMillis: 0n })).rejects.toMatchObject({ code: "deadline_elapsed" });
   });
 
@@ -510,8 +527,8 @@ describe("website Stream contract", () => {
     expect(observed?.outcome).toEqual({ type: "append", outcome: first });
 
     const [second, third] = await Promise.all([
-      provider.append("events", [new Uint8Array([2])]),
-      provider.append("events", [new Uint8Array([3])]),
+      provider.append("events", [new Uint8Array([2])], { idempotencyKey: key("stream.test.ts:512:append") }),
+      provider.append("events", [new Uint8Array([3])], { idempotencyKey: key("stream.test.ts:513:append") }),
     ]);
     if (!second.ok || !third.ok) throw new Error("unconditional append unexpectedly conflicted");
     expect([second.start, third.start]).toEqual([1n, 2n]);
@@ -528,7 +545,7 @@ describe("website Stream contract", () => {
 
   test("does not create a path when its first conditional append conflicts", async () => {
     const provider = new MemoryStreamProvider();
-    const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { ifTail: 1n });
+    const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { idempotencyKey: key("stream.test.ts:530:append"), ifTail: 1n });
     expect(conflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 0n });
     expect((await new StreamClient(provider).childrenPage({ parent: "parent", limit: 10 })).children).toEqual([]);
     await expect(provider.tail("parent/phantom")).rejects.toMatchObject({ code: "stream_not_found" });
@@ -536,57 +553,56 @@ describe("website Stream contract", () => {
 
   test("removes cancelled memory followers without waiting for a later append", async () => {
     const provider = new MemoryStreamProvider();
-    await provider.append("events", [new Uint8Array([1])]);
+    await provider.append("events", [new Uint8Array([1])], { idempotencyKey: key("stream.test.ts:538:append") });
     const controller = new AbortController();
-    let removed = 0;
+    const registered = new Set<EventListenerOrEventListenerObject | null>();
     let followerReady!: () => void;
     const followerStarted = new Promise<void>(resolve => { followerReady = resolve; });
     const add = controller.signal.addEventListener.bind(controller.signal);
-    controller.signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => { followerReady(); return add(...args); }) as AbortSignal["addEventListener"];
+    controller.signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => { if (args[0] === "abort") registered.add(args[1]); const result = add(...args); followerReady(); return result; }) as AbortSignal["addEventListener"];
     const remove = controller.signal.removeEventListener.bind(controller.signal);
-    controller.signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => { removed += 1; return remove(...args); }) as AbortSignal["removeEventListener"];
+    controller.signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => { if (args[0] === "abort") registered.delete(args[1]); return remove(...args); }) as AbortSignal["removeEventListener"];
     const next = provider.follow("events", { from: 1n, signal: controller.signal })[Symbol.asyncIterator]().next();
     await followerStarted;
     controller.abort();
     await expect(next).resolves.toEqual({ done: true, value: undefined });
-    expect(removed).toBe(1);
-    await provider.append("events", [new Uint8Array([2])]);
-    expect(removed).toBe(1);
+    expect(registered.size).toBe(0);
+    await provider.append("events", [new Uint8Array([2])], { idempotencyKey: key("stream.test.ts:552:append") });
+    expect(registered.size).toBe(0);
   });
 
   test("rejects a failed multi-stream commit atomically", async () => {
     const client = new StreamClient(new MemoryStreamProvider());
     const source = client.bytes("source");
     await source.append(new Uint8Array([1]), { idempotencyKey: key("stream.test-524") });
-    await expect(client.commit({ conditions: [{ stream: source, ifTail: 1n }, { path: "invalid", ifAbsent: true }], mutations: [
+    await expect(client.commit({ effects: [{ conditions: [{ stream: source, ifTail: 1n }, { path: "invalid", ifAbsent: true }], mutations: [
       { append: { stream: source, values: [new Uint8Array([2])] } },
       { fork: { source, destination: "invalid", atTail: 99n } },
-    ] }, { idempotencyKey: key("atomic") })).rejects.toMatchObject({ code: "invalid_argument" });
+    ], soft: false }] }, { idempotencyKey: key("atomic") })).rejects.toMatchObject({ code: "invalid_argument" });
     expect(await source.tail()).toBe(1n);
     expect(await client.inspectIdempotency(key("atomic"))).toBeUndefined();
   });
 
   test("retains a valid prototype-named tail in memory and hosted commit results", async () => {
     const request = {
-      conditions: [{ path: "__proto__", ifAbsent: true as const }],
-      mutations: [{ append: { path: "__proto__", values: [new Uint8Array([1])] } }],
+      effects: [{ conditions: [{ path: "__proto__", ifAbsent: true as const }], mutations: [{ append: { path: "__proto__", values: [new Uint8Array([1])] } }], soft: false }]
     };
     const local = await new MemoryStreamProvider().commit(request, { idempotencyKey: key("prototype-local") });
     if (!local.ok) throw new Error("local commit unexpectedly conflicted");
     expect(local.appends).toEqual([{ path: "__proto__", start: 0n, tail: 1n }]);
 
     const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
-      new Response(`{"ok":true,"commitId":"${encodedCommitId}","committedAtMicros":"1","appends":[{"path":"__proto__","start":"0","tail":"1"}],"forks":[]}`) });
+      new Response(JSON.stringify({ ok: true, commitId: encodedCommitId, committedAtMicros: "1", appends: [{ path: "__proto__", start: "0", tail: "1" }], forks: [], skipped: [], revision: fixtureRevisionJson })) });
     const hosted = await remote.commit(request, { idempotencyKey: key("prototype-hosted") });
     if (!hosted.ok) throw new Error("hosted commit unexpectedly conflicted");
     expect(hosted.appends).toEqual([{ path: "__proto__", start: 0n, tail: 1n }]);
   });
 
   test("hosted append sends the bytes and key validated at call time", async () => {
-    let sent: { values: string[]; options: { idempotencyKey: string } } | undefined;
+    let sent: Record<string, unknown> | undefined;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_url, init) => {
       sent = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ ok: true, start: "0", end: "1", tail: "1", commitId: encodedCommitId }));
+      return new Response(JSON.stringify({ ok: true, start: "0", end: "1", tail: "1", commitId: encodedCommitId, revision: fixtureRevisionJson }));
     } });
     const value = new Uint8Array([1]);
     const retryKey = key("snap");
@@ -595,7 +611,7 @@ describe("website Stream contract", () => {
     retryKey[0] = 9;
     await pending;
     expect(sent?.records).toEqual([{ value: "AQ==", keys: [], attributes: [] }]);
-    expect(sent?.options.idempotencyKey).toBe(btoa("snap"));
+    expect(sent?.options).toEqual({ idempotencyKey: btoa("snap") });
   });
 
   test("default transport snapshots append inputs before delayed provider selection", async () => {
@@ -607,7 +623,7 @@ describe("website Stream contract", () => {
     await withBrowserDefault(async (_input, init) => {
       await selection;
       sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      return new Response(JSON.stringify({ ok: true, start: "0", end: "0", tail: "1", commitId: encodedCommitId }));
+      return new Response(JSON.stringify({ ok: true, start: "0", end: "1", tail: "1", commitId: encodedCommitId, revision: fixtureRevisionJson }));
     }, async () => {
       const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
       const pending = provider.append("events", [value], { idempotencyKey: retryKey });
@@ -653,12 +669,11 @@ describe("website Stream contract", () => {
     expect(encoded("read", toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "events", from: 5n, limit: 6 })))).toEqual({ path: "events", from: "5", limit: 6 });
     expect(encoded("children/page", toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, { parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 7 })))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 7 });
     const commit = create(CommitRequestSchema, {
-      conditions: [create(CommitConditionSchema, { condition: { case: "tail", value: create(TailConditionSchema, { path: "events", expected: 8n }) } })],
-      mutations: [create(CommitMutationSchema, { mutation: { case: "append", value: create(AppendMutationSchema, { path: "events", records: [create(AppendRecordSchema, { value: new Uint8Array([9]) })] }) } })],
+      effects: [{ conditions: [create(CommitConditionSchema, { condition: { case: "tail", value: create(TailConditionSchema, { path: "events", expected: 8n }) } })], mutations: [create(CommitMutationSchema, { mutation: { case: "append", value: create(AppendMutationSchema, { path: "events", records: [create(AppendRecordSchema, { value: new Uint8Array([9]) })] }) } })], soft: false }],
       idempotencyKey: retry,
     });
     const commitBody = encoded("commit", normalizeCommitRequest(toBinary(CommitRequestSchema, commit)));
-    expect(commitBody).toEqual({ request: { conditions: [{ path: "events", ifTail: "8" }], mutations: [{ append: { path: "events", records: [{ value: "CQ==", keys: [], attributes: [] }] } }] }, options: { idempotencyKey: retryWire } });
+    expect(commitBody).toEqual({ request: { effects: [{ conditions: [{ path: "events", ifTail: "8" }], mutations: [{ append: { path: "events", records: [{ value: "CQ==", keys: [], attributes: [] }] } }], soft: false }] }, options: { idempotencyKey: retryWire } });
     expect(encoded("commits/read", toBinary(ReadCommitRequestSchema, create(ReadCommitRequestSchema, { commitId: new Uint8Array(32).fill(7) })))).toEqual({ commitId: encodedCommitId });
   });
 
@@ -696,19 +711,20 @@ describe("website Stream contract", () => {
       seenReadOptions = options;
       return read(path, options);
     };
-    provider.follow = (_path, options) => {
+    const follow = provider.follow.bind(provider);
+    provider.follow = (path, options) => {
       seenFollowOptions = options;
-      return (async function* () { /* capture only */ })();
+      return follow(path, options);
     };
     const client = new StreamClient(provider);
     const stream = client.bytes("events");
     const commitOptions = { idempotencyKey: key("public-commit") };
-    const commitRequest = { conditions: [{ path: "events", ifAbsent: true }], mutations: [{ append: { stream, values: [new Uint8Array([1])] } }] } as const;
+    const commitRequest = { effects: [{ conditions: [{ path: "events", ifAbsent: true }], mutations: [{ append: { stream, values: [new Uint8Array([1])] } }], soft: false }] } as const;
     const commitPending = client.commit(commitRequest, commitOptions);
-    (commitRequest.conditions[0] as { ifAbsent: boolean }).ifAbsent = false;
+    (commitRequest.effects[0].conditions[0] as { ifAbsent: boolean }).ifAbsent = false;
     commitOptions.idempotencyKey[0] = 9;
     await commitPending;
-    expect(seenCommitRequest).toMatchObject({ conditions: [{ path: "events", ifAbsent: true }] });
+    expect(seenCommitRequest).toMatchObject({ effects: [{ conditions: [{ path: "events", ifAbsent: true }] }] });
     expect((seenCommitOptions as { idempotencyKey: Uint8Array }).idempotencyKey).toEqual(key("public-commit"));
 
     const readOptions = { from: 0n, limit: 1 };
@@ -720,10 +736,17 @@ describe("website Stream contract", () => {
 
     const signal = new AbortController().signal;
     const followOptions = { from: 0n, signal };
-    const followPending = stream.follow(followOptions)[Symbol.asyncIterator]().next();
+    const followOwner = stream.follow(followOptions);
+    const followPending = followOwner.next();
     followOptions.from = 7n;
-    await followPending;
-    expect(seenFollowOptions).toEqual({ from: 0n, signal });
+    try {
+      await followPending;
+      expect(seenFollowOptions).toMatchObject({ from: 0n });
+    } finally {
+      await followOwner.close();
+    }
+    expect((seenFollowOptions as { signal: AbortSignal }).signal.aborted).toBe(true);
+    expect(signal.aborted).toBe(false);
   });
 
   test("default selection captures opaque key seek and missing-path policy", async () => {
@@ -731,25 +754,33 @@ describe("website Stream contract", () => {
     const internal = provider as unknown as {
       select: (registerCancel: (cancel: () => void) => void) => Promise<StreamProvider>;
     };
-    let release!: (value: StreamProvider) => void;
+    const entered = Promise.withResolvers<void>();
+    const selection = Promise.withResolvers<StreamProvider>();
     let seenRead: unknown;
     let seenFollow: unknown;
-    const selected = {
-      read: (_path: string, options: unknown) => { seenRead = options; return (async function* () {})(); },
-      follow: (_path: string, options: unknown) => { seenFollow = options; return (async function* () {})(); },
-    } as unknown as StreamProvider;
-    internal.select = async () => new Promise<StreamProvider>(resolve => { release = resolve; });
+    const { provider: selected } = await selectedMemory(new Uint8Array([1]));
+    const originalRead = selected.read.bind(selected);
+    const originalFollow = selected.follow.bind(selected);
+    selected.read = (path, options) => { seenRead = options; return originalRead(path, options); };
+    selected.follow = (path, options) => { seenFollow = options; return originalFollow(path, options); };
+    internal.select = async () => { entered.resolve(); return selection.promise; };
     const readOptions = { from: 2n, limit: 3, key: { key: new Uint8Array([0, 255]), before: 8n } };
     const followOptions: Parameters<StreamProvider["follow"]>[1] = { from: 2n, whenAbsent: "wait" };
-    const read = provider.read("events", readOptions)[Symbol.asyncIterator]().next();
-    const follow = provider.follow("events", followOptions)[Symbol.asyncIterator]().next();
+    const read = provider.read("events", readOptions);
+    const follow = provider.follow("events", followOptions);
+    const pending = Promise.all([read.next(), follow.next()]);
     readOptions.key.key[0] = 99;
     readOptions.key.before = 99n;
     (followOptions as { whenAbsent: string }).whenAbsent = "not_found";
-    release(selected);
-    await Promise.all([read, follow]);
-    expect(seenRead).toEqual({ from: 2n, limit: 3, key: { key: new Uint8Array([0, 255]), before: 8n } });
-    expect(seenFollow).toEqual({ from: 2n, whenAbsent: "wait" });
+    await entered.promise;
+    selection.resolve(selected);
+    try {
+      await pending;
+      expect(seenRead).toEqual({ from: 2n, limit: 3, key: { key: new Uint8Array([0, 255]), before: 8n } });
+      expect(seenFollow).toMatchObject({ from: 2n, whenAbsent: "wait" });
+    } finally {
+      await Promise.all([read.close(), follow.close()]);
+    }
   });
 
   test("default selection keeps concurrent follow waiters independent", async () => {
@@ -757,24 +788,32 @@ describe("website Stream contract", () => {
     const internal = provider as unknown as {
       select: (registerCancel: (cancel: () => void) => void) => Promise<StreamProvider>;
     };
-    let release!: (value: StreamProvider) => void;
+    const entered = Promise.withResolvers<void>();
+    const selection = Promise.withResolvers<StreamProvider>();
     let cancelled = 0;
     internal.select = async registerCancel => {
       registerCancel(() => { cancelled += 1; });
-      return new Promise<StreamProvider>(resolve => { release = resolve; });
+      entered.resolve();
+      return selection.promise;
     };
-    const record = { sequence: 0n, value: new Uint8Array([1]), commitId: new Uint8Array(32), committedAtMicros: 0n };
-    const selected = { follow: async function* () { yield record; } } as unknown as StreamProvider;
+    const { provider: selected, record } = await selectedMemory(new Uint8Array([1]));
     const firstController = new AbortController();
     const secondController = new AbortController();
-    const first = provider.follow("events", { from: 0n, signal: firstController.signal })[Symbol.asyncIterator]().next();
-    const second = provider.follow("events", { from: 0n, signal: secondController.signal })[Symbol.asyncIterator]().next();
-    await Promise.resolve();
+    const firstOwner = provider.follow("events", { from: 0n, signal: firstController.signal });
+    const secondOwner = provider.follow("events", { from: 0n, signal: secondController.signal });
+    const first = firstOwner.next();
+    const second = secondOwner.next();
+    await entered.promise;
     firstController.abort();
-    await expect(first).resolves.toEqual({ value: undefined, done: true });
-    expect(cancelled).toBe(0);
-    release(selected);
-    await expect(second).resolves.toEqual({ value: record, done: false });
+    try {
+      await expect(first).resolves.toEqual({ value: undefined, done: true });
+      expect(cancelled).toBe(0);
+      selection.resolve(selected);
+      await expect(second).resolves.toEqual({ value: record, done: false });
+    } finally {
+      selection.resolve(selected);
+      await Promise.all([firstOwner.close(), secondOwner.close()]);
+    }
   });
 
   test("default selection cancels abandoned native connect and retries for a newcomer", async () => {
@@ -782,33 +821,44 @@ describe("website Stream contract", () => {
     const internal = provider as unknown as {
       select: (registerCancel: (cancel: () => void) => void) => Promise<StreamProvider>;
     };
-    const releases: Array<(value: StreamProvider) => void> = [];
+    const firstEntered = Promise.withResolvers<void>();
+    const nextEntered = Promise.withResolvers<void>();
+    const abandoned = Promise.withResolvers<StreamProvider>();
+    const replacement = Promise.withResolvers<StreamProvider>();
     let selectCalls = 0;
     let cancelled = 0;
     internal.select = async registerCancel => {
       selectCalls += 1;
       registerCancel(() => { cancelled += 1; });
-      return new Promise<StreamProvider>(resolve => { releases.push(resolve); });
+      if (selectCalls === 1) { firstEntered.resolve(); return abandoned.promise; }
+      nextEntered.resolve();
+      return replacement.promise;
     };
-    const record = { sequence: 0n, value: new Uint8Array([2]), commitId: new Uint8Array(32), committedAtMicros: 0n };
-    const selected = { follow: async function* () { yield record; } } as unknown as StreamProvider;
+    const { provider: selected, record } = await selectedMemory(new Uint8Array([2]));
     const firstController = new AbortController();
     const secondController = new AbortController();
-    const first = provider.follow("events", { from: 0n, signal: firstController.signal })[Symbol.asyncIterator]().next();
-    const second = provider.follow("events", { from: 0n, signal: secondController.signal })[Symbol.asyncIterator]().next();
-    await Promise.resolve();
+    const firstOwner = provider.follow("events", { from: 0n, signal: firstController.signal });
+    const secondOwner = provider.follow("events", { from: 0n, signal: secondController.signal });
+    const first = firstOwner.next();
+    const second = secondOwner.next();
+    await firstEntered.promise;
     firstController.abort();
     secondController.abort();
     await expect(first).resolves.toEqual({ value: undefined, done: true });
     await expect(second).resolves.toEqual({ value: undefined, done: true });
     expect(cancelled).toBe(1);
-
-    const newcomer = provider.follow("events", { from: 0n })[Symbol.asyncIterator]().next();
-    await Promise.resolve();
-    expect(selectCalls).toBe(2);
-    releases[1]!(selected);
-    await expect(newcomer).resolves.toEqual({ value: record, done: false });
-    releases[0]!(selected);
+    const newcomerOwner = provider.follow("events", { from: 0n });
+    const newcomer = newcomerOwner.next();
+    await nextEntered.promise;
+    try {
+      expect(selectCalls).toBe(2);
+      replacement.resolve(selected);
+      await expect(newcomer).resolves.toEqual({ value: record, done: false });
+    } finally {
+      replacement.resolve(selected);
+      abandoned.resolve(selected);
+      await Promise.all([firstOwner.close(), secondOwner.close(), newcomerOwner.close()]);
+    }
   });
 
   test("default selection caches a successfully selected provider", async () => {
@@ -851,7 +901,7 @@ describe("website Stream contract", () => {
   test("read captures one cursor before asynchronous validation", async () => {
     let localReads = 0;
     const local = new MemoryStreamProvider();
-    await local.append("events", [new Uint8Array([1])]);
+    await local.append("events", [new Uint8Array([1])], { idempotencyKey: key("stream.test.ts:851:append") });
     const localOptions = { get from() { localReads += 1; return 0n; }, limit: 1 };
     for await (const _record of local.read("events", localOptions)) { /* consume */ }
     expect(localReads).toBe(1);
@@ -1042,19 +1092,19 @@ describe("website Stream contract", () => {
     for (const operation of [
       () => provider.tail("bad path"),
       () => provider.tail(123 as never),
-      () => provider.fork("source", "bad\\path"),
-      () => provider.fork("same", "same"),
-      () => provider.append("bad path", [new Uint8Array([1])]),
-      () => provider.commit({ conditions: [{ path: "valid", ifAbsent: true }], mutations: [{ fork: { source: "valid", destination: "unguarded", atTail: 0n } }] }, { idempotencyKey: key("invalid-commit") }),
-      () => provider.commit({ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [{ append: { path: "forged", values: [new Uint8Array([1])] } }] }, { idempotencyKey: key("forged") }),
-      () => provider.commit({ conditions: null as never, mutations: [] }, { idempotencyKey: key("null-conditions") }),
-      () => provider.commit({ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never] }, { idempotencyKey: key("null-mutation") }),
+      () => provider.fork("source", "bad\\path", { idempotencyKey: key("stream.test.ts:1042:fork") }),
+      () => provider.fork("same", "same", { idempotencyKey: key("stream.test.ts:1043:fork") }),
+      () => provider.append("bad path", [new Uint8Array([1])], { idempotencyKey: key("stream.test.ts:1044:append") }),
+      () => provider.commit({ effects: [{ conditions: [{ path: "valid", ifAbsent: true }], mutations: [{ fork: { source: "valid", destination: "unguarded", atTail: 0n } }], soft: false }] }, { idempotencyKey: key("invalid-commit") }),
+      () => provider.commit({ effects: [{ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [{ append: { path: "forged", values: [new Uint8Array([1])] } }], soft: false }] }, { idempotencyKey: key("forged") }),
+      () => provider.commit({ effects: [{ conditions: null as never, mutations: [], soft: false }] }, { idempotencyKey: key("null-conditions") }),
+      () => provider.commit({ effects: [{ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never], soft: false }] }, { idempotencyKey: key("null-mutation") }),
     ]) await expect(Promise.resolve().then(operation)).rejects.toThrow();
     await expect(provider.read("bad path", { from: 0n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toThrow();
     await expect(provider.read("valid", { from: 0n, limit: 0 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "limit_exceeded" });
     await expect(provider.read("valid", { from: 0n, limit: 1.5 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(provider.follow("bad path", { from: 0n })[Symbol.asyncIterator]().next()).rejects.toThrow();
-    await expect(provider.follow("valid", { from: -1n })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(Promise.resolve().then(() => provider.follow("bad path", { from: 0n }).next())).rejects.toThrow();
+    await expect(Promise.resolve().then(() => provider.follow("valid", { from: -1n }).next())).rejects.toBeInstanceOf(RangeError);
     await expect(provider.childrenPage({ parent: "bad path", limit: 1 })).rejects.toThrow();
     await expect(provider.childrenPage({ limit: 0 })).rejects.toMatchObject({ code: "limit_exceeded" });
     await expect(provider.childrenPage(null as never)).rejects.toMatchObject({ code: "invalid_argument" });
@@ -1100,12 +1150,12 @@ describe("website Stream contract", () => {
 
   test("HTTP responses have no implicit logical total", async () => {
     const memory = new MemoryStreamProvider();
-    await memory.append("events", [new Uint8Array([1])]);
+    await memory.append("events", [new Uint8Array([1])], { idempotencyKey: key("stream.test.ts:1100:append") });
     // The original provider's valid tail reply crosses the former wire-body
     // fallback without manufacturing logical history or malformed fields.
     const padding = " ".repeat(8 * 1024 * 1024 + 1);
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
-      new Response(padding + JSON.stringify({ tail: (await memory.tail("events")).toString() })) });
+      new Response(padding + JSON.stringify({ tail: (await memory.tail("events")).toString(), applied: fixtureRevisionJson })) });
     expect(await provider.tail("events")).toBe(1n);
   });
 
@@ -1127,7 +1177,7 @@ describe("website Stream contract", () => {
     let redirect: RequestRedirect | undefined;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
       redirect = init?.redirect;
-      return new Response('"0"');
+      return new Response(JSON.stringify({ tail: "0", applied: fixtureRevisionJson }));
     } });
     expect(await provider.tail("events")).toBe(0n);
     expect(redirect).toBe("error");
@@ -1139,7 +1189,7 @@ describe("website Stream contract", () => {
     let requestBody: unknown;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
       requestBody = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ ok: true, start: maximum.toString(), end: maximum.toString(), tail: maximum.toString(), commitId: encodedCommitId }));
+      return new Response(JSON.stringify({ ok: true, start: maximum.toString(), end: maximum.toString(), tail: maximum.toString(), commitId: encodedCommitId, revision: fixtureRevisionJson }));
     } });
     const result = await provider.append("events", [new Uint8Array([1])], { ifTail: maximum, idempotencyKey: identity });
     expect(requestBody).toMatchObject({ options: { ifTail: maximum.toString(), idempotencyKey: btoa(String.fromCharCode(...identity)) } });

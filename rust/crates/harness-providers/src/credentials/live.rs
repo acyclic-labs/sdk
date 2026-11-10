@@ -90,7 +90,7 @@ impl CredentialInputs {
         #[cfg(target_arch = "wasm32")]
         {
             select(
-                &mut self
+                &mut *self
                     .state
                     .lock()
                     .map_err(|_| crate::invalid("credential resolver lock poisoned"))?,

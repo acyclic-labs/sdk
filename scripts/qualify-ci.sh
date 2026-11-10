@@ -356,6 +356,7 @@ case "$lane" in
     # when the dependency cache is cold.
     cargo fetch --locked
     node scripts/check-git-proto-build.mjs
+    node scripts/check-proto-source-root.mjs
     background napi native_binding
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"

@@ -28,9 +28,13 @@
 use super::*;
 use crate::NativeIndexWork;
 use acyclic_collections::{FixedIndex, IndexWork};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_native_runtime::{InlineMutex as Mutex, InlineMutexGuard as MutexGuard};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, PoisonError};
+#[cfg(target_arch = "wasm32")]
+use std::sync::{Mutex, MutexGuard};
 
 /// How a recorded tool call settled.
 #[derive(Clone, Debug, PartialEq)]
@@ -439,7 +443,7 @@ impl RecordedModel {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Replay> {
+    fn lock(&self) -> MutexGuard<'_, Replay> {
         self.replay.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
