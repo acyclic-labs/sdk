@@ -703,7 +703,10 @@ async fn drive(
             view::run(
                 conversation,
                 args.inline,
-                args.resume.is_some() || args.continue_session || args.agent.is_some(),
+                args.resume.is_some()
+                    || args.continue_session
+                    || args.agent.is_some()
+                    || args.endpoint.is_some(),
                 terminal,
             )
         })

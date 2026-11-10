@@ -351,6 +351,20 @@ impl LocalHarness {
                     )?,
                 });
             }
+            #[cfg(any(test, feature = "native-execution"))]
+            let context = if let Some(workspace) = &self.workspace {
+                let view = workspace.spawned_project_view(project).await?;
+                let authority = crate::filesystem::NativeMountAuthority::admitted(
+                    verifier.clone(),
+                    authority.scope.copy(&mut None)?,
+                );
+                super::context::Binding {
+                    workspace: Some(workspace.context_task_view(view, project, &authority)?),
+                    ..context
+                }
+            } else {
+                context
+            };
             let writer = crate::filesystem::FilesystemContentPublisher::new(
                 Arc::clone(&self.files),
                 project,

@@ -3160,6 +3160,73 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
 }
 
 #[tokio::test]
+async fn tool_free_checkout_sessions_read_their_own_logical_context_without_mounting() -> Result<()>
+{
+    use acyclic_fs::facade::FsWork as _;
+    let checkout = tempfile::tempdir().map_err(agent)?;
+    let state = tempfile::tempdir().map_err(agent)?;
+    std::fs::write(
+        checkout.path().join("AGENTS.md"),
+        "ORIGINAL_CHECKOUT_INSTRUCTIONS",
+    )
+    .map_err(agent)?;
+    let provider = super::scripted([super::ScriptedTurn::Text("own context".into())]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            crate::test_support::local_harness_config(
+                checkout.path(),
+                (
+                    crate::model::Model::new("scripted".into(), "test".into(), "1".into())?,
+                    provider.clone(),
+                ),
+            )?
+            .state_directory(state.path())
+            .without_default_tools()
+            .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let directory = harness.connect_sessions().await?;
+    let session = crate::local::sessions::create(&directory, "tool-free-session").await?;
+    let (agents, _) = harness.agents().await?;
+    let root = agents.state(session.root()).await.map_err(agent)?;
+    let project = root
+        .volumes
+        .iter()
+        .find(|binding| binding.name == "project")
+        .ok_or_else(|| Error::Invalid("session has no project".into()))?;
+    let view = harness
+        .workspace
+        .as_ref()
+        .unwrap()
+        .spawned_project_view(&project.volume)
+        .await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    view.write(
+        "/AGENTS.md",
+        acyclic_stream::OwnedBytes::from_static(b"SESSION_ONLY_INSTRUCTIONS"),
+        acyclic_fs::IdempotencyKey::from_bytes(crate::OperationId::new().into_bytes()),
+        acyclic_fs::PublicationPermit::Unrestricted,
+        &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
+    )
+    .await
+    .map_err(agent)?;
+    let mut observed = ObservedConversation::observe(Conversation::open(session), None).await?;
+    observed
+        .send("context", "read the selected instructions")
+        .await?;
+    let request = super::request_text(
+        &harness,
+        &provider.last_request().expect("session model turn"),
+    )
+    .await?;
+    assert!(request.contains("SESSION_ONLY_INSTRUCTIONS"));
+    assert!(!request.contains("ORIGINAL_CHECKOUT_INSTRUCTIONS"));
+    assert_eq!(provider.requests().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversation_cut()
 -> Result<()> {
     use crate::client::{AgentCommand, AgentReply};
