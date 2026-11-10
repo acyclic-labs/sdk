@@ -1,6 +1,7 @@
 use super::*;
 use ratatui::{Terminal, backend::TestBackend};
 
+#[path = "tests/tui_render_work.rs"]
 mod tui_render_work;
 
 fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
