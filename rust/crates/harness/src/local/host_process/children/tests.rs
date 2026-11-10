@@ -25,7 +25,7 @@ async fn pi_exited_session_settles_with_an_external_stderr_writer() -> Result {
     served("pi", exercise).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_idle_child_runs_a_follow_up_after_its_view_is_released() -> Result {
+async fn nested_children_preserve_unmerged_work_across_follow_up_and_merge() -> Result {
     served("codex", follow_up).await
 }
 
@@ -84,87 +84,97 @@ async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Resul
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof() -> Result {
     served("codex", |host, cwd| {
-        let (mut sessions, _) = children(host, cwd, "exit-output")?;
-        let (mut running, view) = claim(
-            &mut sessions,
-            cwd,
-            "captured",
-            SessionAction::Spawn {
-                prompt: "captured reply".into(),
-            },
-        )?;
-        let mut command = native_fixture(&view, "", "0");
-        running
-            .process
-            .spawn(&mut command, running.claim.operation)?;
-        let pid = shell_pid(&mut running)?;
-        let mut writer = fs::OpenOptions::new()
-            .write(true)
-            .open(format!("/proc/{pid}/fd/1"))?;
-        let mut diagnostic_writer = fs::OpenOptions::new()
-            .write(true)
-            .open(format!("/proc/{pid}/fd/2"))?;
-        running.process.queue_stdin(b"exit\n".to_vec())?;
-        wait_exit(&mut running)?;
-        // Replay the actual diagnostic with stdout quiescent and both writers
-        // retained. Progress must schedule another pass without requiring EOF.
-        let diagnostic = running.process.failure_message("");
-        assert!(diagnostic.contains("native-diagnostic"));
-        diagnostic_writer.write_all(diagnostic.as_bytes())?;
-        assert!(
-            output(&mut running, &mut [0; 8])?,
-            "consumed stderr must schedule the next bounded output pass"
-        );
-        assert!(running.process.take_output_progress());
-        // Replay after direct-child exit. Derive one invalid UTF-8 frame from
-        // the captured start, between that start and its original reply, so
-        // framing loss cannot be reset by another turn-start. Keeping this
-        // writer proves settlement cannot require EOF.
         let captured = include_bytes!("../fixtures/codex-completed.jsonl");
-        let first = captured
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .ok_or("captured start absent")?
-            + 1;
-        let mut corrupted = captured[..first].to_vec();
-        corrupted[0] = 0xff;
-        writer.write_all(&captured[..first])?;
-        writer.write_all(&corrupted)?;
-        writer.write_all(&captured[first..])?;
-        sessions.children.insert("captured".into(), running);
-        sessions.ready.push("captured");
-        // Small scratch pages force both real output passes to spend all
-        // their credit while the captured terminal is still unread.
-        let mut page = [0; 8];
-        sessions.pump_output(&mut page)?;
-        assert!(sessions.children.contains_key("captured"));
-        assert!(
-            sessions.children["captured"].answer.outcome.is_none(),
-            "terminal remains unread after the full passes"
-        );
-        assert_eq!(
-            sessions
-                .ready
-                .queue()
-                .keys
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["captured"],
-            "actual output must schedule exactly its next bounded pass"
-        );
-        sessions.pump_output(&mut page)?;
-        assert!(!sessions.children.contains_key("captured"));
-        assert!(sessions.ready.queue().keys.is_empty());
-        let completed = sessions
-            .wait("captured")?
-            .ok_or("captured child is still running")?;
-        assert_eq!(
-            completed["results"][0]["outcome"]["Succeeded"]["text"],
-            "PAIRED_NATIVE_DONE"
-        );
-        drop(writer);
-        drop(diagnostic_writer);
+        let mut events = captured.split_inclusive(|byte| *byte == b'\n');
+        let start = events.next().ok_or("captured start absent")?;
+        let preview = events.next().ok_or("captured preview absent")?;
+        let (mut sessions, _) = children(host, cwd, "exit-output")?;
+        for (reference, recovered) in [("recovered", true), ("stale", false)] {
+            let (mut running, view) = claim(
+                &mut sessions,
+                cwd,
+                reference,
+                SessionAction::Spawn {
+                    prompt: "captured reply".into(),
+                },
+            )?;
+            let mut command = native_fixture(&view, "", "0");
+            running
+                .process
+                .spawn(&mut command, running.claim.operation)?;
+            let pid = shell_pid(&mut running)?;
+            let mut writer = fs::OpenOptions::new()
+                .write(true)
+                .open(format!("/proc/{pid}/fd/1"))?;
+            let mut diagnostic_writer = fs::OpenOptions::new()
+                .write(true)
+                .open(format!("/proc/{pid}/fd/2"))?;
+            running.process.queue_stdin(b"exit\n".to_vec())?;
+            wait_exit(&mut running)?;
+            let diagnostic = running.process.failure_message("");
+            assert!(diagnostic.contains("native-diagnostic"));
+            diagnostic_writer.write_all(diagnostic.as_bytes())?;
+            assert!(
+                output(&mut running, &mut [0; 8])?,
+                "consumed stderr must schedule the next bounded output pass"
+            );
+            assert!(running.process.take_output_progress());
+            // Replay after direct-child exit, keeping the writer to withhold EOF.
+            // Derived negative inputs corrupt one original frame: invalid UTF-8
+            // before a fresh preview can recover, while malformed JSON after the
+            // preview must invalidate it before the original completed terminal.
+            let boundary = if recovered {
+                start.len()
+            } else {
+                start.len() + preview.len()
+            };
+            let mut corrupted = if recovered { start } else { preview }.to_vec();
+            corrupted[0] = if recovered { 0xff } else { b'!' };
+            writer.write_all(&captured[..boundary])?;
+            writer.write_all(&corrupted)?;
+            writer.write_all(&captured[boundary..])?;
+            sessions.children.insert(reference.into(), running);
+            sessions.ready.push(reference);
+            // Small scratch pages force both real output passes to spend all
+            // their credit while the captured terminal is still unread.
+            let mut page = [0; 8];
+            sessions.pump_output(&mut page)?;
+            assert!(sessions.children.contains_key(reference));
+            assert!(
+                sessions.children[reference].answer.outcome.is_none(),
+                "terminal remains unread after the full passes"
+            );
+            assert_eq!(
+                sessions
+                    .ready
+                    .queue()
+                    .keys
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                [reference],
+                "actual output must schedule exactly its next bounded pass"
+            );
+            sessions.pump_output(&mut page)?;
+            assert!(!sessions.children.contains_key(reference));
+            assert!(sessions.ready.queue().keys.is_empty());
+            let completed = sessions
+                .wait(reference)?
+                .ok_or("captured child is still running")?;
+            if recovered {
+                assert_eq!(
+                    completed["results"][0]["outcome"]["Succeeded"]["text"],
+                    "PAIRED_NATIVE_DONE"
+                );
+            } else {
+                let failure = completed["results"][0]["outcome"]["Failed"]["message"]
+                    .as_str()
+                    .ok_or("malformed native event retained a stale successful reply")?;
+                assert!(failure.contains("malformed JSON"), "{failure}");
+            }
+            drop(writer);
+            drop(diagnostic_writer);
+        }
         Ok(())
     })
     .await
@@ -229,22 +239,18 @@ fn children(host: &str, cwd: &Path, session: &str) -> Result<(NativeChildren, Ag
         },
     )?;
     let parent: AgentPath = serde_json::from_value(root["task"].clone())?;
-    let held = acyclic_fs::hold_root(cwd)?.create_directories(
-        &PathBuf::from(".acyclic-sdk/host-processes").join(parent.id().as_str()),
-        acyclic_fs::NativeDurability::Durable,
-    )?;
-    let ownership = FileLock::try_acquire(
-        held.open_file(Path::new("fixture.lock"), true)?,
-        FileLockMode::Exclusive,
-    )?;
-    let sessions = NativeChildren::with(
-        host,
-        cwd.to_path_buf(),
-        parent.clone(),
-        Vec::new(),
-        ownership,
-        held,
-    );
+    let policy: &[&str] = match host {
+        "codex" => &[
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "never",
+        ],
+        "claude-code" => &["--settings", "{}", "--permission-mode", "default"],
+        _ => &[],
+    };
+    let policy = policy.iter().map(|value| (*value).to_owned()).collect();
+    let sessions = NativeChildren::own(host, cwd, parent.clone(), policy)?;
     Ok((sessions, parent))
 }
 
@@ -267,22 +273,19 @@ fn claim(
     let receipt = sessions.record(reference, &accepted)?.receipt.clone();
     let view = receipt.confirm(&claimed)?;
     let lease = HostProcessLease::admit(cwd, &receipt, &claimed)?;
-    let running = Running {
-        process: lease.funded_process()?,
-        claim: serde_json::from_value(claimed["claim"].clone())?,
-        failure: None,
-        events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
-        answer: NativeAnswer::default(),
-        settlement: None,
-        wake: std::task::Waker::noop().clone(),
-        armed: None,
-    };
+    let running = Running::new(
+        lease.funded_process()?,
+        serde_json::from_value(claimed["claim"].clone())?,
+        reference,
+        &sessions.ready,
+    );
     Ok((running, view))
 }
 
 /// An idle child's view is released once its turn settles with nothing
 /// queued; a follow-up mounts it again, and its turn runs and settles under
-/// the child's original receipt.
+/// the child's original receipt. A nested child inherits the unmerged parent
+/// cut, and each merge changes only its own parent until the outer merge.
 fn follow_up(host: &str, cwd: &Path) -> Result {
     let (mut sessions, parent) = children(host, cwd, "follow-up")?;
     let prompts = [
@@ -293,38 +296,78 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
             prompt: "follow-up".into(),
         },
     ];
+    let mut previous: Option<TurnClaim> = None;
     for (turn, action) in prompts.into_iter().enumerate() {
         let (mut running, view) = claim(&mut sessions, cwd, "idle", action)?;
-        let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
-        command
-            .args([
-                "-c",
-                "printf turn > \"turn-$1\"; printf '%s' \"$2\"",
-                "fixture",
-            ])
-            .arg(turn.to_string())
-            .arg(include_str!("../fixtures/codex-completed.jsonl"))
-            .current_dir(&view)
-            .stdin(ProcessStdio::null())
-            .stdout(ProcessStdio::piped())
-            .stderr(ProcessStdio::piped());
+        if let Some(previous) = &previous {
+            assert_eq!(running.claim.agent, previous.agent);
+            assert_ne!(running.claim.operation, previous.operation);
+            assert_eq!(running.claim.turn, previous.turn + 1);
+            assert_eq!(fs::read(view.join("nested.txt"))?, b"turn");
+        }
+        let mut command = completed_write(&view, &format!("turn-{turn}"));
         let operation = running.claim.operation;
         running.process.spawn(&mut command, operation)?;
         wait_exit(&mut running)?;
-        let completed = sessions
-            .refresh("idle", &mut running, &mut [0; 8192])?
-            .ok_or_else(|| failed("settle idle child", "exited turn did not settle"))?;
-        assert!(completed["next"].is_null(), "turn {turn} queued nothing");
-        assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
-        let results = completed["results"]
-            .as_array()
-            .ok_or("settled results absent")?;
-        assert!(
-            results.last().is_some_and(
-                |result| result["outcome"]["Succeeded"]["text"] == "PAIRED_NATIVE_DONE"
-            ),
-            "turn {turn} recorded its reply: {results:?}"
-        );
+        if turn == 0 {
+            // Reusing the local name must still create a distinct child of
+            // this parent, using the production ownership entrance.
+            let mut nested = NativeChildren::own(
+                host,
+                &view,
+                running.claim.agent.clone(),
+                sessions.flags.clone(),
+            )?;
+            let (mut inner, inner_view) = claim(
+                &mut nested,
+                &view,
+                "idle",
+                SessionAction::Spawn {
+                    prompt: "nested work".into(),
+                },
+            )?;
+            assert_eq!(
+                inner.claim.agent.parent(),
+                Some(running.claim.agent.clone())
+            );
+            assert_eq!(fs::read(inner_view.join("turn-0"))?, b"turn");
+            let mut command = completed_write(&inner_view, "nested.txt");
+            inner.process.spawn(&mut command, inner.claim.operation)?;
+            wait_exit(&mut inner)?;
+            finish_turn(&nested, "idle", &mut inner)?;
+            let foreign = sessions
+                .request(
+                    "idle",
+                    SessionAction::Complete {
+                        claim: inner.claim.clone(),
+                        outcome: inner
+                            .settlement
+                            .clone()
+                            .ok_or("nested child retained no settlement")?,
+                    },
+                    false,
+                )
+                .expect_err("a parent-local name cannot authorize another child's reply");
+            assert_eq!(foreign.code(), crate::wire::ErrorCode::Conflict);
+            assert!(
+                foreign
+                    .to_string()
+                    .contains("native completion selects another child"),
+                "{foreign}"
+            );
+            assert!(!view.join("nested.txt").exists(), "nested work is private");
+            host_files::request(
+                &view,
+                HostAction::Fs {
+                    task: running.claim.agent.clone(),
+                    command: "merge agents/idle".into(),
+                },
+            )?;
+            assert_eq!(fs::read(view.join("nested.txt"))?, b"turn");
+            assert!(!cwd.join("nested.txt").exists(), "outer work is private");
+        }
+        finish_turn(&sessions, "idle", &mut running)?;
+        previous = Some(running.claim.clone());
     }
     host_files::request(
         cwd,
@@ -335,6 +378,38 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
     )?;
     assert_eq!(fs::read(cwd.join("turn-0"))?, b"turn");
     assert_eq!(fs::read(cwd.join("turn-1"))?, b"turn");
+    assert_eq!(fs::read(cwd.join("nested.txt"))?, b"turn");
+    Ok(())
+}
+
+fn completed_write(view: &Path, file: &str) -> acyclic_native_runtime::ProcessCommand {
+    let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
+    command
+        .args(["-c", "printf turn > \"$1\" || { printf 'step=write native fixture: write failed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf '%s' \"$2\"", "fixture"])
+        .arg(file)
+        .arg(include_str!("../fixtures/codex-completed.jsonl"))
+        .current_dir(view)
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
+    command
+}
+
+fn finish_turn(sessions: &NativeChildren, reference: &str, running: &mut Running) -> Result {
+    let completed = sessions
+        .refresh(reference, running, &mut [0; 8192])?
+        .ok_or_else(|| failed("settle native child", "exited turn did not settle"))?;
+    assert!(completed["next"].is_null(), "nothing else was queued");
+    assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
+    let results = completed["results"]
+        .as_array()
+        .ok_or("settled results absent")?;
+    assert!(
+        results
+            .last()
+            .is_some_and(|result| result["outcome"]["Succeeded"]["text"] == "PAIRED_NATIVE_DONE"),
+        "{reference} recorded its reply: {results:?}"
+    );
     Ok(())
 }
 
@@ -428,14 +503,26 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     let writer = fs::OpenOptions::new()
         .write(true)
         .open(format!("/proc/{pid}/fd/2"))?;
+    // Reject a forged/noop control owner before parking on its real process.
+    running.wake.wake_by_ref();
+    assert_eq!(sessions.ready.take(), BTreeSet::from(["held".into()]));
+    running.process.take_output_progress();
+    sessions.arm("held", &mut running);
+    assert!(running.armed.is_some() || sessions.ready.queue().keys.contains("held"));
     running.process.queue_stdin(b"exit\n".to_vec())?;
-    wait_exit(&mut running)?;
-    assert!(
-        !running.process.drain_stderr()?.closed,
-        "negative input must withhold stderr EOF"
-    );
+    assert!(running.process.pump_stdin()?);
+    // The production owner already holds the sole readiness observation.
+    // Hand it the process without installing a competing test-side wait.
+    // `writer` stays live through settlement, so stderr cannot reach EOF.
+    sessions.children.insert("held".into(), running);
+    // The same owner registration and pump as the deployed coordination
+    // server. Every pass waits for the native producer or actual I/O progress.
+    while sessions.children.contains_key("held") {
+        futures::executor::block_on(std::future::poll_fn(|cx| sessions.ready.poll(cx)));
+        sessions.pump()?;
+    }
     let completed = sessions
-        .refresh("held", &mut running, &mut [0; 8192])?
+        .wait("held")?
         .ok_or("exited native session still waits for inherited stderr EOF")?;
     assert!(completed["next"].is_null(), "no further input was queued");
     assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
@@ -447,6 +534,9 @@ fn exercise(host: &str, cwd: &Path) -> Result {
             failure.starts_with("No API key for provider: fixture"),
             "native semantic refusal was lost: {failure}"
         );
+        let file: crate::conversation::FileRef =
+            serde_json::from_value(completed["events"].clone())?;
+        file.descriptor().verify(events.as_bytes(), &mut None)?;
     }
     assert!(failure.ends_with("native-diagnostic"), "{failure}");
     host_files::request(

@@ -32,7 +32,7 @@ pub(crate) mod readiness_validation;
 mod tools;
 pub use tools::serve;
 
-/// The saved log's line where the bounded framer dropped one native event.
+/// The saved log's line where framing or decoding dropped one native event.
 const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
 
 struct Running {
@@ -52,6 +52,28 @@ struct Running {
 }
 
 impl Running {
+    /// Binds an originally funded process and claim to its owner's ready key.
+    fn new(
+        process: HostSessionProcess,
+        claim: TurnClaim,
+        reference: &str,
+        ready: &Arc<Ready>,
+    ) -> Self {
+        Self {
+            process,
+            claim,
+            failure: None,
+            events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+            answer: NativeAnswer::default(),
+            settlement: None,
+            wake: Waker::from(Arc::new(ChildWake {
+                key: reference.into(),
+                ready: Arc::clone(ready),
+            })),
+            armed: None,
+        }
+    }
+
     /// Consumes the same armed result before attempting another child pass.
     fn poll_readiness(&mut self) -> Poll<()> {
         let Some(wait) = self.armed.as_mut() else {
@@ -193,7 +215,17 @@ impl NativeChildren {
             FileLockMode::Exclusive,
         )
         .map_err(storage)?;
-        let mut children = Self::with(host, cwd, parent, flags, ownership, root);
+        let mut children = Self {
+            host: host.into(),
+            cwd,
+            parent,
+            flags,
+            children: BTreeMap::new(),
+            accepted: BTreeMap::new(),
+            ready: Arc::default(),
+            _ownership: ownership,
+            _root: root,
+        };
         let open = host_files::request(
             &children.cwd,
             HostAction::Sessions {
@@ -209,27 +241,6 @@ impl NativeChildren {
             children.launch(&reference, &mut recovered)?;
         }
         Ok(children)
-    }
-
-    fn with(
-        host: &str,
-        cwd: PathBuf,
-        parent: AgentPath,
-        flags: Vec<String>,
-        ownership: FileLock,
-        root: acyclic_fs::HeldRoot,
-    ) -> Self {
-        Self {
-            host: host.into(),
-            cwd,
-            parent,
-            flags,
-            children: BTreeMap::new(),
-            accepted: BTreeMap::new(),
-            ready: Arc::default(),
-            _ownership: ownership,
-            _root: root,
-        }
     }
 
     /// One exchange about `reference`; with `next`, its reply also carries
@@ -377,22 +388,12 @@ impl NativeChildren {
             .env("ACYCLIC_WORKSPACE", &view)
             .env("ACYCLIC_TASK", receipt.task().to_string());
         let process = lease.funded_process()?;
-        let wake = Waker::from(Arc::new(ChildWake {
-            key: reference.into(),
-            ready: Arc::clone(&self.ready),
-        }));
         // Install the stable owner before spawn can acquire any physical work.
         // Even a partial spawn or stdin failure stays here until it is reaped.
-        let running = self.children.entry(reference.into()).or_insert(Running {
-            process,
-            claim,
-            failure: None,
-            events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
-            answer: NativeAnswer::default(),
-            settlement: None,
-            wake,
-            armed: None,
-        });
+        let running = self
+            .children
+            .entry(reference.into())
+            .or_insert(Running::new(process, claim, reference, &self.ready));
         let claim = running.claim.operation;
         if let Err(error) = running
             .process
@@ -524,7 +525,7 @@ impl NativeChildren {
                     cause: cause.clone(),
                 },
                 None if running.answer.omitted => Outcome::Failed {
-                    message: "step=read native reply: an event exceeded the 65,536-byte frame limit or contained invalid UTF-8; recovery=acyclic agents".into(),
+                    message: "step=read native reply: an event exceeded the 65,536-byte frame limit, contained invalid UTF-8 or malformed JSON; recovery=acyclic agents".into(),
                 },
                 None => Outcome::Failed {
                     message: "step=settle native child: process exited without a completed native reply; recovery=acyclic agents".into(),
@@ -670,16 +671,13 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
             .get(..count)
             .ok_or_else(|| invalid("native output count invalid"))?;
         for line in running.events.push(bytes) {
-            let Ok(line) = line else {
+            let Some((line, event)) = answer::decode(line) else {
                 // A dropped answer replaces an earlier preview, preserving
                 // terminal refusals. Keep draining through the same framer
                 // and owner; later complete answers remain usable.
                 running.answer.omit();
                 // The saved log marks where the event was dropped.
                 running.process.record_event(EVENT_OMITTED)?;
-                continue;
-            };
-            let Ok(event) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
             // The whole event stream joins the conversation at settlement.

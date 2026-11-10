@@ -221,9 +221,22 @@ not json naming a session_id
             "opaque-native-resume-id",
         )
     };
+    let captures: Value = serde_json::from_str(include_str!(
+        "../../../../../../plugin/tests/hosts/fixtures/native-completion.json"
+    ))
+    .map_err(storage)?;
+    let captured = match host {
+        "codex" => captures["records"][0]["stdout"].as_str(),
+        "claude-code" => captures["records"][1]["stdout"].as_str(),
+        _ => Some(include_str!(
+            "../host_process/fixtures/pi-assistant-error.jsonl"
+        )),
+    }
+    .ok_or_else(|| Error::Invalid("original native capture has no stdout".into()))?;
+    let events = format!("{captured}{events}");
     std::fs::write(
         custody.join(format!("events-{}.jsonl", claim(&first)?.operation)),
-        events,
+        &events,
     )
     .map_err(storage)?;
     native_write(&view.join("child.txt"), b"native")?;
@@ -245,12 +258,29 @@ not json naming a session_id
         )
         .await?;
     assert_eq!(failed.pointer("/status/settled"), Some(&json!(true)));
+    let file: crate::conversation::FileRef =
+        serde_json::from_value(failed["events"].clone()).map_err(storage)?;
+    let (state, _) = fixture.owner.native.session(&child).await?;
+    assert_eq!(
+        fixture.owner.native.read(&state, &file).await?,
+        events.as_bytes()
+    );
+    assert!(
+        !custody
+            .join(format!("events-{}.jsonl", claim(&first)?.operation))
+            .exists()
+    );
     assert_eq!(
         failed.pointer("/results/0/outcome/Failed/message"),
         Some(&json!(diagnostic))
     );
     // A new owner over the same harness reopens the same agent and view.
     fixture.restart(&child).await?;
+    let (state, _) = fixture.owner.native.session(&child).await?;
+    assert_eq!(
+        fixture.owner.native.read(&state, &file).await?,
+        events.as_bytes()
+    );
     assert_eq!(
         fixture
             .owner

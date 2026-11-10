@@ -54,11 +54,10 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
         .chunks(chunk_size)
         .flat_map(|chunk| frames.push(chunk))
     {
-        let Ok(line) = line else {
+        let Some((_, event)) = super::decode(line) else {
             current.omit();
-            continue;
-        };
-        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            assert!(current.pending.is_none());
+            assert!(!matches!(current.outcome, Some(Outcome::Succeeded(_))));
             continue;
         };
         accepted += 1;
@@ -121,6 +120,15 @@ fn successful_prefix(text: &str, current: &NativeAnswer, message: &str) {
 }
 
 fn check_event(event: &Value, current: &NativeAnswer, before: NativeAnswer) {
+    if event.get("type").and_then(Value::as_str) != Some("turn.started")
+        && matches!(
+            before.outcome,
+            Some(Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Indeterminate { .. })
+        )
+    {
+        same(current, &before);
+        return;
+    }
     match event.get("type").and_then(Value::as_str) {
         Some("turn.started") => same(current, &NativeAnswer::default()),
         Some("item.completed") => {

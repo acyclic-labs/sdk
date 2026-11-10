@@ -209,3 +209,11 @@ restores the original error-as-withdrawal defect and must fail at
 forces actual directory scans and must fail at
 `named request observation scanned history`. These are component controls;
 original caller/owner cancellation and physical retirement remain separate.
+
+
+`native_reply` replays original Codex, Claude and Pi output through the shared
+`test_support::native_answer` production decoder oracle. It checks read-boundary
+independence, malformed-frame/JSON invalidation and refusal custody until the
+original new-turn boundary. Seeds are unchanged copies of the recorded fixtures
+in `../src/local/host_process/fixtures`. Run with
+`cargo fuzz run native_reply --fuzz-dir rust/crates/harness/fuzz-native-journal`.
