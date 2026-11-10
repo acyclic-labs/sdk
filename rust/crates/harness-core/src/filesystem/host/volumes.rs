@@ -1,6 +1,32 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    /// The immutable generation created by this exact volume operation, if
+    /// committed. It remains the diff base after the current head changes.
+    pub async fn creation_generation(
+        &self,
+        volume: &VolumeRef,
+        operation: acyclic_fs::OperationId,
+    ) -> Result<Option<GenerationRef>> {
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let reference = bounded_io::content_workspace(&self.provider, volume, Some(&io))?;
+        let workspace = self.open(&reference, Some(&io)).await?;
+        let created = io.sdk(
+            self.filesystem
+                .workspace_for_creation_operation(
+                    volume.storage_name(&mut None)?,
+                    workspace.volume_config(),
+                    operation,
+                    &io,
+                    io.cancellation(),
+                )
+                .await,
+        )?;
+        created
+            .map(|generation| self.generation_ref_id(generation.id(), Some(&io)))
+            .transpose()
+    }
+
     /// Forks selected volume paths at an exact generation.
     pub async fn fork_volume(
         &self,

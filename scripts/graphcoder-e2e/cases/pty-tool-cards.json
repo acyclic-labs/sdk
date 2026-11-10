@@ -11,7 +11,7 @@
   "inputs": [
     {"mode": "pty", "actions": [
       {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "run CARD_PROMPT"},
-      {"when": {"contains": ["⏺ shell  node -e", "CARD_SHELL_OK')\" ✓", "⏺ read  CARD_MISSING.txt ✗", "CARDS_DONE", "○"]}, "send": "\u0004"}
+      {"when": {"contains": ["⏺ shell  node -e", "CARD_SHELL_OK')\" ✓", "⏺ read  CARD_MISSING.txt ✗", "CARDS_DONE", "○"]}, "send": "\u0004\u0004"}
     ], "settled_contains": ["run CARD_PROMPT", "⏺ shell", "⏺ read  CARD_MISSING.txt ✗", "CARDS_DONE"]}
   ],
   "assert": {"requests": 2, "tool_contains": ["CARD_SHELL_OK"], "tool_errors": ["tool execution failed: tool rejected: selected file does not exist"]}

@@ -41,6 +41,17 @@ pub struct ClientFiles {
     pub files: BTreeMap<String, Option<ClientFile>>,
 }
 
+/// Bounded UTF-8 previews at one immutable generation. Previews are not
+/// replacement preconditions and cannot be mistaken for complete files.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilePreviews {
+    /// Exact snapshot cut and next live query's wait condition.
+    pub generation: GenerationRef,
+    /// Requested paths; absent files are distinct from empty prefixes.
+    pub files: BTreeMap<String, Option<String>>,
+}
+
 /// One conditional UTF-8 replacement in an atomic session publication.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

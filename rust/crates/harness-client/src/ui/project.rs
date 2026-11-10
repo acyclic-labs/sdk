@@ -35,8 +35,6 @@ pub struct ReaderCut<'a> {
 pub struct AgentRow {
     /// State glyph from the original phase, or an authored replacement.
     pub glyph: String,
-    /// State text (including authored status.md overrides).
-    pub state: String,
     /// Authored title, otherwise the canonical agent identity.
     pub title: String,
     /// Authored model label, when available at the cut.
@@ -50,7 +48,7 @@ pub struct AgentRow {
 impl AgentRow {
     /// Explicit UI paths needed for one visible row. Querying these paths does
     /// not list a directory or evaluate another agent's projection.
-    pub const PATHS: [&str; 6] = ["status.md", "title", "model", "cost", "age", "glyph"];
+    pub const PATHS: [&str; 5] = ["title", "model", "cost", "age", "glyph"];
 }
 impl Cut for ReaderCut<'_> {
     fn agent(&self) -> &AgentPath {
@@ -139,7 +137,6 @@ impl View {
         };
         Ok(AgentRow {
             glyph: resolve("glyph")?,
-            state: resolve("status.md")?,
             title: resolve("title")?,
             model: resolve("model")?,
             cost: resolve("cost")?,

@@ -173,14 +173,12 @@ async fn ui_default_projection() -> TestResult {
         ("model", "selected-model"),
         ("cost", "0.12 EUR"),
         ("age", "2m"),
-        ("status.md", "Review ready\n\n~~~ui:default\n~~~\n"),
     ]);
     let row = view.row(&cut, |path| authored.get(path).copied())?;
     assert_eq!(
         (&*row.title, &*row.model, &*row.cost, &*row.age),
         ("Parser worker", "selected-model", "0.12 EUR", "2m")
     );
-    assert!(row.state.contains("Review ready") && row.state.contains("Idle"));
     assert!(title_matches(&row.title, "pWK"));
     assert!(!title_matches(&row.title, "wp"));
     assert_eq!(

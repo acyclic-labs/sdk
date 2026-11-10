@@ -131,6 +131,59 @@ pub enum AgentCommand {
     },
     /// Discover the root admitted by this session's credential.
     Root {},
+    /// Read the last committed root-directory membership in constant work.
+    LatestSession {},
+    /// Mark an explicit attach as latest for this checkout.
+    SelectSession {
+        /// Independent session in the admitted directory.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable identity of this selection.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+    },
+    /// Page the explicitly admitted root-session directory.
+    Sessions {
+        /// Bounded directory credit and its opaque continuation.
+        #[serde(default)]
+        page: AgentPageRequest,
+    },
+    /// Create an independent root under the host's session admission.
+    NewSession {
+        /// Stable creation identity; reuse exactly after an uncertain result.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+    },
+    /// Fork a parentless session at a settled turn, retaining the source.
+    ForkSession {
+        /// Source session within the admitted directory.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable branch identity; retain the complete request on uncertainty.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// Zero-based inclusive settled conversation offset.
+        at: u64,
+    },
+    /// Durably pause or explicitly resume the selected actor through its
+    /// existing runtime, parking the same owned execution resources.
+    Pause {
+        /// Selected actor within the authenticated session tree or directory.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// True to pause, false to resume.
+        paused: bool,
+    },
+    /// Integrate this session through the platform's ordinary filesystem
+    /// merge. Conflicts remain files in the destination checkout.
+    MergeSession {
+        /// Independent session selected for integration.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable merge request identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+    },
     /// Snapshot explicit paths in a named client session; wait on its original
     /// filesystem publication producer when `after` is still current.
     ClientFiles {
@@ -143,17 +196,6 @@ pub enum AgentCommand {
         /// Distinct relative file paths; no directory scan is performed.
         paths: Vec<String>,
         /// Wait for a generation different from this committed snapshot.
-        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
-        after: Option<acyclic_harness_core::resources::GenerationRef>,
-    },
-    /// Snapshot explicit paths in the selected agent's private volume.
-    PrivateFiles {
-        /// Exact owner admitted within this tree.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        agent: AgentPath,
-        /// Distinct normalized paths; no directory scan is performed.
-        paths: Vec<String>,
-        /// Wait for this volume's publication after the retained generation.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
         after: Option<acyclic_harness_core::resources::GenerationRef>,
     },
@@ -171,6 +213,51 @@ pub enum AgentCommand {
         /// Distinct paths with their original source preconditions.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
         changes: Vec<acyclic_harness_core::client_files::ClientFileChange>,
+    },
+    /// Snapshot exactly the requested files in the agent's private volume.
+    AgentFiles {
+        /// Selected agent; no request supplies a volume grant.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Explicit paths, such as ui/title.
+        paths: Vec<String>,
+        /// Wait on the original filesystem producer after this generation.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        after: Option<acyclic_harness_core::resources::GenerationRef>,
+    },
+    /// Read bounded text prefixes at one live agent-file snapshot.
+    AgentFilePreviews {
+        /// Selected agent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Explicit relative paths.
+        paths: Vec<String>,
+        /// Next live query waits after this cut.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        after: Option<acyclic_harness_core::resources::GenerationRef>,
+        /// Per-path display credit; aggregate bytes fit one read chunk.
+        bytes: u64,
+    },
+    /// Conditionally publish authored files in the agent's private volume.
+    PublishAgentFiles {
+        /// Selected agent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Caller-owned publication identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        operation: acyclic_harness_core::OperationId,
+        /// Exact source preconditions and replacement contents.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
+        changes: Vec<acyclic_harness_core::client_files::ClientFileChange>,
+    },
+    /// Freeze an agent through its ordinary closing input and resource release.
+    Archive {
+        /// Exact recipient.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable archive identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
     },
     /// Stage canonical user input and send one message with caller-owned intent.
     Prompt {
@@ -485,6 +572,15 @@ pub enum ReadTarget {
         #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
         file: FileRef,
     },
+    /// An exact file named by one committed conversation record. Its original
+    /// sequence proves inherited-file access without granting a source volume.
+    Conversation {
+        /// Zero-based sequence in the selected agent's conversation prefix.
+        sequence: u64,
+        /// Exact original reference; another file or version is refused.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
+        file: FileRef,
+    },
     /// One chunk of the agent's tool output, as its change records name it.
     ToolOutput {
         /// Path below the agent's tool-output directory.
@@ -501,7 +597,17 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
-            Self::ClientFiles { paths, .. } | Self::PrivateFiles { paths, .. } => {
+            Self::ClientFiles { paths, .. }
+            | Self::AgentFiles { paths, .. }
+            | Self::AgentFilePreviews { paths, .. } => {
+                if let Self::AgentFilePreviews { bytes, .. } = self
+                    && (*bytes == 0
+                        || bytes
+                            .checked_mul(paths.len() as u64)
+                            .is_none_or(|total| total > MAX_READ_BYTES))
+                {
+                    return Err(CommandError::Invalid);
+                }
                 if paths.is_empty() {
                     return Err(CommandError::Invalid);
                 }
@@ -515,7 +621,7 @@ impl AgentCommand {
                 }
                 Ok(())
             }
-            Self::PublishClientFiles { changes, .. } => {
+            Self::PublishClientFiles { changes, .. } | Self::PublishAgentFiles { changes, .. } => {
                 if changes.is_empty() {
                     return Err(CommandError::Invalid);
                 }
@@ -628,10 +734,16 @@ impl AgentCommand {
     #[must_use]
     pub const fn agent(&self) -> Option<&AgentPath> {
         match self {
-            Self::Root {} => None,
+            Self::Root {}
+            | Self::LatestSession {}
+            | Self::Sessions { .. }
+            | Self::NewSession { .. } => None,
             Self::Bind { agent } => agent.as_ref(),
             Self::Spawn { parent: agent, .. }
             | Self::Fork { parent: agent, .. }
+            | Self::ForkSession { agent, .. }
+            | Self::Pause { agent, .. }
+            | Self::MergeSession { agent, .. }
             | Self::Prompt { agent, .. }
             | Self::Cancel { agent, .. }
             | Self::Compact { agent, .. }
@@ -650,8 +762,12 @@ impl AgentCommand {
             | Self::Settlement { agent }
             | Self::Usage { agent, .. }
             | Self::Events { agent, .. }
+            | Self::AgentFilePreviews { agent, .. }
+            | Self::SelectSession { agent, .. }
+            | Self::AgentFiles { agent, .. }
+            | Self::PublishAgentFiles { agent, .. }
+            | Self::Archive { agent, .. }
             | Self::ClientFiles { agent, .. }
-            | Self::PrivateFiles { agent, .. }
             | Self::PublishClientFiles { agent, .. }
             | Self::Read { agent, .. }
             | Self::Stage { agent, .. }
@@ -665,8 +781,18 @@ impl AgentCommand {
         match self {
             Self::Bind { .. } => "bind",
             Self::Root {} => "root",
+            Self::LatestSession {} => "latest_session",
+            Self::Sessions { .. } => "sessions",
+            Self::NewSession { .. } => "new_session",
+            Self::ForkSession { .. } => "fork_session",
+            Self::Pause { .. } => "pause",
+            Self::MergeSession { .. } => "merge_session",
+            Self::AgentFilePreviews { .. } => "agent_file_previews",
+            Self::SelectSession { .. } => "select_session",
+            Self::AgentFiles { .. } => "agent_files",
+            Self::PublishAgentFiles { .. } => "publish_agent_files",
+            Self::Archive { .. } => "archive",
             Self::ClientFiles { .. } => "client_files",
-            Self::PrivateFiles { .. } => "private_files",
             Self::PublishClientFiles { .. } => "publish_client_files",
             Self::Prompt { .. } => "prompt",
             Self::Cancel { .. } => "cancel",

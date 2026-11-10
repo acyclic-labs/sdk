@@ -57,6 +57,7 @@ impl Hosted {
 /// own session credential carries, and its prompts attach the checkout files
 /// they mention.
 struct LocalUser {
+    sessions: bool,
     harness: Weak<LocalHarness>,
     /// The root's retained diff projection, which its continuation pages
     /// read without projecting again.
@@ -73,6 +74,43 @@ impl LocalUser {
 }
 
 impl crate::hosting::Platform for LocalUser {
+    fn sessions(&self) -> bool {
+        self.sessions
+    }
+
+    fn session_source(&self) -> Option<AgentPath> {
+        let local = self.harness().ok()?;
+        Some(AgentPath::root(&crate::agent::AgentId::from_bytes(
+            local.root.into_bytes(),
+        )))
+    }
+
+    fn session_root(
+        &self,
+        agent: crate::agent::AgentId,
+    ) -> BoxProviderFuture<'_, Result<crate::hosting::RootRequest>> {
+        Box::pin(async move {
+            let local = self.harness()?;
+            let policy = local.root_policy(&agent).await?;
+            Ok(crate::hosting::RootRequest {
+                agent,
+                fresh: Vec::new(),
+                retained: Vec::new(),
+                brief: None,
+                policy: Some(policy),
+            })
+        })
+    }
+
+    #[cfg(any(test, feature = "native-execution"))]
+    fn merge_session<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        operation: OperationId,
+    ) -> BoxProviderFuture<'a, Result<Option<String>>> {
+        Box::pin(async move { self.harness()?.merge_session(agent, operation).await })
+    }
+
     fn policy<'a>(
         &'a self,
         _: &'a Principal,
@@ -110,12 +148,46 @@ impl crate::hosting::Platform for LocalUser {
     ) -> BoxProviderFuture<'a, Result<Vec<crate::context::DiffFilePage>>> {
         Box::pin(async move {
             let local = self.harness()?;
-            if local.agents.get().map(Hosted::root) != Some(agent) {
-                return Err(Error::Unsupported(
-                    "a child agent's fork diff is unavailable".into(),
-                ));
+            if local.agents.get().map(Hosted::root) == Some(agent) {
+                return local.project_diff(&self.diffs, page).await;
             }
-            local.project_diff(&self.diffs, page).await
+            let state = local
+                .agents()
+                .await?
+                .0
+                .state(agent)
+                .await
+                .map_err(storage)?;
+            let project = state
+                .volumes
+                .iter()
+                .find(|binding| binding.name == "project")
+                .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
+            let operation = crate::filesystem::spawned_operation(agent, &project.name);
+            let base = local
+                .files
+                .creation_generation(&project.volume, operation)
+                .await?
+                .ok_or_else(|| {
+                    Error::Unsupported("selected project has no fork creation receipt".into())
+                })?;
+            let reference = crate::filesystem::workspace_ref(
+                project.volume.provider().clone(),
+                &project.volume.storage_name(&mut None)?,
+            )?;
+            let current = local.files.resolve(&reference, None).await?.generation;
+            let reader = local
+                .agents
+                .get()
+                .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+                .server
+                .bound()
+                .content_reader(agent)
+                .await
+                .map_err(storage)?;
+            self.diffs
+                .page(&*reader, &project.volume, (&base, &current), page)
+                .await
         })
     }
 
@@ -540,6 +612,7 @@ impl LocalHarness {
         }
         .map_err(storage)?;
         let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser {
+            sessions: bound.admit_sessions().is_ok(),
             harness: Arc::downgrade(self),
             #[cfg(any(test, feature = "native-execution"))]
             diffs: crate::hosting::DiffPages::default(),

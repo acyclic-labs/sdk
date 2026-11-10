@@ -73,7 +73,7 @@
             ],
             "task_failure": "model provider unavailable"
           },
-          "send": "\u0004"
+          "send": "\u0004\u0004"
         }
       ]
     }

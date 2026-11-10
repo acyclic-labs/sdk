@@ -38,9 +38,52 @@ struct Invocation<'a> {
     lease: &'a acyclic_fs::OperationWindowLease,
     watcher: &'a mut Option<capture::Cursor>,
     access: &'a crate::filesystem::WorkspaceAccess,
+    capture_cut: acyclic_fs::GenerationId,
 }
 
 impl Commands<'_> {
+    /// One serialized entry to the git facade, shared by native hosts and
+    /// platform-owned session integration. The existing capture, recovery,
+    /// publication window and conflict projection all remain inside it.
+    pub(in crate::local) fn invoke<'a, F>(
+        &'a self,
+        command: &'a str,
+        context: CommandContext<'a>,
+        before: F,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_fs::GitCommandOutput>>
+    where
+        F: std::future::Future<Output = Result<()>> + Send + 'a,
+    {
+        Box::pin(async move {
+            context.owner.verify().await?;
+            let parsed = self.fs_arguments(command, context.scope)?;
+            let mut state =
+                crate::sync::owned::lock_owned(StateArc::clone(&self.workspace.state)).await;
+            let (selected, pending) = self.workspace.selected_view().await?;
+            reconciliation::recover_pending(
+                self.workspace,
+                selected.as_ref().unwrap_or_else(|| self.workspace.view()),
+                pending,
+                &|| context.owner.verify(),
+            )
+            .await?;
+            state.active = selected;
+            let physical = self
+                .workspace
+                .selected_workspace(&mut state, context.owner)
+                .await?;
+            before.await?;
+            let command: acyclic_stream::BoxProviderFuture<'_, Result<Outcome>> =
+                Box::pin(self.fs(parsed, &context, &mut state, &physical));
+            let result = command.await?;
+            context.owner.verify().await?;
+            match result {
+                Outcome::Completed(output) => Ok(*output),
+                Outcome::Rejected(error) => Err(*error),
+            }
+        })
+    }
+
     pub(in crate::local) fn fs_arguments(
         &self,
         command: &str,
@@ -175,6 +218,7 @@ impl Commands<'_> {
                     lease: &lease,
                     watcher,
                     access: &access,
+                    capture_cut: parent.id(),
                 },
             )
             .await;
@@ -270,15 +314,21 @@ impl Commands<'_> {
             lease,
             watcher,
             access,
+            capture_cut,
         } = invocation;
         let owner = context.owner;
         owner.verify().await?;
         if source.is_none() {
+            // A conflict continuation retains the Git request, but captures a
+            // new checkout transition. Its selected cut distinguishes that
+            // publication from an earlier capture under the same request.
+            let capture_operation =
+                reconciliation_operation(context.operation, b"capture", capture_cut, capture_cut);
             capture::capture(
                 (self.capture_options, self.capture_policy),
                 (workspace, checkout),
                 watcher,
-                (context.operation, 0),
+                (OperationId::from_bytes(capture_operation.into_bytes()), 0),
                 lease.publication_permit(),
             )
             .await?;

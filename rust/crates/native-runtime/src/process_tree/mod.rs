@@ -18,6 +18,11 @@ mod command;
 pub use command::{ProcessCommand, ProcessStdio};
 #[cfg(windows)]
 mod windows_create;
+
+#[cfg(windows)]
+pub(crate) fn service_command_line(command: &ProcessCommand) -> std::io::Result<Vec<u16>> {
+    windows_create::make_command_line(&command.program, &command.args)
+}
 use std::time::{Duration, Instant};
 #[cfg(windows)]
 use windows_create::Child;

@@ -44,6 +44,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         clock: Arc<dyn UnixMillisClock>,
         calls: Option<&str>,
     ) -> Result<AgentObservation> {
+        self.client_observation(authority, agent, volume, clock, calls, None)
+            .await
+    }
+
+    /// Host-authorized directory observation. Only a platform owning all roots
+    /// of the placement may request this credential; ordinary tree enrollment
+    /// always uses the single-agent observation entry.
+    pub(crate) async fn client_observation(
+        &self,
+        authority: &AgentAuthority<'_>,
+        agent: &crate::agent::AgentPath,
+        volume: &VolumeRef,
+        clock: Arc<dyn UnixMillisClock>,
+        calls: Option<&str>,
+        directory: Option<&str>,
+    ) -> Result<AgentObservation> {
         let issuer = authority.issuer.native().ok_or_else(|| {
             Error::Invalid("client credential enrollment requires native custody".into())
         })?;
@@ -123,6 +139,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         ];
         if let Some(calls) = calls {
             grants.push((calls, false, invoke));
+        }
+        let directory_streams = [
+            acyclic_stream::wire_codec::session::stream_resource(crate::agent::AGENTS),
+            acyclic_stream::wire_codec::session::stream_resource(crate::agent::STATUSES),
+            acyclic_stream::wire_codec::session::stream_resource("harness/membership"),
+        ];
+        if let Some(directory) = directory {
+            grants.push((directory, false, invoke));
+            for stream in &directory_streams {
+                grants.push((stream.as_str(), true, follow));
+            }
+            grants.push(("fs:/", true, read));
         }
         let (credential, principal) =
             issuer.resource_credential(&authority.scope, &grants, seconds(clock.as_ref()))?;

@@ -15,6 +15,7 @@ pub mod test_support {
 }
 mod headless;
 mod lifecycle;
+mod sessions;
 mod setup;
 mod usage_export;
 mod view;
@@ -244,10 +245,27 @@ fn configure(
 
 // Own native phase futures separately from the CLI orchestration frame.
 async fn run(
+    args: Args,
+    seams: impl FnOnce(ServerConfig) -> ServerConfig,
+    shutdown: completion::Shutdown,
+    event_output: Option<&mut headless::Output>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut ready = acyclic_native_runtime::take_service_ready_signal()?;
+    let result = run_inner(args, seams, shutdown, event_output, &mut ready).await;
+    if let Some(ready) = ready
+        && let Err(error) = &result
+    {
+        ready.fail(&error.to_string())?;
+    }
+    result
+}
+
+async fn run_inner(
     mut args: Args,
     seams: impl FnOnce(ServerConfig) -> ServerConfig,
     shutdown: completion::Shutdown,
     event_output: Option<&mut headless::Output>,
+    ready: &mut Option<acyclic_native_runtime::ServiceReadySignal>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if matches!(args.command, Some(Command::Doctor))
         && (args.host_workspace || args.endpoint.is_some())
@@ -281,9 +299,68 @@ async fn run(
     if matches!(args.command, Some(Command::Doctor)) {
         return setup::doctor(&args).await;
     }
+    let interactive = !args.local_service
+        && args.command.is_none()
+        && args.prompt.is_none()
+        && args.input_format == InputFormat::Text
+        && args.output_format == OutputFormat::Text
+        && !acyclic_harness::tui::term::Environment::capture().is_dumb();
+    let session_client = interactive
+        || args.agent.is_some()
+        || args.new_session
+        || args.continue_session
+        || args.resume.is_some()
+        || matches!(
+            args.command,
+            Some(
+                Command::Sessions(_)
+                    | Command::NewSession { .. }
+                    | Command::Rename { .. }
+                    | Command::Archive
+            )
+        );
+    let service = if session_client {
+        let directory = acyclic_harness::local::service::Directory::for_workspace(
+            &args.workspace,
+            args.host_state_directory.as_deref(),
+        )?;
+        let existing = directory.clone();
+        if tokio::task::spawn_blocking(move || existing.existing()).await?? {
+            // A running session needs only its existing capability and files;
+            // attaching never asks the user for the owner's model credentials.
+            return connected(
+                &args,
+                directory.connect().await?,
+                output,
+                event_output,
+                None,
+            )
+            .await;
+        }
+        Some(directory)
+    } else {
+        None
+    };
     let mut registry = setup::registry(&args)?;
     let terminal = setup::first_run(&mut args, &mut registry)?;
     let config = configure(&args, registry)?;
+    if args.local_service {
+        let directory = acyclic_harness::local::service::Directory::for_config(&config)?;
+        let owner = directory.own()?;
+        let signal = ready
+            .take()
+            .ok_or("local service requires its readiness channel")?;
+        return acyclic_harness::local::service::serve(
+            seams(ServerConfig::new(config)),
+            owner,
+            signal,
+            async {
+                let _ = shutdown.await;
+            },
+        )
+        .await
+        .map_err(Into::into);
+    }
     if let Some(Command::Serve(serve)) = &args.command {
         let tls = match (&serve.tls_certificate, &serve.tls_key, &serve.url) {
             (Some(certificate), Some(key), Some(url)) => {
@@ -319,9 +396,73 @@ async fn run(
         .await?;
         return Ok(());
     }
+    // Interactive sessions belong to the serving process. The terminal owns
+    // only a client, so dropping it neither cancels a turn nor ends its owner.
+    if let Some(directory) = service {
+        let starter = directory.clone();
+        let arguments = service_arguments(&args);
+        tokio::task::spawn_blocking(move || {
+            starter.start(
+                &std::env::current_exe()
+                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?,
+                &arguments,
+            )
+        })
+        .await??;
+        let connection = directory.connect().await?;
+        return connected(&args, connection, output, event_output, terminal).await;
+    }
     let local = Arc::new(phase(|| LocalHarness::open(config)).await?);
     let connection = phase(|| local.connect()).await?;
     connected(&args, connection, output, event_output, terminal).await
+}
+
+// Only owner configuration crosses the process boundary. Prompt identities,
+// view selections and output destinations belong to the attaching client.
+fn service_arguments(args: &Args) -> Vec<std::ffi::OsString> {
+    let mut arguments = vec![
+        "--local-service".into(),
+        "--workspace".into(),
+        args.workspace.clone().into_os_string(),
+    ];
+    for (flag, path) in [
+        ("--host-state-directory", args.host_state_directory.as_ref()),
+        ("--catalog", args.catalog.as_ref()),
+        ("--credentials", args.credentials.as_ref()),
+        ("--settings-root", args.settings_root.as_ref()),
+        ("--approval-policy", args.approval_policy.as_ref()),
+    ] {
+        if let Some(path) = path {
+            arguments.extend([flag.into(), path.clone().into_os_string()]);
+        }
+    }
+    for (flag, value) in [
+        ("--model", args.model.as_ref()),
+        ("--directory", args.directory.as_ref()),
+    ] {
+        if let Some(value) = value {
+            arguments.extend([flag.into(), value.into()]);
+        }
+    }
+    arguments.extend([
+        "--workspace-mounting".into(),
+        match args.workspace_mounting {
+            args::Mounting::Auto => "auto",
+            args::Mounting::Native => "native",
+            args::Mounting::Physical => "physical",
+        }
+        .into(),
+    ]);
+    if args.default_config {
+        arguments.push("--default-config".into());
+    }
+    if let Some(records) = args.diagnostic_records {
+        arguments.extend(["--diagnostic-records".into(), records.to_string().into()]);
+    }
+    if let Some(bytes) = args.diagnostic_record_bytes {
+        arguments.extend(["--diagnostic-record-bytes".into(), bytes.to_string().into()]);
+    }
+    arguments
 }
 
 async fn host_workspace(
@@ -380,8 +521,29 @@ async fn connected(
     connection: Connection,
     output: headless::Prepared,
     event_output: Option<&mut headless::Output>,
-    terminal: Option<acyclic_harness::tui::term::Tty>,
+    mut terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(Command::Sessions(page)) = &args.command {
+        let page = acyclic_harness::local::sessions::page(
+            &connection,
+            acyclic_harness::client::AgentPageRequest::new(
+                page.page_size,
+                page.page_bytes,
+                page.cursor.clone(),
+            )?,
+        )
+        .await?;
+        let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
+        headless::write_event(
+            &mut output,
+            OperationId::from_bytes(connection.root().id_bytes()),
+            &page,
+        )
+        .await?;
+        return Ok(());
+    }
+    let (connection, selected_terminal) = sessions::select(args, connection, terminal).await?;
+    terminal = selected_terminal;
     let connection = match &args.agent {
         Some(agent) => {
             connection
@@ -407,18 +569,14 @@ async fn connected(
     } else {
         connection
     };
-    if let Some(Command::Sessions(page) | Command::History(page)) = &args.command {
+    if let Some(Command::History(page)) = &args.command {
         let page = acyclic_harness::client::AgentPageRequest::new(
             page.page_size,
             page.page_bytes,
             page.cursor.clone(),
         )?;
         let agent = connection.root().clone();
-        let command = if matches!(args.command, Some(Command::History(_))) {
-            acyclic_harness::client::AgentCommand::History { agent, page }
-        } else {
-            acyclic_harness::client::AgentCommand::Children { agent, page }
-        };
+        let command = acyclic_harness::client::AgentCommand::History { agent, page };
         let reply = connection.execute(&command).await?;
         let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
         headless::write_event(
@@ -428,6 +586,41 @@ async fn connected(
         )
         .await?;
         return Ok(());
+    }
+    match &args.command {
+        Some(Command::Rename { title }) => {
+            acyclic_harness::local::sessions::rename(
+                &connection,
+                OperationId::new(),
+                title.clone(),
+            )
+            .await?;
+            return Ok(());
+        }
+        Some(Command::Archive) => {
+            let operation = args
+                .operation
+                .clone()
+                .unwrap_or_else(|| OperationId::new().to_string());
+            acyclic_harness::local::sessions::archive(&connection, &operation).await?;
+            return Ok(());
+        }
+        Some(Command::NewSession { .. })
+            if acyclic_harness::tui::term::Environment::capture().is_dumb() =>
+        {
+            let mut output =
+                headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
+            headless::write_event(
+                &mut output,
+                OperationId::from_bytes(connection.root().id_bytes()),
+                &acyclic_harness::client::AgentReply::Root {
+                    agent: connection.root().clone(),
+                },
+            )
+            .await?;
+            return Ok(());
+        }
+        _ => {}
     }
     if let Some(Command::Study(study)) = &args.command {
         // Admitted before any model call.
@@ -486,7 +679,7 @@ async fn drive(
             view::run(
                 conversation,
                 args.inline,
-                args.resume || args.agent.is_some(),
+                args.resume.is_some() || args.continue_session || args.agent.is_some(),
                 terminal,
             )
         })

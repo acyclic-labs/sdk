@@ -97,7 +97,29 @@
         {
           "when": {
             "contains": [
-              "Rewound to selected checkpoint",
+              "Fork / rewind to turn",
+              "Turn 2"
+            ]
+          },
+          "send": "2\r"
+        },
+        {
+          "when": {
+            "contains": [
+              "REWIND_E2E_FIRST",
+              "GraphCoder"
+            ],
+            "absent": [
+              "REWIND_E2E_DISCARDED"
+            ],
+            "cursor": true
+          },
+          "prompt": "/unpause "
+        },
+        {
+          "when": {
+            "contains": [
+              "Session resumed",
               "○"
             ]
           },
@@ -110,7 +132,7 @@
               "○"
             ]
           },
-          "send": "\u0004"
+          "send": "\u0004\u0004"
         }
       ]
     },
@@ -135,7 +157,7 @@
               "○"
             ]
           },
-          "send": "\u0004"
+          "send": "\u0004\u0004"
         }
       ]
     }

@@ -49,6 +49,9 @@ mod owner_record;
 mod preflight;
 #[cfg(feature = "serve")]
 mod serve;
+#[cfg(feature = "serve")]
+pub mod service;
+pub mod sessions;
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;
 pub mod study;

@@ -2,6 +2,84 @@ use super::*;
 use crate::filesystem::FilesystemContentVerifier;
 
 impl LocalHarness {
+    /// A directory-authorized integration uses the same native capture,
+    /// operation receipt, recovery and conflict files as ordinary `fs merge`.
+    /// This binds the source's lazy cut; it creates no physical task view.
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) async fn merge_session(
+        &self,
+        agent: &crate::agent::AgentPath,
+        operation: OperationId,
+    ) -> Result<Option<String>> {
+        let workspace = self
+            .workspace
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("session integration requires a checkout".into()))?;
+        let hosted = self
+            .agents
+            .get()
+            .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?;
+        if agent.parent().is_some() || agent == hosted.root() {
+            return Err(Error::Invalid(
+                "merge selects an independent session fork".into(),
+            ));
+        }
+        let state = hosted.agents().state(agent).await.map_err(storage)?;
+        let project = state
+            .volumes
+            .iter()
+            .find(|binding| binding.name == "project")
+            .ok_or_else(|| Error::Invalid("session has no project binding".into()))?;
+        let source = workspace.spawned_project_view(&project.volume).await?;
+        let branch = format!("agents/session-{}", agent.id());
+        let command = format!("merge {branch}");
+        let configuration = super::checkout_tools::capture::configuration(workspace)?;
+        let commands = super::workspace::git::Commands {
+            workspace,
+            signed: &self.signed,
+            clock: self.clock.as_ref(),
+            capture_options: &configuration.0,
+            capture_policy: &configuration.1,
+        };
+        let owner = super::workspace::owner::AgentOwner(agent.clone());
+        let scope = crate::runtime::RuntimeScope::new(
+            self.signed.capabilities().clone(),
+            Default::default(),
+        )?;
+        let output = commands
+            .invoke(
+                &command,
+                super::workspace::git::CommandContext {
+                    owner: &owner,
+                    operation,
+                    scope: &scope,
+                    request: Some(acyclic_fs::GitRequest {
+                        operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
+                        unanswered: Arc::new(|_| true),
+                    }),
+                },
+                async {
+                    acyclic_fs::GitCompatRepository::new(
+                        workspace.view().workspace().id(),
+                        workspace.store.clone(),
+                    )
+                    .register_branch_workspace(branch, source.workspace().id(), None, false)
+                    .await
+                    .map_err(storage)
+                },
+            )
+            .await?;
+        match output {
+            acyclic_fs::GitCommandOutput::Committed(commit) => Ok(Some(commit.id.to_hex())),
+            acyclic_fs::GitCommandOutput::NoOp | acyclic_fs::GitCommandOutput::Filesystem(_) => {
+                Ok(None)
+            }
+            _ => Err(Error::Invalid(
+                "merge returned another git-facade result".into(),
+            )),
+        }
+    }
+
     /// Authority selecting this local agent's followed document and task files.
     pub fn client_owner(&self) -> crate::wire::Authority {
         crate::wire_codec::encode_authority(self.verifier.audience())

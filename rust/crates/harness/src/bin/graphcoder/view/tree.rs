@@ -116,15 +116,17 @@ impl Sidebar {
         }
     }
 
-    pub fn frame(&mut self, now: u64, height: u16, visible: bool) {
+    pub fn frame(&mut self, now: u64, area: Rect) {
+        let height = area.height;
         let credit = usize::from(height.saturating_sub(if self.search.is_some() { 4 } else { 3 }));
-        let visible = visible && credit > 0;
+        let visible = area.width > 2 && credit > 0;
+        let bytes = u64::from(area.width.saturating_sub(2)) * 4;
         self.source
             .view
             .set_viewport(if visible { credit } else { 1 }, 0, 16);
         self.source.view.frame(now);
         self.children = self.has_children();
-        self.retain_files(visible);
+        self.retain_files(visible, bytes);
         self.filter();
         if self
             .search
@@ -158,7 +160,7 @@ impl Sidebar {
             } else if !pending {
                 self.search_next();
                 self.source.view.frame(now);
-                self.retain_files(visible);
+                self.retain_files(visible, bytes);
                 self.filter();
             }
         }
@@ -168,7 +170,7 @@ impl Sidebar {
         }
     }
 
-    fn retain_files(&mut self, visible: bool) {
+    fn retain_files(&mut self, visible: bool, bytes: u64) {
         self.files.retain(
             self.source
                 .view
@@ -178,6 +180,7 @@ impl Sidebar {
                     Row::Agent { path, .. } if visible => Some(path.clone()),
                     _ => None,
                 }),
+            bytes,
         );
     }
 
@@ -207,7 +210,7 @@ impl Sidebar {
                             .files
                             .get("ui/title")
                             .and_then(Option::as_ref)
-                            .map(|file| file.text.as_str()),
+                            .map(String::as_str),
                         || Ok(path.id().to_string()),
                     )
                     .ok()?;
@@ -284,7 +287,7 @@ impl Sidebar {
                                         .files
                                         .get(&format!("ui/{name}"))
                                         .and_then(Option::as_ref)
-                                        .map(|file| file.text.as_str())
+                                        .map(String::as_str)
                                 })
                                 .map_err(|error| error.to_string()),
                             Some(Err(error)) => Err(format!("UI unavailable: {error}")),
@@ -298,13 +301,12 @@ impl Sidebar {
                         let prefix = format!("{marker}{}{branch}", "  ".repeat(indent));
                         match summary {
                             Ok(row) => Line::raw(format!(
-                                "{prefix} {} {} · {} · {} · {} · {}",
+                                "{prefix} {} {} · {} · {} · {}",
                                 first_line(&row.glyph),
                                 first_line(&row.title),
                                 first_line(&row.model),
                                 first_line(&row.cost),
-                                first_line(&row.age),
-                                first_line(&row.state)
+                                first_line(&row.age)
                             )),
                             Err(error) => Line::raw(format!("{prefix} {} · {error}", path.id())),
                         }

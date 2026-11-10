@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     OperationId,
-    client_files::{ClientFileChange, ClientFiles},
+    client_files::{ClientFileChange, ClientFiles, FilePreviews},
     resources::GenerationRef,
 };
 use futures::future::LocalBoxFuture;
@@ -11,11 +11,12 @@ use std::{
     task::{Context, Poll},
 };
 
-type Snapshot = LocalBoxFuture<'static, Result<(Arc<Conversation>, ClientFiles)>>;
+type Snapshot = LocalBoxFuture<'static, Result<(Arc<Conversation>, FilePreviews)>>;
 
 struct VisibleFileQuery {
-    snapshot: Option<Result<ClientFiles>>,
+    snapshot: Option<Result<FilePreviews>>,
     pending: Option<Snapshot>,
+    bytes: u64,
 }
 
 /// Publication-driven file queries for exactly the agents a view displays.
@@ -41,18 +42,24 @@ impl VisibleFiles {
 
     /// Reconcile the visible set. An unchanged row keeps its original request,
     /// generation and source failure across redraws.
-    pub fn retain(&mut self, agents: impl IntoIterator<Item = AgentPath>) {
+    pub fn retain(&mut self, agents: impl IntoIterator<Item = AgentPath>, bytes: u64) {
+        if bytes == 0 {
+            self.rows.clear();
+            return;
+        }
         let visible: BTreeSet<_> = agents.into_iter().collect();
-        self.rows.retain(|agent, _| visible.contains(agent));
+        self.rows
+            .retain(|agent, query| visible.contains(agent) && query.bytes == bytes);
         for agent in visible {
             self.rows.entry(agent.clone()).or_insert_with(|| {
                 let root = Arc::clone(&self.root);
                 let paths = self.paths.clone();
                 VisibleFileQuery {
                     snapshot: None,
+                    bytes,
                     pending: Some(Box::pin(async move {
                         let conversation = root.select(agent).await?;
-                        let snapshot = conversation.private_files(paths, None).await?;
+                        let snapshot = conversation.agent_file_previews(paths, None, bytes).await?;
                         Ok((conversation, snapshot))
                     })),
                 }
@@ -66,7 +73,7 @@ impl VisibleFiles {
     pub fn snapshot(
         &self,
         agent: &AgentPath,
-    ) -> Option<std::result::Result<&ClientFiles, &crate::Error>> {
+    ) -> Option<std::result::Result<&FilePreviews, &crate::Error>> {
         self.rows
             .get(agent)?
             .snapshot
@@ -90,8 +97,11 @@ impl VisibleFiles {
                 Ok((conversation, snapshot)) => {
                     let paths = self.paths.clone();
                     let after = snapshot.generation.clone();
+                    let bytes = query.bytes;
                     query.pending = Some(Box::pin(async move {
-                        let snapshot = conversation.private_files(paths, Some(after)).await?;
+                        let snapshot = conversation
+                            .agent_file_previews(paths, Some(after), bytes)
+                            .await?;
                         Ok((conversation, snapshot))
                     }));
                     Ok(snapshot)
@@ -109,6 +119,48 @@ impl VisibleFiles {
 }
 
 impl Conversation {
+    /// Bounded authored-file previews with the original publication follow.
+    pub async fn agent_file_previews(
+        &self,
+        paths: Vec<String>,
+        after: Option<GenerationRef>,
+        bytes: u64,
+    ) -> Result<crate::client_files::FilePreviews> {
+        match self
+            .connection
+            .execute(&AgentCommand::AgentFilePreviews {
+                agent: self.agent().clone(),
+                paths,
+                after,
+                bytes,
+            })
+            .await?
+        {
+            AgentReply::FilePreviews { snapshot } => Ok(snapshot),
+            _ => Err(unexpected()),
+        }
+    }
+
+    /// Authored agent files, observed at one committed generation.
+    pub async fn agent_files(
+        &self,
+        paths: Vec<String>,
+        after: Option<GenerationRef>,
+    ) -> Result<ClientFiles> {
+        match self
+            .connection
+            .execute(&AgentCommand::AgentFiles {
+                agent: self.agent().clone(),
+                paths,
+                after,
+            })
+            .await?
+        {
+            AgentReply::ClientFiles { snapshot } => Ok(snapshot),
+            _ => Err(unexpected()),
+        }
+    }
+
     /// The default client session of this selected conversation. Callers that
     /// need independent UI sessions supply their own stable session identity.
     #[must_use]
@@ -129,27 +181,6 @@ impl Conversation {
             .execute(&AgentCommand::ClientFiles {
                 agent: self.agent().clone(),
                 session,
-                paths,
-                after,
-            })
-            .await?
-        {
-            AgentReply::ClientFiles { snapshot } => Ok(snapshot),
-            _ => Err(unexpected()),
-        }
-    }
-
-    /// Snapshot explicit private paths, optionally waiting on this volume's
-    /// original publication stream. The shared query owns cancellation/credit.
-    pub async fn private_files(
-        &self,
-        paths: Vec<String>,
-        after: Option<GenerationRef>,
-    ) -> Result<ClientFiles> {
-        match self
-            .connection
-            .execute(&AgentCommand::PrivateFiles {
-                agent: self.agent().clone(),
                 paths,
                 after,
             })

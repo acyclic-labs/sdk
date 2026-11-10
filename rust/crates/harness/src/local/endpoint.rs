@@ -22,6 +22,7 @@ pub(super) const CREDENTIAL: u32 = 0;
 #[derive(Clone)]
 pub struct Connection {
     pub(super) session: Client,
+    directory: bool,
     // One immutable authenticated selection, shared by commands and follows.
     pub(super) controls: Arc<AgentControls>,
     pub(super) root: AgentPath,
@@ -86,7 +87,9 @@ impl Connection {
     /// rebinds the same session. The local harness binds the descendant's own
     /// scope and volumes, retaining its policy and observation lifetime.
     pub async fn select(&self, agent: AgentPath) -> Result<Self> {
-        if let Some(host) = &self._host {
+        if let Some(host) = &self._host
+            && !self.directory
+        {
             if !self.root.contains(&agent) {
                 return Err(Error::Unauthorized(
                     "a selected agent must be the root or its descendant".into(),
@@ -107,6 +110,7 @@ impl Connection {
             root: agent,
             tools,
             _host: self._host.clone(),
+            directory: self.directory,
         })
     }
 
@@ -130,7 +134,8 @@ impl Connection {
         };
         let root = host.agents.get().map(super::agents::Hosted::root);
         let agent = (root != Some(&self.root)).then(|| self.root.clone());
-        host.attach(agent, false).await
+        host.attach_with_directory(agent, false, self.directory)
+            .await
     }
 
     /// Connects to the endpoint the one connection policy selects: an
@@ -178,7 +183,7 @@ impl Connection {
         }
         .map_err(exchange)?;
         let session = client.session_client().map_err(exchange)?;
-        Self::bind(session, credential, None).await
+        Self::bind(session, credential, None, false).await
     }
 
     /// Binds `session`, holding `credential`, to the tree its endpoint
@@ -187,13 +192,14 @@ impl Connection {
         session: Client,
         credential: Vec<u8>,
         host: Option<Arc<LocalHarness>>,
+        directory: bool,
     ) -> Result<Self> {
         session
             .register_credential(CREDENTIAL, credential.into())
             .map_err(exchange)?;
         let (controls, tools) = AgentControls::discover(session.clone(), CREDENTIAL)
             .await
-            .map_err(exchange)?;
+            .map_err(|error| exchange(format_args!("discover agent binding: {error}")))?;
         let AgentReply::Root { agent: root } = execute(&controls, &AgentCommand::Root {}).await?
         else {
             return Err(Error::Conflict("the endpoint named no root".into()));
@@ -204,6 +210,7 @@ impl Connection {
             root,
             tools,
             _host: host,
+            directory,
         })
     }
 }
@@ -238,7 +245,13 @@ impl LocalHarness {
         self.connect_agent(None).await
     }
 
-    /// [`Self::connect`] under a credential minted for `agent`, the root when
+    /// Explicit owner connection to this placement's independent root sessions.
+    /// Ordinary connect retains its single-tree credential boundary.
+    pub async fn connect_sessions(self: &Arc<Self>) -> Result<Connection> {
+        self.attach_with_directory(None, true, true).await
+    }
+
+    /// [Self::connect] under a credential minted for the selected agent, the root when
     /// `None`: the one credential that drives and observes that agent.
     async fn connect_agent(self: &Arc<Self>, agent: Option<AgentPath>) -> Result<Connection> {
         self.attach(agent, true).await
@@ -254,6 +267,15 @@ impl LocalHarness {
         agent: Option<AgentPath>,
         live: bool,
     ) -> Result<Connection> {
+        self.attach_with_directory(agent, live, false).await
+    }
+
+    async fn attach_with_directory(
+        self: &Arc<Self>,
+        agent: Option<AgentPath>,
+        live: bool,
+        directory: bool,
+    ) -> Result<Connection> {
         self.agents().await?;
         let hosted = self
             .agents
@@ -265,14 +287,25 @@ impl LocalHarness {
                 Error::Unsupported("an embedded harness has no agent stream".into())
             })?;
             let bound = server.bound();
-            let observation = bound
-                .client_credential(
-                    agent.as_ref().unwrap_or(server.root()),
-                    server.resource(),
-                    Arc::clone(&self.clock),
-                )
-                .await
-                .map_err(storage)?;
+            let selected = agent.as_ref().unwrap_or(server.root());
+            let observation = if directory {
+                if !server.serves_sessions() {
+                    return Err(Error::Unauthorized("this admission serves one tree".into()));
+                }
+                bound
+                    .session_credential(
+                        selected,
+                        server.resource(),
+                        &server.session_resource(),
+                        Arc::clone(&self.clock),
+                    )
+                    .await
+            } else {
+                bound
+                    .client_credential(selected, server.resource(), Arc::clone(&self.clock))
+                    .await
+            }
+            .map_err(storage)?;
             let changes = bound.changes().map_err(storage)?;
             let session = Client::in_process_with_products(
                 stream,
@@ -282,8 +315,13 @@ impl LocalHarness {
                 Arc::new(acyclic_stream::runtime::PlatformExecutor),
                 live.then(|| hosted.runtime.lifetime()),
             );
-            let connection =
-                Connection::bind(session, observation.credential, Some(Arc::clone(self))).await?;
+            let connection = Connection::bind(
+                session,
+                observation.credential,
+                Some(Arc::clone(self)),
+                directory,
+            )
+            .await?;
             let Some(agent) = agent else {
                 return Ok(connection);
             };
@@ -298,6 +336,7 @@ impl LocalHarness {
                 root: agent,
                 tools,
                 _host: connection._host,
+                directory,
             })
         };
         if live {

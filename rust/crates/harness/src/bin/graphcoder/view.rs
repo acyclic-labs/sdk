@@ -169,10 +169,15 @@ enum Prompt {
     Feedback,
     /// A command that runs once its yes arrives.
     Confirm(CommandRequest),
+    /// Explicit terminal-exit choice; quitting otherwise only detaches.
+    StopOrDetach,
 }
 
 #[derive(Default)]
 struct View {
+    /// Retain one requested merge identity across transport uncertainty and
+    /// conflict resolution; a redraw or repeated command cannot replace it.
+    merge_operation: Option<acyclic_harness::OperationId>,
     transcript: TranscriptRows,
     /// Sent prompts not yet settled, by inbox sequence.
     pending: Vec<(u64, String)>,
@@ -184,6 +189,8 @@ struct View {
     stopped: Option<(u64, u64)>,
     /// A cancelled entry already marked its turn's stop.
     cancel_marked: bool,
+    /// The authored session title, projected only for this attached view.
+    title: String,
     /// The running turn's answer while it streams.
     reply: String,
     phase: Option<Phase>,
@@ -307,7 +314,13 @@ impl View {
                     .map(|at| self.pending.remove(at).1);
                 // A turn's text is its committed entry's, a cancelled one's
                 // too, whichever of it and its status arrived first.
-                let turn = conversation.turn(&entry).await?;
+                let turn = conversation
+                    .turn_at(
+                        seen.checked_sub(1)
+                            .ok_or("turn has no committed sequence")?,
+                        &entry,
+                    )
+                    .await?;
                 if let Some(text) = sent.or(turn.prompt) {
                     self.transcript.push(BlockKind::Prompt, &text);
                 }
@@ -379,6 +392,53 @@ impl View {
         request: CommandRequest,
     ) -> Result<(), Failure> {
         let id = acyclic_harness::OperationId::new().to_string();
+        if matches!(request, CommandRequest::Merge {}) {
+            let operation = *self
+                .merge_operation
+                .get_or_insert_with(acyclic_harness::OperationId::new);
+            match acyclic_harness::local::sessions::merge(
+                conversation.connection(),
+                &operation.to_string(),
+            )
+            .await
+            {
+                Ok(commit) => {
+                    self.merge_operation = None;
+                    self.notice = Some(commit.map_or_else(
+                        || "Session already integrated".into(),
+                        |commit| format!("Merged into checkout: {commit}"),
+                    ));
+                }
+                Err(error) => self.notice = Some(error.to_string()),
+            }
+            return Ok(());
+        }
+        if let CommandRequest::Pause { scope } | CommandRequest::Resume { scope } = &request {
+            let paused = matches!(request, CommandRequest::Pause { .. });
+            match scope {
+                acyclic_harness::client::commands::CommandTaskScope::Subtree => {
+                    acyclic_harness::local::sessions::pause_subtree(
+                        conversation.connection(),
+                        conversation.connection().root().clone(),
+                        paused,
+                    )
+                    .await?;
+                }
+                acyclic_harness::client::commands::CommandTaskScope::All => {
+                    acyclic_harness::local::sessions::pause_all(conversation.connection(), paused)
+                        .await?;
+                }
+            }
+            self.notice = Some(
+                if paused {
+                    "Session paused"
+                } else {
+                    "Session resumed"
+                }
+                .into(),
+            );
+            return Ok(());
+        }
         let inbox = match &request {
             CommandRequest::Compact { instructions } => {
                 let instructions = instructions.trim();
@@ -386,7 +446,6 @@ impl View {
                     .compact(&id, (!instructions.is_empty()).then_some(instructions))
                     .await?
             }
-            CommandRequest::Rewind {} => conversation.rewind(&id).await?,
             CommandRequest::ClearAll {} => conversation.clear_all(&id).await?,
             _ => {
                 self.notice = Some(format!("{request:?} is not available in this view"));
@@ -552,6 +611,9 @@ impl View {
             Span::raw(if self.busy() { "● " } else { "○ " }),
             Span::styled("GraphCoder", Style::default().add_modifier(Modifier::BOLD)),
         ];
+        if !self.title.is_empty() {
+            spans.push(Span::raw(format!(" · {}", self.title)));
+        }
         if self.outcome == Outcome::Cancelled && !self.busy() {
             spans.push(Span::raw(" ■ STOPPED"));
         }
@@ -559,6 +621,9 @@ impl View {
     }
 
     fn status(&self) -> String {
+        if matches!(self.prompt, Some(Prompt::StopOrDetach)) {
+            return "Stop or detach? s stops this turn; d or Ctrl+D detaches; Esc stays.".into();
+        }
         if let Some(Prompt::Confirm(CommandRequest::ClearAll {})) = &self.prompt {
             return "Clear all conversations? Enter yes or no.".into();
         }
@@ -572,7 +637,8 @@ impl View {
             ),
             (Some(Phase::Done { outcome }), _) => format!("conversation ended: {outcome:?}"),
             _ if self.busy() => "working · Esc or Ctrl+C interrupts".into(),
-            _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+D quits".into(),
+            _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+S sessions · Ctrl+D stop or detach"
+                .into(),
         }
     }
 }
@@ -628,12 +694,67 @@ fn terminal_events(
 /// Runs the terminal view; `resume` reopens the last conversation's recent
 /// turns, paged in from the stream as they show, otherwise the view starts
 /// empty.
+enum Next {
+    Exit,
+    Picker,
+    New,
+    HistoryBranch,
+}
+
 pub async fn run(
+    mut conversation: Arc<Conversation>,
+    inline: bool,
+    mut resume: bool,
+    mut terminal: Option<Tty>,
+) -> Result<(), Failure> {
+    loop {
+        match run_current(Arc::clone(&conversation), inline, resume, terminal.take()).await? {
+            Next::Exit => return Ok(()),
+            Next::New => {
+                let connection = acyclic_harness::local::sessions::create(
+                    conversation.connection(),
+                    &acyclic_harness::OperationId::new().to_string(),
+                )
+                .await?;
+                conversation = Conversation::open(connection);
+                resume = false;
+            }
+            Next::Picker => {
+                let (connection, owned) =
+                    crate::sessions::picker(conversation.connection().clone(), None, None).await?;
+                conversation = Conversation::open(connection);
+                terminal = owned;
+                resume = true;
+            }
+            Next::HistoryBranch => {
+                let (connection, owned) =
+                    crate::sessions::history_picker(conversation.connection().clone(), None)
+                        .await?;
+                conversation = Conversation::open(connection);
+                terminal = owned;
+                resume = true;
+            }
+        }
+    }
+}
+
+async fn run_current(
     mut conversation: Arc<Conversation>,
     inline: bool,
     resume: bool,
     terminal: Option<Tty>,
-) -> Result<(), Failure> {
+) -> Result<Next, Failure> {
+    let title = conversation
+        .agent_file_previews(
+            vec!["ui/title".into()],
+            None,
+            acyclic_harness::client::MAX_READ_BYTES,
+        )
+        .await?;
+    let mut title_future = std::pin::pin!(session::follow_title(
+        Arc::clone(&conversation),
+        title.generation.clone()
+    ));
     let root = Arc::clone(&conversation);
     let mut sidebar = tree::Sidebar::new(&conversation)?;
     let mut ui = session::Session::open(&conversation).await?;
@@ -665,6 +786,7 @@ pub async fn run(
     };
     let mut events = conversation.observe(from).await?;
     let mut view = View {
+        title: session::title(&title),
         top: events.seen(),
         floor: if resume { 0 } else { events.seen() },
         ..View::default()
@@ -733,7 +855,7 @@ pub async fn run(
         }
         .areas(Rect::from((Position::ORIGIN, size)), &input)
         .tree;
-        sidebar.frame(now, tree_area.height, tree_area.width > 0);
+        sidebar.frame(now, tree_area);
         let tree_shown = ui.tree.unwrap_or_else(|| sidebar.has_children());
         let tree_rows = sidebar.rows(root.agent(), tree_shown && size.width >= 80, size.width / 3);
         let transcript_width = size
@@ -856,6 +978,11 @@ pub async fn run(
                     std::future::pending().await
                 }
             }, if sidebar.failure.is_none() => {}
+            title = &mut title_future => {
+                let title = title?;
+                view.title = session::title(&title);
+                title_future.set(session::follow_title(Arc::clone(&conversation), title.generation));
+            }
             snapshot = &mut files_future => {
                 let snapshot = snapshot?;
                 let layout_changed = ui.snapshot.files.get("layout.json").and_then(Option::as_ref).map(|file| &file.file)
@@ -1007,9 +1134,10 @@ pub async fn run(
                                 let from = selected.settled().await?.saturating_sub(1);
                                 let events = selected.observe(Some(from)).await?;
                                 let session = session::Session::open(&selected).await?;
-                                Ok::<_, Failure>((selected, events, session))
+                                let title = selected.agent_file_previews(vec!["ui/title".into()], None, acyclic_harness::client::MAX_READ_BYTES).await?;
+                                Ok::<_, Failure>((selected, events, session, title))
                             }.await;
-                            let (selected, selected_events, session) = match opening {
+                            let (selected, selected_events, session, title) = match opening {
                                 Ok(opened) => opened,
                                 Err(error) => {
                                     sidebar.cancel_navigation();
@@ -1020,7 +1148,8 @@ pub async fn run(
                             sidebar.attached(&agent, history);
                             events = selected_events;
                             conversation = selected;
-                            view = View { top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
+                            view = View { title: session::title(&title), top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
+                            title_future.set(session::follow_title(Arc::clone(&conversation), title.generation));
                             ui = session;
                             queries.close(query_future.as_mut());
                             overlay = None;
@@ -1055,6 +1184,14 @@ pub async fn run(
                                         ));
                                         continue;
                                     }
+                                    Some(Prompt::StopOrDetach) => {
+                                        match text.trim().to_ascii_lowercase().as_str() {
+                                            "s" | "stop" => { conversation.cancel().await?; return Ok(Next::Exit); }
+                                            "d" | "detach" | "" => return view.exit().map(|()| Next::Exit),
+                                            _ => { view.prompt = Some(Prompt::StopOrDetach); }
+                                        }
+                                        continue;
+                                    }
                                     Some(Prompt::Confirm(request)) => {
                                         if matches!(text.trim(), "y" | "Y" | "yes") {
                                             view.request(&conversation, request).await?;
@@ -1079,8 +1216,17 @@ pub async fn run(
                                 }
                                 match ui.catalog.resolve(&text, u64::MAX) {
                                     Ok(None) => {}
+                                    Ok(Some(CommandResolution::Submit { request: CommandRequest::New {} })) => {
+                                        return Ok(Next::New);
+                                    }
+                                    Ok(Some(CommandResolution::Submit { request: CommandRequest::Rewind {} })) => {
+                                        return Ok(Next::HistoryBranch);
+                                    }
+                                    Ok(Some(CommandResolution::Select { query: CommandQuery::Sessions })) => {
+                                        return Ok(Next::Picker);
+                                    }
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
-                                        return view.exit();
+                                        return view.exit().map(|()| Next::Exit);
                                     }
                                     Ok(Some(CommandResolution::Select { query: selected @ (CommandQuery::Shortcuts | CommandQuery::Diff | CommandQuery::History) })) => {
                                         match ui.select(&conversation, Some(&selected)).await {
@@ -1158,7 +1304,8 @@ pub async fn run(
                                 conversation.cancel().await?;
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
-                            InputEffect::Quit => return view.exit(),
+                            InputEffect::Quit if matches!(view.prompt, Some(Prompt::StopOrDetach)) => return view.exit().map(|()| Next::Exit),
+                            InputEffect::Quit => { view.prompt = Some(Prompt::StopOrDetach); }
                             InputEffect::Scroll(rows) if queries.source().is_some() && credit != 0 => {
                                 queries.scroll(&mut overlay_top, rows, areas.overlay_rows(0),
                                     query_future.as_mut(), query::Source::newest);
@@ -1173,6 +1320,9 @@ pub async fn run(
                                     .saturating_add_signed(rows)
                                     .min(view.transcript.len().saturating_sub(page));
                             }
+                            InputEffect::Host(Action::App(AppAction::Sessions)) => return Ok(Next::Picker),
+                            InputEffect::Host(Action::App(AppAction::NewSession)) => return Ok(Next::New),
+                            InputEffect::Host(Action::App(AppAction::Quit)) => return view.exit().map(|()| Next::Exit),
                             InputEffect::Host(Action::App(AppAction::Find)) => {
                                 view.find(input.editor.text(), usize::from(areas.transcript.height));
                             }

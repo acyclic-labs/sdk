@@ -69,11 +69,33 @@ pub enum AgentReply {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
     },
+    /// Latest independent root from the placement's directory membership feed.
+    LatestSession {
+        /// No entry means the directory has no independent sessions yet.
+        #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
+        agent: Option<AgentPath>,
+    },
+    /// The actor runtime committed the requested paused state.
+    Paused {
+        /// True for pause, false for resume.
+        paused: bool,
+    },
+    /// Original Git-facade merge receipt; an unchanged source needs no commit.
+    Merged {
+        /// Content-addressed merge commit, when the facade created one.
+        commit: Option<String>,
+    },
     /// Requested session files at one committed generation.
     ClientFiles {
         /// Exactly the requested paths at the selected committed generation.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
         snapshot: acyclic_harness_core::client_files::ClientFiles,
+    },
+    /// Bounded previews, without full-file replacement descriptors.
+    FilePreviews {
+        /// Exactly the requested paths and display credit.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        snapshot: acyclic_harness_core::client_files::FilePreviews,
     },
     /// Exact generation produced by the conditional publication.
     ClientFilesPublished {
@@ -419,7 +441,10 @@ fn validate_reply(
     bytes: usize,
 ) -> Result<(), CommandError> {
     let page = match (reply, command) {
-        (AgentReply::ClientFilesPublished { .. }, AgentCommand::PublishClientFiles { .. }) => {
+        (
+            AgentReply::ClientFilesPublished { .. },
+            AgentCommand::PublishClientFiles { .. } | AgentCommand::PublishAgentFiles { .. },
+        ) => {
             return Ok(());
         }
         (
@@ -442,22 +467,96 @@ fn validate_reply(
         }
         (
             AgentReply::ClientFiles { snapshot },
-            AgentCommand::PrivateFiles {
+            AgentCommand::AgentFiles {
                 agent,
                 paths,
                 after,
             },
         ) => {
             return validate_files(snapshot, paths, after.as_ref(), |file| {
-                // The private role can bind any owned private volume, including
-                // a local root's retained journal. Its constructor's default
-                // name is not an ownership or authorization contract.
+                // Binding roles do not prescribe a volume name.
                 file.volume().class() == VolumeClass::AgentPrivate
                     && file.volume().owner()
                         == &VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
                             agent.id_bytes(),
                         ))
             });
+        }
+        (
+            AgentReply::FilePreviews { snapshot },
+            AgentCommand::AgentFilePreviews {
+                paths,
+                after,
+                bytes,
+                ..
+            },
+        ) => {
+            return if after.as_ref() != Some(&snapshot.generation)
+                && snapshot.files.len() == paths.len()
+                && paths.iter().all(|path| {
+                    snapshot.files.get(path).is_some_and(|value| {
+                        value
+                            .as_ref()
+                            .is_none_or(|text| text.len() as u64 <= *bytes)
+                    })
+                }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (AgentReply::Merged { commit }, AgentCommand::MergeSession { .. }) => {
+            return if commit.as_ref().is_none_or(|commit| {
+                commit.len() == 64
+                    && commit
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (AgentReply::LatestSession { agent }, AgentCommand::LatestSession {}) => {
+            return if agent.as_ref().is_none_or(|agent| agent.parent().is_none()) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Paused { paused },
+            AgentCommand::Pause {
+                paused: requested, ..
+            },
+        ) => {
+            return if paused == requested {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Root { agent },
+            AgentCommand::NewSession { .. } | AgentCommand::ForkSession { .. },
+        ) => {
+            return if agent.parent().is_none() {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Root { agent },
+            AgentCommand::SelectSession {
+                agent: requested, ..
+            },
+        ) => {
+            return if agent == requested {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
         }
         (AgentReply::Root { .. }, AgentCommand::Root {})
         | (AgentReply::Bound { .. }, AgentCommand::Bind { .. })
@@ -466,6 +565,7 @@ fn validate_reply(
         | (
             AgentReply::Delivered { .. },
             AgentCommand::Prompt { .. }
+            | AgentCommand::Archive { .. }
             | AgentCommand::Cancel { .. }
             | AgentCommand::Decide { .. }
             | AgentCommand::Compact { .. }
@@ -706,6 +806,16 @@ fn validate_reply(
             if items
                 .iter()
                 .any(|item| !item.agent.is_child_of(agent) || !seen.insert(&item.agent))
+            {
+                return Err(CommandError::Invalid);
+            }
+            (items.len(), next, page)
+        }
+        (AgentReply::Children { items, next }, AgentCommand::Sessions { page }) => {
+            let mut seen = std::collections::BTreeSet::new();
+            if items
+                .iter()
+                .any(|item| item.agent.parent().is_some() || !seen.insert(&item.agent))
             {
                 return Err(CommandError::Invalid);
             }

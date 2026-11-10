@@ -166,6 +166,12 @@ impl Conversation {
         .map_err(failed)
     }
 
+    /// The authenticated selection shared by session controls and observation.
+    #[must_use]
+    pub fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
     /// The root agent's id in operation form: the task its failures name.
     #[must_use]
     pub fn task(&self) -> crate::OperationId {
@@ -451,12 +457,18 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn text(&self, file: &FileRef) -> Result<String> {
-        let bytes = Self::read(
-            &self.connection,
-            self.agent(),
-            ReadTarget::File { file: file.clone() },
-        )
-        .await?;
+        self.selected_text(file, None).await
+    }
+
+    async fn selected_text(&self, file: &FileRef, sequence: Option<u64>) -> Result<String> {
+        let target = match sequence {
+            Some(sequence) => ReadTarget::Conversation {
+                sequence,
+                file: file.clone(),
+            },
+            None => ReadTarget::File { file: file.clone() },
+        };
+        let bytes = Self::read(&self.connection, self.agent(), target).await?;
         String::from_utf8(bytes).map_err(failed)
     }
 
@@ -512,11 +524,25 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn turn(&self, entry: &ConversationEntry) -> Result<Turn> {
+        self.selected_turn(entry, None).await
+    }
+
+    /// Render a turn with its original committed sequence as the exact-file
+    /// proof. This also reads inherited turns without source-volume authority.
+    pub async fn turn_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<Turn> {
+        self.selected_turn(entry, Some(sequence)).await
+    }
+
+    async fn selected_turn(
+        &self,
+        entry: &ConversationEntry,
+        sequence: Option<u64>,
+    ) -> Result<Turn> {
         let prompt = match &entry.input {
-            TurnInput::Message { body, .. } => Some(self.text(body).await?),
+            TurnInput::Message { body, .. } => Some(self.selected_text(body, sequence).await?),
             _ => None,
         };
-        let output = self.output(entry).await?;
+        let output = self.output(entry, sequence).await?;
         Ok(Turn {
             prompt,
             tools: output.tool_cards(),
@@ -531,11 +557,16 @@ impl Conversation {
     /// # Errors
     /// Session, host or output decoding failures.
     pub async fn output_text(&self, entry: &ConversationEntry) -> Result<String> {
-        Ok(self.output(entry).await?.text)
+        Ok(self.output(entry, None).await?.text)
     }
 
-    async fn output(&self, entry: &ConversationEntry) -> Result<TurnOutput> {
-        let output = self.text(&entry.output).await?;
+    /// Read an inherited output with its exact committed record as proof.
+    pub async fn output_text_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<String> {
+        Ok(self.output(entry, Some(sequence)).await?.text)
+    }
+
+    async fn output(&self, entry: &ConversationEntry, sequence: Option<u64>) -> Result<TurnOutput> {
+        let output = self.selected_text(&entry.output, sequence).await?;
         serde_json::from_str(&output).map_err(failed)
     }
 

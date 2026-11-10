@@ -129,6 +129,12 @@ impl<'a> Input<'a> {
         }
     }
 
+    /// One visible line through the same owned OS event decoder. The caller
+    /// decides where authored text belongs; secret input uses read_secret.
+    pub fn read_text(&mut self, label: &str) -> io::Result<String> {
+        self.read(label, false).map(|text| text.to_string())
+    }
+
     /// Numeric choices keep provider/model names out of the input parser.
     pub fn choose(&mut self, label: &str, choices: &[String]) -> io::Result<usize> {
         for (index, choice) in choices.iter().enumerate() {

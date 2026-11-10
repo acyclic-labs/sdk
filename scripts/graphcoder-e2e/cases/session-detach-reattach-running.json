@@ -1,0 +1,73 @@
+{
+  "id": "session-detach-reattach-running",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "keep running across detach"
+        },
+        "text": [
+          "DETACHED_RUNNING_E2E"
+        ],
+        "hold": true
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "keep running across detach"
+        },
+        {
+          "when": {
+            "delta": "DETACHED_RUNNING_E2E"
+          },
+          "prompt": "/quit "
+        }
+      ]
+    },
+    {
+      "mode": "pty",
+      "resume": true,
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder",
+              "DETACHED_RUNNING_E2E"
+            ],
+            "cursor": true
+          },
+          "send": "\u0003"
+        },
+        {
+          "when": {
+            "contains": [
+              "cancelled"
+            ]
+          },
+          "prompt": "/quit "
+        }
+      ],
+      "exit": 2
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_contains": [
+      "keep running across detach"
+    ]
+  }
+}
