@@ -1,11 +1,9 @@
 // Observe completed terminal transactions and retain only explicitly handled failures.
 export class TerminalFrames {
   #pending = 0;
-  // Undefined until the producer first uses synchronized transactions.
-  #synchronized;
+  #synchronized = false;
   #boundary = false;
   #completed = false;
-  #available = false;
   constructor(terminal, frame) {
     this.terminal = terminal;
     this.frame = frame;
@@ -18,7 +16,6 @@ export class TerminalFrames {
           // before parsing the next redraw, while these cells still exist.
           this.#completed = true;
           this.#boundary = true;
-          this.#available = true;
           try { this.frame(); } finally { this.#boundary = false; }
         }
       }
@@ -30,18 +27,11 @@ export class TerminalFrames {
     ];
   }
   ready() { return (this.#pending === 0 || this.#boundary) && !this.#synchronized; }
-  available() { return this.ready() && this.#available; }
-  consume() { this.#available = false; }
   write(bytes) {
     this.#pending++;
     return new Promise(resolve => this.terminal.write(bytes, () => {
       this.#pending--;
-      if (!this.#completed && this.ready()) {
-        // Once transactions are in use, out-of-band bytes still report errors
-        // but cannot admit input against the preceding transaction's cells.
-        if (this.#synchronized === undefined) this.#available = true;
-        this.frame();
-      }
+      if (!this.#completed && this.ready()) this.frame();
       this.#completed = false;
       resolve();
     }));

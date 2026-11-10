@@ -16,7 +16,6 @@ use transport::Endpoint;
 mod admissions;
 mod application;
 mod call;
-mod credentials;
 mod input;
 pub use input::CallInputSender;
 mod data;
@@ -80,7 +79,6 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 /// Shared pool owning one bidirectional Streams session per authenticated node.
 #[derive(Clone)]
 pub struct Client {
-    credential_owner: Option<Arc<credentials::Owner>>,
     pool: PoolHandle,
     /// Requirements owned by this operation, independently of the transport.
     revisions: Arc<crate::RevisionTracker>,
@@ -109,7 +107,6 @@ impl PoolHandle {
     }
     pub(crate) fn with_revisions(self, revisions: Arc<crate::RevisionTracker>) -> Client {
         Client {
-            credential_owner: None,
             pool: self,
             revisions,
         }
@@ -207,14 +204,6 @@ impl futures::Stream for SubscriptionSource {
     }
 }
 enum Command {
-    AcquireCredential {
-        credential: Bytes,
-        withdrawal: mpsc::OwnedPermit<Command>,
-        ready: oneshot::Sender<Result<(u32, Arc<credentials::Owner>), StreamError>>,
-    },
-    ReleaseCredential {
-        slot: u32,
-    },
     Credential {
         slot: u32,
         credential: Bytes,
@@ -290,7 +279,6 @@ struct Link {
     input: Arc<input::Window>,
 }
 struct Pool {
-    credential_slots: credentials::Slots,
     credentials: BTreeMap<u32, Bytes>,
     credential_bytes: usize,
     connections: super::Connections,
@@ -396,7 +384,6 @@ impl Client {
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
-            credential_slots: credentials::Slots::new(),
             credentials: BTreeMap::new(),
             credential_bytes: 0,
             connections: connections.clone(),

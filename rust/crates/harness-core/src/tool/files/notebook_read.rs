@@ -286,7 +286,6 @@ impl Selection {
 pub(super) async fn read(
     context: &ToolContext,
     input: &ReadFileInput,
-    selected: Option<&crate::conversation::FilePathSelection>,
     offset: u64,
     limit: Option<u64>,
     work: crate::NativeWork<'_>,
@@ -308,7 +307,6 @@ pub(super) async fn read(
     let mut window = super::window::Window::first(
         context,
         input,
-        selected,
         acyclic_fs::ByteRange {
             offset: 0,
             length: if destination.is_some() { 0 } else { quantum },

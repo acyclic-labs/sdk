@@ -162,6 +162,13 @@ resource_conversion!(GenerationRef, Generation);
 resource_conversion!(StreamRef, Stream);
 
 #[cfg(feature = "filesystem")]
+impl WorkspaceRef {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.0.logical_owned_bytes()
+    }
+}
+
+#[cfg(feature = "filesystem")]
 impl GenerationRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.0.logical_owned_bytes()

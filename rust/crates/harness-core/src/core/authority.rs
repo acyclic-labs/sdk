@@ -565,7 +565,7 @@ impl AuthorityRoot {
     }
 
     /// A credential for exactly `grants`, each `(resource, prefix, actions)`,
-    /// for `audience`, derived from `parent` under this root at `now`: it lives
+    /// under this root's audience, derived from `parent` at `now`: it lives
     /// no longer than `parent` and is revoked with it. Callers first check
     /// that `parent` may reach everything `grants` names. Returns it with
     /// the principal it authenticates.
@@ -573,7 +573,6 @@ impl AuthorityRoot {
         &self,
         parent: &Scope,
         grants: &[(&str, bool, &[&str])],
-        audience: String,
         now: u64,
     ) -> Result<(Vec<u8>, String)> {
         let capability = workload::verify(
@@ -583,7 +582,7 @@ impl AuthorityRoot {
             now,
             &mut None,
         )?;
-        workload::resource_credential(self, &capability, grants, audience, now)
+        workload::resource_credential(self, &capability, grants, now)
     }
 
     pub(in crate::core) fn issue_bound(

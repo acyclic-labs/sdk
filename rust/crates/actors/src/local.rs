@@ -761,7 +761,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 Some(cursor) => cursor,
                 None => match self.provider.head(path.clone()).await {
                     Ok(head) => head.tail,
-                    Err(error) if error.category() == StreamError::NotFound => 0,
+                    Err(StreamError::NotFound) => 0,
                     Err(error) => return Err(error.into()),
                 },
             };
@@ -854,7 +854,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     async fn head(&self, path: &StreamPath) -> Result<Option<PathHead>, Error> {
         match self.provider.head(path.clone()).await {
             Ok(head) => Ok(Some(head)),
-            Err(error) if error.category() == StreamError::NotFound => Ok(None),
+            Err(StreamError::NotFound) => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
@@ -1151,17 +1151,35 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         });
                     }
                 }
-                if let Err(source) = &outcome
-                    && matches!(
-                        source.category(),
-                        StreamError::Unavailable | StreamError::InvalidResponse
-                    )
-                {
-                    prepared.acknowledgement_unknown = true;
-                    return Err(Error::Unknown {
-                        publication: Box::new(prepared),
-                        source: source.clone(),
-                    });
+                match &outcome {
+                    Err(
+                        source @ (StreamError::Unavailable
+                        | StreamError::Refused(_)
+                        | StreamError::InvalidResponse),
+                    ) => {
+                        prepared.acknowledgement_unknown = true;
+                        return Err(Error::Unknown {
+                            publication: Box::new(prepared),
+                            source: source.clone(),
+                        });
+                    }
+                    Ok(_)
+                    | Err(
+                        StreamError::InvalidPath
+                        | StreamError::InvalidArgument
+                        | StreamError::LimitExceeded
+                        | StreamError::NotFound
+                        | StreamError::AlreadyExists
+                        | StreamError::PrefixNotRetained
+                        | StreamError::OutOfRange
+                        | StreamError::HierarchyChanged
+                        | StreamError::IdempotencyMismatch
+                        | StreamError::Capacity
+                        | StreamError::AccessDenied
+                        | StreamError::DeadlineElapsed
+                        | StreamError::Unsupported
+                        | StreamError::RevisionForeign,
+                    ) => {}
                 }
                 let retained = match &outcome {
                     Ok(CommitOutcome::Committed(receipt)) => prepared.retained(receipt),

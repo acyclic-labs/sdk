@@ -429,7 +429,7 @@ impl StreamProvider for BrowserStream {
         self.with_retained(
             async |provider| match provider.read_commit_inner(id).await {
                 Ok(envelope) => Ok(Some(envelope)),
-                Err(error) if error.category() == StreamError::NotFound => Ok(None),
+                Err(StreamError::NotFound) => Ok(None),
                 Err(error) => Err(error),
             },
             Option::is_some,

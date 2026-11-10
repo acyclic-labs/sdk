@@ -29,9 +29,6 @@ use steps::{apply, idle, reject, start, waiting};
 #[cfg(any(test, feature = "test-support"))]
 pub(super) mod validation;
 
-pub(super) const ARCHIVED: &str =
-    "native session is archived; spawn a new reference to start another session";
-
 /// Host name of the inbox records this owner writes for a native session.
 const HOST: &str = "native";
 /// Bound of one session event, prompt or native resume reference.
@@ -361,7 +358,7 @@ impl HostDriver {
             let brief = serde_json::from_slice::<Brief>(&bytes).map_err(storage)?;
             if brief.prompt != prompt {
                 return Err(Error::Conflict(format!(
-                    "session {reference} was already spawned with a different prompt; use send or resume for that session, or spawn a new reference (required if archived)"
+                    "session {reference} was already spawned with a different prompt"
                 )));
             }
             return Ok(file);
@@ -424,7 +421,7 @@ impl HostDriver {
             .await
         {
             Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(error) if error.category() == StreamError::NotFound => Vec::new(),
+            Err(StreamError::NotFound) => Vec::new(),
             Err(error) => return Err(error.into()),
         };
         let Some(record) = records.pop() else {
@@ -533,20 +530,7 @@ fn snapshot(agent: &AgentState, inbox: u64) -> OperationId {
 }
 
 /// Spawned session `reference` of `parent`: the spawn intent names it.
-pub(crate) fn child(parent: &AgentPath, reference: &str) -> Result<AgentPath> {
-    if reference.contains('/') {
-        let child = AgentPath::try_from(reference.to_owned()).map_err(|_| {
-            Error::Invalid("reference must be a local child name or a canonical AgentPath".into())
-        })?;
-        if !child.is_child_of(parent) {
-            return Err(Error::Invalid(
-                "only direct children can be waited on or coordinated; ask the owning parent"
-                    .into(),
-            ));
-        }
-        return Ok(child);
-    }
-    super::super::host_workspace::child_reference(reference)?;
+pub(super) fn child(parent: &AgentPath, reference: &str) -> Result<AgentPath> {
     let intent = IntentId::try_from(reference).map_err(storage)?;
     parent
         .child(&AgentId::derive(&parent.id(), intent.as_str()))
@@ -682,12 +666,7 @@ impl NativeAgents {
 
     /// The committed state of `agent`.
     pub(super) async fn state(&self, agent: &AgentPath) -> Result<AgentState> {
-        self.host.state(agent).await.map_err(|error| match error {
-            crate::agent::Error::NoSuchAgent => {
-                Error::NotFound("native agent does not exist".into())
-            }
-            error => storage(error),
-        })
+        self.host.state(agent).await.map_err(storage)
     }
 
     /// Stages `agent`'s native event log of the turn claimed under `claim`.
@@ -782,11 +761,6 @@ impl NativeAgents {
         prompt: &str,
     ) -> Result<u64> {
         let state = self.state(agent).await?;
-        // Admission and exact replay both respect the native session's stop.
-        // Its inbox stays open for observation and settlement hooks.
-        if self.driver.session(&state).await?.control == Control::Archive {
-            return Err(Error::Conflict(ARCHIVED.into()));
-        }
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.native-host.message.v1");
         hasher.update(agent.as_str().as_bytes());
         hasher.update(&[0]);
@@ -855,7 +829,7 @@ impl NativeAgents {
             .map_err(storage)?
         {
             crate::agent::Delivered::Closed => {
-                return Err(Error::Conflict(ARCHIVED.into()));
+                return Err(Error::Conflict("native session is archived".into()));
             }
             crate::agent::Delivered::Committed { inbox } => inbox,
         };

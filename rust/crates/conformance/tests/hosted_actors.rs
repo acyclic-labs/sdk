@@ -280,7 +280,7 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
     let foreign = AgentControls::new(clients[1].clone(), 0, binding);
     assert!(matches!(
         foreign.select(root.clone()).await,
-        Err(AgentExchangeError::Session(error)) if error.category() == StreamError::AccessDenied
+        Err(AgentExchangeError::Session(StreamError::AccessDenied))
     ));
     let encoded = selected.binding_bytes();
     let published = acyclic_actors::wire::InvokeActorRequest::decode(encoded.as_slice())?;
@@ -293,7 +293,7 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
     clients[0].actor_call(&routed, 0, 1 << 20).await?;
     assert!(matches!(
         clients[1].actor_call(&routed, 0, 1 << 20).await,
-        Err(error) if error.category() == StreamError::AccessDenied
+        Err(StreamError::AccessDenied)
     ));
     for field in ["account", "namespace"] {
         let mut other = published.clone();
@@ -308,7 +308,7 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
                 AgentBinding::new(&other.encode_to_vec())?,
             )
             .await,
-            Err(AgentExchangeError::Session(error)) if error.category() == StreamError::AccessDenied
+            Err(AgentExchangeError::Session(StreamError::AccessDenied))
         ));
     }
     let (bootstrapped, _) = AgentControls::discover_at(clients[0].clone(), 0, binding).await?;
@@ -545,7 +545,7 @@ async fn run(producer: Producer) -> Outcome {
             matches!(
                 &failure.cause,
                 Some(acyclic_conformance::client::Cause::Stream(error))
-                    if error.category() == StreamError::Unavailable
+                    if error.code() == StreamError::Unavailable.code()
             ),
             "closed producer returned {failure:?}"
         );

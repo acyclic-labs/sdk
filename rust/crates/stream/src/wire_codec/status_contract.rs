@@ -192,7 +192,10 @@ mod tests {
                 } else { wire_codec::status(wire) };
                 proptest::prop_assert!(check_with(&input, broken).is_err());
             }
-            let stripped = wire_codec::status::category;
+            let stripped = |wire: &Status| match wire_codec::status(wire) {
+                StreamError::Refused(_) => StreamError::Unavailable,
+                other => other,
+            };
             proptest::prop_assert_eq!(check_with(&input, stripped), Err("original refusal diagnostics"));
             // The removed round-trip-only property accepts this symmetric
             // path/limit swap. The independent contract must reject it.

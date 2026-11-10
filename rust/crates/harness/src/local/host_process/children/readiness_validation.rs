@@ -52,7 +52,7 @@ pub(crate) fn verify(input: &[u8], members: usize) {
             })
             .collect::<BTreeSet<_>>();
         assert_eq!(
-            ready.take().into_iter().collect::<BTreeSet<_>>(),
+            ready.take(),
             expected,
             "native ready queue lost, invented or repeated a child notification"
         );

@@ -22,15 +22,14 @@ pub const EVENT_LOG_BYTES: u64 = 4 * 1024 * 1024;
 /// The line ending a log whose later events exceeded its bound.
 const EVENTS_OMITTED: &[u8] = b"{\"type\":\"acyclic.events_omitted\"}\n";
 
-/// Runs the native root with inherited input, output and process group.
-/// Native hosts retain terminal/job control; managed children use the
+/// Runs the interactive native root with its inherited console and process
+/// group. Native hosts retain terminal/job control; managed children use the
 /// separate, custodied session API below. Turn-end hooks capture root turns.
 pub fn run_root_session(
     cwd: &Path,
     host: &str,
     program: &std::ffi::OsStr,
     arguments: &[String],
-    headless: bool,
 ) -> Result<std::process::ExitStatus> {
     use super::host_owner::HostAction;
     let location = super::host_files::request(
@@ -47,13 +46,9 @@ pub fn run_root_session(
             .ok_or_else(|| Error::Invalid("native root task absent".into()))?,
     )
     .map_err(storage)?;
-    let mut command = acyclic_native_runtime::host_command(program).map_err(storage)?;
-    if headless {
-        command.args(launch::child_arguments(host, arguments, cwd, None)?);
-    } else {
-        command.args(arguments);
-    }
-    let status = command
+    let status = acyclic_native_runtime::host_command(program)
+        .map_err(storage)?
+        .args(arguments)
         .current_dir(cwd)
         .env(
             "ACYCLIC_HOST_ARGS",
@@ -372,14 +367,6 @@ impl HostSessionProcess {
         let drained = self.tree.drain_stderr(&meter).map_err(storage)?;
         self.output_progress |= drained.read_bytes > 0;
         Ok(drained)
-    }
-
-    /// Stops descendants after root exit and fixes the original pipe boundary.
-    /// Both operations share the terminal observation's funding window.
-    pub fn seal_output(&mut self) -> Result<()> {
-        let mut owner = self.live_io()?;
-        owner.terminate_descendants().map_err(storage)?;
-        owner.seal_output().map_err(storage)
     }
 
     /// Arms one wait for this child's next pipe data, writable stdin or exit,

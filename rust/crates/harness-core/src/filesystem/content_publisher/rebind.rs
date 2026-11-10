@@ -50,6 +50,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             &self.volume,
             Some(io),
         )?;
+        let _workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace = self.host.open(&workspace_ref, Some(io)).await?;
         let source_generation = self.host.file_generation(source, Some(io))?;
         let _source_hold = io.guard_owned(source_generation.logical_owned_bytes()?)?;

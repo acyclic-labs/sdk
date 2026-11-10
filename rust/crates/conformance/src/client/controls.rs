@@ -1,5 +1,5 @@
 //! Host-provisioned vectors executed only through the shipping public client.
-use super::{Failure, Report, failure, stream_failure};
+use super::{Failure, Report, failure};
 use acyclic_harness_client::{
     AgentBinding, AgentCommand, AgentControlFailure, AgentControls, AgentExchangeError, AgentReply,
     Delivered, PreparedCommand, decode_agent_reply,
@@ -218,9 +218,6 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
             .prepare(command)
             .map_err(|cause| failure(case, cause))?;
         let actual = controls.execute(&invocation).await;
-        if let Err(AgentExchangeError::Session(error)) = actual {
-            return Err(stream_failure(case, error));
-        }
         let matches = match (&vector.expected, actual) {
             (
                 ControlExpected::ActorStatus { status },

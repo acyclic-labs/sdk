@@ -3,9 +3,7 @@ use super::*;
 
 // Fields retire in declaration order, including during unwinding: value
 // backing first, then its original funding and that funding's own backing.
-/// Shared backing funded by the original accounting owner through its final
-/// strong or weak handle, including both allocation control blocks.
-pub struct RetainedArc<T> {
+pub(crate) struct RetainedArc<T> {
     value: Arc<T>,
     allocation: RetainedFunding,
 }
@@ -36,8 +34,7 @@ impl<T> RetainedArcAdmission<T> {
     }
 }
 
-/// A weak observation that retains funding for the original control backing.
-pub struct RetainedWeak<T> {
+pub(crate) struct RetainedWeak<T> {
     value: std::sync::Weak<T>,
     allocation: RetainedFunding,
 }
@@ -58,23 +55,11 @@ impl<T> RetainedArc<T> {
         self.allocation.0.as_deref()?.standalone_live_bytes()
     }
 
-    /// Admits shared backing before constructing a value with retirement effects.
-    ///
-    /// # Errors
-    /// Returns the original accounting refusal without invoking `create`.
-    pub fn new_with(
+    pub(crate) fn new(
+        value: T,
         accounting: &mut KernelAccounting<'_>,
-        create: impl FnOnce() -> T,
     ) -> Result<Self, crate::FsError> {
-        Ok(Self::admit(accounting)?.into_value(create()))
-    }
-
-    /// Admits the complete shared allocation before constructing it.
-    ///
-    /// # Errors
-    /// Returns the original accounting refusal without allocating the value.
-    pub fn new(value: T, accounting: &mut KernelAccounting<'_>) -> Result<Self, crate::FsError> {
-        Self::new_with(accounting, || value)
+        Ok(Self::admit(accounting)?.into_value(value))
     }
 
     pub(crate) fn admit(
@@ -95,8 +80,7 @@ impl<T> RetainedArc<T> {
         })
     }
 
-    /// Retains a weak observation and its original allocation custody.
-    pub fn downgrade(&self) -> RetainedWeak<T> {
+    pub(crate) fn downgrade(&self) -> RetainedWeak<T> {
         RetainedWeak {
             value: Arc::downgrade(&self.value),
             allocation: self.allocation.clone(),
@@ -136,13 +120,11 @@ impl<T> RetainedWeak<T> {
         self.value.strong_count()
     }
 
-    /// Original allocation identity, including after the value has retired.
-    pub fn as_ptr(&self) -> *const T {
+    pub(crate) fn as_ptr(&self) -> *const T {
         self.value.as_ptr()
     }
 
-    /// Retains the original value if its last strong owner has not retired.
-    pub fn upgrade(&self) -> Option<RetainedArc<T>> {
+    pub(crate) fn upgrade(&self) -> Option<RetainedArc<T>> {
         Some(RetainedArc {
             value: self.value.upgrade()?,
             allocation: RetainedFunding(Some(Arc::clone(self.allocation.0.as_ref()?))),

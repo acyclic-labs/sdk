@@ -72,6 +72,9 @@ pub(super) async fn read_pinned(
                 .map(|io| io.guard_owned(generation.logical_owned_bytes()?))
                 .transpose()?;
             let workspace = bounded_io::content_workspace(&host.provider, reference.volume(), io)?;
+            let _workspace_hold = io
+                .map(|io| io.guard_owned(workspace.logical_owned_bytes()?))
+                .transpose()?;
             let path = format!("/{}", reference.path());
             let bytes = match io {
                 Some(io) => {

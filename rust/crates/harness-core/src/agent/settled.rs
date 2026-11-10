@@ -1,6 +1,5 @@
 //! Settlement from the original actor checkpoint and consumed inbox cursor.
-//! Status records announce phase changes and conversation creation; entries
-//! announce replies.
+//! Status records announce phase changes; conversation entries announce replies.
 
 use super::{AgentPath, ConversationEntry, Error, Phase, inbox_tail};
 use std::{collections::HashSet, sync::Arc};

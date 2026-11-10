@@ -582,9 +582,7 @@ async fn applied(blobs: &dyn Blobs, metadata: &MetadataMap) -> Result<(), Error>
     let deadline = std::pin::pin!(deadline(metadata));
     match futures::future::select(wait, deadline).await {
         futures::future::Either::Left((Ok(_), _)) => Ok(()),
-        futures::future::Either::Left((Err(error), _))
-            if error.category() == StreamError::RevisionForeign =>
-        {
+        futures::future::Either::Left((Err(StreamError::RevisionForeign), _)) => {
             Err(wire::ErrorCode::RevisionForeign.into())
         }
         futures::future::Either::Left((Err(_), _)) => Err(wire::ErrorCode::Unavailable.into()),

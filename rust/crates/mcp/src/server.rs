@@ -77,11 +77,8 @@ pub trait ToolProvider {
     }
 
     /// Input ended or the server failed: no further answer is read. Runs
-    /// before the server waits for its queued replies to be written. A failed
-    /// retirement is retained by the serving result.
-    fn closed(&mut self) -> Result<(), Self::Error> {
-        Ok(())
-    }
+    /// before the server waits for its queued replies to be written.
+    fn closed(&mut self) {}
 
     /// Advances the provider's work and pushes each `parked` key it settles
     /// with its result. Returns the wake-up that schedules the next pass
@@ -130,7 +127,7 @@ impl ToolServer {
         let (mut replies, mut failed, writer) = writer(output);
         let mut backlog = VecDeque::new();
         let served = self.run(provider, input, &mut replies, &mut backlog, &mut failed);
-        let closed = provider.closed().map_err(ServeError::Provider);
+        provider.closed();
         for line in backlog {
             // A closed queue means the writer failed; joining reports it.
             if block_on(replies.send(line)).is_err() {
@@ -143,7 +140,7 @@ impl ToolServer {
             .map_err(|_| io::Error::other("MCP output writer stopped"))?;
         // An output failure outranks the serving result it ended.
         written?;
-        served.and(closed)
+        served
     }
 
     fn run<P: ToolProvider>(

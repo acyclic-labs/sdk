@@ -1,11 +1,5 @@
 use super::*;
 
-/// Original allocation ownership for an authored file selection.
-#[cfg(feature = "filesystem")]
-pub(crate) type FileSelectionCustody = Option<crate::filesystem::PreparationCustody>;
-#[cfg(not(feature = "filesystem"))]
-pub(crate) type FileSelectionCustody = Option<()>;
-
 /// An immutable authored file selection. This identifies the selected generation
 /// and path; it makes no whole-file digest or native snapshot completeness claim.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]

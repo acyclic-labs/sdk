@@ -49,7 +49,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             InternalContentClass::require_path(internal_class, path, Some(io))?;
         }
         let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
-        let root = self.open(&workspace_ref, Some(io)).await?;
+        let hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
+        let workspace_ref = (workspace_ref, hold);
+        let root = self.open(&workspace_ref.0, Some(io)).await?;
         let operation = bounded_io::operation_key(key, Some(io))?;
         let Some((workspace, binding)) = self
             .content_operation_workspace(&root, operation, internal_class.is_some(), io)

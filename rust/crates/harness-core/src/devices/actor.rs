@@ -172,8 +172,7 @@ impl State {
         // journal. The acceptance guards also fence cancellation after this read.
         match provider.head(call.log().clone()).await {
             Ok(head) if head.tail != 0 => return Ok(()),
-            Ok(_) => {}
-            Err(error) if error.category() == StreamError::NotFound => {}
+            Ok(_) | Err(StreamError::NotFound) => {}
             Err(error) => return Err(error.into()),
         }
         let ours = run.command.actor
@@ -258,7 +257,7 @@ impl State {
         let call = super::records::call(agent, op)?;
         let last = match provider.head(call.log().clone()).await {
             Ok(head) => head.last,
-            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+            Err(StreamError::NotFound) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         let Some(last) = last else {

@@ -206,15 +206,8 @@ impl FileTool {
             ));
         }
         version.map_or(Ok((None, None)), |version| {
-            // Validate original token metadata and grants during preflight.
-            // The selected physical layer later establishes its volume match.
-            let (file, custody) = match path
-                .strip_prefix(crate::layers::EFFECTIVE_PATH)
-                .filter(|_| matches!(self, Self::Read))
-            {
-                Some(relative) => super::version::decode_version(relative, version, work)?,
-                None => super::version::decode_tool_version(context, path, version, work)?,
-            };
+            let (file, custody) =
+                super::version::decode_tool_version(context, path, version, work)?;
             match file {
                 FileReadSource::Content(file) => Ok((Some(file), custody)),
                 // A selected generation grants no authority. The ordinary path

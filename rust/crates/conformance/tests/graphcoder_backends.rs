@@ -573,7 +573,7 @@ async fn selected_discovery_survives_a_serving_process_restart() {
             matches!(
                 &failure,
                 AgentExchangeError::Session(error)
-                    if error.category() == StreamError::Unavailable
+                    if error.code() == StreamError::Unavailable.code()
             ),
             "retired serving process returned {failure:?}"
         );

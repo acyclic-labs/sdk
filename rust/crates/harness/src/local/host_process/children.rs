@@ -18,7 +18,7 @@ use crate::executor::TurnOutput;
 use crate::local::host_files;
 use crate::local::host_owner::{Control, HostAction, SessionAction, TurnClaim};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future as _;
 use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
@@ -83,7 +83,7 @@ struct Ready(Mutex<Queue>);
 
 #[derive(Default)]
 struct Queue {
-    keys: HashSet<String>,
+    keys: BTreeSet<String>,
     waker: Option<Waker>,
 }
 
@@ -103,7 +103,7 @@ impl Ready {
         }
     }
 
-    fn take(&self) -> HashSet<String> {
+    fn take(&self) -> BTreeSet<String> {
         std::mem::take(&mut self.queue().keys)
     }
 
@@ -134,14 +134,14 @@ impl std::task::Wake for ChildWake {
     }
 }
 
-/// Exclusive owner of one native parent's children, by canonical agent path.
+/// Exclusive owner of one native parent's children, by parent-local name.
 pub struct NativeChildren {
     host: String,
     cwd: PathBuf,
     parent: AgentPath,
     flags: Vec<String>,
-    children: HashMap<String, Running>,
-    accepted: HashMap<String, Accepted>,
+    children: BTreeMap<String, Running>,
+    accepted: BTreeMap<String, Accepted>,
     ready: Arc<Ready>,
     _ownership: FileLock,
     _root: acyclic_fs::HeldRoot,
@@ -204,7 +204,6 @@ impl NativeChildren {
             serde_json::from_value(open.get("references").cloned().unwrap_or_default())
                 .map_err(storage)?;
         for reference in references {
-            let reference = children.key(&reference)?;
             // Settles the orphaned claim, then carries the next input.
             let mut recovered = children.request(&reference, SessionAction::Recover {}, true)?;
             children.launch(&reference, &mut recovered)?;
@@ -225,8 +224,8 @@ impl NativeChildren {
             cwd,
             parent,
             flags,
-            children: HashMap::new(),
-            accepted: HashMap::new(),
+            children: BTreeMap::new(),
+            accepted: BTreeMap::new(),
             ready: Arc::default(),
             _ownership: ownership,
             _root: root,
@@ -247,18 +246,13 @@ impl NativeChildren {
         )
     }
 
-    /// Local names and full paths address the same owned process and prompt.
-    fn key(&self, reference: &str) -> Result<String> {
-        crate::local::host_owner::child(&self.parent, reference).map(String::from)
-    }
-
     /// Records the task a reply names: the first reply fixes it, and any
     /// later one naming another task is refused. Its view may differ: an
     /// idle child's view is released and remounted by a later exchange.
     fn record(&mut self, reference: &str, reply: &Value) -> Result<&mut Accepted> {
         let accepted = match self.accepted.entry(reference.into()) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(Accepted {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => entry.insert(Accepted {
                 receipt: Receipt::accepted(reply)?,
                 prompt: None,
             }),
@@ -292,8 +286,6 @@ impl NativeChildren {
 
     /// Resumes a stopped `reference` with `prompt`.
     pub fn resume(&mut self, reference: &str, prompt: String) -> Result<Value> {
-        let reference = self.key(reference)?;
-        let reference = reference.as_str();
         if self.children.contains_key(reference) {
             return Err(Error::Conflict("native session is still running".into()));
         }
@@ -312,9 +304,8 @@ impl NativeChildren {
     /// the same exchange claimed. A replay names its original, earlier prompt
     /// and never displaces a newer one.
     fn accept(&mut self, reference: &str, action: SessionAction) -> Result<Value> {
-        let key = self.key(reference)?;
         // A running child's fence is held: claim only for an idle one.
-        let idle = !self.children.contains_key(&key);
+        let idle = !self.children.contains_key(reference);
         let mut accepted = self.request(reference, action, idle)?;
         let inbox = accepted
             .get("inbox")
@@ -327,7 +318,7 @@ impl NativeChildren {
                 .ok_or_else(|| invalid("accepted prompt has no id"))?,
         )
         .map_err(storage)?;
-        let record = self.record(&key, &accepted)?;
+        let record = self.record(reference, &accepted)?;
         if record
             .prompt
             .as_ref()
@@ -335,7 +326,7 @@ impl NativeChildren {
         {
             record.prompt = Some((id, inbox));
         }
-        self.launch(&key, &mut accepted)?;
+        self.launch(reference, &mut accepted)?;
         Ok(accepted)
     }
 
@@ -498,7 +489,7 @@ impl NativeChildren {
                 .map_err(|error| error.to_string()),
         };
         if matches!(&exited, Ok(Some(_))) {
-            running.process.seal_output()?;
+            running.process.terminate_descendants()?;
             match running.process.pump_stdin() {
                 Ok(false) => return Ok(None),
                 Ok(true) => {}
@@ -600,8 +591,6 @@ impl NativeChildren {
     /// The control's own reply, or the settlement's when a turn was running:
     /// no separate observation follows.
     fn stop(&mut self, reference: &str, control: Control) -> Result<Value> {
-        let reference = self.key(reference)?;
-        let reference = reference.as_str();
         let mut reply = self.request(reference, SessionAction::Control { control }, false)?;
         self.record(reference, &reply)?;
         if let Some(mut running) = self.children.remove(reference) {
@@ -634,8 +623,6 @@ impl NativeChildren {
     /// After a restart, recovered work is awaited the same way, and the
     /// answer is the observed session.
     pub fn wait(&self, reference: &str) -> Result<Option<Value>> {
-        let reference = self.key(reference)?;
-        let reference = reference.as_str();
         if self.children.contains_key(reference) {
             return Ok(None);
         }
@@ -654,28 +641,14 @@ impl NativeChildren {
     }
 
     /// Interrupts every running child; the owner's host is going away.
-    /// A refused control still retires its physical process through the
-    /// original custody owner, retaining the claim for later recovery. The
-    /// first failed child's control and cleanup causes remain in the result.
     pub fn shutdown(&mut self) -> Result<()> {
-        let mut stopped = Ok(());
+        let mut failure = None;
         for reference in self.children.keys().cloned().collect::<Vec<_>>() {
-            let result = match self.cancel(&reference) {
-                Ok(_) => Ok(()),
-                Err(error) => {
-                    // A refused control cannot make physical retirement depend
-                    // on the owner's reply consumer. Keep the original claim
-                    // for recovery and use its existing process custody now.
-                    let retired = self.children.get_mut(&reference).map_or(Ok(()), |running| {
-                        running.armed = None;
-                        running.process.release()
-                    });
-                    Error::after_cleanup(Err(error), retired)
-                }
-            };
-            stopped = stopped.and(result);
+            if let Err(error) = self.cancel(&reference) {
+                failure = Some(error);
+            }
         }
-        stopped
+        failure.map_or(Ok(()), Err)
     }
 }
 

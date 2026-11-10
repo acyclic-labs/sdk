@@ -87,7 +87,7 @@ impl CallProvider for Endpoint {
                 },
                 AgentCommand::Bind { .. } => {
                     assert!(AgentBinding::is_discovery(call.invocation()));
-                    AgentBinding::reply(&route(), TOOLS.into(), None)
+                    AgentBinding::reply(&route(), TOOLS.into())
                 }
                 AgentCommand::Root {} => {
                     let mut routing = call.invocation().clone();

@@ -152,7 +152,6 @@ test("original process phase cleanup joins a blocked transcript after physical r
     release?.();
     await scope.close().catch(error => { assert.ok(error instanceof ProcessObservationFailed); });
     t.mock.restoreAll(); syncBuiltinESMExports();
-    fs.rmSync(transcripts, { recursive: true });
   }
 });
 

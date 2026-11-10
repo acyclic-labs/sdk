@@ -19,43 +19,33 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         };
         let (frame, key) = match record {
             Ok(Event::Opened(preceding, applied, selection)) => {
-                self.controls.push_back(
-                    frame(
+                self.controls.push_back(frame(
+                    identity.channel_id,
+                    identity.generation,
+                    Body::Opened(wire::SessionOpened {
+                        resume: Some(channel.applied.clone()),
+                        preceding_commit_id: preceding
+                            .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
+                        applied,
+                        selection,
+                    }),
+                ));
+                if let Some(input) = &channel.input {
+                    self.controls.push_back(frame(
                         identity.channel_id,
                         identity.generation,
-                        Body::Opened(wire::SessionOpened {
-                            resume: Some(channel.applied.clone()),
-                            preceding_commit_id: preceding.map_or_else(Bytes::new, |id| {
-                                Bytes::copy_from_slice(id.as_bytes())
-                            }),
-                            applied,
-                            selection,
-                        }),
-                    )
-                    .into(),
-                );
-                if let Some(input) = &channel.input {
-                    self.controls.push_back(
-                        frame(
-                            identity.channel_id,
-                            identity.generation,
-                            Body::Window(input.credit),
-                        )
-                        .into(),
-                    );
+                        Body::Window(input.credit),
+                    ));
                 }
                 return Ok(());
             }
             Ok(Event::Progress(mark)) => {
                 if mark.opening_tail.is_some() {
-                    self.controls.push_back(
-                        frame(
-                            identity.channel_id,
-                            identity.generation,
-                            Body::Watermark(mark),
-                        )
-                        .into(),
-                    );
+                    self.controls.push_back(frame(
+                        identity.channel_id,
+                        identity.generation,
+                        Body::Watermark(mark),
+                    ));
                     return Ok(());
                 }
                 let channel = self
@@ -102,23 +92,31 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 None,
             ),
             Ok(Event::End) => {
-                self.end(identity.channel_id, Ok(()))?;
+                self.end(identity.channel_id, wire_codec::session::END_CODE)?;
                 return Ok(());
             }
             Err(error) => {
                 if channel.revalidate.is_some()
                     && matches!(
-                        error.category(),
+                        error,
                         StreamError::AccessDenied
                             | StreamError::NotFound
                             | StreamError::PrefixNotRetained
                     )
                 {
+                    let generation = channel.generation;
                     self.remove(identity.channel_id)?;
-                    self.controls.push_back(Frame::closed(identity, error));
+                    self.controls.push_back(frame(
+                        identity.channel_id,
+                        generation,
+                        Body::Closed(wire::SessionClosed {
+                            code: error.code().into(),
+                            message: String::new(),
+                        }),
+                    ));
                     return Ok(());
                 }
-                self.end(identity.channel_id, Err(error))?;
+                self.end(identity.channel_id, error.code())?;
                 return Ok(());
             }
         };
@@ -161,22 +159,14 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         Ok(())
     }
 
-    /// Stops both producers; the original result follows its queued frames.
-    pub(super) fn end(
-        &mut self,
-        id: u64,
-        result: Result<(), StreamError>,
-    ) -> Result<(), StreamError> {
+    /// Stops both producers; `code` closes the channel after its queued frames.
+    pub(super) fn end(&mut self, id: u64, code: &'static str) -> Result<(), StreamError> {
         let channel = self.channels.get_mut(&id).ok_or(StreamError::Unavailable)?;
+        channel.ending = Some(code);
         channel.socket.take();
         if let Some(input) = &mut channel.input {
-            let _ = input.finish(Err(result
-                .as_ref()
-                .err()
-                .cloned()
-                .unwrap_or(StreamError::Unavailable)));
+            let _ = input.finish(Err(StreamError::from_session_close(code)));
         }
-        channel.ending = Some(result);
         self.sources.remove(id);
         self.finish_if_drained(id)
     }
@@ -189,25 +179,17 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         {
             return Ok(());
         }
-        if let Some(channel) = self.channels.get_mut(&id)
-            && let Some(result) = channel.ending.take()
+        if let Some(channel) = self.channels.get(&id)
+            && let Some(code) = channel.ending
         {
-            let identity = wire::SessionChannel {
-                channel_id: id,
-                generation: channel.generation,
-            };
-            self.controls.push_back(match result {
-                Ok(()) => frame(
-                    id,
-                    channel.generation,
-                    Body::Closed(wire::SessionClosed {
-                        code: wire_codec::session::END_CODE.into(),
-                        message: String::new(),
-                    }),
-                )
-                .into(),
-                Err(error) => Frame::closed(identity, error),
-            });
+            self.controls.push_back(frame(
+                id,
+                channel.generation,
+                Body::Closed(wire::SessionClosed {
+                    code: code.into(),
+                    message: String::new(),
+                }),
+            ));
             self.remove(id)?;
         }
         Ok(())
@@ -252,7 +234,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 },
                 reason,
             )?;
-            return Ok(self.controls.pop_front());
+            return Ok(self.controls.pop_front().map(Into::into));
         }
         if let Some(revalidate) = self
             .channels
@@ -267,13 +249,17 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     .ok_or(StreamError::Unavailable)?
                     .generation;
                 self.remove(id)?;
-                return Ok(Some(Frame::closed(
-                    wire::SessionChannel {
-                        channel_id: id,
+                return Ok(Some(
+                    frame(
+                        id,
                         generation,
-                    },
-                    error,
-                )));
+                        Body::Closed(wire::SessionClosed {
+                            code: error.code().into(),
+                            message: String::new(),
+                        }),
+                    )
+                    .into(),
+                ));
             }
         }
         self.ready_after = selected;
@@ -313,7 +299,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }
             channel.sent = after.clone();
             self.controls
-                .push_back(frame(id, channel.generation, Body::Watermark(mark)).into());
+                .push_back(frame(id, channel.generation, Body::Watermark(mark)));
         }
         Ok(())
     }

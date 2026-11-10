@@ -213,13 +213,11 @@ impl Pool {
             Err(error) => {
                 // A received frame that fails structural validation is terminal.
                 // Transport I/O failures use the reconnect path in `run`.
-                let error = if matches!(
-                    error.category(),
-                    StreamError::Unavailable | StreamError::InvalidArgument
-                ) {
-                    StreamError::InvalidResponse
-                } else {
-                    error
+                let error = match error {
+                    StreamError::Unavailable
+                    | StreamError::Refused(_)
+                    | StreamError::InvalidArgument => StreamError::InvalidResponse,
+                    other => other,
                 };
                 self.fail_link(node, &error);
                 false
@@ -248,26 +246,31 @@ impl Pool {
     fn apply_command(&mut self, command: Command) -> Result<(), StreamError> {
         self.sync_attempts()?;
         match command {
-            Command::AcquireCredential {
-                credential,
-                withdrawal,
-                ready,
-            } => self.acquire_credential(credential, withdrawal, ready),
-            Command::ReleaseCredential { slot } => {
-                if !self.credential_slots.owned(slot) {
-                    return Err(StreamError::InvalidArgument);
-                }
-                self.install_credential(slot, Bytes::new())?;
-                self.credential_slots.release(slot);
-                Ok(())
-            }
             Command::Credential { slot, credential } => {
-                if self.credential_slots.owned(slot) {
-                    return Err(StreamError::InvalidArgument);
+                let total = self
+                    .credential_bytes
+                    .checked_sub(self.credentials.get(&slot).map_or(0, Bytes::len))
+                    .and_then(|current| current.checked_add(credential.len()))
+                    .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
+                    .ok_or(StreamError::Capacity)?;
+                let encoded = frame(
+                    0,
+                    0,
+                    Body::Credential(wire::SessionCredential {
+                        slot,
+                        credential: credential.clone(),
+                    }),
+                );
+                if credential.is_empty() {
+                    self.credentials.remove(&slot);
+                } else {
+                    self.credentials.insert(slot, credential);
                 }
-                let empty = credential.is_empty();
-                self.install_credential(slot, credential)?;
-                self.credential_slots.available(slot, empty);
+                self.credential_bytes = total;
+                let nodes = self.links.keys().cloned().collect::<Vec<_>>();
+                for node in nodes {
+                    self.send(&node, encoded.clone())?;
+                }
                 Ok(())
             }
             Command::Socket {
@@ -875,8 +878,8 @@ impl Pool {
     pub(super) fn fail_node(&mut self, node: &str, error: &StreamError) {
         if node == self.home
             && matches!(
-                error.category(),
-                StreamError::Unavailable | StreamError::InvalidArgument
+                error,
+                StreamError::Unavailable | StreamError::Refused(_) | StreamError::InvalidArgument
             )
         {
             self.reset_home();
@@ -940,6 +943,3 @@ pub(super) fn poll_dials(
 #[cfg(test)]
 #[cfg(all(not(loom), feature = "grpc", not(target_arch = "wasm32")))]
 mod filtered_credit_tests;
-
-#[cfg(all(test, not(loom), feature = "grpc", not(target_arch = "wasm32")))]
-mod credential_ownership_tests;
