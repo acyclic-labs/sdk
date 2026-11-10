@@ -72,6 +72,7 @@ async function inside(binary, mock, output) {
 async function outside(image, binary, mock, output) {
   assert.ok(image && [binary, mock, output].every(path => path && isAbsolute(path)), recovery);
   await mkdir(output); // Evidence is fresh; an earlier PASS can never qualify this run.
+  await mkdir(join(output, "transcripts"));
   const processes = new Processes({ transcripts: join(output, "transcripts") });
   const cancellation = commandCancellation();
   const name = `graphcoder-no-fuse-${randomUUID()}`;
