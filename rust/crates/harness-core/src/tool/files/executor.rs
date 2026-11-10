@@ -23,6 +23,35 @@ pub(super) struct Source {
 }
 
 impl Source {
+    pub async fn selected(
+        context: &ToolContext,
+        path: &str,
+        original: super::source::ReadSource,
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Self> {
+        match original {
+            super::source::ReadSource {
+                source: Some(FileReadSource::Content(file)),
+                custody,
+            } => Ok(Self {
+                file,
+                bytes: None,
+                _custody: custody,
+            }),
+            original => {
+                let Some(FileReadSource::Authored(selected)) = original.source.as_ref() else {
+                    return Self::read(context, path, None, io).await;
+                };
+                let source = Self::read(context, path, Some(&selected.generation), io).await?;
+                if !selected.matches_content(&source.file) {
+                    return Err(rejection(work, "file version differs from its selection"));
+                }
+                Ok(source)
+            }
+        }
+    }
+
     pub async fn read(
         context: &ToolContext,
         path: &str,
@@ -192,33 +221,8 @@ impl FileTool {
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Source> {
-        if let Some(version) = version {
-            let original_custody;
-            let (file, custody) =
-                super::version::decode_tool_version(Some(context), path, version, work)?;
-            original_custody = custody;
-            match file {
-                FileReadSource::Content(file) => {
-                    return Ok(Source {
-                        file,
-                        bytes: None,
-                        _custody: original_custody,
-                    });
-                }
-                FileReadSource::Authored(selected) => {
-                    let source =
-                        Source::read(context, path, Some(&selected.generation), io).await?;
-                    if source.file.descriptor().byte_length() != selected.byte_length {
-                        return Err(rejection(
-                            work,
-                            "file version length differs from its selection",
-                        ));
-                    }
-                    return Ok(source);
-                }
-            }
-        }
-        Source::read(context, path, None, io).await
+        let original = super::source::ReadSource::decode(context, path, version, work)?;
+        Source::selected(context, path, original, work, io).await
     }
     async fn edit(
         &self,
@@ -320,6 +324,13 @@ impl ToolExecutor for FileTool {
             .ok_or_else(unauthorized)?;
         let context = context.ok_or_else(unauthorized)?;
         if file.is_none() && matches!(self, Self::Read | Self::Edit) {
+            if matches!(self, Self::Read) && path.starts_with(crate::layers::EFFECTIVE_PATH) {
+                // This read-only view has no concrete volume until the async
+                // resolver selects its layer. That producer checks the original
+                // directory grant before reading; no source authority is issued
+                // by accepting the unresolved path here.
+                return Ok(());
+            }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let owned_io = work
                 .map(crate::executor::PreparationIo::from_native_work)
