@@ -168,7 +168,7 @@ pub enum AgentReply {
     ChildWakes {
         /// Only the requested page at the original status cut.
         items: Vec<acyclic_harness_core::agent::ChildWake>,
-        /// Last returned child id when more samples may remain.
+        /// Next original status sequence when more samples may remain.
         next: Option<String>,
     },
     /// Authorized names at one generation, without eager file reads.
@@ -717,13 +717,19 @@ fn validate_reply(
         (AgentReply::History { items, next }, AgentCommand::History { page, .. }) => {
             if items
                 .array_windows::<2>()
-                .any(|[newer, older]| older.conversation.checked_add(1) != Some(newer.conversation))
-            {
-                return Err(CommandError::Invalid);
-            }
-            if items
-                .iter()
-                .any(|item| item.conversation == 0 || item.context_tail > item.conversation)
+                .any(|[a, b]| a.status.checked_add(1) != Some(b.status))
+                || page.cursor().is_some_and(|after| {
+                    after.parse::<u64>().ok() != items.first().map(|item| item.status)
+                        && !items.is_empty()
+                })
+                || next.as_deref().is_some_and(|next| {
+                    items
+                        .last()
+                        .and_then(|item| item.status.checked_add(1))
+                        .map(|n| n.to_string())
+                        .as_deref()
+                        != Some(next)
+                })
             {
                 return Err(CommandError::Invalid);
             }

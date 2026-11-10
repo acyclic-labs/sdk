@@ -95,11 +95,12 @@ pub use machine::{
     TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait, Wake, requested_child, step,
 };
 pub use records::{
-    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, ChildWake,
-    ChildWakes, Closed, ContextAction, ContextRequest, Control, CreationConfig, ForkAdopted, Hook,
-    InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
-    Membership, Message, NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext, SpawnRequest,
-    SpawnTemplates, StatusRecord, UnsupportedRecordVersion, VolumeBinding, decode_record,
+    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled,
+    ChildSettlement, ChildWake, ChildWakes, Closed, ContextAction, ContextRequest, Control,
+    CreationConfig, ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
+    MAX_RECORD_BYTES, MAX_VOLUMES, Membership, Message, NoticePayload, Phase, RECORD_VERSION,
+    Sender, SpawnContext, SpawnRequest, SpawnTemplates, StatusRecord, UnsupportedRecordVersion,
+    VolumeBinding, decode_record,
 };
 pub use reply::{Reply, SteeringReply, reply};
 

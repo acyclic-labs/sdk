@@ -620,6 +620,8 @@ impl Phase {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct ChildWake {
+    /// Sequence of the original completion fact in the owner status stream.
+    pub status: u64,
     /// Direct child id, relative to the owner of this status stream.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub child: AgentId,
@@ -629,46 +631,89 @@ pub struct ChildWake {
     pub woke_at_micros: u64,
 }
 
-/// Immutable completion samples for one returned wait. The index root is
-/// published with this status; neither status nor checkpoint size grows with
-/// the number of completions. Read samples through the owner's bounded query.
+/// One admitted completion fact. It is not a wait-return measurement until
+/// an original ChildWakes range supplies the parent's return clock.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(deny_unknown_fields)]
+pub struct ChildSettlement {
+    /// Direct child of the status owner.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub child: AgentId,
+    /// Original inbox commit clock, retained in the same ordinary status commit.
+    pub settled_at_micros: u64,
+}
+
+/// Original completion facts for one returned wait. These status sequences
+/// form a dense range: only admitted completions publish while a wait is parked.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct ChildWakes {
-    /// Persistent index of direct child ids and original settlement times.
-    #[cfg_attr(
-        feature = "wasm",
-        tsify(type = "{ root: number[] | null; count: number }")
-    )]
-    pub settlements: super::Children,
+    /// First completion fact in the owner's status stream.
+    pub from: u64,
+    /// Exclusive end, including a completion in the returning status itself.
+    pub until: u64,
     /// Parent delivery clock at the actual wait return, before the driver runs.
     pub woke_at_micros: u64,
 }
 impl ChildWakes {
-    /// Read only the requested samples at this immutable cut.
+    /// Read only the requested original status facts at this immutable cut.
+    /// No index IO, reconstruction of a subtree or per-child retained state.
     pub async fn page<P: acyclic_stream::StreamProvider + ?Sized>(
         &self,
         provider: std::sync::Arc<P>,
-        after: Option<&AgentId>,
+        agent: &AgentPath,
+        after: Option<u64>,
         limit: usize,
     ) -> Result<Vec<ChildWake>, Error> {
-        let mut entries = self.settlements.clone();
-        entries.bind(provider);
-        entries
-            .values_page(after, limit)
-            .await?
-            .into_iter()
-            .map(|(child, value)| {
-                Ok(ChildWake {
-                    child,
-                    settled_at_micros: value
-                        .ok_or(Error::Record("child completion has no timestamp"))?,
-                    woke_at_micros: self.woke_at_micros,
-                })
+        use futures::TryStreamExt as _;
+        let from = after.unwrap_or(self.from);
+        if self.from > from || from > self.until || self.from >= self.until {
+            return Err(Error::Record("completion cursor is outside its status cut"));
+        }
+        if from == self.until || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut source = provider
+            .read(acyclic_stream::ReadRequest {
+                path: agent.status()?,
+                from,
+                limit: u32::try_from(limit)
+                    .map_err(|_| Error::Record("completion page exceeds transport credit"))?,
+                key: None,
+                at_least: Default::default(),
             })
-            .collect()
+            .await
+            .map_err(Error::Stream)?;
+        let mut samples = Vec::new();
+        let mut next = from;
+        while let Some(record) = source.try_next().await.map_err(Error::Stream)? {
+            if record.sequence >= self.until {
+                break;
+            }
+            if record.sequence != next {
+                return Err(Error::Record("completion status range has a gap"));
+            }
+            let fact = StatusRecord::decode(&record.value)?
+                .child_settlement
+                .ok_or(Error::Record(
+                    "completion status range contains an unrelated phase",
+                ))?;
+            samples.push(ChildWake {
+                status: record.sequence,
+                child: fact.child,
+                settled_at_micros: fact.settled_at_micros,
+                woke_at_micros: self.woke_at_micros,
+            });
+            next += 1;
+        }
+        if samples.len() as u64 != (limit as u64).min(self.until - from) {
+            return Err(Error::Record("completion status range is missing"));
+        }
+        Ok(samples)
     }
 }
 
@@ -678,6 +723,9 @@ impl ChildWakes {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct StatusRecord {
+    /// One admitted completion fact, durable before a waiting parent resumes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_settlement: Option<ChildSettlement>,
     /// Paged measurements, published only when the wait returns.
     /// Travels through the existing status/SessionFrame telemetry projection.
     #[serde(default, skip_serializing_if = "Option::is_none")]

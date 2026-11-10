@@ -72,12 +72,12 @@ where
     O: AsyncObjectStore + 'static,
 {
     /// Page completion measurements referenced by an exact original status.
-    /// Rechecks tree admission before resolving any content-addressed index.
+    /// Rechecks tree admission before reading the original completion range.
     pub async fn child_wakes(
         &self,
         agent: &AgentPath,
         status: u64,
-        after: Option<&AgentId>,
+        after: Option<u64>,
         limit: usize,
     ) -> Result<Vec<crate::agent::ChildWake>, Error> {
         use crate::agent::AgentRecord as _;
@@ -101,7 +101,12 @@ where
             .filter(|record| record.sequence == status)
             .ok_or(Error::Record("status measurement cut is missing"))?;
         match crate::agent::StatusRecord::decode(&record.value)?.child_wakes {
-            Some(wakes) => wakes.page(provider.clone(), after, limit).await,
+            Some(wakes) if status.checked_add(1).is_some_and(|end| wakes.until <= end) => {
+                wakes.page(provider.clone(), agent, after, limit).await
+            }
+            Some(_) => Err(Error::Record(
+                "completion range exceeds its original status",
+            )),
             None => Ok(Vec::new()),
         }
     }

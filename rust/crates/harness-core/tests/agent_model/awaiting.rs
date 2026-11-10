@@ -406,7 +406,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
         "root must resume in the delivery consuming the last completion, before its alarm"
     );
     assert_eq!(host.state(&root).await?.phase, Phase::Idle);
-    assert!(host.state(&root).await?.child_settlements.is_empty());
+    assert!(host.state(&root).await?.child_settlements.is_none());
     let statuses = values(&*provider, root.status()?)
         .await?
         .iter()
@@ -423,7 +423,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
         .child_wakes
         .as_ref()
         .ok_or("missing wake root")?
-        .page(provider.clone(), None, CHILDREN)
+        .page(provider.clone(), &root, None, CHILDREN)
         .await?;
     assert_eq!(
         samples.len(),

@@ -74,6 +74,7 @@ fn clock_jumps_and_extreme_scroll_preserve_original_provider_progress() {
                     path: stream.clone(),
                     records: vec![
                         StatusRecord {
+                            child_settlement: None,
                             child_wakes: None,
                             phase: Phase::Idle,
                             cursor: 0,
@@ -137,6 +138,7 @@ fn explorer_prefetch_and_expansion_keep_original_provider_cuts() {
                     agent.status().unwrap(),
                     vec![
                         StatusRecord {
+                            child_settlement: None,
                             child_wakes: None,
                             phase: Phase::Idle,
                             cursor: 0,

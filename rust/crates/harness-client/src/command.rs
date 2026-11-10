@@ -359,7 +359,7 @@ pub enum AgentCommand {
         agent: AgentPath,
         /// Sequence in the owner's original status stream.
         status: u64,
-        /// Row/byte credit; cursor is the preceding page's last child id.
+        /// Row/byte credit; cursor is the next original status sequence.
         page: AgentPageRequest,
     },
     /// One authorized private directory page at its original immutable cut.
@@ -567,8 +567,9 @@ impl AgentCommand {
             }
             Self::ChildWakes { page, .. } => {
                 if let Some(after) = page.cursor() {
-                    acyclic_harness_core::agent::AgentId::validate(after)
-                        .map_err(|_| CommandError::Invalid)?;
+                    if !after.parse::<u64>().is_ok_and(|n| n.to_string() == after) {
+                        return Err(CommandError::Invalid);
+                    }
                 }
                 Ok(())
             }

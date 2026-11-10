@@ -285,6 +285,7 @@ fn first_status(
         path: agent.status()?,
         records: vec![
             StatusRecord {
+                child_settlement: None,
                 child_wakes: None,
                 phase: Phase::Idle,
                 cursor: forked_at,

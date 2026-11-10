@@ -385,6 +385,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             (
                 "status",
                 StatusRecord {
+                    child_settlement: None,
                     child_wakes: None,
                     phase: Phase::Idle,
                     cursor: 0,
@@ -575,6 +576,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 binding,
             };
             let status = StatusRecord {
+                child_settlement: None,
                 child_wakes: None,
                 phase: state.phase.clone(),
                 cursor: 0,

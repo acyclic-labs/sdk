@@ -138,6 +138,7 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
         let mut bytes = vec![1];
         bytes.extend(
             StatusRecord {
+                child_settlement: None,
                 child_wakes: None,
                 phase,
                 cursor,
