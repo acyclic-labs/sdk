@@ -389,6 +389,21 @@ mod tests {
         assert_ne!(raw.input_mode & 512, 0);
         assert_ne!(raw.output_mode & 4, 0);
         assert_eq!((raw.input_page, raw.output_page), (65001, 65001));
+        if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("output-completion") {
+            let ready = path.with_extension("output-ready");
+            let start = Instant::now();
+            Owner::run(&tty.owner, None, move |guard| {
+                // The host observes this worker's entry, holds its actual
+                // ConPTY output pipe past the probe deadline, then drains it.
+                std::fs::write(ready, b"ordinary output entered")?;
+                guard.writer().write_all(&vec![b'B'; 1024 * 1024])
+            })?;
+            assert!(start.elapsed() >= super::super::PROBE_TIMEOUT);
+            // Success above must precede close, which may cancel output.
+            drop(tty);
+            std::fs::write(path, b"ordinary output completed before close")?;
+            return Ok(());
+        }
         if std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("input-close") {
             let (mut tty, output_half) = tty.split();
             let closing = std::thread::spawn(move || drop(output_half));
