@@ -122,10 +122,16 @@ impl MachinesHost {
         sandbox: &SandboxRef,
         command: acyclic_machines::ExecCommand,
     ) -> Result<acyclic_machines::ExecStream> {
+        // Select a fallback only when it is declared. Otherwise preserve the
+        // original exec admission and its provider-owned refusal.
         if self
             .provider
             .capability(acyclic_machines::ProviderCapability::BinaryDuplexExec)
             == acyclic_machines::Support::Unsupported
+            && self
+                .provider
+                .capability(acyclic_machines::ProviderCapability::RequestResponseExec)
+                == acyclic_machines::Support::Supported
         {
             let maximum = command.maximum_output_bytes();
             let output = self
