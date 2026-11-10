@@ -66,7 +66,9 @@ async fn run_provider_scenario(root: &std::path::Path, path: &std::path::Path) -
         Some("provider".into())
     );
     let case = serde_json::from_value(value)?;
-    stall::guarded(path, providers::run(case)).await??;
+    stall::guarded(path, providers::run(case))
+        .await?
+        .map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(())
 }
 

@@ -83,17 +83,15 @@ impl Recorded {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.refused < self.unreachable {
             state.refused += 1;
-            // As the platform transport reports a refused connection on each path.
-            return Err(if native {
-                Error::NativeBoundary {
-                    code: acyclic_harness::wire::ErrorCode::Unavailable,
-                    reason: "model provider connection failed",
-                }
-            } else {
-                Error::ModelUnavailable {
-                    failure: acyclic_harness::ModelTransportFailure::Connect,
-                    excerpt: "Connection refused (os error 111)".into(),
-                }
+            // Both platform paths retain the semantic Connect class. Native
+            // failures omit the excerpt until diagnostic storage is admitted.
+            return Err(Error::ModelUnavailable {
+                failure: acyclic_harness::ModelTransportFailure::Connect,
+                excerpt: if native {
+                    String::new()
+                } else {
+                    "Connection refused".into()
+                },
             });
         }
         if request.url.ends_with("/count") {
