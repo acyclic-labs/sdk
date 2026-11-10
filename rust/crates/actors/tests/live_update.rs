@@ -264,7 +264,7 @@ impl Handler for Package {
                 let payload = Bytes::from(serde_json::to_vec(&next).map_err(guest)?);
                 let record = if next.step % 2 == 0 {
                     Invocation::new(
-                        acyclic_stream::StreamPath::new("invoke-control/caller")?,
+                        acyclic_stream::StreamPath::new("invoke-control/caller").map_err(guest)?,
                         route.actor.clone(),
                         "inbox".into(),
                         Bytes::from(next.operation()),
