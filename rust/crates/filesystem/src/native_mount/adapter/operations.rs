@@ -1,3 +1,5 @@
+use crate::native_mount::retirement::SourceRetirementWait;
+
 impl<A, O> MountFilesystem for CheckoutMountSource<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,

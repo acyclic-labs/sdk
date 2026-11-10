@@ -229,6 +229,7 @@ fn invariant(message: &'static str) -> CanonicalDecodeError {
 
 #[cfg(all(test, feature = "native-watch", not(target_arch = "wasm32")))]
 mod tests {
+    use super::*;
     #[test]
     fn source_fact_round_trips_and_authority_is_domain_separated()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -264,8 +265,8 @@ mod tests {
             ));
         }
         assert_ne!(
-            super::source_authority_id(volume).into_bytes(),
-            volume.into_bytes()
+            super::source_authority_id(volume_id).into_bytes(),
+            volume_id.into_bytes()
         );
         Ok(())
     }

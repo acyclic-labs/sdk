@@ -630,7 +630,11 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
             // Observe cancellation or exhausted delivery credit on a real
             // notification before attempting dependent housekeeping.
             std::fs::write(directory.path().join("child/reported"), b"changed")?;
-            let state = watch.shared.lock().map_err(|_| "watch state poisoned")?;
+            let state = watch
+                .shared
+                .state
+                .lock()
+                .map_err(|_| "watch state poisoned")?;
             drop(
                 watch
                     .fenced

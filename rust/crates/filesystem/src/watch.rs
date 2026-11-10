@@ -428,28 +428,6 @@ impl SharedState {
     }
 }
 
-/// One publication event for native arrival observers and synchronous fences.
-/// Both wait forms consume the same retained state. Arrival holds no worker.
-#[derive(Debug, Default)]
-struct WatchEvent {
-    fenced: Condvar,
-    changed: tokio::sync::Notify,
-}
-
-impl WatchEvent {
-    fn notify_all(&self) {
-        self.fenced.notify_all();
-        self.changed.notify_waiters();
-    }
-
-    fn wait<'a, T>(
-        &self,
-        guard: std::sync::MutexGuard<'a, T>,
-    ) -> std::sync::LockResult<std::sync::MutexGuard<'a, T>> {
-        self.fenced.wait(guard)
-    }
-}
-
 /// Exclusive custody of an authenticated baseline scan.
 ///
 /// Finishing consumes this owner. Dropping it, including when an async capture
@@ -460,6 +438,7 @@ impl WatchEvent {
 #[must_use = "keep the scan owner until finish_rescan or abort"]
 pub struct NativeWatchRescan {
     shared: Arc<WatchState>,
+    fenced: Arc<Condvar>,
     epoch: u64,
     invalidation: Option<WatchInvalidationReason>,
 }
@@ -1613,12 +1592,6 @@ pub struct NativeWatch {
     owner_allocation: Option<crate::NativeAllocation>,
 }
 
-impl Drop for NativeWatch {
-    fn drop(&mut self) {
-        lose_delivery(&self.shared, &self.fenced);
-    }
-}
-
 impl std::fmt::Debug for NativeWatch {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1756,6 +1729,7 @@ impl Drop for NativeWatch {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .closed = true;
+        lose_delivery(&self.shared, &self.fenced);
     }
 }
 
@@ -2089,7 +2063,7 @@ impl NativeWatch {
         let state = SharedState::new(Some(WatchInvalidationReason::InitialSnapshotRequired));
         let shared = Arc::new(WatchState::new(state));
         Self::startup_control(work)?;
-        let fenced = Arc::new(WatchEvent::default());
+        let fenced = Arc::new(Condvar::new());
         #[cfg(windows)]
         let (context_root, context_allocation) = Self::copy_startup_path(&root, work, original)?;
         #[cfg(windows)]
@@ -3888,15 +3862,12 @@ impl NativeWatch {
     }
 
     fn ensure_arrival_available(&self) -> Result<(), NativeWatchError> {
-        if let Some(owner) = &self.pending_source_watch {
-            return Err(NativeWatchError::SourceStartup(Arc::clone(owner)));
-        }
         match &self.watcher {
             NativeWatchDriver::Source(source) => {
-                source.ensure_wait_available().map_err(demand_watch_error)
+                source.ensure_wait_available().map_err(demand_watch_error)?;
             }
             NativeWatchDriver::StartupFailure(owner) => {
-                Err(NativeWatchError::SourceStartup(Arc::clone(owner)))
+                return Err(NativeWatchError::SourceStartup(Arc::clone(owner)));
             }
             #[cfg(not(windows))]
             NativeWatchDriver::Adapter(_) => {}
