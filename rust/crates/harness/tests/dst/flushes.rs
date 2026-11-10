@@ -75,14 +75,19 @@ fn turns(
             .state_directory(directory.join("state")))
         };
         let mut cuts = [0; 10];
-        // Volume setup can return while its accepted native owner is retiring.
-        // Its durability calls belong to setup, before the harness-open window.
+        // The original oracle opens a new owner against prepared account
+        // custody. Keep the hermetic account's real private-file publication
+        // outside that owner-open window and account for its two drains here.
         let setup = schedule.durable_write_count();
-        let pending_setup = schedule.pending_native_work();
-        schedule.drained().await;
-        eprintln!(
-            "original setup owners: {pending_setup}; durable calls: {setup}..{}",
-            schedule.durable_write_count()
+        let custody = directory.join("state/signing-custody");
+        acyclic_native_runtime::signing_key::SigningKeyReference::create(
+            acyclic_native_runtime::signing_key::SigningCustody::PrivateFile(&custody),
+        )
+        .map_err(storage)?;
+        assert_eq!(
+            flushes(&schedule.durable_writes()[setup..]),
+            (0, 2),
+            "account custody must retain its original durable publication"
         );
         cuts[0] = schedule.durable_write_count();
         let harness = Arc::new(entry(LocalHarness::open(config()?)).await?);
@@ -194,7 +199,7 @@ fn reply_publication_drains_follow_commits_and_not_history_or_event_count() -> R
     assert_eq!(
         observed.open,
         (7, 12),
-        "fresh open flushes changed: {observed:?}"
+        "fresh owner open with prepared account custody changed: {observed:?}"
     );
     assert_eq!(observed.reopen, (1, 5), "reopen flushes changed");
     // Root creation publishes its policy and namespaces before the first reply.
