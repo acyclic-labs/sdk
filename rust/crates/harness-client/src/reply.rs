@@ -6,7 +6,7 @@ use acyclic_harness_core::{
         AgentPath, Delivered, Error as AgentError, IntentId, Phase, Reply, StatusRecord, TurnInput,
     },
     context::{DiffCursor, DiffFilePage},
-    conversation::PrivateDirectoryPage,
+    conversation::{PrivateDirectoryPage, VolumeClass, VolumeOwner},
     interaction::ApprovalBinding,
 };
 use acyclic_stream::{CommitRequest, wire_codec};
@@ -449,11 +449,14 @@ fn validate_reply(
             },
         ) => {
             return validate_files(snapshot, paths, after.as_ref(), |file| {
-                acyclic_harness_core::conversation::private_volume(
-                    file.volume().provider().clone(),
-                    &agent.id(),
-                )
-                .is_ok_and(|volume| &volume == file.volume())
+                // The private role can bind any owned private volume, including
+                // a local root's retained journal. Its constructor's default
+                // name is not an ownership or authorization contract.
+                file.volume().class() == VolumeClass::AgentPrivate
+                    && file.volume().owner()
+                        == &VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                            agent.id_bytes(),
+                        ))
             });
         }
         (AgentReply::Root { .. }, AgentCommand::Root {})
