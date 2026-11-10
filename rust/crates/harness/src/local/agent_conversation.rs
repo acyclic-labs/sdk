@@ -35,7 +35,7 @@ pub use acyclic_harness_client::ExecutionQuery;
 use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
-pub use history::HistoryPage;
+pub use history::{HistoryPage, PreparedHistoryAction};
 use std::sync::Arc;
 pub use usage_query::UsageQuery;
 
@@ -642,13 +642,18 @@ impl Conversation {
         Ok(self.settlement().await?.0)
     }
 
-    /// Opens the current event window and returns the phase from its original
-    /// settlement. Reconnecting input can admit approval answers before events.
+    /// Observes new turns and the latest status, returning the current phase
+    /// from the same settlement that selected both opening positions. A
+    /// reconnecting client can admit input before consuming its first event.
     ///
     /// # Errors
-    /// Session or host failures, or refused follows.
+    /// Session, host, decoding or follow admission failures.
     pub async fn observe_current(&self) -> Result<(super::Observer, Phase)> {
-        self.observe_from(None).await
+        let (settled, statuses, phase) = self.settlement().await?;
+        Ok((
+            super::Observer::open(&self.connection, settled, statuses.saturating_sub(1))?,
+            phase,
+        ))
     }
 
     /// Every settled turn from conversation sequence `from`, or from the current
@@ -660,17 +665,12 @@ impl Conversation {
     /// # Errors
     /// Session or host failures, or refused follows.
     pub async fn observe(&self, from: Option<u64>) -> Result<super::Observer> {
-        self.observe_from(from).await.map(|(observer, _)| observer)
-    }
-
-    async fn observe_from(&self, from: Option<u64>) -> Result<(super::Observer, Phase)> {
-        let (settled, statuses, phase) = self.settlement().await?;
-        let observer = super::Observer::open(
+        let (settled, statuses, _) = self.settlement().await?;
+        super::Observer::open(
             &self.connection,
             from.unwrap_or(settled),
             statuses.saturating_sub(1),
-        )?;
-        Ok((observer, phase))
+        )
     }
 
     /// The settled entries at conversation sequences `from..to`, every one

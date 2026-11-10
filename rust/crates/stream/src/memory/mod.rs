@@ -16,11 +16,11 @@ use crate::OwnedBytes as Bytes;
 use crate::native::Work;
 use crate::preparation::commit_identity;
 use crate::query_sync::{Mutex, RwLock, watch};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::request::normalize_commit;
 #[cfg(test)]
 use crate::request::validate_append_size;
 use crate::request::{append_digest, commit_digest, fork_digest};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::request::{normalize_commit, validate_commit_shape};
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
 #[cfg(test)]

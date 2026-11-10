@@ -25,14 +25,14 @@ impl KeyTree {
         work: &mut impl acyclic_collections::IndexWork<Error = StreamError, Allocation = Allocation>,
     ) -> Result<Self, StreamError> {
         let mut tree = self.clone();
-        for record in &records.records {
+        for (index, record) in records.values.iter().enumerate() {
             for key in record.headers.keys() {
                 let key = acyclic_collections::binary_key::<RECORD_KEY_WIDTH, _>(key, work)
                     .map_err(|error| match error {
                         acyclic_collections::BinaryKeyError::Work(error) => error,
                         _ => StreamError::InvalidArgument,
                     })?;
-                tree.0 = tree.0.insert(key, record.sequence, (), work)?;
+                tree.0 = tree.0.insert(key, records.start + index as u64, (), work)?;
             }
         }
         Ok(tree)

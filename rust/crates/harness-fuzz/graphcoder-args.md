@@ -10,11 +10,25 @@ separated by zero *units*. This preserves zero bytes inside units such as D800
 and DC00. `native-d800` and `native-dc00` retain those authored OS inputs; the
 readable UTF-8 corpus uses its original encoding.
 
-The target includes the shipping `graphcoder/args.rs` and invokes its clap parser
-and `prepare_input`. It opens no runtime, config, provider or output file.
+The one `graphcoder_args` target uses the shipping plugin's public parser and
+native ingress, including `prepare_input`. Its `graphcoder_args` corpus retains
+all 38 original CLI seeds, with duplicate seeds stored once. It opens no runtime,
+config, provider or output file.
 Accepted results must retain one input producer and operation identity, one
 prompt owner, compatible output mode and distinct destinations. A generated
 explicit execution must also succeed, so rejecting everything fails the oracle.
+Generated valid inputs also cover native workspace ownership, plain and TLS
+serving, prompt and JSONL input, `run`, and attachment. Explicit root and child
+reopen paths must preserve their identity without consulting ambient selection.
+
+The binary requires the `runtime` feature. An all-target check that enables only
+the `graphcoder` feature does not compile it. Compile the selected binary and
+replay its retained corpus with:
+
+```
+cargo check --locked -p acyclic-harness-fuzz --bin graphcoder_args --no-default-features --features runtime
+cargo run --locked -p acyclic-harness-fuzz --bin graphcoder_args --no-default-features --features runtime -- -runs=0 rust/crates/harness-fuzz/corpus/graphcoder_args
+```
 
 `exec-missing-operation` reaches the post-clap normalization guard. The kept
 negative control removes that actual production guard, requires the unchanged

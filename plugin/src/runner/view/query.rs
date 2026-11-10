@@ -1,8 +1,9 @@
-//! One visible page on the selected conversation's authenticated connection.
+//! Visible query selection over the connection's original authenticated pool.
 use super::{Conversation, Failure, Line, diff};
+use acyclic_harness::{agent::IntentId, interaction::ApprovalBinding};
 use acyclic_harness::{
     client::AgentPageRequest,
-    tui::{QueryController, QueryPage},
+    tui::{QueryController, QueryPage, display_text, display_text_prefix},
 };
 use std::sync::Arc;
 
@@ -11,9 +12,10 @@ pub(super) enum Source {
     Cost,
     Diff(Option<String>),
     History(Option<String>),
-    /// One bounded range of the original immutable approval request file.
     Approval {
-        status: u64,
+        request: IntentId,
+        binding: ApprovalBinding,
+        status: Option<u64>,
         offset: u64,
     },
 }
@@ -24,7 +26,7 @@ impl Source {
             Self::Cost => "Subtree cost",
             Self::Diff(_) => "Diff",
             Self::History(_) => "History",
-            Self::Approval { .. } => "Approval",
+            Self::Approval { .. } => "Approval request",
         }
     }
 
@@ -33,7 +35,14 @@ impl Source {
             Self::Cost => Self::Cost,
             Self::Diff(_) => Self::Diff(None),
             Self::History(_) => Self::History(None),
-            Self::Approval { status, .. } => Self::Approval {
+            Self::Approval {
+                request,
+                binding,
+                status,
+                ..
+            } => Self::Approval {
+                request: request.clone(),
+                binding: binding.clone(),
                 status: *status,
                 offset: 0,
             },
@@ -45,23 +54,42 @@ impl Source {
     }
 }
 
-pub(super) type Panel = QueryPage<Source>;
+#[derive(Default)]
+pub(super) struct Context {
+    pub approval_status: Option<u64>,
+    history: Vec<u64>,
+}
+
+pub(super) type Panel = QueryPage<Source, Context>;
+
+impl Context {
+    /// Select by the immutable cut printed on screen, never by a moving row.
+    pub(super) fn history_turn(&self, cut: u64) -> Option<u64> {
+        if !self.history.contains(&cut) {
+            return None;
+        }
+        cut.checked_sub(1)
+    }
+}
 
 /// Call only after painting the selected panel. Loading the final source
 /// range is insufficient: its wrapped rows must reach the visible bottom.
-pub(super) fn reviewed(queries: &QueryController<Source>, top: usize, height: u16) -> Option<u64> {
-    let Source::Approval { status, .. } = queries.source()? else {
+pub(super) fn reviewed(
+    queries: &QueryController<Source, Context>,
+    top: usize,
+    height: u16,
+) -> Option<u64> {
+    let Source::Approval { .. } = queries.source()? else {
         return None;
     };
     let page = queries.page.as_ref()?;
     (height != 0
         && page.next.is_none()
         && top.saturating_add(usize::from(height)) >= page.lines.len())
-    .then_some(*status)
+    .then_some(page.context.approval_status)
+    .flatten()
 }
 
-/// The existing session owns the wait. Closing or replacing the selection
-/// drops that consumer; input and redraw keep the same pending future.
 pub(super) async fn load(
     conversation: Arc<Conversation>,
     rows: u32,
@@ -76,7 +104,7 @@ pub(super) async fn load(
                     &prices,
                 )
                 .await?;
-            Ok(Panel::new(
+            Ok(QueryPage::new(
                 vec![
                     Line::raw("This agent and descendants · observed original calls"),
                     Line::raw(format!(
@@ -88,46 +116,13 @@ pub(super) async fn load(
                 ],
                 None,
                 false,
-            ))
+            )
+            .with_context(Context::default()))
         }
-        Source::Diff(cursor) => diff::query(conversation, rows, cursor).await,
-        Source::Approval { status, offset } => {
-            let (bytes, length) = conversation.approval_request(status, offset).await?;
-            // Read ranges can split a UTF-8 character. Leave its partial bytes
-            // at the next offset, rather than replacing or losing the action.
-            let text = match std::str::from_utf8(&bytes) {
-                Ok(text) => text,
-                Err(error)
-                    if error.error_len().is_none() && offset + (bytes.len() as u64) < length =>
-                {
-                    std::str::from_utf8(&bytes[..error.valid_up_to()])?
-                }
-                Err(error) => return Err(error.into()),
-            };
-            let end = offset + text.len() as u64;
-            if end == offset && end < length {
-                return Err("approval request range made no progress".into());
-            }
-            let mut lines = vec![Line::raw(
-                "Original action · y once · r exact rule · n deny · Esc cancels",
-            )];
-            lines.push(Line::raw(
-                "r: same tool, arguments and target in this agent and policy",
-            ));
-            lines.extend(
-                text.lines()
-                    .map(|line| Line::raw(acyclic_harness::tui::display_text(line).into_owned())),
-            );
-            lines.push(Line::raw("PgDn: more · PgUp: start"));
-            Ok(Panel::new(
-                lines,
-                (end < length).then_some(Source::Approval {
-                    status,
-                    offset: end,
-                }),
-                offset != 0,
-            ))
-        }
+
+        Source::Diff(cursor) => Ok(diff::query(conversation, rows, cursor)
+            .await?
+            .with_context(Context::default())),
         Source::History(cursor) => {
             let continued = cursor.is_some();
             let history = conversation
@@ -137,18 +132,83 @@ pub(super) async fn load(
             if history.items.is_empty() {
                 lines.push(Line::raw("No settled history"));
             }
-            for item in history.items {
+            for item in &history.items {
                 lines.push(Line::raw(format!(
-                    "Cut {} · {} project volumes · context through {}",
+                    "{} · {} project volumes · context through {}",
                     item.conversation, item.volume_count, item.context_tail,
                 )));
             }
-            lines.push(Line::raw("PgDn: older · PgUp: newest · Esc: close"));
-            Ok(Panel::new(
+            let selected = history.items.iter().map(|item| item.conversation).collect();
+            lines.push(Line::raw(
+                "Enter a displayed cut to select · PgDn: older · PgUp: newest · Esc: close",
+            ));
+            Ok(QueryPage::new(
                 lines,
                 history.next.map(|cursor| Source::History(Some(cursor))),
                 continued,
-            ))
+            )
+            .with_context(Context {
+                approval_status: None,
+                history: selected,
+            }))
+        }
+        Source::Approval {
+            request,
+            binding,
+            status,
+            offset,
+        } => {
+            let status = match status {
+                Some(status) => status,
+                None => {
+                    let pending = conversation
+                        .pending_approval(&request)
+                        .await?
+                        .filter(|pending| pending.binding == binding)
+                        .ok_or("The selected approval is no longer pending.")?;
+                    pending.status
+                }
+            };
+            let (bytes, length) = conversation.approval_request(status, offset).await?;
+            let range_end = offset
+                .checked_add(bytes.len() as u64)
+                .ok_or("Approval range overflows.")?;
+            // A byte page can end inside a character. Leave that suffix at the
+            // original offset for the next range; never replace or lose bytes.
+            let text = display_text_prefix(&bytes, range_end == length)?;
+            let end = offset
+                .checked_add(text.len() as u64)
+                .ok_or("Approval range overflows.")?;
+            if end == offset && end < length {
+                return Err("Approval range made no progress.".into());
+            }
+            let mut lines = vec![
+                Line::raw("Original action · y once · r exact rule · n deny · Esc cancels"),
+                Line::raw("r: same tool, arguments and target in this agent and policy"),
+            ];
+            lines.push(Line::raw(format!(
+                "Request {} · bytes {offset}–{end} of {length}",
+                display_text(request.as_str())
+            )));
+            lines.extend(
+                text.lines()
+                    .map(|line| Line::raw(display_text(line).into_owned())),
+            );
+            lines.push(Line::raw("PgDn: more · PgUp: start"));
+            Ok(QueryPage::new(
+                lines,
+                (end < length).then_some(Source::Approval {
+                    request,
+                    binding,
+                    status: Some(status),
+                    offset: end,
+                }),
+                offset != 0,
+            )
+            .with_context(Context {
+                approval_status: Some(status),
+                history: Vec::new(),
+            }))
         }
     }
 }
@@ -170,19 +230,30 @@ mod tests {
         let mut pending = std::pin::pin!(None::<std::future::Ready<()>>);
         queries.select(
             Source::Approval {
-                status: 7,
+                request: IntentId::try_from("approval")?,
+                binding: acyclic_harness::interaction::ApprovalBinding {
+                    operation_id: acyclic_harness::OperationId::from_bytes([3; 16]),
+                    action_digest: [4; 32],
+                },
+                status: Some(7),
                 offset: 0,
             },
             pending.as_mut(),
         );
-        queries.page = Some(Panel::new(
-            vec![
-                Line::raw("original action ".repeat(50)),
-                Line::raw("ACTION_END"),
-            ],
-            None,
-            false,
-        ));
+        queries.page = Some(
+            QueryPage::new(
+                vec![
+                    Line::raw("original action ".repeat(50)),
+                    Line::raw("ACTION_END"),
+                ],
+                None,
+                false,
+            )
+            .with_context(Context {
+                approval_status: Some(7),
+                history: Vec::new(),
+            }),
+        );
         let input = PromptInput::default();
         let mut terminal = Terminal::new(TestBackend::new(40, 20))?;
         let area = Rect::new(0, 0, 40, 20);
@@ -222,7 +293,12 @@ mod tests {
         }
         // The end of a range with more source bytes cannot finish review.
         queries.page.as_mut().unwrap().next = Some(Source::Approval {
-            status: 7,
+            request: IntentId::try_from("approval")?,
+            binding: ApprovalBinding {
+                operation_id: acyclic_harness::OperationId::from_bytes([3; 16]),
+                action_digest: [4; 32],
+            },
+            status: Some(7),
             offset: 32,
         });
         assert_eq!(reviewed(&queries, top, height), None);
@@ -240,12 +316,10 @@ mod tests {
             Source::Cost => Source::Cost,
             Source::Diff(_) => Source::Diff(Some("original-diff-cut".into())),
             Source::History(_) => Source::History(Some("original-history-cut".into())),
-            Source::Approval { status, .. } => Source::Approval {
-                status: *status,
-                offset: 32,
-            },
+            Source::Approval { .. } => source.clone(),
         };
-        Panel::new(vec![Line::raw("original source row")], Some(next), false)
+        QueryPage::new(vec![Line::raw("original source row")], Some(next), false)
+            .with_context(Context::default())
     }
 
     #[tokio::test]

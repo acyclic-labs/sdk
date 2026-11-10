@@ -1,4 +1,4 @@
-//! Thin native-host workspace client. `GraphCoder` owns the shared workspace.
+//! Product entry point over the shared agent frontend and native-host adapters.
 mod install;
 #[cfg(test)]
 mod tests;
@@ -12,7 +12,21 @@ use std::{
 };
 
 fn main() -> std::process::ExitCode {
-    match run() {
+    let arguments = match acyclic_plugin::ingress::parse(env::args_os().collect()) {
+        Ok(acyclic_plugin::ingress::Input::Agent(arguments)) => {
+            return std::process::Termination::report(acyclic_plugin::main_from(
+                arguments,
+                std::convert::identity,
+                None,
+            ));
+        }
+        Ok(acyclic_plugin::ingress::Input::Native(arguments)) => arguments,
+        Err(error) => {
+            eprintln!("{error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    match run(arguments) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -21,8 +35,7 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run() -> Result<()> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
+fn run(args: Vec<String>) -> Result<()> {
     let Some(command) = args.first().cloned() else {
         return help();
     };
@@ -213,7 +226,7 @@ fn verify_certification(
 
 fn help() -> Result<()> {
     println!(
-        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH] [--host-version VERSION (agy)]\nacyclic host HOST [--prompt TEXT] -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
+        "Acyclic {}\nacyclic run [OPTIONS]\nacyclic serve ADDRESS [OPTIONS]\nacyclic attach AGENT [OPTIONS]\nNative hosts own their tools, permissions and agent loops.\nStart acyclic run --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH] [--host-version VERSION (agy)]\nacyclic host HOST [--prompt TEXT] -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
         env!("CARGO_PKG_VERSION")
     );
     Ok(())

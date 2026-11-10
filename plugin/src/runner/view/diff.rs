@@ -1,13 +1,12 @@
 //! The terminal renders one authorized query page and retains its continuation.
-use super::{
-    Conversation, Failure, Line,
-    query::{Panel, Source},
-};
+use super::{Conversation, Failure, Line, query::Source};
 use acyclic_harness::{
     client::{AgentPageRequest, DiffFilePage, DiffKind},
     tui::display_text,
 };
 use std::sync::Arc;
+
+type DiffPanel = acyclic_harness::tui::QueryPage<Source>;
 
 /// Keep only the visible page. The existing session owns the request's wait;
 /// dropping this future on close or replacement cancels that consumer.
@@ -15,7 +14,7 @@ pub(super) async fn query(
     conversation: Arc<Conversation>,
     rows: u32,
     cursor: Option<String>,
-) -> Result<Panel, Failure> {
+) -> Result<DiffPanel, Failure> {
     let continued = cursor.is_some();
     let page = AgentPageRequest::new(rows, 64 * 1024, cursor)?;
     let fragments = conversation.diff(page).await?;
@@ -36,7 +35,7 @@ pub(super) async fn query(
     } else {
         lines.push(Line::raw("PgDn/PgUp: scroll · Esc: close"));
     }
-    Ok(Panel::new(
+    Ok(DiffPanel::new(
         lines,
         next.map(|cursor| Source::Diff(Some(cursor))),
         continued,

@@ -112,7 +112,12 @@ pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
 pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
     validate_commit(request)?;
     // The digest alone retains nothing, so it allocates nothing.
-    Ok(hash_commit(request, |_, _| ()))
+    Ok(canonical_digest(request))
+}
+
+/// Hashes a request whose shape was admitted by the shared canonicalizer.
+pub(crate) fn canonical_digest(request: &CommitRequest) -> [u8; 32] {
+    hash_commit(request, |_, _| ())
 }
 
 /// Retains, per effect, its header hash state, its digest and its mutation
@@ -347,8 +352,7 @@ fn fact_hash_bytes(fact: &crate::CommittedMutation) -> u64 {
 /// Normalizes a commit and admits its shape and complete encoded command size.
 /// Callers that only prepare a request need not hash all record bytes again.
 pub fn validate_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
-    normalize_commit(request)?;
-    validate_commit_shape(request)
+    normalize_commit(request)
 }
 
 pub(crate) fn hash_conditions(hash: &mut Sha256, conditions: &[CommitCondition]) {
@@ -559,7 +563,7 @@ fn effect_conditions_with<'a>(
             break None;
         };
         visit();
-        match condition.path().cmp(path) {
+        match CommitCondition::path(condition).cmp(path) {
             std::cmp::Ordering::Less => {
                 conditions.next();
             }
@@ -573,6 +577,22 @@ fn effect_conditions_with<'a>(
 /// refuses a path conditioned twice by one effect or mutated twice by the
 /// commit. Effects keep their request order: a receipt names them by index.
 pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
+    normalize_commit_with(request, ordinary_index)
+}
+
+fn ordinary_index(length: usize) -> Result<(Vec<MutationIndex>, ()), StreamError> {
+    let mut index = Vec::new();
+    index
+        .try_reserve_exact(length)
+        .map_err(|_| StreamError::Capacity)?;
+    Ok((index, ()))
+}
+
+/// The caller owns admission for the only cross-effect scratch allocation.
+pub(crate) fn normalize_commit_with<A>(
+    request: &mut CommitRequest,
+    allocate: impl FnOnce(usize) -> Result<(Vec<MutationIndex>, A), StreamError>,
+) -> Result<(), StreamError> {
     if !crate::preparation::shaped(request)
         || request.conditions().count() > MAX_ITEMS
         || request.mutations().count() > MAX_ITEMS
@@ -615,25 +635,115 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
             return Err(StreamError::InvalidArgument);
         }
     }
-    // Each effect is canonical, so a path repeated across effects is found by
-    // searching every earlier effect, without a second copy.
-    for (index, effect) in request.effects.iter().enumerate() {
-        let earlier = &request.effects[..index];
-        if effect.mutations.iter().any(|mutation| {
-            earlier.iter().any(|other| {
-                other
-                    .mutations
-                    .binary_search_by(|other| {
-                        crate::CommitMutation::path(other)
-                            .cmp(crate::CommitMutation::path(mutation))
-                    })
-                    .is_ok()
-            })
-        }) {
+    let view = MutationView::new(request, allocate)?;
+    validate_shape(&view, || {})
+}
+
+/// Addresses borrow original mutations: no paths, records or payloads are copied.
+pub(crate) struct MutationIndex {
+    effect: usize,
+    mutation: usize,
+}
+
+struct MutationView<'a, A> {
+    request: &'a CommitRequest,
+    single: Option<&'a [CommitMutation]>,
+    index: Vec<MutationIndex>,
+    // Drop the physical backing before retiring its original credit.
+    _allocation: Option<A>,
+}
+
+impl<'a, A> MutationView<'a, A> {
+    fn new(
+        request: &'a CommitRequest,
+        allocate: impl FnOnce(usize) -> Result<(Vec<MutationIndex>, A), StreamError>,
+    ) -> Result<Self, StreamError> {
+        let mut nonempty = request
+            .effects
+            .iter()
+            .filter(|effect| !effect.mutations.is_empty());
+        let single = nonempty.next().map(|effect| effect.mutations.as_slice());
+        if nonempty.next().is_none() {
+            return Ok(Self {
+                request,
+                single,
+                index: Vec::new(),
+                _allocation: None,
+            });
+        }
+        let (index, allocation) = allocate(request.mutations().count())?;
+        let mut view = Self {
+            request,
+            single: None,
+            index,
+            _allocation: Some(allocation),
+        };
+        for (effect, group) in request.effects.iter().enumerate() {
+            view.index.extend(
+                (0..group.mutations.len()).map(|mutation| MutationIndex { effect, mutation }),
+            );
+        }
+        let path = |position: &MutationIndex| {
+            CommitMutation::path(&request.effects[position.effect].mutations[position.mutation])
+        };
+        view.index
+            .sort_unstable_by(|left, right| path(left).cmp(path(right)));
+        if view
+            .index
+            .windows(2)
+            .any(|pair| path(&pair[0]) == path(&pair[1]))
+        {
             return Err(StreamError::InvalidArgument);
         }
+        Ok(view)
     }
-    Ok(())
+
+    fn len(&self) -> usize {
+        self.single
+            .map_or(self.index.len(), <[CommitMutation]>::len)
+    }
+
+    fn at(&self, position: usize) -> &CommitMutation {
+        match self.single {
+            Some(mutations) => &mutations[position],
+            None => {
+                let index = &self.index[position];
+                &self.request.effects[index.effect].mutations[index.mutation]
+            }
+        }
+    }
+
+    fn descendants<'b>(
+        &'b self,
+        destination: &'b StreamPath,
+    ) -> impl Iterator<Item = &'b str> + 'b {
+        // Seek the segment prefix itself. Text such as "a." sorts between "a"
+        // and "a/", so seeking after the parent would miss its descendants.
+        let mut low = 0;
+        let mut high = self.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let path = CommitMutation::path(self.at(middle)).as_str();
+            let ordering = path
+                .bytes()
+                .cmp(destination.as_str().bytes().chain(std::iter::once(b'/')));
+            if ordering.is_lt() {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        // Own only the offset into the borrowed destination, not its lifetime.
+        let prefix_len = destination.as_str().len();
+        let prefix = destination.as_str();
+        (low..self.len())
+            .map(move |position| CommitMutation::path(self.at(position)).as_str())
+            .take_while(move |path| {
+                path.strip_prefix(prefix)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+            })
+            .map(move |path| &path[prefix_len + 1..])
+    }
 }
 
 /// Encoded command bytes, using the same wire encoder as request validation.
@@ -646,15 +756,20 @@ fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
     command_size(commit_encoded_len(request))
 }
 
-pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
-    validate_commit_shape_with(request, || {})
-}
-
+#[cfg(test)]
 pub(crate) fn validate_commit_shape_with(
     request: &CommitRequest,
+    condition_visit: impl FnMut(),
+) -> Result<(), StreamError> {
+    let view = MutationView::new(request, ordinary_index)?;
+    validate_shape(&view, condition_visit)
+}
+
+fn validate_shape<A>(
+    view: &MutationView<'_, A>,
     mut condition_visit: impl FnMut(),
 ) -> Result<(), StreamError> {
-    for effect in &request.effects {
+    for effect in &view.request.effects {
         let mut condition_for = effect_conditions_with(effect, &mut condition_visit);
         for mutation in &effect.mutations {
             let CommitMutation::Fork {
@@ -669,15 +784,11 @@ pub(crate) fn validate_commit_shape_with(
             let condition = condition_for(destination);
             if source == destination
                 || !matches!(condition, Some(CommitCondition::Absent { .. }))
-                || request.mutations().any(|other| {
-                    let path = crate::CommitMutation::path(other).as_str();
-                    path.strip_prefix(destination.as_str())
-                        .and_then(|suffix| suffix.strip_prefix('/'))
-                        // A fork installs the parent of an excluded direct
-                        // child first; deeper paths would replace its parents.
-                        .is_some_and(|relative| {
-                            !exclude.iter().any(|excluded| relative == excluded.as_str())
-                        })
+                || view.descendants(destination).any(|relative| {
+                    // Only the exact excluded child can be installed separately.
+                    exclude
+                        .binary_search_by(|excluded| excluded.as_str().cmp(relative))
+                        .is_err()
                 })
             {
                 return Err(StreamError::InvalidArgument);
@@ -693,6 +804,73 @@ mod tests {
     use crate::OwnedBytes as Bytes;
     use crate::StreamProviderExt as _;
     use crate::{IdempotencyKey, IdempotencyObservation, MemoryStream, StreamPath, StreamProvider};
+
+    #[test]
+    fn cross_effect_forks_validate_segment_ranges_among_empty_guards() -> Result<(), StreamError> {
+        let append = |name: &str| -> Result<CommitMutation, StreamError> {
+            Ok(CommitMutation::Append {
+                path: StreamPath::new(name)?,
+                records: vec![Bytes::from_static(b"record").into()],
+            })
+        };
+        let parent = StreamPath::new("a")?;
+        let mut request = CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"fork-segment-range"))?,
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Absent {
+                    path: parent.clone(),
+                }],
+                vec![CommitMutation::Fork {
+                    source: StreamPath::new("source")?,
+                    destination: parent,
+                    at_tail: 0,
+                    records: Vec::new(),
+                    exclude: vec![crate::RelativePath::new("child")?],
+                }],
+            )],
+        };
+        // Guard-only effects retain request order without contributing paths.
+        for _ in 0..257 {
+            request.effects.push(CommitEffect::hard(
+                vec![CommitCondition::Absent {
+                    path: StreamPath::new("guard")?,
+                }],
+                Vec::new(),
+            ));
+        }
+        request.effects.push(CommitEffect::hard(
+            Vec::new(),
+            vec![append("a.")?, append("a/child")?],
+        ));
+        validate_commit(&mut request)?;
+        request
+            .effects
+            .last_mut()
+            .ok_or(StreamError::InvalidArgument)?
+            .mutations
+            .push(append("a/child/deeper")?);
+        assert_eq!(
+            validate_commit(&mut request),
+            Err(StreamError::InvalidArgument)
+        );
+        request
+            .effects
+            .last_mut()
+            .ok_or(StreamError::InvalidArgument)?
+            .mutations
+            .pop();
+        request.effects.push(CommitEffect {
+            soft: true,
+            conditions: Vec::new(),
+            mutations: vec![append("a/child")?],
+        });
+        assert_eq!(
+            validate_commit(&mut request),
+            Err(StreamError::InvalidArgument)
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn recovery_binding_refuses_changed_facts_and_unfunded_hash_work()

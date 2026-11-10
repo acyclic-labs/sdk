@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { Processes, Spool, OutputWatch, conptyArgs } from "./process.mjs";
+import { Processes, Spool, OutputWatch } from "./process.mjs";
 import { alive } from "./orphan-check.mjs";
 
 const fixture = fileURLToPath(new URL("./terminal-fixture.py", import.meta.url));
@@ -40,40 +40,38 @@ test("terminal output consumes the original source and refuses early EOF", async
   assert.equal((await lost.closed).code, 3);
 });
 
-test("ConPTY launch contract carries the shared terminal arguments and refuses others", () => {
-  const args = ["--workspace", "W", "--settings-root", "S", "--catalog", "C", "--model", "m/x"];
-  assert.deepEqual(conptyArgs("B", args), ["B", "W", "C", "S", "m/x"]);
-  assert.deepEqual(conptyArgs("B", ["--operation", "id", ...args, "--resume"]).slice(5), ["--resume", "--operation", "id"]);
-  assert.deepEqual(conptyArgs("B", [...args, "--diagnostic-records", "16", "--diagnostic-record-bytes", "4096"]).slice(5),
-    ["--diagnostic-records", "16", "--diagnostic-record-bytes", "4096"]);
-  assert.deepEqual(conptyArgs("B", [...args, "--approval-policy", "P"]).slice(5), ["--approval-policy", "P"]);
-  assert.deepEqual(conptyArgs("B", [...args, "--prices", "P"]).slice(5), ["--prices", "P"]);
-  // Negative controls: the native host has no channel for these.
-  assert.throws(() => conptyArgs("B", [...args, "--operation", "a", "--operation", "b"]), /cannot launch argument --operation/);
-  assert.throws(() => conptyArgs("B", [...args, "--operation"]), /cannot launch argument --operation/);
-  assert.throws(() => conptyArgs("B", [...args, "-p", "x"]), /cannot launch argument -p/);
-  assert.throws(() => conptyArgs("B", args.slice(2)), /requires --workspace/);
-  assert.throws(() => conptyArgs("B", [...args, "--model", "n/y"]), /cannot launch argument --model/);
-});
-
 const conpty = {
   skip: process.platform !== "win32" || !process.env.E2E_CONPTY_HOST || !process.env.E2E_PROCESS_HOST,
   timeout: 10000,
 };
 const cmd = `${process.env.SystemRoot}\\System32\\cmd.exe`;
-const launch = ["--workspace", process.cwd(), "--settings-root", process.cwd(), "--catalog", process.cwd(), "--model", "m/x"];
+const launch = ["/D", "/Q"];
 
-test("real ConPTY carries typed options, raw input, output and the exit code", conpty, async t => {
+test("real ConPTY forwards native argv, raw input, output and the exit code", conpty, async t => {
   const processes = new Processes();
   try {
-    const running = await processes.startTerminal(cmd, [...launch, "--resume", "--operation", "op 1",
-      "--diagnostic-records", "0", "--diagnostic-record-bytes", "0"]);
+    const args = ["--resume", "--operation", "op 1", "", 'embedded"quote', "trailing\\", "日本語 é"];
+    const program = `
+      process.stdin.setRawMode(true);
+      let input = '';
+      process.stdin.on('data', bytes => {
+        input += bytes.toString('utf8');
+        if (!input.includes('\\r')) return;
+        console.log(JSON.stringify({args: process.argv.slice(1), input}));
+        process.exit(7);
+      });
+      process.stdin.resume();
+      process.stdout.write('ready>');
+    `;
+    const running = await processes.startTerminal(process.execPath, ["-e", program, "--", ...args]);
     await shown(running, ">");
-    running.child.stdin.write("echo po^ng %CMDCMDLINE%\r\nexit 7\r\n");
+    running.child.stdin.write("pong\r");
     const result = await bounded(t, running.closed);
     assert.equal(result.code, 7, result.stderr);
-    assert.match(result.stdout.replace(/\x1b\[[0-9;?]*[A-Za-z]|\r|\n/g, ""),
-      /pong .*--resume --operation "op 1" --diagnostic-records 0 --diagnostic-record-bytes 0/);
+    const plain = result.stdout.replace(/\x1b\[[0-9;?]*[A-Za-z]|\r|\n/g, "");
+    const record = JSON.parse(plain.slice(plain.indexOf('{'), plain.lastIndexOf('}') + 1));
+    assert.deepEqual(record.args, args);
+    assert.equal(record.input, "pong\r");
   } finally { await processes.close(); }
 });
 
@@ -82,13 +80,9 @@ test("ConPTY refuses launches outside admitted native custody", conpty, async t 
   const host = process.env.E2E_CONPTY_HOST;
   let admissionFailure;
   try {
-    const direct = await bounded(t, processes.start(host, conptyArgs(cmd, launch)).closed);
+    const direct = await bounded(t, processes.start(host, [cmd, ...launch]).closed);
     assert.equal(direct.code, 125);
     assert.match(direct.stderr, /step=conpty-native-custody/);
-    const untypedLaunch = await processes.startOwned(host, [...conptyArgs(cmd, launch), "-p", "x"], { scopeInheritInput: true });
-    const untyped = await bounded(t, untypedLaunch.closed);
-    assert.equal(untyped.code, 125);
-    assert.match(untyped.stderr, /step=conpty-arguments/);
     const binaryLaunch = await processes.startTerminal(`${host}.missing.exe`, launch);
     const binary = await bounded(t, binaryLaunch.closed);
     assert.equal(binary.code, 125);

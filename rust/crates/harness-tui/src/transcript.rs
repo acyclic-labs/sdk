@@ -17,6 +17,9 @@ use ratatui::{
 use std::collections::VecDeque;
 use unicode_width::UnicodeWidthStr;
 
+#[cfg(test)]
+thread_local! { pub(crate) static WRAP_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// What a transcript block is, and so how it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockKind {
@@ -383,6 +386,8 @@ fn wrap_rendered(
     width: usize,
     theme: &ThemeStyles,
 ) -> Wrapped {
+    #[cfg(test)]
+    WRAP_BYTES.with(|work| work.set(work.get() + rendered.text.len()));
     let prompt = kind == BlockKind::Prompt;
     let marked = width > 1;
     let columns = if marked { width - 1 } else { width };

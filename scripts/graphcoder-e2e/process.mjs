@@ -287,7 +287,7 @@ export class Processes {
       announced.catch(() => {});
       return { ...running, killExecutable: () => announced.then(pid => process.kill(pid)) };
     };
-    const running = start(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
+    const running = start(host, [binary, ...args], { ...options, env, scopeInheritInput: true });
     return running instanceof Promise ? running.then(terminal) : terminal(running);
   }
   async runOwned(program, args, options, input = "") {
@@ -395,24 +395,6 @@ export class ProcessObservationFailed extends Error {
     this.code = "PROCESS_OBSERVATION_FAILED";
     this.ordinal = event.ordinal; this.operation = event.operation; this.phase = event.phase;
   }
-}
-
-// The ConPTY host admits the launch paths plus typed options; the case owner holds the only deadline.
-export function conptyArgs(binary, args) {
-  const flags = new Map();
-  let resume = false;
-  for (let index = 0; index < args.length; index++) {
-    if (args[index] === "--resume" && !resume) { resume = true; continue; }
-    assert.ok(["--workspace", "--settings-root", "--catalog", "--model", "--operation", "--approval-policy", "--prices", "--diagnostic-records", "--diagnostic-record-bytes"].includes(args[index])
-      && !flags.has(args[index]) && index + 1 < args.length, `ConPTY host cannot launch argument ${args[index]}`);
-    flags.set(args[index], args[++index]);
-  }
-  const [workspace, catalog, settings, model] = ["--workspace", "--catalog", "--settings-root", "--model"].map(flag => flags.get(flag));
-  assert.ok(workspace && catalog && settings && model, "ConPTY host requires --workspace, --settings-root, --catalog and --model");
-  const operation = flags.get("--operation");
-  return [binary, workspace, catalog, settings, model, ...(resume ? ["--resume"] : []),
-    ...(operation === undefined ? [] : ["--operation", operation]),
-    ...["--approval-policy", "--prices", "--diagnostic-records", "--diagnostic-record-bytes"].flatMap(flag => flags.has(flag) ? [flag, flags.get(flag)] : [])];
 }
 
 // A settled process result. Its output is the explicit historical query of

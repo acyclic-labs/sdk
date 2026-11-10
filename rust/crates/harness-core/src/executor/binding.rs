@@ -103,7 +103,13 @@ impl StockExecution<'_> {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let io = self.io;
         let contracts = self.context_pipeline().contracts(io)?;
-        let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
+        // Live catalogs are turn inputs. Their original schemas and producer
+        // bindings are pinned by each retained model request, not this fixed
+        // executor configuration digest.
+        let tools = self
+            .stock
+            .tools
+            .fixed_definitions(self.stock.tool_scope.grants(), io)?;
         let task_context = self.context.map(|(context, operation)| IssuedContext {
             admission_operation: operation,
             execution_operation: operation,

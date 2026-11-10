@@ -8,10 +8,13 @@
 //! streaming answer is the observer's delta projection, rewrapped alone.
 use acyclic_harness::local::{
     Event, LiveKind,
-    agent_conversation::{Conversation, UsageQuery, checkpoint},
+    agent_conversation::{Conversation, PreparedHistoryAction, UsageQuery, checkpoint},
 };
 use acyclic_harness::{
-    agent::{AgentOutcome, ContextAction, ConversationEntry, IntentId, Phase, TurnOutcome},
+    agent::{
+        AgentOutcome, ContextAction, ConversationEntry, Delivered, IntentId, Phase, RestoreMode,
+        TurnOutcome,
+    },
     client::commands::{CommandCatalog, CommandQuery, CommandRequest, CommandResolution},
     executor::ToolCard,
     interaction::{ApprovalBinding, ApprovalVerdict},
@@ -30,6 +33,7 @@ use acyclic_harness::{
         usage_summary,
     },
 };
+use acyclic_harness_client::{AgentControlFailure, AgentExchangeError, AgentReply};
 use futures::{StreamExt as _, stream::LocalBoxStream};
 use std::{sync::Arc, time::Instant};
 
@@ -169,6 +173,23 @@ enum Prompt {
     Feedback,
     /// A command that runs once its yes arrives.
     Confirm(CommandRequest),
+    /// Choose an action for the exact history turn selected on screen.
+    History { at: u64 },
+    /// A fork names its admitted role before preparing the immutable request.
+    ForkRole { at: u64 },
+    /// The selected role and history cut, awaiting the new task brief.
+    ForkBrief { at: u64, role: String },
+    /// An immutable history turn and the original restoration intent.
+    Restore {
+        at: u64,
+        mode: RestoreMode,
+        request: PreparedHistoryAction,
+    },
+    /// A fork keeps its complete original request across an uncertain result.
+    Fork {
+        at: u64,
+        request: PreparedHistoryAction,
+    },
 }
 
 #[derive(Default)]
@@ -179,6 +200,9 @@ struct View {
     /// Sent compactions, rewinds and clears not yet settled, by inbox
     /// sequence.
     checkpoints: Vec<u64>,
+    /// Inputs below this observed frontier cannot become pending again when
+    /// an uncertain command later replays its original delivery receipt.
+    settled_before: u64,
     /// A cancel's settled status, shown once every entry it announced was:
     /// its inbox cursor and conversation tail.
     stopped: Option<(u64, u64)>,
@@ -217,6 +241,8 @@ struct View {
     notice: Option<String>,
     /// Original waiting-status identity of the action displayed by the pager.
     approval_status: Option<u64>,
+    /// Exact immutable action whose final rows were painted.
+    approval_shown: Option<acyclic_harness_client::PendingApproval>,
     /// Reports saved in this session.
     reports: Vec<String>,
 }
@@ -229,6 +255,19 @@ impl View {
         self.phase.as_ref().is_some_and(Phase::in_turn)
             || !self.pending.is_empty()
             || !self.checkpoints.is_empty()
+    }
+
+    fn checkpoint_sent(&mut self, inbox: u64) {
+        if inbox >= self.settled_before && !self.checkpoints.contains(&inbox) {
+            self.checkpoints.push(inbox);
+            self.pending_dirty = true;
+        }
+    }
+
+    fn observe_settled_before(&mut self, cursor: u64) {
+        self.settled_before = self.settled_before.max(cursor);
+        self.checkpoints
+            .retain(|inbox| *inbox >= self.settled_before);
     }
 
     fn approval(&self) -> Option<&IntentId> {
@@ -262,6 +301,13 @@ impl View {
             return Err("approval requires y (once), r (exact rule), or n (deny)");
         };
         let binding = binding.as_ref().ok_or("approval action is unavailable")?;
+        if !self
+            .approval_shown
+            .as_ref()
+            .is_some_and(|shown| &shown.id == id && &shown.binding == binding)
+        {
+            return Err("Review the complete approval action before deciding (PgDn: more)");
+        }
         Ok(Some((id.clone(), binding.clone(), verdict)))
     }
 
@@ -276,7 +322,7 @@ impl View {
         match event {
             Event::Turn(entry) => {
                 self.pending_dirty = true;
-                self.checkpoints.retain(|inbox| *inbox != entry.inbox);
+                self.observe_settled_before(entry.inbox.saturating_add(1));
                 if let Some(action) = checkpoint(&entry) {
                     match notice(&action) {
                         Some(text) => self.transcript.push(BlockKind::Answer, &text),
@@ -333,6 +379,12 @@ impl View {
             }
             Event::Delta => return Ok(()),
             Event::Status(status) => {
+                if !matches!((&status.phase, &self.approval_shown),
+                    (Phase::WaitingApproval { id, binding: Some(binding) }, Some(shown))
+                    if id == &shown.id && binding == &shown.binding)
+                {
+                    self.approval_shown = None;
+                }
                 self.approval_status = match &status.phase {
                     Phase::WaitingApproval { id, binding } => conversation
                         .pending_approval(id)
@@ -345,7 +397,7 @@ impl View {
                 // a context request it passed without an entry was dropped
                 // (cancelled) or failed, and is no longer work.
                 if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
-                    self.checkpoints.retain(|inbox| *inbox >= status.cursor);
+                    self.observe_settled_before(status.cursor);
                 }
                 if let Phase::Done {
                     outcome: AgentOutcome::Failed { message },
@@ -399,8 +451,7 @@ impl View {
                 return Ok(());
             }
         };
-        self.checkpoints.push(inbox);
-        self.pending_dirty = true;
+        self.checkpoint_sent(inbox);
         Ok(())
     }
 
@@ -559,6 +610,35 @@ impl View {
         if let Some(notice) = &self.notice {
             return notice.clone();
         }
+        if let Some(Prompt::Restore { at, mode, .. }) = &self.prompt {
+            let target = match mode {
+                RestoreMode::Files => "files",
+                RestoreMode::Context => "context",
+                RestoreMode::Both => "files and context",
+            };
+            return format!(
+                "Restore {target} through cut {}? Enter yes or no. Child agents and external effects continue.",
+                at + 1
+            );
+        }
+        if let Some(Prompt::History { at }) = &self.prompt {
+            return format!(
+                "Cut {} selected. Enter files, context, both, or fork.",
+                at + 1
+            );
+        }
+        if let Some(Prompt::ForkRole { at }) = &self.prompt {
+            return format!("Fork cut {}: enter the child's role name.", at + 1);
+        }
+        if let Some(Prompt::ForkBrief { at, role }) = &self.prompt {
+            return format!("Fork cut {} as {role}: enter the new task brief.", at + 1);
+        }
+        if let Some(Prompt::Fork { at, .. }) = &self.prompt {
+            return format!(
+                "Fork files and context through cut {}? Enter yes or no.",
+                at + 1
+            );
+        }
         match (&self.phase, self.approval()) {
             (_, Some(id)) => format!("approval {} · y once · r exact rule · n deny", id.as_str()),
             (Some(Phase::Done { outcome }), _) => format!("conversation ended: {outcome:?}"),
@@ -673,7 +753,7 @@ pub async fn run(
     view.tail_dirty = true;
     // The open panel's title and rows; Esc closes it.
     let mut overlay: Option<(&'static str, Vec<Line<'static>>)> = None;
-    let mut queries = QueryController::<query::Source>::default();
+    let mut queries = QueryController::<query::Source, query::Context>::default();
     let query_loading = [Line::raw("Loading…")];
     let mut query_future = std::pin::pin!(None);
     if resume {
@@ -736,7 +816,7 @@ pub async fn run(
             terminal.bell();
         }
         if let Some(query::Source::Approval { status, .. }) = queries.source()
-            && Some(*status) != view.approval_status
+            && *status != view.approval_status
         {
             queries.close(query_future.as_mut());
         }
@@ -747,7 +827,21 @@ pub async fn run(
                 && view.prompt.is_none()
             {
                 queries.select(
-                    query::Source::Approval { status, offset: 0 },
+                    query::Source::Approval {
+                        request: view
+                            .approval()
+                            .ok_or("pending approval has no request")?
+                            .clone(),
+                        binding: match &view.phase {
+                            Some(Phase::WaitingApproval {
+                                binding: Some(binding),
+                                ..
+                            }) => binding.clone(),
+                            _ => return Err("pending approval has no binding".into()),
+                        },
+                        status: Some(status),
+                        offset: 0,
+                    },
                     query_future.as_mut(),
                 );
                 overlay_top = 0;
@@ -819,6 +913,18 @@ pub async fn run(
                 && let Some(status) = query::reviewed(&queries, overlay_top, areas.overlay_rows(0))
             {
                 approval_reviewed = Some(status);
+                if let Some(Phase::WaitingApproval {
+                    id,
+                    binding: Some(binding),
+                }) = &view.phase
+                    && view.approval_status == Some(status)
+                {
+                    view.approval_shown = Some(acyclic_harness_client::PendingApproval {
+                        id: id.clone(),
+                        binding: binding.clone(),
+                        status,
+                    });
+                }
             }
             // Page keys scroll the open panel by its page, else the transcript.
             let page = if panel {
@@ -928,7 +1034,7 @@ pub async fn run(
                 }
             } => {
                 let approval = match queries.source() {
-                    Some(query::Source::Approval { status, .. }) => Some(*status),
+                    Some(query::Source::Approval { status, .. }) => *status,
                     _ => None,
                 };
                 match queries.finish(result, query_future.as_mut()) {
@@ -953,6 +1059,12 @@ pub async fn run(
                 // history is not news.
                 let waited = view.busy();
                 view.apply(&conversation, event, events.seen()).await?;
+                if let Some(query::Source::Approval { request, binding, .. }) = queries.source()
+                    && !matches!(&view.phase, Some(Phase::WaitingApproval { id, binding: Some(current) }) if id == request && current == binding)
+                {
+                    queries.close(query_future.as_mut());
+                    overlay_top = 0;
+                }
                 view.ring &= waited;
                 if settled {
                     queries.invalidate(query::Source::follows_tail);
@@ -1004,7 +1116,109 @@ pub async fn run(
                                         }
                                         continue;
                                     }
+                                    Some(Prompt::Restore { at, mode, mut request }) => {
+                                        if matches!(text.trim(), "y" | "Y" | "yes") {
+                                            match request.execute().await {
+                                                Ok(AgentReply::Delivered { delivery: Delivered::Committed { inbox } }) => {
+                                                    view.checkpoint_sent(inbox);
+                                                }
+                                                Ok(AgentReply::Delivered { delivery: Delivered::Closed }) => {
+                                                    view.notice = Some("Restore refused: conversation is archived.".into());
+                                                }
+                                                Ok(_) => return Err("the endpoint answered another history action".into()),
+                                                Err(error) => {
+                                                    if matches!(error, AgentExchangeError::Control(AgentControlFailure::Refused { .. })) {
+                                                        view.notice = Some(format!("Restore refused: {error}"));
+                                                    } else {
+                                                        view.notice = Some(format!("Restore not confirmed ({}): {error}. Enter yes to resend the same request.", error.code()));
+                                                        view.prompt = Some(Prompt::Restore { at, mode, request });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    Some(Prompt::History { at }) => {
+                                        let mode = match text.trim() {
+                                            "files" => Some(RestoreMode::Files),
+                                            "context" => Some(RestoreMode::Context),
+                                            "both" => Some(RestoreMode::Both),
+                                            _ => None,
+                                        };
+                                        if let Some(mode) = mode {
+                                            let prepared = async {
+                                                let expected = if mode.files() { conversation.project_heads().await? } else { Vec::new() };
+                                                conversation.prepare_restore(&acyclic_harness::OperationId::new().to_string(), at, mode, expected)
+                                            }.await;
+                                            match prepared {
+                                                Ok(request) => view.prompt = Some(Prompt::Restore { at, mode, request }),
+                                                Err(error) => {
+                                                    view.prompt = Some(Prompt::History { at });
+                                                    view.notice = Some(format!("Prepare restore failed before sending: {error}. Enter the restore mode to retry."));
+                                                }
+                                            }
+                                        } else if text.trim() == "fork" {
+                                            view.prompt = Some(Prompt::ForkRole { at });
+                                        } else {
+                                            view.prompt = Some(Prompt::History { at });
+                                            view.notice = Some("Enter files, context, both, or fork.".into());
+                                        }
+                                        continue;
+                                    }
+                                    Some(Prompt::ForkRole { at }) => {
+                                        view.prompt = Some(if text.trim().is_empty() {
+                                            Prompt::ForkRole { at }
+                                        } else {
+                                            Prompt::ForkBrief { at, role: text.trim().to_owned() }
+                                        });
+                                        continue;
+                                    }
+                                    Some(Prompt::ForkBrief { at, role }) => {
+                                        if text.trim().is_empty() {
+                                            view.prompt = Some(Prompt::ForkBrief { at, role });
+                                        } else {
+                                            match conversation.prepare_fork(&acyclic_harness::OperationId::new().to_string(), at, role.clone(), text) {
+                                                Ok(request) => view.prompt = Some(Prompt::Fork { at, request }),
+                                                Err(error) => {
+                                                    view.prompt = Some(Prompt::ForkBrief { at, role });
+                                                    view.notice = Some(format!("Prepare fork failed before sending: {error}"));
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    Some(Prompt::Fork { at, mut request }) => {
+                                        if matches!(text.trim(), "y" | "Y" | "yes") {
+                                            match request.execute().await {
+                                                Ok(AgentReply::Spawned { agent, delivery: Delivered::Committed { .. } }) => view.notice = Some(format!("Fork published: {}", agent.as_str())),
+                                                Ok(AgentReply::Spawned { delivery: Delivered::Closed, .. }) => view.notice = Some("Fork refused: conversation is archived.".into()),
+                                                Ok(_) => return Err("the endpoint answered another history action".into()),
+                                                Err(error) => {
+                                                    if matches!(error, AgentExchangeError::Control(AgentControlFailure::Refused { .. })) {
+                                                        view.notice = Some(format!("Fork refused: {error}"));
+                                                    } else {
+                                                        view.notice = Some(format!("Fork not confirmed ({}): {error}. Enter yes to resend the same request.", error.code()));
+                                                        view.prompt = Some(Prompt::Fork { at, request });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        continue;
+                                    }
                                     None => {}
+                                }
+                                if matches!(queries.source(), Some(query::Source::History(_))) && !text.trim_start().starts_with('/') {
+                                    let selected = text.trim().parse::<u64>().ok()
+                                        .and_then(|cut| queries.page.as_ref().and_then(|panel| panel.context.history_turn(cut)));
+                                    if let Some(at) = selected {
+                                        view.prompt = Some(Prompt::History { at });
+                                        queries.close(query_future.as_mut());
+                                        ui.select(&conversation, None).await?;
+                                        selection_changed = true;
+                                    } else {
+                                        view.notice = Some("Enter an immutable cut displayed on this history page.".into());
+                                    }
+                                    continue;
                                 }
                                 // Commands stay usable while an approval
                                 // waits; only other input answers it.
@@ -1161,6 +1375,94 @@ pub async fn run(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn restore_receipts_cannot_reopen_observed_settlement() -> Result<(), Failure> {
+        use acyclic_harness::{
+            LocalHarness,
+            context::{CompactionPolicy, ModelContextCapacity},
+            local::WorkspaceMounting,
+            model::Model,
+            test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
+        };
+        let directory = tempfile::tempdir()?;
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace)?;
+        let provider = Arc::new(
+            ScriptedModelProvider::new([
+                ScriptedTurn::Text("before".into()),
+                ScriptedTurn::Text("after".into()),
+            ])
+            .with_context_capacity(ModelContextCapacity {
+                context_tokens: 32_768,
+                output_tokens: Some(4096),
+            }),
+        );
+        let harness = Arc::new(
+            LocalHarness::open(
+                local_harness_config(
+                    &workspace,
+                    (
+                        Model::new("scripted".into(), "test".into(), "1".into())?,
+                        provider.clone(),
+                    ),
+                )?
+                .without_user_settings()
+                .state_directory(directory.path().join("state"))
+                .workspace_mounting(WorkspaceMounting::Physical)
+                .compaction(CompactionPolicy::Disabled),
+            )
+            .await?,
+        );
+        let conversation = Conversation::open(harness.connect().await?);
+        let mut events = conversation.observe(None).await?;
+        for id in ["before", "after"] {
+            let inbox = conversation.send(id, id).await?;
+            conversation.settle(id, inbox, &mut events).await?;
+        }
+        drop(events);
+        let (mut events, phase) = conversation.observe_current().await?;
+        let mut view = View {
+            phase: Some(phase),
+            ..View::default()
+        };
+        for (id, lose_reply) in [("lost-restore", true), ("observed-restore", false)] {
+            let mut request =
+                conversation.prepare_restore(id, 0, RestoreMode::Context, Vec::new())?;
+            let inbox = match request.execute().await.map_err(|error| error.to_string())? {
+                AgentReply::Delivered {
+                    delivery: Delivered::Committed { inbox },
+                } => inbox,
+                _ => return Err("restore did not retain its original delivery".into()),
+            };
+            if !lose_reply {
+                view.checkpoint_sent(inbox);
+                assert!(view.busy(), "an unobserved receipt must remain pending");
+            }
+            let mut turn = false;
+            while !turn {
+                let event = events.next().await?;
+                turn |= matches!(&event, Event::Turn(entry) if entry.inbox == inbox);
+                view.apply(&conversation, event, events.seen()).await?;
+            }
+            assert!(!view.busy());
+            let replay = request.execute().await.map_err(|error| error.to_string())?;
+            assert!(
+                matches!(replay, AgentReply::Delivered { delivery: Delivered::Committed { inbox: repeated } } if repeated == inbox)
+            );
+            view.checkpoint_sent(inbox);
+            assert!(
+                !view.busy(),
+                "an original settled receipt became pending again"
+            );
+        }
+        assert_eq!(
+            provider.request_count(),
+            2,
+            "restoration must not redispatch the model"
+        );
+        Ok(())
+    }
+
     #[test]
     fn search_visits_each_older_match_across_prepended_pages() {
         let mut view = View::default();
@@ -1200,7 +1502,7 @@ mod tests {
         let catalog = CommandCatalog::builtins()?;
         let input = PromptInput::default();
         let mut overlay = None;
-        let mut queries = QueryController::<query::Source>::default();
+        let mut queries = QueryController::<query::Source, query::Context>::default();
         let mut pending = std::pin::pin!(None::<std::future::Ready<()>>);
         // Views the shared writer saves and this terminal does not render.
         for query in [
@@ -1252,6 +1554,12 @@ mod tests {
             id: id.clone(),
             binding: Some(binding.clone()),
         });
+        assert!(view.approval_answer("yes").is_err());
+        view.approval_shown = Some(acyclic_harness_client::PendingApproval {
+            id: id.clone(),
+            binding: binding.clone(),
+            status: 1,
+        });
         for (text, approved) in [("y", true), (" YES ", true), ("n", false), (" No ", false)] {
             assert_eq!(
                 view.approval_answer(text)?,
@@ -1273,6 +1581,12 @@ mod tests {
         });
         assert_eq!(prepared, (id.clone(), binding.clone(), true.into()));
         assert_ne!(prepared.1, replacement);
+        assert!(view.approval_answer("yes").is_err());
+        view.approval_shown = Some(acyclic_harness_client::PendingApproval {
+            id: id.clone(),
+            binding: replacement.clone(),
+            status: 2,
+        });
         assert_eq!(
             view.approval_answer("yes")?,
             Some((id.clone(), replacement, true.into()))
@@ -1336,7 +1650,7 @@ mod tests {
 fn apply_open_view<F>(
     selected: Option<&str>,
     overlay: &mut Option<(&'static str, Vec<Line<'static>>)>,
-    queries: &mut QueryController<query::Source>,
+    queries: &mut QueryController<query::Source, query::Context>,
     pending: std::pin::Pin<&mut Option<F>>,
     catalog: &CommandCatalog,
     input: &PromptInput,

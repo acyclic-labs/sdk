@@ -37,7 +37,19 @@ pub(crate) async fn replay(
 }
 
 impl WriteRequest {
-    pub(crate) fn validated(mut self) -> Result<Self, StreamError> {
+    pub(crate) fn validated(self) -> Result<Self, StreamError> {
+        self.canonicalized_with(|request| {
+            crate::request::normalize_commit(request)?;
+            Ok(None)
+        })
+        .map(|canonical| canonical.command)
+    }
+
+    pub(crate) fn canonicalized_with(
+        mut self,
+        mut commit: impl FnMut(&mut crate::CommitRequest) -> Result<Option<[u8; 32]>, StreamError>,
+    ) -> Result<CanonicalCommand, StreamError> {
+        let mut digest = None;
         match &mut self {
             Self::Append(request) => {
                 crate::request::validate_records(&request.records)?;
@@ -45,14 +57,16 @@ impl WriteRequest {
             }
             Self::Fork(request) => crate::request::validate_fork_size(request)?,
             Self::Commit(request) | Self::CommitAccepted(request) => {
-                crate::request::normalize_commit(request)?;
-                crate::request::validate_commit_shape(request)?;
+                digest = commit(request)?;
             }
         }
         if self.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        Ok(self)
+        Ok(CanonicalCommand {
+            command: self,
+            digest,
+        })
     }
 
     pub(crate) fn encoded_len(&self) -> usize {

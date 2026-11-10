@@ -123,7 +123,7 @@ impl MemoryStream {
             .first_mut()
             .ok_or(StreamError::Unavailable)?
             .sequence = expected;
-        history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.sequence =
+        history_batch(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.start =
             expected;
         // Header keys arrive with the body. The shared radix owns its physical
         // node layout and fixed-width work bound; prepay both before issuance.
@@ -529,7 +529,10 @@ fn bind_body(plan: &mut CommitPlan, body: crate::AppendRecord) -> Result<(), Str
         .ok_or(StreamError::Unavailable)?;
     record.value = body.value.clone();
     record.headers = body.headers.clone();
-    let record = history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?;
+    let record = history_batch(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?
+        .values
+        .first_mut()
+        .ok_or(StreamError::Unavailable)?;
     record.value = body.value;
     record.headers = body.headers;
     Ok(())
@@ -565,13 +568,11 @@ fn envelope_append_mut(envelope: &mut CommittedEnvelope) -> &mut crate::Committe
     };
     append
 }
-fn history_record(history: &mut PreparedHistory) -> Result<&mut Record, StreamError> {
+fn history_batch(history: &mut PreparedHistory) -> Result<&mut RecordBatch, StreamError> {
     let Some(History::Batch { records, .. }) = Arc::get_mut(&mut history.history) else {
         return Err(StreamError::Unavailable);
     };
-    Arc::get_mut(records)
-        .and_then(|batch| batch.records.first_mut())
-        .ok_or(StreamError::Unavailable)
+    Arc::get_mut(records).ok_or(StreamError::Unavailable)
 }
 fn digest(
     conditions: &[CommitCondition; 2],
@@ -656,7 +657,6 @@ fn prepared_tail(request: &mut CommitRequest, maximum: usize) -> Result<u64, Str
         return Err(StreamError::LimitExceeded);
     }
     normalize_commit(request)?;
-    validate_commit_shape(request)?;
     let [
         CommitEffect {
             conditions,

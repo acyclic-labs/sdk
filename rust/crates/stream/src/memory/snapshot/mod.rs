@@ -170,11 +170,11 @@ impl Snapshot {
                 } => {
                     out.push(NODE_BATCH);
                     put_len(&mut out, reference(parent));
-                    put_len(&mut out, records.records.len());
-                    for record in records.records.iter() {
-                        put_u64(&mut out, record.sequence);
-                        out.extend_from_slice(record.commit_id.as_bytes());
-                        put_u64(&mut out, record.committed_at_micros);
+                    put_len(&mut out, records.values.len());
+                    for (index, record) in records.values.iter().enumerate() {
+                        put_u64(&mut out, records.start + index as u64);
+                        out.extend_from_slice(records.commit_id.as_bytes());
+                        put_u64(&mut out, records.committed_at_micros);
                         put_bytes(&mut out, &record.value);
                     }
                 }

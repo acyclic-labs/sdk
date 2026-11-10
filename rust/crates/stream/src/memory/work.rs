@@ -217,10 +217,11 @@ impl MemoryStream {
     }
 
     fn digest(&self, request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
+        crate::request::normalize_commit_with(request, |length| self.vector(length))?;
         let bytes = commit_hash_bytes(request);
         let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
         work.record(work.meter.admit_codec(0, 0, bytes))?;
-        let digest = commit_digest(request)?;
+        let digest = crate::request::canonical_digest(request);
         work.record(work.meter.record_codec(0, 0, bytes))?;
         work.record(work.meter.check())?;
         Ok(digest)

@@ -12,9 +12,9 @@
         "tools": [
           {
             "id": "write",
-            "name": "Write",
+            "name": "write",
             "arguments": {
-              "file_path": "approved.txt",
+              "path": "approved.txt",
               "content": "APPROVED_E2E\n"
             }
           }

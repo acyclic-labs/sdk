@@ -112,7 +112,6 @@ fn normalize_commit_bytes(input: &[u8]) -> Result<Vec<u8>, &'static str> {
     let mut request =
         wire_codec::commit_from_wire(request).map_err(|error| error_code_str(&error))?;
     crate::request::normalize_commit(&mut request).map_err(|error| error_code_str(&error))?;
-    crate::request::validate_commit_shape(&request).map_err(|error| error_code_str(&error))?;
     let mut normalized = wire_codec::commit_to_wire(&request);
     normalized.deadline_unix_millis = deadline_unix_millis;
     normalized.include_envelope = include_envelope;

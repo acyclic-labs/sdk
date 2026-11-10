@@ -144,7 +144,7 @@ impl Prepared {
             .transpose()?;
         let projection = if args.output_format == super::args::OutputFormat::Jsonl {
             Some(Projection::open(
-                args.operation.as_deref().ok_or("event output: operation absent; recovery: graphcoder --output-format jsonl --operation OPERATION exec")?,
+                args.operation.as_deref().ok_or("event output: operation absent; recovery: acyclic exec --output-format jsonl --operation OPERATION")?,
                 args.event_cursor.as_deref(),
             )?)
         } else {
@@ -579,7 +579,7 @@ async fn prompt_approval(
 ) -> Result<(IntentId, ApprovalBinding), Failure> {
     let binding = binding.ok_or_else(|| {
         acyclic_harness::Error::Invalid(
-            "approval prompt: status has no action binding; recovery: graphcoder exec --input-format jsonl"
+            "approval prompt: status has no action binding; recovery: acyclic exec --input-format jsonl"
                 .into(),
         )
     })?;
@@ -989,7 +989,8 @@ pub(super) async fn jsonl(
     // delays only this prompt, never the coordination runtime.
     let mut diagnostics = None;
     // Admit text against the opening phase before stdin can win the select.
-    // Preserve its original answer binding; projected replay owns its frames.
+    // Preserve the live approval frame as well as its original answer binding.
+    // Projected replay owns its source frames through the saved cursors.
     if input_format == super::args::InputFormat::Text
         && let Some(Phase::WaitingApproval { id, binding }) = opening_phase
     {
@@ -1144,7 +1145,7 @@ pub(super) async fn jsonl(
                         let answer = line.as_deref().unwrap_or_default();
                         conversation.decide_with_binding(&id, binding, matches!(answer.trim(), "y" | "Y" | "yes").into()).await?;
                     } else if line.as_deref().is_some_and(|line| !line.trim().is_empty()) {
-                        return Err("text input: no task or pending approval; recovery: use graphcoder -p 'TASK' or graphcoder exec --operation OPERATION with JSONL input".into());
+                        return Err("text input: no task or pending approval; recovery: use acyclic run -p 'TASK' or acyclic exec --operation OPERATION with JSONL input".into());
                     }
                     continue;
                 }
@@ -1388,7 +1389,7 @@ mod tests {
     fn full_output_pipe(terminal: Terminal, diagnostics: bool) -> Result<(), Failure> {
         let report = WaitReport::default();
         let dispatch = tracing::Dispatch::new(
-            crate::lifecycle::subscriber(&report, Some("off".into()), || Ok(None))?.0,
+            super::super::lifecycle::subscriber(&report, Some("off".into()), || Ok(None))?.0,
         );
         let _subscriber = tracing::dispatcher::set_default(&dispatch);
         acyclic_native_runtime::coordination_runtime()?.block_on(async {
