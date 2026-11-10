@@ -158,6 +158,57 @@ impl LocalWorkspace {
             .map_err(storage)
     }
 
+    /// A logical project binding needs no OS mount or physical task directory.
+    pub(in crate::local) fn context_task_view(
+        &self,
+        view: workspace::View,
+        project: &VolumeRef,
+        authority: &crate::filesystem::NativeMountAuthority,
+    ) -> Result<Arc<LocalWorkspace>> {
+        let mounts = Arc::new(mounts::owner(
+            &self.path,
+            project,
+            None,
+            std::iter::empty::<(String, VolumeRef, Option<Arc<MountedVolume>>)>(),
+        )?);
+        Ok(Arc::new(self.unmounted_task_view(view, mounts, authority)))
+    }
+
+    fn unmounted_task_view(
+        &self,
+        view: workspace::View,
+        mounts: Arc<Mounts>,
+        authority: &crate::filesystem::NativeMountAuthority,
+    ) -> LocalWorkspace {
+        LocalWorkspace {
+            shutdown: self.shutdown.clone(),
+            native_mount_probe: self.native_mount_probe.clone(),
+            #[cfg(all(test, not(loom)))]
+            selection_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(all(test, not(loom)))]
+            mount_advances: std::sync::atomic::AtomicUsize::new(0),
+            state: StateArc::new(AsyncMutex::new(State::new(
+                view.workspace().id(),
+                Arc::clone(&mounts),
+            ))),
+            mounts: Arc::clone(&mounts),
+            context_line: mounts.context_line(),
+            processes: self.processes.clone(),
+            path: self.path.clone(),
+            fresh: false,
+            import_source: false,
+            mount_directory: self.mount_directory.clone(),
+            task_view_admission: Arc::clone(&self.task_view_admission),
+            view,
+            mounted: None,
+            mounting: self.mounting,
+            identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
+            filesystem: self.filesystem.clone(),
+            store: self.store.clone(),
+            mount_authority: Some(authority.clone()),
+        }
+    }
+
     // Child admission and tools share this boundary over native mount setup.
     pub(in crate::local) fn mount_task_view<'a>(
         &'a self,
@@ -171,33 +222,11 @@ impl LocalWorkspace {
             // live mount needs its own namespace so retiring it cannot
             // detach a replacement owner's mount at the same path.
             owner.verify().await?;
-            let mut workspace = LocalWorkspace {
-                shutdown: self.shutdown.clone(),
-                native_mount_probe: self.native_mount_probe.clone(),
-                #[cfg(all(test, not(loom)))]
-                selection_reads: std::sync::atomic::AtomicUsize::new(0),
-                #[cfg(all(test, not(loom)))]
-                mount_advances: std::sync::atomic::AtomicUsize::new(0),
-                state: StateArc::new(AsyncMutex::new(State::new(
-                    view.workspace().id(),
-                    Arc::clone(&self.mounts),
-                ))),
-                mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
-                context_line: self.context_line().into(),
-                processes: self.processes.clone(),
-                path: self.path.clone(),
-                fresh: false,
-                import_source: false,
-                mount_directory: self.mount_directory.clone(),
-                task_view_admission: Arc::clone(&self.task_view_admission),
+            let mut workspace = self.unmounted_task_view(
                 view,
-                mounted: None,
-                mounting: self.mounting,
-                identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
-                filesystem: self.filesystem.clone(),
-                store: self.store.clone(),
-                mount_authority: Some(authority.clone()),
-            };
+                mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
+                authority,
+            );
             let (active, pending) = workspace.selected_view().await?;
             let selected = active.as_ref().unwrap_or_else(|| workspace.view());
             let initial_view = selected.workspace().id();

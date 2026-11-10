@@ -1,5 +1,12 @@
 use super::*;
 
+#[cfg(any(test, feature = "native-execution"))]
+pub(super) fn uses_native_execution(tools: &ToolRegistry) -> Result<bool> {
+    Ok(tools
+        .get(crate::tools::shell::PLATFORM.name, None, None)?
+        .is_some())
+}
+
 struct Opening {
     config: LocalHarnessConfig,
     /// The agents' defaults, from which their tools and turns are built.
@@ -121,9 +128,7 @@ impl Opening {
         #[cfg(any(test, feature = "native-execution"))]
         // Coordination uses the existing checkout. Only our own native shell
         // needs its auxiliary volumes projected before a command can run.
-        let native_execution = tools
-            .get(crate::tools::shell::PLATFORM.name, None, None)?
-            .is_some();
+        let native_execution = uses_native_execution(&tools)?;
         let compaction_choice = config.compaction.take();
         Ok(Self {
             config,

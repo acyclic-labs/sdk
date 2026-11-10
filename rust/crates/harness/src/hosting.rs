@@ -436,6 +436,8 @@ where
             AgentCommand::Sessions { .. }
                 | AgentCommand::NewSession { .. }
                 | AgentCommand::ForkSession { .. }
+                | AgentCommand::NameSession { .. }
+                | AgentCommand::ResolveSession { .. }
                 | AgentCommand::SelectSession { .. }
                 | AgentCommand::LatestSession {}
         ) || matches!(command, AgentCommand::MergeSession { agent, .. } if agent.parent().is_none())
@@ -585,6 +587,23 @@ where
                     .await
                     .map_err(|error| Error::Turn(Box::new(error)))?;
                 Ok(AgentReply::Merged { commit })
+            }
+            AgentCommand::NameSession { agent, name, id } => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                self.bound.name_session(agent, name, id).await?;
+                Ok(AgentReply::Root {
+                    agent: agent.clone(),
+                })
+            }
+            AgentCommand::ResolveSession { name } => {
+                if !self.platform.sessions() {
+                    return Err(Error::Record("this host serves one tree"));
+                }
+                Ok(AgentReply::Root {
+                    agent: self.bound.resolve_session(name).await?,
+                })
             }
             AgentCommand::SelectSession { agent, id } => {
                 if !self.platform.sessions() {
@@ -1121,6 +1140,7 @@ where
                 Ok(AgentReply::History { items, next })
             }
             AgentCommand::Children { page, .. } | AgentCommand::Sessions { page } => {
+                let sessions = matches!(command, AgentCommand::Sessions { .. });
                 let parent = match command {
                     AgentCommand::Children { agent, .. } => self.within_tree(agent)?.children()?,
                     AgentCommand::Sessions { .. } if self.platform.sessions() => {
@@ -1186,11 +1206,16 @@ where
                     } else {
                         AgentPath::try_from(child.path.as_str().to_owned())?
                     };
-                    listed_paths.push(child.path);
+                    listed_paths.push(child.path.clone());
                     paths.push(agent.status()?);
+                    if sessions {
+                        paths.push(child.path);
+                    }
                     items.push(ChildAgent {
                         agent,
                         status: None,
+                        created_at_micros: None,
+                        updated_at_micros: None,
                     });
                 }
                 if !items.is_empty() {
@@ -1203,7 +1228,7 @@ where
                         projection: HeadProjection::History,
                         paths,
                         children: None,
-                        limit: page.items(),
+                        limit: page.items() * if sessions { 2 } else { 1 },
                         at_least: RevisionCut::of(view.snapshot),
                     };
                     let statuses = provider
@@ -1211,11 +1236,28 @@ where
                         .await
                         .map_err(Error::Stream)?;
                     statuses.validate_for(&request).map_err(Error::Stream)?;
-                    for (item, head) in items.iter_mut().zip(statuses.heads) {
-                        let record = head
+                    let mut heads = statuses.heads.into_iter();
+                    for item in &mut items {
+                        let record = heads
+                            .next()
+                            .flatten()
                             .and_then(|head| head.last)
                             .ok_or(Error::Record("admitted child has no published status"))?;
+                        item.updated_at_micros = Some(record.committed_at_micros);
                         item.status = Some(StatusRecord::decode(&record.value)?);
+                        if sessions {
+                            let member = heads
+                                .next()
+                                .flatten()
+                                .and_then(|head| head.last)
+                                .ok_or(Error::Record("session has no directory admission"))?;
+                            if member.sequence != 0 {
+                                return Err(Error::Record(
+                                    "session directory admission is not immutable",
+                                ));
+                            }
+                            item.created_at_micros = Some(member.committed_at_micros);
+                        }
                     }
                 }
                 for (index, item) in items.iter().enumerate() {
@@ -1710,6 +1752,7 @@ where
             let query = match call.command() {
                 AgentCommand::Bind { .. }
                 | AgentCommand::Root {}
+                | AgentCommand::ResolveSession { .. }
                 | AgentCommand::LatestSession {}
                 | AgentCommand::Sessions { .. }
                 | AgentCommand::Children { .. }
@@ -1728,6 +1771,7 @@ where
                 | AgentCommand::ClientFiles { .. }
                 | AgentCommand::Read { .. } => true,
                 AgentCommand::NewSession { .. }
+                | AgentCommand::NameSession { .. }
                 | AgentCommand::SelectSession { .. }
                 | AgentCommand::ForkSession { .. }
                 | AgentCommand::Pause { .. }

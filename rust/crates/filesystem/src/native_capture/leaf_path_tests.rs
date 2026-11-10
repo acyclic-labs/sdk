@@ -72,6 +72,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
     let root = HostRoot::open(source.path(), &mut &setup)
         .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
     let options = CaptureOptions {
+        source_namespace: None,
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
         maximum_paths: 8,
@@ -192,6 +193,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
     let root = HostRoot::open(source.path(), &mut &setup)
         .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
     let options = CaptureOptions {
+        source_namespace: None,
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
         maximum_paths: 32,

@@ -1,0 +1,20 @@
+{
+  "id": "session-remote-attach",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [
+    { "when": { "user": "remember remote history" }, "text": ["REMOTE_HISTORY_FIRST"] },
+    { "when": { "user": "continue remote history", "contains": "REMOTE_HISTORY_FIRST" }, "text": ["REMOTE_HISTORY_DONE"] }
+  ] },
+  "inputs": [
+    { "mode": "service", "endpoint": true },
+    { "mode": "pty", "actions": [
+      { "when": { "contains": ["GraphCoder"], "cursor": true }, "prompt": "remember remote history" },
+      { "when": { "contains": ["REMOTE_HISTORY_FIRST", "○"] }, "prompt": "/quit " }
+    ] },
+    { "mode": "pty", "actions": [
+      { "when": { "contains": ["GraphCoder", "REMOTE_HISTORY_FIRST"], "cursor": true }, "prompt": "continue remote history" },
+      { "when": { "contains": ["REMOTE_HISTORY_DONE", "○"] }, "prompt": "/quit " }
+    ] }
+  ],
+  "assert": { "requests": 2 }
+}

@@ -23,6 +23,14 @@ mod windows_create;
 pub(crate) fn service_command_line(command: &ProcessCommand) -> std::io::Result<Vec<u16>> {
     windows_create::make_command_line(&command.program, &command.args)
 }
+#[cfg(windows)]
+pub(crate) fn service_environment(command: &ProcessCommand) -> std::io::Result<Option<Vec<u16>>> {
+    command
+        .env
+        .capture_if_changed()
+        .map(windows_create::make_environment)
+        .transpose()
+}
 use std::time::{Duration, Instant};
 #[cfg(windows)]
 use windows_create::Child;

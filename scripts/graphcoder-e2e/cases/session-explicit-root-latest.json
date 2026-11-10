@@ -1,0 +1,22 @@
+{
+  "id": "session-explicit-root-latest",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [
+    { "when": { "user": "remember explicit root" }, "text": ["EXPLICIT_ROOT_FIRST"] },
+    { "when": { "user": "continue explicit root", "contains": "EXPLICIT_ROOT_FIRST" }, "text": ["EXPLICIT_ROOT_DONE"] }
+  ] },
+  "inputs": [
+    { "mode": "service" },
+    { "mode": "text", "args": ["new", "First session"], "environment": { "TERM": "dumb" }, "capture_root": "first" },
+    { "mode": "text", "args": ["new", "Second session"], "environment": { "TERM": "dumb" }, "capture_root": "second" },
+    { "mode": "pty", "args": ["--agent", "{{session:first}}"], "actions": [
+      { "when": { "contains": ["GraphCoder"], "cursor": true }, "prompt": "remember explicit root" },
+      { "when": { "contains": ["EXPLICIT_ROOT_FIRST", "○"] }, "prompt": "/quit " }
+    ] },
+    { "mode": "pty", "resume": true, "actions": [
+      { "when": { "contains": ["GraphCoder", "EXPLICIT_ROOT_FIRST"], "cursor": true }, "prompt": "continue explicit root" },
+      { "when": { "contains": ["EXPLICIT_ROOT_DONE", "○"] }, "prompt": "/quit " }
+    ] }
+  ],
+  "assert": { "requests": 2 }
+}

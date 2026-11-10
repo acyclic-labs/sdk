@@ -8,13 +8,18 @@ another independent root.
 
 Use `graphcoder -c` to continue the latest session for this checkout,
 `graphcoder -r` for the picker, or `graphcoder -r SESSION_ID` to attach directly.
-A canonical agent path also works. `-r NAME` filters the visible picker pages
-by title. Advancing to another page is an explicit user action.
+A canonical agent path also works. `-r NAME` resolves the exact alias registered
+with `graphcoder name NAME`. Renaming `ui/title` preserves that alias. Advancing
+to another picker page is an explicit user action.
 
 `graphcoder new [TITLE]` creates a session. In a terminal it opens the new
 conversation; with a dumb terminal it prints the root identity. `graphcoder
 sessions` returns a page of independent roots and their projected titles and
 states. `graphcoder -r SESSION_ID rename TITLE` conditionally writes `ui/title`.
+Use `sessions --title TEXT`, `--state idle,running` and the UTC Unix-microsecond
+`--created-after`, `--created-before` and `--updated-after` bounds to filter each
+requested page. The checkout selects its own directory. An empty filtered page
+can still have a continuation; return it with `--cursor` to advance explicitly.
 `graphcoder -r SESSION_ID archive` sends the ordinary closing input, refusing
 later messages and releasing owned resources through the closing actor.
 The switcher also offers rename and archive.
@@ -31,6 +36,8 @@ identities and committed inbox order; attaching never dispatches a model call.
 An existing local server supplies its own client capability, so reattaching does
 not reload its provider credentials. `--endpoint` uses the same authenticated
 client protocol for an explicitly served endpoint.
+Opening an explicit single-tree endpoint attaches its existing conversation;
+creating another root requires a directory-capable endpoint.
 
 Headless invocations can select a served session with `-c`, `-r SESSION_ID` or
 `--agent AGENT_PATH`, or create one with `--new-session`. Without a session

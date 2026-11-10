@@ -7,7 +7,7 @@ use super::{LocalHarness, LocalStream, storage};
 use crate::{
     Error, OperationId, Result,
     agent::{AgentHost, AgentPath, AgentState, IntentId, VolumeBinding},
-    conversation::{ContentAccess, ContentPublisher, VolumeRef},
+    conversation::{ContentAccess, ContentPublisher},
     executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemTurnHost, HOME_VOLUME, PRIVATE_VOLUME, Tasks, TurnAuthority, TurnContext,
@@ -267,8 +267,8 @@ impl LocalHarness {
         &self,
         workspace: &Arc<super::workspace::LocalWorkspace>,
         agent: &AgentPath,
-        project: &VolumeRef,
-        scratch: &VolumeRef,
+        project: &crate::conversation::VolumeRef,
+        scratch: &crate::conversation::VolumeRef,
         scope: &crate::core::Scope,
         verifier: &crate::core::AuthorityVerifier,
     ) -> Result<Arc<super::workspace::LocalWorkspace>> {
@@ -350,7 +350,9 @@ impl LocalHarness {
                 });
             }
             #[cfg(any(test, feature = "native-execution"))]
-            if let Some(workspace) = &self.workspace {
+            if super::open::uses_native_execution(&self.tools)?
+                && let Some(workspace) = &self.workspace
+            {
                 let workspace = self
                     .project_workspace(
                         workspace,
@@ -386,6 +388,20 @@ impl LocalHarness {
                     )?,
                 });
             }
+            #[cfg(any(test, feature = "native-execution"))]
+            let context = if let Some(workspace) = &self.workspace {
+                let view = workspace.spawned_project_view(project).await?;
+                let authority = crate::filesystem::NativeMountAuthority::admitted(
+                    verifier.clone(),
+                    authority.scope.copy(&mut None)?,
+                );
+                super::context::Binding {
+                    workspace: Some(workspace.context_task_view(view, project, &authority)?),
+                    ..context
+                }
+            } else {
+                context
+            };
             let writer = crate::filesystem::FilesystemContentPublisher::new(
                 Arc::clone(&self.files),
                 project,

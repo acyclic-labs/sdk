@@ -22,7 +22,12 @@ pub async fn select(
             || args.new_session
             || matches!(
                 args.command,
-                Some(Command::NewSession { .. } | Command::Rename { .. } | Command::Archive)
+                Some(
+                    Command::NewSession { .. }
+                        | Command::Name { .. }
+                        | Command::Rename { .. }
+                        | Command::Archive
+                )
             )
             || args.command.is_none() && args.prompt.is_none())
     {
@@ -41,17 +46,14 @@ async fn select_inner(
     }
     if let Some(resume) = &args.resume {
         if let Some(name) = resume {
-            if name.contains('/') || acyclic_harness::agent::AgentId::try_from(name.clone()).is_ok()
-            {
-                return Ok((sessions::select(&connection, name).await?, terminal));
-            }
+            return Ok((sessions::select(&connection, name).await?, terminal));
         }
-        return choose(connection, terminal, resume.as_deref()).await;
+        return choose(connection, terminal, None).await;
     }
     if args.continue_session
         || matches!(
             args.command,
-            Some(Command::Rename { .. } | Command::Archive)
+            Some(Command::Name { .. } | Command::Rename { .. } | Command::Archive)
         )
     {
         let selected = sessions::latest(&connection)
@@ -59,7 +61,8 @@ async fn select_inner(
             .ok_or("No previous session for this checkout; start graphcoder or graphcoder new")?;
         return Ok((selected, terminal));
     }
-    let interactive = args.command.is_none()
+    let interactive = args.endpoint.is_none()
+        && args.command.is_none()
         && args.prompt.is_none()
         && args.input_format == crate::InputFormat::Text
         && args.output_format == crate::OutputFormat::Text
@@ -104,24 +107,16 @@ async fn choose(
     loop {
         let height = terminal.size_reader()()?.height;
         let rows = u32::from(height.saturating_sub(9).max(1)).min(128);
-        let page = sessions::page(
+        let page = sessions::page_filtered(
             &connection,
             AgentPageRequest::new(rows, 64 * 1024, cursor.clone())?,
+            &sessions::Filter {
+                title: filter.map(str::to_owned),
+                ..Default::default()
+            },
         )
         .await?;
-        let visible: Vec<_> = page
-            .items
-            .into_iter()
-            .filter(|row| {
-                filter.is_none_or(|filter| {
-                    row.agent.as_str().contains(filter)
-                        || row
-                            .title
-                            .as_ref()
-                            .is_some_and(|title| title.contains(filter))
-                })
-            })
-            .collect();
+        let visible: Vec<_> = page.items.into_iter().collect();
         let mut choices: Vec<_> = visible
             .iter()
             .map(|row| {

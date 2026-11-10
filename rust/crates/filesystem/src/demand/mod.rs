@@ -9,6 +9,26 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use thiserror::Error;
 
+/// One identity for an unresolved source node and its authored captures.
+pub(crate) fn source_file_id(
+    namespace: &[u8; 16],
+    identity: &[u8; 32],
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+) -> Result<crate::FileId, crate::WorkError> {
+    let domain = b"acyclic-fs-lazy-source-file-id-v1\0";
+    accounting.charge(WorkCounters {
+        bytes_hashed: domain.len() as u64 + 48,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    hash.update(namespace);
+    hash.update(identity);
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    Ok(crate::FileId::from_bytes(bytes))
+}
+
 mod model;
 pub use model::*;
 mod cursor;

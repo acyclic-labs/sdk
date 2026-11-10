@@ -1,0 +1,14 @@
+{
+  "id": "session-list-filter",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [] },
+  "inputs": [
+    { "mode": "service" },
+    { "mode": "text", "args": ["new", "Parser repair"], "environment": { "TERM": "dumb" }, "capture_root": "parser" },
+    { "mode": "text", "args": ["new", "Renderer repair"], "environment": { "TERM": "dumb" }, "capture_root": "renderer" },
+    { "mode": "text", "args": ["sessions", "--title", "PARSER", "--state", "idle", "--created-after", "1", "--updated-after", "1"],
+      "stdout_contains": ["Parser repair", "{{session:parser}}"], "stdout_absent": ["Renderer repair", "{{session:renderer}}"] },
+    { "mode": "text", "args": ["sessions", "--title", "absent title", "--page-size", "1"], "stdout_contains": ["\"items\":[]", "\"next\":\""], "stdout_absent": ["Parser repair", "Renderer repair"] }
+  ],
+  "assert": { "requests": 0 }
+}

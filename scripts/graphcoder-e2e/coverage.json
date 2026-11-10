@@ -101,7 +101,12 @@
         "pty-diff-folder-replace",
         "pty-diff-large-restoration",
         "pty-diff-limit",
-        "session-detach-reattach-running"
+        "session-detach-reattach-running",
+        "session-two-terminals",
+        "session-remote-attach",
+        "session-explicit-root-latest",
+        "session-list-filter",
+        "session-concurrent-same-repo"
       ]
     },
     "A8": {

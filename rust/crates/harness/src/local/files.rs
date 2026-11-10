@@ -97,7 +97,7 @@ impl LocalHarness {
                         unanswered: Arc::new(|_| true),
                     }),
                 },
-                async {
+                Box::pin(async {
                     let (selected, _) = workspace.selected_view().await?;
                     acyclic_fs::GitCompatRepository::new(
                         selected
@@ -110,7 +110,7 @@ impl LocalHarness {
                     .register_branch_workspace(branch, source.workspace().id(), None, false)
                     .await
                     .map_err(storage)
-                },
+                }),
             )
             .await?;
         match output {

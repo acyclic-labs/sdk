@@ -318,6 +318,7 @@ async fn run_inner(
             Some(
                 Command::Sessions(_)
                     | Command::NewSession { .. }
+                    | Command::Name { .. }
                     | Command::Rename { .. }
                     | Command::Archive
             )
@@ -526,14 +527,21 @@ async fn connected(
     event_output: Option<&mut headless::Output>,
     mut terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(Command::Sessions(page)) = &args.command {
-        let page = acyclic_harness::local::sessions::page(
+    if let Some(Command::Sessions(list)) = &args.command {
+        let page = acyclic_harness::local::sessions::page_filtered(
             &connection,
             acyclic_harness::client::AgentPageRequest::new(
-                page.page_size,
-                page.page_bytes,
-                page.cursor.clone(),
+                list.page.page_size,
+                list.page.page_bytes,
+                list.page.cursor.clone(),
             )?,
+            &acyclic_harness::local::sessions::Filter {
+                title: list.title.clone(),
+                states: list.state.clone(),
+                created_after: list.created_after,
+                created_before: list.created_before,
+                updated_after: list.updated_after,
+            },
         )
         .await?;
         let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
@@ -549,9 +557,17 @@ async fn connected(
     terminal = selected_terminal;
     let connection = match &args.agent {
         Some(agent) => {
-            connection
+            let selected = connection
                 .select(acyclic_harness::agent::AgentPath::try_from(agent.clone())?)
-                .await?
+                .await?;
+            if selected.root().parent().is_none() && selected.root() != connection.root() {
+                acyclic_harness::local::sessions::selected(
+                    &selected,
+                    &OperationId::new().to_string(),
+                )
+                .await?;
+            }
+            selected
         }
         None => connection,
     };
@@ -591,6 +607,14 @@ async fn connected(
         return Ok(());
     }
     match &args.command {
+        Some(Command::Name { name }) => {
+            let operation = args
+                .operation
+                .clone()
+                .unwrap_or_else(|| OperationId::new().to_string());
+            acyclic_harness::local::sessions::name(&connection, name.clone(), &operation).await?;
+            return Ok(());
+        }
         Some(Command::Rename { title }) => {
             acyclic_harness::local::sessions::rename(
                 &connection,
@@ -682,7 +706,10 @@ async fn drive(
             view::run(
                 conversation,
                 args.inline,
-                args.resume.is_some() || args.continue_session || args.agent.is_some(),
+                args.resume.is_some()
+                    || args.continue_session
+                    || args.agent.is_some()
+                    || args.endpoint.is_some(),
                 terminal,
             )
         })

@@ -48,7 +48,7 @@ pub struct Args {
     pub signal_ready: bool,
     /// Own workspace files for native coding hosts, without a provider or agent loop.
     /// Emits a `workspace-owner-ready` JSONL event on stdout after request events are installed.
-    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "transcripts", "resume", "agent"])]
+    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "transcripts", "resume", "agent", "continue_session", "new_session"])]
     pub host_workspace: bool,
     /// Explicit durable storage for the local owner or a selected agent.
     #[arg(long, conflicts_with = "endpoint")]
@@ -145,7 +145,7 @@ pub struct Args {
     #[arg(long, global = true)]
     pub agent: Option<String>,
     /// Fork a decider's retained conversation event and workspace generation.
-    #[arg(long, value_name = "AGENT_PATH@EVENT_OFFSET", conflicts_with_all = ["agent", "resume", "host_workspace"])]
+    #[arg(long, value_name = "AGENT_PATH@EVENT_OFFSET", conflicts_with_all = ["agent", "resume", "continue_session", "new_session", "host_workspace"])]
     pub fork_from: Option<String>,
     /// Version-one continuation JSON: {"version":1,"override_item":...}.
     #[arg(long = "override", global = true, value_name = "FILE")]
@@ -360,12 +360,14 @@ pub enum Command {
         prompt: Option<String>,
     },
     /// Read one lazy page of this checkout's root sessions.
-    Sessions(Page),
+    Sessions(Sessions),
     /// Create a session and optionally author its title.
     #[command(name = "new")]
     NewSession { title: Option<String> },
     /// Rename the selected session by conditionally writing ui/title.
     Rename { title: String },
+    /// Give the selected session a stable alias for -r NAME.
+    Name { name: String },
     /// Freeze the selected session and release its owned resources.
     Archive,
     /// Read one immutable page of the selected session's saved turns.
@@ -397,6 +399,28 @@ pub struct Page {
     /// Encoded reply credit; increase it if one row and its continuation cannot fit.
     #[arg(long, default_value_t = AgentPageRequest::default().bytes())]
     pub page_bytes: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct Sessions {
+    #[command(flatten)]
+    pub page: Page,
+    /// Case-insensitive title or root-id substring within each requested page.
+    #[arg(long)]
+    pub title: Option<String>,
+    /// Match these states (repeat or comma-separate): idle, running,
+    /// waiting-approval, waiting, done, archived.
+    #[arg(long, value_delimiter = ',')]
+    pub state: Vec<acyclic_harness::local::sessions::State>,
+    /// Inclusive UTC creation bound in Unix microseconds.
+    #[arg(long)]
+    pub created_after: Option<u64>,
+    /// Exclusive UTC creation bound in Unix microseconds.
+    #[arg(long)]
+    pub created_before: Option<u64>,
+    /// Inclusive UTC status-commit bound in Unix microseconds.
+    #[arg(long)]
+    pub updated_after: Option<u64>,
 }
 
 #[derive(Debug, clap::Args)]

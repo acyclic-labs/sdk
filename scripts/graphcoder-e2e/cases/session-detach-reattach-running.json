@@ -18,6 +18,7 @@
     ]
   },
   "inputs": [
+    { "mode": "service" },
     {
       "mode": "pty",
       "actions": [

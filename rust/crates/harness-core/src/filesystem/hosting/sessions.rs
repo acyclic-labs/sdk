@@ -64,6 +64,90 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             .map_err(Error::Stream)
     }
 
+    fn session_names(&self) -> Result<crate::agent::NameIndex<P>, Error> {
+        let directory = self.session_directory()?;
+        let scope = directory
+            .as_str()
+            .rsplit('/')
+            .next()
+            .ok_or(Error::Record("session directory has no scope"))?;
+        let path = acyclic_stream::StreamPath::new(format!("harness/names/{scope}"))
+            .map_err(Error::Stream)?;
+        Ok(crate::agent::NameIndex::new(
+            self.agents.provider().clone(),
+            path,
+        ))
+    }
+
+    fn session_member(&self, agent: &AgentPath) -> Result<acyclic_stream::StreamPath, Error> {
+        if agent.parent().is_some() {
+            return Err(Error::Record(
+                "session membership requires an independent root",
+            ));
+        }
+        acyclic_stream::StreamPath::new(format!(
+            "{}/{}",
+            self.session_roots()?.as_str(),
+            agent.id()
+        ))
+        .map_err(Error::Stream)
+    }
+
+    /// Resolve a stable alias through one name-index head. Discovery conveys
+    /// no authority to bind, read or drive the returned actor.
+    pub async fn resolve_session(&self, name: &str) -> Result<AgentPath, Error> {
+        self.admit_sessions()?;
+        self.session_names()?
+            .resolve(name)
+            .await?
+            .ok_or(Error::NoSuchAgent)
+    }
+
+    /// Bind an additional stable alias, atomically conditioned on this root's
+    /// directory membership. A name already bound to another root is refused.
+    pub async fn name_session(
+        &self,
+        agent: &AgentPath,
+        name: &str,
+        id: &IntentId,
+    ) -> Result<(), Error> {
+        self.admit_sessions()?;
+        let member = self.session_member(agent)?;
+        let names = self.session_names()?;
+        if let Some(original) = names.resolve(name).await? {
+            return if original == *agent {
+                Ok(())
+            } else {
+                Err(Error::Record(
+                    "session name already belongs to another root",
+                ))
+            };
+        }
+        let directory = self.session_directory()?;
+        let mut request = acyclic_stream::CommitRequest {
+            deadline_unix_millis: None,
+            conditions: vec![acyclic_stream::CommitCondition::Present { path: member }],
+            mutations: Vec::new(),
+            idempotency_key: crate::agent::intent_key(
+                "name-session",
+                &[directory.as_str(), agent.as_str(), name, id.as_str()],
+            )?,
+        };
+        names.bind(name, agent, &mut request)?;
+        match self
+            .agents
+            .provider()
+            .commit(request)
+            .await
+            .map_err(Error::Stream)?
+        {
+            acyclic_stream::CommitOutcome::Committed(_) => Ok(()),
+            acyclic_stream::CommitOutcome::Conflict(_) => {
+                Err(Error::Record("session name or membership changed"))
+            }
+        }
+    }
+
     /// Idempotent placement startup. This directory's version-one creation
     /// record is written once; no per-session setup or readiness probe occurs.
     pub async fn initialize_sessions(&self) -> Result<(), Error> {
@@ -106,12 +190,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             agent: agent.clone(),
         })
         .map_err(|_| Error::Record("directory membership cannot encode"))?;
-        let entry = acyclic_stream::StreamPath::new(format!(
-            "{}/{}",
-            self.session_roots()?.as_str(),
-            agent.id()
-        ))
-        .map_err(Error::Stream)?;
+        let entry = self.session_member(agent)?;
         request
             .conditions
             .push(acyclic_stream::CommitCondition::Absent {
@@ -258,18 +337,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     /// selection and preview queries do not change the user's latest session.
     pub async fn select_session(&self, agent: &AgentPath, id: &IntentId) -> Result<(), Error> {
         self.admit_sessions()?;
-        if agent.parent().is_some() {
-            return Err(Error::Record(
-                "session selection requires an independent root",
-            ));
-        }
         let directory = self.session_directory()?;
-        let member = acyclic_stream::StreamPath::new(format!(
-            "{}/{}",
-            self.session_roots()?.as_str(),
-            agent.id()
-        ))
-        .map_err(Error::Stream)?;
+        let member = self.session_member(agent)?;
         let value = serde_json::to_vec(&Entry::Root {
             version: 1,
             agent: agent.clone(),

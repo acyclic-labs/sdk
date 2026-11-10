@@ -206,7 +206,9 @@ impl LocalHarness {
                     } else {
                         None
                     };
-                    let cwd = if selected.is_none() || workspace.mounted.is_none() {
+                    let cwd = if !super::open::uses_native_execution(&self.tools)? {
+                        None
+                    } else if selected.is_none() || workspace.mounted.is_none() {
                         Some(workspace.path.as_path())
                     } else {
                         selected_mount

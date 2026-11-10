@@ -521,6 +521,97 @@ mod tests {
             };
             connection.execute(&create_title).await?;
             let selected = connection.select(agent.clone()).await?;
+            let filtered = crate::local::sessions::page_filtered(
+                &connection,
+                AgentPageRequest::default(),
+                &crate::local::sessions::Filter {
+                    title: Some("INDEPENDENT".into()),
+                    states: vec![crate::local::sessions::State::Idle],
+                    created_after: Some(1),
+                    created_before: Some(u64::MAX),
+                    updated_after: Some(1),
+                },
+            )
+            .await?;
+            assert_eq!(filtered.items.len(), 1);
+            assert_eq!(filtered.items[0].agent, agent);
+            let request = AgentPageRequest::new(1, 64 * 1024, None).map_err(storage)?;
+            let unfiltered = crate::local::sessions::page(&connection, request.clone()).await?;
+            let empty = crate::local::sessions::page_filtered(
+                &connection,
+                request,
+                &crate::local::sessions::Filter {
+                    states: vec![crate::local::sessions::State::Archived],
+                    ..Default::default()
+                },
+            )
+            .await?;
+            assert!(empty.items.is_empty());
+            assert!(empty.next.is_some());
+            assert_eq!(
+                empty.next, unfiltered.next,
+                "an empty filtered page must preserve the source continuation"
+            );
+            let name = AgentCommand::NameSession {
+                agent: agent.clone(),
+                name: "fix parser/branch".into(),
+                id: crate::agent::IntentId::try_from("name-independent-session")
+                    .map_err(storage)?,
+            };
+            connection.execute(&name).await?;
+            connection.execute(&name).await?;
+            assert_eq!(
+                crate::local::sessions::select(&connection, "fix parser/branch")
+                    .await?
+                    .root(),
+                &agent
+            );
+            assert!(
+                restricted_remote.execute(&name).await.is_err(),
+                "a tree credential cannot author directory names"
+            );
+            assert!(
+                restricted_remote
+                    .execute(&AgentCommand::ResolveSession {
+                        name: "fix parser/branch".into()
+                    })
+                    .await
+                    .is_err(),
+                "name discovery requires directory admission"
+            );
+            let another = roots.iter().find(|other| *other != &agent).unwrap();
+            assert!(
+                connection
+                    .execute(&AgentCommand::NameSession {
+                        agent: another.clone(),
+                        name: "fix parser/branch".into(),
+                        id: crate::agent::IntentId::try_from("conflicting-name")
+                            .map_err(storage)?,
+                    })
+                    .await
+                    .is_err(),
+                "an existing alias cannot silently move to another session"
+            );
+            assert!(
+                connection
+                    .execute(&AgentCommand::NameSession {
+                        agent: tree.root().clone(),
+                        name: "not-in-directory".into(),
+                        id: crate::agent::IntentId::try_from("name-checkout-owner")
+                            .map_err(storage)?,
+                    })
+                    .await
+                    .is_err()
+            );
+            assert!(
+                connection
+                    .execute(&AgentCommand::ResolveSession {
+                        name: "not-in-directory".into()
+                    })
+                    .await
+                    .is_err(),
+                "failed membership admission must publish no alias"
+            );
             let selection = AgentCommand::SelectSession {
                 agent: agent.clone(),
                 id: crate::agent::IntentId::try_from("explicit-reattach").map_err(storage)?,
@@ -570,6 +661,13 @@ mod tests {
             assert_eq!(
                 snapshot.files["ui/title"].as_ref().unwrap(),
                 "Renamed session "
+            );
+            assert_eq!(
+                crate::local::sessions::select(&connection, "fix parser/branch")
+                    .await?
+                    .root(),
+                &agent,
+                "display title edits retain direct aliases"
             );
             let stale = AgentCommand::PublishAgentFiles {
                 agent: agent.clone(),
@@ -748,11 +846,17 @@ mod tests {
 
     #[tokio::test]
     async fn session_merges_publish_checkout_files_and_preserve_conflicts() -> Result<()> {
-        use crate::filesystem::{WorkspaceMutation, workspace_ref};
         use crate::local::{WorkspaceMounting, sessions};
+        use acyclic_fs::facade::FsWork as _;
         let checkout = tempfile::tempdir().map_err(storage)?;
         let storage_dir = tempfile::tempdir().map_err(storage)?;
         std::fs::write(checkout.path().join("shared.txt"), b"base\n").map_err(storage)?;
+        std::fs::create_dir(checkout.path().join("nested")).map_err(storage)?;
+        std::fs::write(
+            checkout.path().join("nested/kept.txt"),
+            b"native untouched\n",
+        )
+        .map_err(storage)?;
         let provider = Arc::new(
             ScriptedModelProvider::new([
                 ScriptedTurn::Text("child ready".into()),
@@ -797,37 +901,43 @@ mod tests {
                 .iter()
                 .find(|binding| binding.name == "project")
                 .ok_or_else(|| Error::Invalid("missing isolated project".into()))?;
-            let reference = workspace_ref(
-                project.volume.provider().clone(),
-                &project.volume.storage_name(&mut None)?,
-            )?;
-            local
-                .files
-                .apply(
-                    &reference,
-                    None,
-                    &[
-                        WorkspaceMutation::PutFile {
-                            path: format!("/{name}"),
-                            bytes: acyclic_stream::OwnedBytes::copy_from_slice(text),
-                        },
-                        WorkspaceMutation::PutFile {
-                            path: "/shared.txt".into(),
-                            bytes: acyclic_stream::OwnedBytes::copy_from_slice(text),
-                        },
-                    ],
-                    &crate::IdempotencyKey::new(name)?,
-                )
+            let view = local
+                .workspace
+                .as_ref()
+                .unwrap()
+                .spawned_project_view(&project.volume)
                 .await?;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+            // Use the same lazy writer as tools: an overwrite preserves the
+            // native source identity rather than adding an unrelated file to
+            // the authored-only generation underneath that source.
+            for path in [format!("/{name}"), "/shared.txt".into()] {
+                view.write(
+                    &path,
+                    acyclic_stream::OwnedBytes::copy_from_slice(text),
+                    acyclic_fs::IdempotencyKey::from_bytes(crate::OperationId::new().into_bytes()),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    &mut accounting,
+                )
+                .await
+                .map_err(storage)?;
+            }
         }
         assert_eq!(
             std::fs::read(checkout.path().join("shared.txt")).map_err(storage)?,
             b"base\n"
         );
-        let first_commit = sessions::merge(&first, "publish-first").await?;
+        let first_commit = sessions::merge(&first, "publish-first")
+            .await
+            .map_err(|error| Error::Storage(format!("first integration: {error}")))?;
         assert!(
             first_commit.is_some(),
             "integration must create a merge commit"
+        );
+        assert_eq!(
+            std::fs::read(checkout.path().join("nested/kept.txt")).map_err(storage)?,
+            b"native untouched\n"
         );
         assert_eq!(
             std::fs::read(checkout.path().join("first.txt")).map_err(storage)?,
@@ -858,7 +968,9 @@ mod tests {
             b"first\n"
         );
         std::fs::write(checkout.path().join("shared.txt"), b"resolved\n").map_err(storage)?;
-        let second_commit = sessions::merge(&second, "publish-second").await?;
+        let second_commit = sessions::merge(&second, "publish-second")
+            .await
+            .map_err(|error| Error::Storage(format!("resolved integration: {error}")))?;
         assert!(second_commit.is_some());
         assert_eq!(
             std::fs::read(checkout.path().join("shared.txt")).map_err(storage)?,
@@ -916,22 +1028,22 @@ mod tests {
             .iter()
             .find(|binding| binding.name == "project")
             .ok_or_else(|| Error::Invalid("missing descendant project".into()))?;
-        let reference = workspace_ref(
-            project.volume.provider().clone(),
-            &project.volume.storage_name(&mut None)?,
-        )?;
-        local
-            .files
-            .apply(
-                &reference,
-                None,
-                &[WorkspaceMutation::PutFile {
-                    path: "/nested.txt".into(),
-                    bytes: acyclic_stream::OwnedBytes::from_static(b"nested\n"),
-                }],
-                &crate::IdempotencyKey::new("nested-edit")?,
-            )
+        let view = local
+            .workspace
+            .as_ref()
+            .unwrap()
+            .spawned_project_view(&project.volume)
             .await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        view.write(
+            "/nested.txt",
+            acyclic_stream::OwnedBytes::from_static(b"nested\n"),
+            acyclic_fs::IdempotencyKey::from_bytes(crate::OperationId::new().into_bytes()),
+            acyclic_fs::PublicationPermit::Unrestricted,
+            &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
+        )
+        .await
+        .map_err(storage)?;
         let commit = sessions::merge(&descendants[1], "merge-grandchild").await?;
         assert!(commit.is_some());
         assert_eq!(

@@ -30,7 +30,7 @@ fn version(metadata: &HostStat) -> SourceVersion {
 /// with neither handles nor birth times (a few) cannot tell reuse apart by
 /// identity alone.
 #[cfg(unix)]
-fn file_identity(metadata: &HostStat) -> [u8; 32] {
+pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-file-v1\0");
     hash.update(&(metadata.raw.st_dev as u64).to_le_bytes());
@@ -48,7 +48,7 @@ fn file_identity(metadata: &HostStat) -> [u8; 32] {
 }
 
 #[cfg(windows)]
-fn file_identity(metadata: &HostStat) -> [u8; 32] {
+pub(crate) fn file_identity(metadata: &HostStat) -> [u8; 32] {
     windows_file_identity(
         u64::from(metadata.volume_serial_number),
         metadata.raw.FileId.cast_unsigned(),

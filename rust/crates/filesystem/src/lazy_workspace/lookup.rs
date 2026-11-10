@@ -318,18 +318,11 @@ impl<
         identity: &[u8; 32],
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<FileId, LazyWorkspaceError> {
-        let domain = b"acyclic-fs-lazy-source-file-id-v1\0";
-        ctx.charge(WorkCounters {
-            bytes_hashed: domain.len() as u64 + 48,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let mut hash = blake3::Hasher::new();
-        hash.update(domain);
-        hash.update(&self.source.reference().identity);
-        hash.update(identity);
-        let mut bytes = [0; 16];
-        bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-        Ok(FileId::from_bytes(bytes))
+        Ok(crate::demand::source_file_id(
+            &self.source.reference().identity,
+            identity,
+            ctx,
+        )?)
     }
 
     /// Preserves a shallowly promoted directory's original source identity.

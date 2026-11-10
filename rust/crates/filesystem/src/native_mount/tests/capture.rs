@@ -38,6 +38,7 @@ async fn baseline_path_limit_stops_unbounded_traversal() -> Result<(), Box<dyn s
     let result = capture_baseline(
         &mut checkout,
         &CaptureOptions {
+            source_namespace: None,
             expected_root_identity: capture_root_identity(host.path())?,
             source_root: host.path().to_path_buf(),
             maximum_paths: 2,
@@ -77,6 +78,7 @@ async fn check_coalesced_removals(replace_parent: bool) -> Result<(), Box<dyn st
     let root = temporary.path().join("capture");
     std::fs::create_dir(&root)?;
     let options = CaptureOptions {
+        source_namespace: None,
         expected_root_identity: capture_root_identity(&root)?,
         source_root: root.clone(),
         maximum_paths: 8,
@@ -174,6 +176,7 @@ async fn stale_created_hints_for_existing_directory_capture_exactly()
     std::fs::create_dir(temporary.path().join("nested"))?;
     std::fs::write(temporary.path().join("nested/child.txt"), b"child")?;
     let options = CaptureOptions {
+        source_namespace: None,
         source_root: temporary.path().to_path_buf(),
         expected_root_identity: capture_root_identity(temporary.path())?,
         maximum_paths: 16,
@@ -266,6 +269,7 @@ async fn windows_created_and_modified_hint_captures_one_new_file()
             original: Default::default(),
         },
         &CaptureOptions {
+            source_namespace: None,
             source_root: temporary.path().to_path_buf(),
             expected_root_identity: capture_root_identity(temporary.path())?,
             maximum_paths: 16,

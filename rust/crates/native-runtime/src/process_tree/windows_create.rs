@@ -585,7 +585,7 @@ pub(in crate::process_tree) fn make_bat_command_line(
     Ok(line)
 }
 
-fn make_environment(
+pub(super) fn make_environment(
     environment: std::collections::BTreeMap<super::command::EnvKey, OsString>,
 ) -> io::Result<Vec<u16>> {
     let mut block = Vec::new();

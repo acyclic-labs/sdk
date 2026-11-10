@@ -32,6 +32,10 @@ pub struct ChildAgent {
     pub agent: AgentPath,
     /// Actual published status, or no status record at this cut.
     pub status: Option<StatusRecord>,
+    /// Original immutable directory admission time, when this is a session.
+    pub created_at_micros: Option<u64>,
+    /// Commit time of the status returned at this page cut.
+    pub updated_at_micros: Option<u64>,
 }
 
 /// Original pending action identity; the immutable request is read separately.
@@ -540,7 +544,9 @@ fn validate_reply(
         }
         (
             AgentReply::Root { agent },
-            AgentCommand::NewSession { .. } | AgentCommand::ForkSession { .. },
+            AgentCommand::NewSession { .. }
+            | AgentCommand::ForkSession { .. }
+            | AgentCommand::ResolveSession { .. },
         ) => {
             return if agent.parent().is_none() {
                 Ok(())
@@ -551,6 +557,18 @@ fn validate_reply(
         (
             AgentReply::Root { agent },
             AgentCommand::SelectSession {
+                agent: requested, ..
+            },
+        ) => {
+            return if agent == requested {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Root { agent },
+            AgentCommand::NameSession {
                 agent: requested, ..
             },
         ) => {
