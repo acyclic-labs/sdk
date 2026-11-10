@@ -1,5 +1,6 @@
 use super::*;
 use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult, ContentChanges};
+use acyclic_fs::access::Action;
 
 impl CheckoutPublisher {
     pub(super) fn publish_changes<'a, 'io: 'a, Output: acyclic_stream::ProviderTask + 'a>(
