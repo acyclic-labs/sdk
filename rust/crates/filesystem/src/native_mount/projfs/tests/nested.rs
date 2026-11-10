@@ -7,7 +7,7 @@ use super::{
 // A child view mounted inside a parent's active projection is rejected before
 // any physical state exists, as its own typed cause; neither failure cleanup
 // nor the parent's teardown waits on the rejected start.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn nested_destination_is_rejected_before_marking() -> Result<(), Box<dyn std::error::Error>> {
     let _services = setup_work()?;
     let parent = windows_checkout_source().await?;
@@ -41,7 +41,7 @@ async fn nested_destination_is_rejected_before_marking() -> Result<(), Box<dyn s
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn junction_cannot_hide_a_parent_projection() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let parent = windows_checkout_source().await?;

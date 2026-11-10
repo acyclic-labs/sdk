@@ -28,7 +28,7 @@ async fn metadata_edit_after_a_boundary_through_a_handle_opened_before_it_is_cap
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_time_set_through_a_writable_handle_stays() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     const FILES: usize = 120;

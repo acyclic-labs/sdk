@@ -11,7 +11,7 @@ const ROLE: &str = "ACYCLIC_PROJFS_CRASH_FIXTURE";
 const READY: &str = "ACYCLIC_PROJFS_CRASH_READY";
 const TEST: &str = "native_mount::projfs::tests::crash_recovery::a_dead_provider_is_preserved_under_held_recovery_custody";
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_dead_provider_is_preserved_under_held_recovery_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     if let Some(root) = std::env::var_os(ROLE) {
