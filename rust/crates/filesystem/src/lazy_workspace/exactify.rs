@@ -70,7 +70,7 @@ impl<
         if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut.clone()) {
             return Ok(None);
         }
-        let live = self.source.reference(ctx)?;
+        let live = self.source_reference(ctx)?;
         let mut overlay = cut.overlay;
         for path in paths {
             let Some(LazyOverlayChange::Observe { source, node }) =

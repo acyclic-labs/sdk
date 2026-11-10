@@ -117,7 +117,7 @@ impl<
         let cut = self.publication_cut(None, ctx).await?;
         let generation = self.head(ctx).await?;
         ctx.check()?;
-        if self.source.reference(ctx)? != cut.source {
+        if self.source_reference(ctx)? != cut.source {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok(NativePublicationSnapshot {
@@ -222,7 +222,7 @@ impl<
             bytes_copied: std::mem::size_of::<LazyPublicationCut>() as u64,
             ..WorkCounters::UNCHARGED
         })?;
-        if self.source.reference(ctx)? != state.source {
+        if self.source_reference(ctx)? != state.source {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok(LazyPublicationCut {
