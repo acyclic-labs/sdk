@@ -128,9 +128,15 @@ pub struct Args {
     /// instead of sending its prompts again.
     #[arg(long, global = true)]
     pub operation: Option<String>,
-    /// Reopen the last interactive conversation, including after a normal quit.
-    #[arg(long, global = true)]
-    pub resume: bool,
+    /// Continue the latest session for this checkout.
+    #[arg(short = 'c', long = "continue", global = true, conflicts_with_all = ["resume", "new_session", "agent", "fork_from", "host_workspace"])]
+    pub continue_session: bool,
+    /// Resume a session by id or name, or open the paged picker when omitted.
+    #[arg(short = 'r', long, global = true, num_args = 0..=1, value_name = "SESSION", conflicts_with_all = ["new_session", "agent", "fork_from"])]
+    pub resume: Option<Option<String>>,
+    /// Start an independent session for this checkout.
+    #[arg(long, global = true, conflicts_with_all = ["agent", "fork_from", "host_workspace"])]
+    pub new_session: bool,
     /// Select an existing session by its canonical agent path.
     #[arg(long, global = true)]
     pub agent: Option<String>,
@@ -346,8 +352,15 @@ pub enum Command {
         /// One task; omitted reads JSONL requests from stdin.
         prompt: Option<String>,
     },
-    /// Read one lazy page of the selected session's direct children.
+    /// Read one lazy page of this checkout's root sessions.
     Sessions(Page),
+    /// Create a session and optionally author its title.
+    #[command(name = "new")]
+    NewSession { title: Option<String> },
+    /// Rename the selected session by conditionally writing ui/title.
+    Rename { title: String },
+    /// Freeze the selected session and release its owned resources.
+    Archive,
     /// Read one immutable page of the selected session's saved turns.
     History(Page),
     /// Run a paired study: the arms file's source task once, then every

@@ -51,7 +51,7 @@ export async function pty(processes, binary, fixture, input, capture) {
   let unsubscribe, frames;
   try {
     frames = new TerminalFrames(screen, frame);
-    const running = await processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
+    const running = await processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--continue"] : [])],
       { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
     screen.onData(data => running.child.stdin.write(data));
     const raw = new OutputWatch(rawNeedles(input.actions));

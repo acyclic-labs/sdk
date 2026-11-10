@@ -279,7 +279,10 @@ mod tests {
         .state_directory(state.path())
         .without_default_tools();
         let local = Arc::new(super::super::LocalHarness::open(config).await?);
-        let tree = local.connect().await?;
+        let tree = local
+            .connect()
+            .await
+            .map_err(|error| Error::Storage(format!("tree client connect: {error}")))?;
         assert!(
             tree.execute(&AgentCommand::Sessions {
                 page: AgentPageRequest::default()
@@ -294,6 +297,11 @@ mod tests {
             .await
             .is_err()
         );
+        tree.execute(&AgentCommand::Root {})
+            .await
+            .map_err(|error| {
+                Error::Storage(format!("tree after denied directory call: {error}"))
+            })?;
         let hosted = local
             .agents
             .get()
@@ -327,12 +335,16 @@ mod tests {
         ));
         let result = async {
             let connection =
-                Connection::connect(&readiness.await.map_err(storage)?.map_err(storage)?).await?;
+                Connection::connect(&readiness.await.map_err(storage)?.map_err(storage)?)
+                    .await
+                    .map_err(|error| {
+                        Error::Storage(format!("directory client connect: {error}"))
+                    })?;
             assert!(matches!(
                 connection.execute(&AgentCommand::LatestSession {}).await?,
                 AgentReply::LatestSession { agent: None }
             ));
-            let mut roots = std::collections::BTreeSet::from([connection.root().clone()]);
+            let mut roots = std::collections::BTreeSet::new();
             for index in 0..4 {
                 let create = AgentCommand::NewSession {
                     id: crate::agent::IntentId::try_from(format!("session-{index}"))

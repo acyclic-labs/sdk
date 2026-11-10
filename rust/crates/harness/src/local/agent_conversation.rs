@@ -144,6 +144,12 @@ impl Conversation {
         self.connection.root()
     }
 
+    /// The authenticated selection shared by session controls and observation.
+    #[must_use]
+    pub fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
     /// The root agent's id in operation form: the task its failures name.
     #[must_use]
     pub fn task(&self) -> crate::OperationId {

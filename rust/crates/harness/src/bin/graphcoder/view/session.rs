@@ -126,6 +126,26 @@ pub(super) fn follow(
     })
 }
 
+pub(super) fn title(snapshot: &ClientFiles) -> String {
+    snapshot
+        .files
+        .get("ui/title")
+        .and_then(Option::as_ref)
+        .map(|file| file.text.chars().filter(|ch| !ch.is_control()).collect())
+        .unwrap_or_default()
+}
+
+pub(super) fn follow_title(
+    conversation: Arc<Conversation>,
+    after: acyclic_harness::resources::GenerationRef,
+) -> futures::future::LocalBoxFuture<'static, acyclic_harness::Result<ClientFiles>> {
+    crate::phase(|| async move {
+        conversation
+            .agent_files(vec!["ui/title".into()], Some(after))
+            .await
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

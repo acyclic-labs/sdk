@@ -15,6 +15,7 @@ pub mod test_support {
 }
 mod headless;
 mod lifecycle;
+mod sessions;
 mod setup;
 mod usage_export;
 mod view;
@@ -304,7 +305,20 @@ async fn run_inner(
         && args.input_format == InputFormat::Text
         && args.output_format == OutputFormat::Text
         && !acyclic_harness::tui::term::Environment::capture().is_dumb();
-    let service = if interactive {
+    let session_client = interactive
+        || args.new_session
+        || args.continue_session
+        || args.resume.is_some()
+        || matches!(
+            args.command,
+            Some(
+                Command::Sessions(_)
+                    | Command::NewSession { .. }
+                    | Command::Rename { .. }
+                    | Command::Archive
+            )
+        );
+    let service = if session_client {
         let directory = acyclic_harness::local::service::Directory::for_workspace(
             &args.workspace,
             args.host_state_directory.as_deref(),
@@ -506,8 +520,29 @@ async fn connected(
     connection: Connection,
     output: headless::Prepared,
     event_output: Option<&mut headless::Output>,
-    terminal: Option<acyclic_harness::tui::term::Tty>,
+    mut terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(Command::Sessions(page)) = &args.command {
+        let page = acyclic_harness::local::sessions::page(
+            &connection,
+            acyclic_harness::client::AgentPageRequest::new(
+                page.page_size,
+                page.page_bytes,
+                page.cursor.clone(),
+            )?,
+        )
+        .await?;
+        let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
+        headless::write_event(
+            &mut output,
+            OperationId::from_bytes(connection.root().id_bytes()),
+            &page,
+        )
+        .await?;
+        return Ok(());
+    }
+    let (connection, selected_terminal) = sessions::select(args, connection, terminal).await?;
+    terminal = selected_terminal;
     let connection = match &args.agent {
         Some(agent) => {
             connection
@@ -533,18 +568,14 @@ async fn connected(
     } else {
         connection
     };
-    if let Some(Command::Sessions(page) | Command::History(page)) = &args.command {
+    if let Some(Command::History(page)) = &args.command {
         let page = acyclic_harness::client::AgentPageRequest::new(
             page.page_size,
             page.page_bytes,
             page.cursor.clone(),
         )?;
         let agent = connection.root().clone();
-        let command = if matches!(args.command, Some(Command::History(_))) {
-            acyclic_harness::client::AgentCommand::History { agent, page }
-        } else {
-            acyclic_harness::client::AgentCommand::Children { agent, page }
-        };
+        let command = acyclic_harness::client::AgentCommand::History { agent, page };
         let reply = connection.execute(&command).await?;
         let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
         headless::write_event(
@@ -554,6 +585,41 @@ async fn connected(
         )
         .await?;
         return Ok(());
+    }
+    match &args.command {
+        Some(Command::Rename { title }) => {
+            acyclic_harness::local::sessions::rename(
+                &connection,
+                OperationId::new(),
+                title.clone(),
+            )
+            .await?;
+            return Ok(());
+        }
+        Some(Command::Archive) => {
+            let operation = args
+                .operation
+                .clone()
+                .unwrap_or_else(|| OperationId::new().to_string());
+            acyclic_harness::local::sessions::archive(&connection, &operation).await?;
+            return Ok(());
+        }
+        Some(Command::NewSession { .. })
+            if acyclic_harness::tui::term::Environment::capture().is_dumb() =>
+        {
+            let mut output =
+                headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
+            headless::write_event(
+                &mut output,
+                OperationId::from_bytes(connection.root().id_bytes()),
+                &acyclic_harness::client::AgentReply::Root {
+                    agent: connection.root().clone(),
+                },
+            )
+            .await?;
+            return Ok(());
+        }
+        _ => {}
     }
     if let Some(Command::Study(study)) = &args.command {
         // Admitted before any model call.
@@ -608,7 +674,15 @@ async fn drive(
                 "--usage-jsonl and --transcripts require -p or --input-format jsonl".into(),
             );
         }
-        return phase(|| view::run(conversation, args.inline, args.resume, terminal)).await;
+        return phase(|| {
+            view::run(
+                conversation,
+                args.inline,
+                args.resume.is_some() || args.continue_session || args.agent.is_some(),
+                terminal,
+            )
+        })
+        .await;
     }
     drop(terminal);
     let usage_stdout = args

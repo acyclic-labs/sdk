@@ -17,6 +17,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     /// its original unbound whole-volume owner, before any storage observation.
     pub fn admit_sessions(&self) -> Result<(), Error> {
         if let TurnAdmission::Admitted { scope, .. } = &self.admission {
+            self.issuer
+                .verifier(&mut None)
+                .map_err(turn)?
+                .verify(scope, &mut None)
+                .map_err(turn)?;
             let whole = acyclic_fs::access::Capability::whole_volume(
                 None,
                 &acyclic_fs::access::Action::ALL,
@@ -50,6 +55,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             hasher.finalize().to_hex()
         ))
         .map_err(Error::Stream)
+    }
+
+    /// Scope-directory entries created atomically with their independent roots.
+    pub fn session_roots(&self) -> Result<acyclic_stream::StreamPath, Error> {
+        self.admit_sessions()?;
+        acyclic_stream::StreamPath::new(format!("{}/roots", self.session_directory()?.as_str()))
+            .map_err(Error::Stream)
     }
 
     /// Idempotent placement startup. This directory's version-one creation
@@ -94,12 +106,27 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             agent: agent.clone(),
         })
         .map_err(|_| Error::Record("directory membership cannot encode"))?;
+        let entry = acyclic_stream::StreamPath::new(format!(
+            "{}/{}",
+            self.session_roots()?.as_str(),
+            agent.id()
+        ))
+        .map_err(Error::Stream)?;
         request
-            .mutations
-            .push(acyclic_stream::CommitMutation::Append {
-                path,
-                records: vec![value.into()],
+            .conditions
+            .push(acyclic_stream::CommitCondition::Absent {
+                path: entry.clone(),
             });
+        request.mutations.extend([
+            acyclic_stream::CommitMutation::Append {
+                path,
+                records: vec![value.clone().into()],
+            },
+            acyclic_stream::CommitMutation::Append {
+                path: entry,
+                records: vec![value.into()],
+            },
+        ]);
         Ok(())
     }
 
