@@ -184,7 +184,7 @@ impl StockExecution<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         // Summaries retain the selected source, including its existing notices.
         // Only the transient instruction is appended; tools cannot be invoked.
-        if compose_tools && self.summary.is_none() {
+        if self.summary.is_none() {
             self.tools_notice(&mut context, &tools)?;
         }
         let message_count = context.messages.len();

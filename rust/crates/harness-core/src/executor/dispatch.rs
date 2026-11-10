@@ -135,7 +135,7 @@ impl StockExecution<'_> {
                         &live
                     }
                 };
-                if self.code_composition(tools)? {
+                {
                     let mut context = crate::context::Context {
                         messages: std::mem::take(history),
                         ..Default::default()

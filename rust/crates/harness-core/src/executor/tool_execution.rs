@@ -111,8 +111,39 @@ impl<'io> StockExecution<'io> {
         } else {
             Ok(None)
         };
-        self.stock.tools.refresh().await?;
-        let admitted = match self.stock.tools.resolve(&invocation.name, self.io)? {
+        // A settled refusal is a durable result, independent of today's catalog.
+        if matches!(recorded, RecordedCall::Failed { started: None, .. }) {
+            if let RecordedCall::Failed { reason, cause, .. } = recorded {
+                let content = tool_failure_content(reason, cause, self.io)?;
+                return self.push_tool_result(&invocation, content, None, prior_messages);
+            }
+        }
+        let selected = if recorded.started().is_some() {
+            let retained = self
+                .retained_dispatch_step(journal, operation_id, step, ModelPurpose::Response)
+                .await?;
+            let definition = retained
+                .request
+                .as_ref()
+                .and_then(|request| {
+                    request
+                        .request()
+                        .tools
+                        .iter()
+                        .find(|tool| tool.name == invocation.name)
+                })
+                .ok_or(Error::Indeterminate(operation_id))?;
+            Some(
+                self.stock
+                    .tools
+                    .recover(definition, self.io)?
+                    .ok_or(Error::Indeterminate(operation_id))?,
+            )
+        } else {
+            self.stock.tools.refresh().await?;
+            self.stock.tools.resolve(&invocation.name, self.io)?
+        };
+        let admitted = match selected {
             Some(tool) => self
                 .authorize_tool_invocation(
                     &tool,
@@ -616,7 +647,7 @@ impl<'io> StockExecution<'io> {
             && !self
                 .stock
                 .tools
-                .source_granted(&granted.definition.name, self.stock.tool_scope.grants())?
+                .source_granted(&granted.definition, self.stock.tool_scope.grants())?
         {
             return Ok(Err(ToolCallRejection::Unavailable));
         }
