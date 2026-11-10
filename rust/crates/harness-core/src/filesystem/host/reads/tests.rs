@@ -5,7 +5,7 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityRoot},
 };
 
-fn grants(volume: &VolumeRef) -> Result<(ContentGrant, ContentGrant)> {
+fn grants(volume: &VolumeRef) -> Result<(AuthorityRoot, ContentGrant, ContentGrant)> {
     let issuer = AuthorityRoot::new(
         "custody",
         [17; 32],
@@ -28,17 +28,16 @@ fn grants(volume: &VolumeRef) -> Result<(ContentGrant, ContentGrant)> {
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    Ok((
-        ContentGrant::verify_directory_read(&verifier, &scope, volume, "", &mut None)?,
-        ContentGrant::verify(
-            &verifier,
-            &scope,
-            volume,
-            VolumeOperation::Write,
-            u64::MAX,
-            &mut None,
-        )?,
-    ))
+    let read = ContentGrant::verify_directory_read(&verifier, &scope, volume, "", &mut None)?;
+    let write = ContentGrant::verify(
+        &verifier,
+        &scope,
+        volume,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
+    Ok((issuer, read, write))
 }
 
 #[test]
@@ -62,8 +61,8 @@ async fn concurrent_publication() -> Result<()> {
     };
     let parent = volume("parent", 1)?;
     let child = volume("child", 2)?;
-    let (parent_read, parent_write) = grants(&parent)?;
-    let (child_read, child_write) = grants(&child)?;
+    let (_parent_issuer, parent_read, parent_write) = grants(&parent)?;
+    let (_child_issuer, child_read, child_write) = grants(&child)?;
     let parent_workspace = host.create_volume(&parent).await?.workspace;
     let original = host
         .put_content(
