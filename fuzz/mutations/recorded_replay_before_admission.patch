@@ -1,0 +1,14 @@
+--- a/rust/crates/harness-core/src/model/recorded.rs
++++ b/rust/crates/harness-core/src/model/recorded.rs
+@@ -160,8 +160,8 @@
+             return admit(None);
+         };
+-        match admit(Some((*next, call))) {
++        *next += 1;
++        self.used += 1;
++        match admit(Some((*next - 1, call))) {
+             Ok(result) => {
+-                *next += 1;
+-                self.used += 1;
+                 Ok(result)
+             }
