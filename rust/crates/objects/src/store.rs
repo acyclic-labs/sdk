@@ -265,16 +265,6 @@ enum Commit {
     Unflushed(Error),
 }
 
-/// What a put found when its envelope already existed.
-enum Adopted {
-    /// A live envelope of the same bytes, which the put shares.
-    Live(Envelope),
-    /// A collector moved or removed it since the put observed it.
-    Lost,
-    /// The revival's outcome is unknown.
-    Unknown,
-}
-
 /// A medium shared by many accounts. Each [`Account`] is isolated: equal bytes
 /// in two accounts are two blobs, and no account observes another's.
 pub struct Store<M> {
@@ -1316,35 +1306,49 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         wanted: Envelope,
     ) -> Result<Put, Error> {
         let key = self.envelope_key(&digest);
-        // A lost conditional write is the event that re-runs the cut: the
-        // winner committed, so the cut runs again once, against what it left.
-        let mut rerun = true;
-        let (envelope, created) = loop {
-            let fresh = Envelope {
-                version: version()?,
-                ..wanted.clone()
+        let fresh = Envelope {
+            version: version()?,
+            ..wanted.clone()
+        };
+        self.track(&digest, &fresh);
+        let created = match self.medium.create(&key, fresh.encode().into()).await {
+            Ok(true) => true,
+            Ok(false) => {
+                self.untrack(&digest, &fresh.version);
+                false
+            }
+            Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
+            Err(error) => return Err(medium(error)),
+        };
+        let envelope = if created {
+            fresh
+        } else {
+            let Some((observed, existing)) = self.stored_envelope(&digest).await? else {
+                // The competing envelope disappeared. Recovery owns torn
+                // storage; publication returns this conditional cut once.
+                return Err(ErrorCode::Conflict.into());
             };
-            self.track(&digest, &fresh);
-            match self.medium.create(&key, fresh.encode().into()).await {
-                Ok(true) => break (fresh, true),
-                Ok(false) => self.untrack(&digest, &fresh.version),
-                Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
-                Err(error) => return Err(medium(error)),
-            }
-            match self.adopt(&digest, &wanted).await? {
-                Adopted::Live(live) => {
-                    // A version outside the unflushed set is durable, unless
-                    // this put writes to it; tracked first, so its writes are
-                    // never invisible to a commit.
-                    self.track(&digest, &live);
-                    break (live, false);
+            let existing = Self::equal(existing, &wanted)?;
+            let live = if existing.dying.is_some() || existing.condemned != 0 {
+                let live = Envelope {
+                    dying: None,
+                    condemned: 0,
+                    ..existing
+                };
+                match self.medium.replace(observed, live.encode().into()).await {
+                    Ok(Some(_)) => live,
+                    Ok(None) => return Err(ErrorCode::Conflict.into()),
+                    Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
+                    Err(error) => return Err(medium(error)),
                 }
-                Adopted::Unknown => return Ok(Put::Unknown),
-                // A collector moved the envelope since; recovery owns torn
-                // storage.
-                Adopted::Lost if std::mem::take(&mut rerun) => {}
-                Adopted::Lost => return Err(ErrorCode::Conflict.into()),
-            }
+            } else {
+                existing
+            };
+            // A version outside the unflushed set is durable, unless this put
+            // writes to it; tracked first, so its writes are never invisible
+            // to a commit.
+            self.track(&digest, &live);
+            live
         };
         let verified = Verified {
             digest,
@@ -1401,37 +1405,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             return Ok(Some(false));
         }
         Err(ErrorCode::Conflict.into())
-    }
-
-    /// Adopts the stored envelope of `digest` for a put of `wanted`, reviving
-    /// it if a collection condemned or marked it. A revival that loses its
-    /// conditional write re-observes once: an equal put that won left the
-    /// envelope live, and the same bytes are adopted, not refused.
-    async fn adopt(&self, digest: &Digest, wanted: &Envelope) -> Result<Adopted, Error> {
-        let Some((observed, existing)) = self.stored_envelope(digest).await? else {
-            return Ok(Adopted::Lost);
-        };
-        let existing = Self::equal(existing, wanted)?;
-        if existing.dying.is_none() && existing.condemned == 0 {
-            return Ok(Adopted::Live(existing));
-        }
-        let live = Envelope {
-            dying: None,
-            condemned: 0,
-            ..existing
-        };
-        match self.medium.replace(observed, live.encode().into()).await {
-            Ok(Some(_)) => return Ok(Adopted::Live(live)),
-            Ok(None) => {}
-            Err(MediumError::Ambiguous(_)) => return Ok(Adopted::Unknown),
-            Err(error) => return Err(medium(error)),
-        }
-        match self.stored_envelope(digest).await? {
-            Some((_, winner)) if winner.dying.is_none() && winner.condemned == 0 => {
-                Ok(Adopted::Live(Self::equal(winner, wanted)?))
-            }
-            _ => Ok(Adopted::Lost),
-        }
     }
 
     /// An existing envelope a put adopts: the same bytes, the same references.

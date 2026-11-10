@@ -623,14 +623,13 @@ async fn an_unrooted_blob_survives_the_pass_after_the_one_finding_it()
 /// ignore the bytes they were given: a deleter's mark is never stored and its
 /// envelope removal matches whatever is there, the negative control for the
 /// delete protocol. Creates of keys containing `ambiguous` are lost with an
-/// unknown outcome. `lost` counts conditional replaces another writer beat.
+/// unknown outcome.
 #[derive(Clone)]
 struct Shared {
     inner: std::sync::Arc<dyn Medium>,
     pause: std::sync::Arc<std::sync::Mutex<Option<Pause>>>,
     forgetful: bool,
     ambiguous: std::sync::Arc<std::sync::Mutex<Option<&'static str>>>,
-    lost: std::sync::Arc<AtomicUsize>,
 }
 
 impl Default for Shared {
@@ -666,7 +665,6 @@ impl Shared {
             pause: Default::default(),
             forgetful,
             ambiguous: Default::default(),
-            lost: Default::default(),
         }
     }
 
@@ -788,9 +786,6 @@ impl Medium for Shared {
         } else {
             self.inner.replace(observed, bytes).await
         };
-        if matches!(replaced, Ok(None)) {
-            self.lost.fetch_add(1, Ordering::SeqCst);
-        }
         self.after("replace", &key)
             .await
             .map_err(MediumError::Ambiguous)?;
@@ -879,6 +874,63 @@ async fn competing_revision_claims_return_the_original_conflict()
             .current();
         assert_eq!(first.incarnation, second.incarnation);
         assert_ne!(first.scope, second.scope);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn competing_envelope_cuts_return_without_republication()
+-> Result<(), Box<dyn std::error::Error>> {
+    for removed in [false, true] {
+        let medium = Shared::default();
+        let first = Store::new(medium.clone()).account(b"envelopes")?;
+        let second = Store::new(medium.clone()).account(b"envelopes")?;
+        let body = OwnedBytes::from(vec![23; 64]);
+        let digest = first
+            .put(body.clone(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("original put was not acknowledged")?
+            .digest;
+        second.flush(None).await?;
+        if !removed {
+            // Collection produces the original stamped envelope to revive.
+            assert_eq!(first.collect().await?.swept, 0);
+        }
+        let (mut reached, release) = medium.park(if removed { "create" } else { "read" }, "/e/");
+        let put = first.put(body.clone(), Vec::new());
+        tokio::pin!(put);
+        drive_to_park(put.as_mut(), &mut reached).await;
+        if removed {
+            assert_eq!(second.delete(digest).await?, Delete::Deleted);
+        } else {
+            assert!(matches!(
+                second.put(body.clone(), Vec::new()).await?,
+                Put::AlreadyExists { .. }
+            ));
+        }
+        let hex = digest.to_hex();
+        let key = format!(
+            "{}/e/{}/{hex}",
+            Digest::of(b"envelopes").to_hex(),
+            &hex[..2]
+        );
+        let winner = medium.inner.read(&key, None).await?;
+        release
+            .send(())
+            .expect("original publication remains alive");
+        assert_eq!(
+            put.await.map_err(|error| error.code),
+            Err(ErrorCode::Conflict)
+        );
+        assert_eq!(medium.inner.read(&key, None).await?, winner);
+        let resent = first.put(body.clone(), Vec::new()).await?;
+        assert!(if removed {
+            matches!(resent, Put::Created { .. })
+        } else {
+            matches!(resent, Put::AlreadyExists { .. })
+        });
+        assert_eq!(first.get(digest, ByteRange::FULL, 64).await?.body(), &body);
     }
     Ok(())
 }
@@ -1715,77 +1767,6 @@ async fn equal_puts_resolve_to_one_created_at_every_interleaving()
         detected |= equal_puts(stall, true).await?.contains(&Put::Unknown);
     }
     assert!(detected);
-    Ok(())
-}
-
-/// A put of a blob whose envelope a collection moved after the put found it.
-/// With `removed`, the collector removes the envelope before the put observes
-/// it; otherwise an equal put revives the condemned envelope first, so the
-/// parked put's own revival loses its conditional write.
-async fn put_racing_a_condemned_envelope(removed: bool) -> Result<Put, Box<dyn std::error::Error>> {
-    let medium = Shared::default();
-    let first = Store::new(medium.clone()).account(b"account")?;
-    let second = Store::new(medium.clone()).account(b"account")?;
-    let body = OwnedBytes::from(vec![if removed { 12 } else { 11 }; 64]);
-    let digest = Digest::of(&body);
-    let hex = digest.to_hex();
-    let envelope = format!("/e/{}/{hex}", &hex[..2]);
-    assert!(matches!(
-        second.put(body.clone(), Vec::new()).await?,
-        Put::Created { .. }
-    ));
-    // The real collector condemns the unrooted blob.
-    assert_eq!(second.collect().await?.swept, 0);
-    let (mut reached, release) = if removed {
-        // Parked after its envelope create lost to the stored one.
-        medium.park("create", envelope.as_str())
-    } else {
-        // Parked after observing the condemned envelope, before reviving it.
-        medium.park("read", envelope.as_str())
-    };
-    let parked = first.put(body.clone(), Vec::new());
-    tokio::pin!(parked);
-    drive_to_park(parked.as_mut(), &mut reached).await;
-    if removed {
-        second.collect().await?;
-        assert_eq!(second.collect().await?.swept, 1);
-        // Negative control: the envelope the parked put lost to is gone.
-        assert!(!stored_under(&medium, digest, "/e/").await?);
-    } else {
-        // An equal put wins the revival.
-        assert!(matches!(
-            second.put(body.clone(), Vec::new()).await?,
-            Put::AlreadyExists { .. }
-        ));
-    }
-    let before = medium.lost.load(Ordering::SeqCst);
-    release
-        .send(())
-        .expect("parked medium operation remains alive");
-    let outcome = parked.await?;
-    // Negative control: the parked revival really lost its conditional write.
-    assert_eq!(
-        medium.lost.load(Ordering::SeqCst) - before,
-        usize::from(!removed)
-    );
-    let read = first.get(digest, ByteRange::FULL, 64).await?;
-    assert_eq!(read.body().as_ref(), body.as_ref());
-    Ok(outcome)
-}
-
-#[tokio::test]
-async fn equal_puts_racing_a_condemned_envelope_both_settle()
--> Result<(), Box<dyn std::error::Error>> {
-    // The revival lost to an equal put: the winner's live envelope is adopted.
-    assert!(matches!(
-        put_racing_a_condemned_envelope(false).await?,
-        Put::AlreadyExists { .. }
-    ));
-    // The envelope was removed under the put: the cut runs again and creates.
-    assert!(matches!(
-        put_racing_a_condemned_envelope(true).await?,
-        Put::Created { .. }
-    ));
     Ok(())
 }
 
