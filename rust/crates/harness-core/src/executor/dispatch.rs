@@ -376,7 +376,7 @@ impl StockExecution<'_> {
             .transpose()
     }
 
-    async fn retained_dispatch_step(
+    pub(super) async fn retained_dispatch_step(
         &self,
         journal: &dyn ExecutionJournal,
         operation: OperationId,
