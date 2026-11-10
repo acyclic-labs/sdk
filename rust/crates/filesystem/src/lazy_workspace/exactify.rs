@@ -42,13 +42,14 @@ impl<
     /// source-derived identity that materializing any view of the cut binds,
     /// which is what a merge base of two such views needs.
     ///
-    /// A cut leaves unobserved files live, so the source as it is now is not
-    /// the cut's content: an in-place edit after the fork would read as the
-    /// base and erase itself from a merge. Only the witness's observation
-    /// pins what the forked side started from. A path it never observed, or
-    /// whose source has since changed version, has no recoverable base, and
-    /// the result is `None`. Reads stay pinned to the observed version, so a
-    /// change racing this call fails it rather than supplying a base.
+    /// A provider may be unable to retain historical bytes, so the source as
+    /// it is now is not the cut's content: an in-place edit after the fork
+    /// would read as the base and erase itself from a merge. The witness's
+    /// observation pins what the forked side started from. A path it never
+    /// observed, or whose observed version is no longer available, has no
+    /// recoverable base, and the result is `None`. Reads stay pinned to the
+    /// observed version, so a change racing this call fails it rather than
+    /// supplying a base.
     ///
     /// The scratch fork is named by the pinned cut and path set, so a retry
     /// resumes it and a different observation never reuses it.
