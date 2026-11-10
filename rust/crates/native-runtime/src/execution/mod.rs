@@ -700,8 +700,7 @@ impl PreparedExecution {
     #[cfg(target_os = "macos")]
     pub(crate) fn wrap_command(&self, command: &mut crate::ProcessCommand) -> io::Result<()> {
         macos::validate_stdio(command.sandbox_stdio()).map_err(failure)?;
-        command.wrap_sandbox(&self.platform.profile);
-        Ok(())
+        command.wrap_sandbox(&self.platform.profile)
     }
     #[cfg(target_os = "linux")]
     pub(crate) fn working_directory(&self) -> &std::fs::File {

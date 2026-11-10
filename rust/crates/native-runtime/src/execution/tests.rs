@@ -148,6 +148,56 @@ fn sandbox_denies_outside_write() {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn custom_arg0_refuses_confined_launch_before_guest_execution() {
+    use std::io::Read;
+    let workspace = tempfile::tempdir().unwrap();
+    let command = || {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg0("custom-shell")
+            .args(["-c", "printf '%s' \"$0\"; printf started > started"])
+            .env_clear()
+            .current_dir(workspace.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        command
+    };
+    // The ordinary native owner is the real-binary control for arg0 semantics.
+    let mut original = ProcessTree::spawn(&mut command()).unwrap();
+    let mut output = String::new();
+    original
+        .take_stdout()
+        .unwrap()
+        .read_to_string(&mut output)
+        .unwrap();
+    assert!(
+        original
+            .wait(crate::CaptureSchedule::Unbounded)
+            .unwrap()
+            .success()
+    );
+    assert_eq!(output, "custom-shell");
+    let marker = workspace.path().join("started");
+    assert!(marker.exists());
+    std::fs::remove_file(&marker).unwrap();
+    let grant = ExecutionGrant::new(
+        workspace.path(),
+        ExecutionAccess::WorkspaceWrite,
+        [PathBuf::from("/")],
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    let error = ProcessTree::spawn_granted(command(), &grant, None)
+        .err()
+        .expect("custom arg0 must refuse rather than change guest behavior");
+    assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+    assert!(error.to_string().contains("custom argv[0]"));
+    assert!(!marker.exists(), "refused guest must never execute");
+}
+
 #[cfg(target_os = "linux")]
 mod ipc;
 

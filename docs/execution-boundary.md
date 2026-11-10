@@ -6,6 +6,9 @@ typed refusals on unsupported platforms. On Linux and macOS, stock workspace she
 workspace-write confinement, independently of the approval policy (including
 GraphCoder's accept-all default). An explicitly authenticated execution grant
 continues to select its own boundary. Tool arguments cannot remove confinement.
+Confined macOS launches explicitly refuse custom `ProcessCommand::arg0` overrides,
+which the native sandbox launcher cannot forward to the guest. Ordinary launches retain
+the existing override semantics.
 The Windows adapter remains pending; that platform retains its inherited host
 boundary and explicit native grants still refuse as unsupported.
 

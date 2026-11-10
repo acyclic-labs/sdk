@@ -306,6 +306,7 @@ impl ProcessCommand {
     }
 
     /// Sets the child's `argv[0]`, as `CommandExt::arg0` does.
+    /// Confined macOS launches refuse this unsupported launcher option.
     #[cfg(unix)]
     pub fn arg0(&mut self, arg0: impl AsRef<OsStr>) -> &mut Self {
         self.unix.arg0 = Some(arg0.as_ref().to_owned());
@@ -365,7 +366,13 @@ impl ProcessCommand {
     }
 
     #[cfg(target_os = "macos")]
-    pub(crate) fn wrap_sandbox(&mut self, profile: &str) {
+    pub(crate) fn wrap_sandbox(&mut self, profile: &str) -> std::io::Result<()> {
+        if self.unix.arg0.is_some() {
+            return Err(crate::execution::failure(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "macOS sandbox launcher does not support custom argv[0]",
+            )));
+        }
         let program = std::mem::replace(&mut self.program, "/usr/bin/sandbox-exec".into());
         let original = std::mem::take(&mut self.args);
         self.args = ["-p", profile, "--"]
@@ -374,6 +381,7 @@ impl ProcessCommand {
             .chain(std::iter::once(Arg::Regular(program)))
             .chain(original)
             .collect();
+        Ok(())
     }
 
     #[cfg(any(unix, test))]
