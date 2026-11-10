@@ -188,7 +188,6 @@ impl ModelRequest {
                         )> = None;
                         let table = match funded {
                             Some((table, _hold)) => {
-                                #[cfg(feature = "filesystem")]
                                 _hold.into_retained()?;
                                 table
                             }

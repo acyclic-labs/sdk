@@ -410,7 +410,7 @@ where
         match command {
             AgentCommand::Bind { agent } => {
                 let agent = self.within_tree(agent.as_ref().unwrap_or(&self.root))?;
-                #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 if agent != &self.root {
                     if let Some((tools, credential)) =
                         self.bound.selected_observation(&self.root, agent).await?

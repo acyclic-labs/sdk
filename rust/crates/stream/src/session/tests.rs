@@ -2,7 +2,6 @@ mod calls;
 mod filtered_progress;
 mod properties;
 mod queue_scaling;
-#[cfg(feature = "grpc")]
 mod refusals;
 mod resource_admission;
 mod sockets;

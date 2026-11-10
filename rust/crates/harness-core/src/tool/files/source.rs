@@ -88,11 +88,11 @@ impl FileReadSource {
 
 /// Keeps decoded native ownership in the same carrier as provider selections.
 pub(super) fn selection_custody(
-    custody: crate::NativeCustody,
+    custody: acyclic_fs::NativeCustody,
 ) -> crate::conversation::FileSelectionCustody {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     return custody.map(crate::filesystem::PreparationCustody::Native);
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     {
         let _ = custody;
         None

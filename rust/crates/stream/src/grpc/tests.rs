@@ -805,7 +805,6 @@ proptest::proptest! {
                 proptest::prop_assert_eq!(status(&encoded), error.clone());
             }
         }
-        #[cfg(any(feature = "test-support", feature = "local"))]
         proptest::prop_assert!(crate::codec_fuzz::grpc_status(&details));
         let mut relayed = Status::with_details(Code::from_i32(code), message, details.into());
         if let Some(reason) = reason {

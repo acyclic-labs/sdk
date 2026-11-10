@@ -524,7 +524,7 @@ where
     /// caller's command credential, and carries no actor invocation grant. Its
     /// recipient remains the session serving `root`, independently of the
     /// selected agent's scope audience.
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[inline(never)]
     pub fn selected_observation<'a>(
         &'a self,
@@ -1245,10 +1245,10 @@ where
     }
 }
 
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 struct ObservationClock(Arc<dyn Clock>);
 
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl acyclic_stream::UnixMillisClock for ObservationClock {
     fn now_unix_millis(&self) -> u64 {
         self.0.now_unix_ms()

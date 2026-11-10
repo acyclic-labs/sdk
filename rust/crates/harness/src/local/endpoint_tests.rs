@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The published credential is exercised over the ordinary server transport,
 /// including direct primitive reads rather than only actor command replies.
-#[cfg(feature = "serve")]
 #[tokio::test]
 async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots() -> Result<()> {
     use crate::agent::AgentRecord as _;

@@ -77,7 +77,6 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
             StreamError::AccessDenied,
         ),
     ];
-    #[cfg(feature = "grpc")]
     let cases = {
         let mut cases = cases;
         for category in [
