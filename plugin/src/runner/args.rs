@@ -209,7 +209,9 @@ impl Args {
                 || self.input_format != InputFormat::Text
                 || self.operation.is_some()
                 || self.agent.is_some()
-                || self.resume)
+                || self.resume.is_some()
+                || self.continue_session
+                || self.new_session)
         {
             return Err(
                 "serve input: execution inputs cannot select a server; recovery: acyclic serve ADDRESS --workspace PATH",

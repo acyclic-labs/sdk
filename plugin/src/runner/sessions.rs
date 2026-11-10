@@ -1,5 +1,5 @@
 //! Selection is a client operation over the root directory and authored files.
-use crate::{Args, Command, Connection, OperationId};
+use super::{Args, Command, Connection, InputFormat, OperationId, OutputFormat};
 use acyclic_harness::{
     client::AgentPageRequest,
     local::sessions,
@@ -64,8 +64,8 @@ async fn select_inner(
     let interactive = args.endpoint.is_none()
         && args.command.is_none()
         && args.prompt.is_none()
-        && args.input_format == crate::InputFormat::Text
-        && args.output_format == crate::OutputFormat::Text
+        && args.input_format == InputFormat::Text
+        && args.output_format == OutputFormat::Text
         && !acyclic_harness::tui::term::Environment::capture().is_dumb();
     if args.new_session || interactive || matches!(args.command, Some(Command::NewSession { .. })) {
         let operation = args

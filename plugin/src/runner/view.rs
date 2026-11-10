@@ -802,14 +802,14 @@ pub async fn run(
             }
             Next::Picker => {
                 let (connection, owned) =
-                    crate::sessions::picker(conversation.connection().clone(), None, None).await?;
+                    super::sessions::picker(conversation.connection().clone(), None, None).await?;
                 conversation = Conversation::open(connection);
                 terminal = owned;
                 resume = true;
             }
             Next::HistoryBranch => {
                 let (connection, owned) =
-                    crate::sessions::history_picker(conversation.connection().clone(), None)
+                    super::sessions::history_picker(conversation.connection().clone(), None)
                         .await?;
                 conversation = Conversation::open(connection);
                 terminal = owned;

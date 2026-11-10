@@ -221,7 +221,7 @@ pub(super) fn follow_title(
     'static,
     acyclic_harness::Result<acyclic_harness::client_files::FilePreviews>,
 > {
-    crate::phase(|| async move {
+    super::super::phase(|| async move {
         conversation
             .agent_file_previews(
                 vec!["ui/title".into()],
