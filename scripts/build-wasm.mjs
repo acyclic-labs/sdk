@@ -110,7 +110,10 @@ for (const name of targets) {
     source = await producer.sourceSnapshot();
   }
   const output = outputArgument && name === packageArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", packages[name].outputPackage ?? name, "generated/wasm");
-  const target = targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
+  // Provenance-bearing families own their Cargo roots, so a selected-root clean
+  // cannot claim or alter a caller's pre-existing shared target directory.
+  const target = producer ? resolve(targetRoot, "wasm-producers", name)
+    : targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
   const rustflags = [
     "--remap-path-prefix", `${root}=.`,
     "--remap-path-prefix", `${target}=/cargo/build-dir`,
@@ -121,18 +124,19 @@ for (const name of targets) {
     "--target", "wasm32-unknown-unknown", "--profile", profile, "--locked",
     "--target-dir", target, "--config", `target.wasm32-unknown-unknown.rustflags = ${JSON.stringify(rustflags)}`,
   ];
-  let compilerInvocation, originalReceipt;
-  const cachedReceipt = resolve(target, "wasm-bindgen", `${name}.producer-receipt.json`);
+  let compilerInvocation;
+  // Capture the selected root crate on this source cut, even when Cargo's
+  // narrower dependency graph would reuse its previous link. Keep dependencies
+  // warm and admit the one required link before the sole build.
+  if (producer) {
+    await producer.ensureCargoTargetDirectory(target);
+    run(cargo, ["clean", "--package", family.wasmPackageName,
+      "--profile", profile, "--target", "wasm32-unknown-unknown", "--target-dir", target]);
+  }
   const rustcCapture = producer ? await producer.createRustcInvocationCapture(artifact) : undefined;
   try {
     run(cargo, buildArgs);
-    if (rustcCapture) {
-      try { compilerInvocation = await rustcCapture.read("wasm32-unknown-unknown"); }
-      catch (error) {
-        if (!/captured 0 Stream rustc link invocations/u.test(String(error?.message)) || !existsSync(cachedReceipt)) throw error;
-        originalReceipt = JSON.parse(readFileSync(cachedReceipt, "utf8"));
-      }
-    }
+    if (rustcCapture) compilerInvocation = await rustcCapture.read("wasm32-unknown-unknown");
   } finally { await rustcCapture?.close(); }
   const module = resolve(target, "wasm32-unknown-unknown", profileDirectory, `${artifact}.wasm`);
   const bindings = resolve(target, "wasm-bindgen", name);
@@ -152,20 +156,14 @@ for (const name of targets) {
     await producer.assertSourceSnapshot(source);
     if (capture("git", ["rev-parse", "HEAD"]) !== revision) throw new Error("WASM source revision changed during build");
     const moduleSha256 = `sha256:${createHash("sha256").update(readFileSync(module)).digest("hex")}`;
-    const receipt = originalReceipt ?? {
+    const receipt = {
       schema: "acyclic.wasm-build-receipt.v1", family: name, package: family.wasmPackageName, version: family.version,
       source_commit: revision, source_sha256: source.sha256, source_files: source.files,
       build: { cargo: { command: cargo, version: capture(cargo, ["--version"]), args: buildArgs }, rustc: { invocation: compilerInvocation, identity: producer.capturedCompilerIdentity(compilerInvocation, "wasm32-unknown-unknown") }, wasm_bindgen: { command: wasmBindgen, version: expectedVersion }, module_sha256: moduleSha256 },
       artifacts,
     };
     if (!receipt.build?.cargo?.version || !receipt.build?.rustc?.identity?.output) throw new Error("WASM compiler identity is missing");
-    if (originalReceipt) {
-      const actualCompiler = producer.capturedCompilerIdentity(receipt.build.rustc.invocation, "wasm32-unknown-unknown");
-      if (receipt.schema !== "acyclic.wasm-build-receipt.v1" || receipt.family !== name || receipt.package !== family.wasmPackageName || receipt.version !== family.version || !/^[0-9a-f]{40,64}$/u.test(receipt.source_commit ?? "") || receipt.source_sha256 !== source.sha256 || JSON.stringify(receipt.source_files) !== JSON.stringify(source.files) || receipt.build.module_sha256 !== moduleSha256 || JSON.stringify(receipt.build.cargo) !== JSON.stringify({ command: cargo, version: capture(cargo, ["--version"]), args: buildArgs }) || JSON.stringify(receipt.build.rustc.identity) !== JSON.stringify(actualCompiler) || JSON.stringify(receipt.build.wasm_bindgen) !== JSON.stringify({ command: wasmBindgen, version: expectedVersion }) || JSON.stringify(receipt.artifacts) !== JSON.stringify(artifacts)) throw new Error("Cached WASM compiler receipt differs; a fresh owned target build is required");
-      receipt.source_commit = revision;
-    }
     const receiptBytes = `${JSON.stringify(receipt, null, 2)}\n`;
     writeFileSync(resolve(output, "producer-receipt.json"), receiptBytes);
-    writeFileSync(cachedReceipt, receiptBytes);
   }
 }

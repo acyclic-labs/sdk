@@ -153,7 +153,7 @@ for (const wrapper of ["", "sccache"]) for (const failure of [undefined, "stream
       const name = args[1];
       const directory = name === "harness" ? "harness-wasm"
         : ["actors", "stream"].includes(name)
-          ? JSON.parse(readFileSync(`compatibility/native-families/${name}.json`, "utf8")).wasm.targetDirectory ?? "root"
+          ? `wasm-producers/${name}`
           : "root";
       assert.ok(!paths.has(directory), `concurrent target directory: ${directory}`);
       paths.add(directory);
