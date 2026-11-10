@@ -542,7 +542,10 @@ async fn role_ceilings_bound_live_source_declarations_and_direct_or_composed_cal
     for compose in [false, true] {
         for configured in [false, true] {
             for allowed in [false, true] {
-                role_ceiling_case(compose, configured, allowed).await?;
+                if let Err(error) = role_ceiling_case(compose, configured, allowed).await {
+                    eprintln!("compose={compose} configured={configured} allowed={allowed}");
+                    return Err(error);
+                }
             }
         }
     }
