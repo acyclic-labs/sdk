@@ -434,6 +434,51 @@ impl RetainedAllocation {
             }
         }
     }
+
+    /// Returns this lease to scratch on the same original accounting frame.
+    /// Ownership changes without releasing bytes or admitting them again.
+    fn take_owned(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(KernelOwnedAllocation, u64), crate::FsError> {
+        accounting.ensure_active()?;
+        match &mut self.inner {
+            RetainedAllocationInner::Standalone { _lease } => {
+                let (ledger, ..) = accounting
+                    .standalone_parts()
+                    .ok_or(crate::FsError::AccountingHandoffActive)?;
+                if !ledger.shares_retained_ledger(Arc::as_ptr(&_lease.ledger)) {
+                    return Err(crate::FsError::AccountingHandoffActive);
+                }
+                let mut state = _lease
+                    .ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.retained_bytes = state
+                    .retained_bytes
+                    .checked_sub(_lease.bytes)
+                    .ok_or(WorkError::Overflow)?;
+                Ok((
+                    KernelOwnedAllocation::Standalone,
+                    std::mem::take(&mut _lease.bytes),
+                ))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            RetainedAllocationInner::Native { _allocation } => {
+                if !accounting
+                    .native_work()
+                    .is_some_and(|work| work.shares_allocation_context(_allocation.work()))
+                {
+                    return Err(crate::FsError::AccountingHandoffActive);
+                }
+                let bytes = _allocation.bytes();
+                Ok((
+                    KernelOwnedAllocation::NativeOriginal(_allocation.split_off(bytes)?),
+                    bytes,
+                ))
+            }
+        }
+    }
 }
 
 /// A value kept with its original admitted allocation credit.
@@ -512,11 +557,12 @@ impl<T> Retained<Vec<T>> {
         if self.value.len() < self.value.capacity() && self.value.len() < maximum {
             return Ok(());
         }
-        // The existing lease keeps the old capacity funded while the canonical
-        // grow leaf admits only its additional backing. Move Vec's header, not
-        // its elements, and join the new credit before restoring the value.
-        let allocation = accounting.claim_owned(0, 0)?;
-        let mut owned = crate::kernel::Owned::new(std::mem::take(&mut self.value), allocation, 0);
+        // The canonical grower owns and retires the old backing. Transfer its
+        // actual credit, including any element backing, rather than presenting
+        // a funded buffer as zero-byte scratch. Restore custody on refusal too.
+        let (allocation, bytes) = self.allocation.take_owned(accounting)?;
+        let mut owned =
+            crate::kernel::Owned::new(std::mem::take(&mut self.value), allocation, bytes);
         let result = owned.ensure_for_push(maximum, accounting);
         let mut grown = Self::from_owned(owned, accounting)?;
         self.allocation.absorb(&mut grown.allocation)?;
@@ -1042,8 +1088,89 @@ mod tests {
         Ok(())
     }
 
+    fn check_retained_growth(count: usize, refuse: bool, accounting: &mut KernelAccounting<'_>) {
+        fn live(accounting: &mut KernelAccounting<'_>) -> u64 {
+            match accounting {
+                KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
+                KernelAccounting::BorrowedStandalone { allocations, .. } => {
+                    allocations.live_bytes()
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
+            }
+        }
+        let anchor = RetainedAllocation::claim(0, 0, accounting).unwrap();
+        let baseline = live(accounting);
+        let mut values = Retained::<Vec<u64>>::allocate(count, accounting).unwrap();
+        for _ in 0..3 {
+            let length = values.len();
+            let capacity = values.capacity();
+            values.value.extend((length..capacity).map(|n| n as u64));
+            let before = accounting.spent();
+            let funded = live(accounting);
+            assert!(values.ensure_for_push(capacity, accounting).is_err());
+            assert_eq!(
+                accounting.spent(),
+                before,
+                "capacity refusal performed work"
+            );
+            let result = values.ensure_for_push(usize::MAX, accounting);
+            if refuse {
+                assert!(matches!(
+                    crate::DemandError::from(result.unwrap_err()),
+                    crate::DemandError::Work(WorkError::BudgetExceeded {
+                        counter: "bytes_copied",
+                        ..
+                    })
+                ));
+                assert_eq!(values.capacity(), capacity);
+                assert_eq!(accounting.spent(), before);
+            } else {
+                result.unwrap();
+                let bytes = (values.capacity() * size_of::<u64>()) as u64;
+                assert_eq!(live(accounting), baseline + bytes);
+                let spent = accounting.spent();
+                assert_eq!(
+                    spent.allocation_operations,
+                    before.allocation_operations + 1
+                );
+                assert_eq!(
+                    spent.bytes_copied,
+                    before.bytes_copied + (capacity * size_of::<u64>()) as u64
+                );
+                assert_eq!(
+                    spent.peak_allocation_bytes,
+                    before.peak_allocation_bytes.max(funded + bytes)
+                );
+            }
+            assert!(values.iter().copied().eq(0..capacity as u64));
+        }
+        drop(values);
+        assert_eq!(
+            live(accounting),
+            baseline,
+            "growth lost or duplicated credit"
+        );
+        drop(anchor);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
+        #[test]
+        fn retained_buffer_growth_conserves_credit(count in 1_usize..65, refuse in any::<bool>()) {
+            let cancel = crate::CancellationToken::new();
+            let budget = WorkBudget {
+                bytes_copied: if refuse { 0 } else { u64::MAX },
+                ..WorkBudget::UNBOUNDED
+            };
+            check_retained_growth(count, refuse, &mut KernelAccounting::standalone(budget, &cancel));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let native = crate::NativeMaterializationWork::new(budget, &cancel).unwrap();
+                check_retained_growth(count, refuse, &mut KernelAccounting::native(&native, &cancel));
+            }
+        }
+
         #[test]
         fn retained_credit_conserves_full_width_ownership_transitions(
             retained in any::<u64>(), scratch in any::<u64>(), split in any::<u64>(),
@@ -1080,6 +1207,18 @@ mod tests {
             prop_assert_eq!(live(), funded);
             accounting.release_owned(&mut temporary, scratch).unwrap();
             prop_assert_eq!(live(), control + retained);
+
+            let mut foreign = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+            prop_assert!(matches!(first.take_owned(&mut foreign),
+                Err(crate::FsError::AccountingHandoffActive)));
+            let (mut owned, bytes) = first.take_owned(&mut accounting).unwrap();
+            prop_assert_eq!(bytes, retained);
+            prop_assert_eq!(live(), control + retained);
+            let mut restored = RetainedAllocation::transfer(&mut owned, bytes, &mut accounting).unwrap();
+            first.absorb(&mut restored).unwrap();
+            drop(restored);
+            prop_assert_eq!(accounting.spent(), before,
+                "returning retained credit to scratch must not readmit it");
 
             prop_assert!(matches!(first.split_off(retained + 1),
                 Err(crate::FsError::Work(WorkError::Overflow))));
