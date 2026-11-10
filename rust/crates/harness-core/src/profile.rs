@@ -11,9 +11,7 @@ use std::{collections::BTreeSet, io::Write};
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
-#[cfg(not(target_arch = "wasm32"))]
 mod binding;
-#[cfg(not(target_arch = "wasm32"))]
 pub use binding::{BoundTools, ToolBinding};
 mod native;
 pub use native::NativeToolProfile;
