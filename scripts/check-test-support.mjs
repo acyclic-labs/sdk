@@ -83,6 +83,97 @@ export function checkDeserializedTestSupport(sources) {
   return sources.length;
 }
 
+// Evaluate only the two cfg inputs whose relationship this policy owns. Other
+// features and platform predicates remain unknown, so an OS-specific export
+// cannot hide a target that unconditionally requires test-support.
+function testCfg(attributes) {
+  const evaluate = expression => {
+    const call = /^(all|any|not)\((.*)\)$/s.exec(expression.trim());
+    if (call) {
+      const values = splitUse(call[2]).map(evaluate);
+      if (call[1] === 'not') return values[0] === undefined ? undefined : !values[0];
+      const decisive = call[1] === 'any';
+      return values.includes(decisive) ? decisive : values.includes(undefined) ? undefined : !decisive;
+    }
+    if (expression.trim() === 'test') return true;
+    if (/^feature\s*=\s*"test-support"$/.test(expression.trim())) return false;
+    return undefined;
+  };
+  return [...attributes.matchAll(/#\[\s*cfg\s*\((.*?)\)\s*\]/gs)]
+    .some(match => evaluate(match[1]) === false) ? false : undefined;
+}
+
+function splitUse(text) {
+  let depth = 0, start = 0;
+  const parts = [];
+  for (let i = 0; i < text.length; i++) {
+    if ('({'.includes(text[i])) depth++;
+    if (')}'.includes(text[i])) depth--;
+    if (text[i] === ',' && depth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  return [...parts, text.slice(start)].filter(part => part.trim());
+}
+
+function usePaths(tree, prefix = '') {
+  return splitUse(tree).flatMap(part => {
+    const group = part.indexOf('{');
+    if (group !== -1) return usePaths(part.slice(group + 1, part.lastIndexOf('}')), prefix + part.slice(0, group));
+    return [(prefix + part).replace(/\s+as\s+\w+\s*$/, '').replace(/\s/g, '').replace(/::self$/, '')];
+  });
+}
+
+// Index crate-relative declarations before checking exports, including every
+// parent on a re-export's path. This deliberately checks source declarations,
+// independent of Cargo's dev-dependency feature unification and the host OS.
+export function checkTestSupportExports(sources) {
+  const declarations = new Map(), exports = [];
+  for (const [file, text] of sources) {
+    const source = /^(.*\/src\/)(.*)\.rs$/.exec(file);
+    if (!source) continue;
+    const root = source[1];
+    const module = source[2].replace(/(?:^|\/)(?:lib|main|mod)$/, '').replaceAll('/', '::');
+    const scope = module ? `crate::${module}::` : 'crate::';
+    const code = text.replace(/\/\/[^\n]*/g, '');
+    const items = /((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(mod|fn|struct|enum|type|const|static|use)\s+([\s\S]*?)(?=[;{=(])/g;
+    for (const match of code.matchAll(items)) {
+      const [, attributes, kind, value] = match;
+      if (kind === 'use') continue;
+      const name = /^\w+/.exec(value)?.[0];
+      if (!name) continue;
+      declarations.set(root + scope + name, {attributes, file, name});
+    }
+    if (!module.split('::').includes('test_support')) continue;
+    for (const match of code.matchAll(/((?:#\[[^\]]*\]\s*)*)pub(?:\([^)]*\))?\s+use\s+([^;]+);/g)) {
+      if (testCfg(match[1]) === false) continue;
+      for (let path of usePaths(match[2])) {
+        let relative = scope;
+        if (path.startsWith('self::')) path = scope + path.slice(6);
+        while (path.startsWith('super::')) {
+          relative = relative.replace(/[^:]+::$/, '');
+          path = path.slice(7);
+        }
+        if (relative !== scope) path = relative + path;
+        if (path.startsWith('crate::')) exports.push({root, scope, path, file});
+      }
+    }
+  }
+  const failures = new Set();
+  for (const {root, scope, path, file} of exports) {
+    const parents = value => value.split('::').map((_, i, parts) => root + parts.slice(0, i + 1).join('::'));
+    if (parents(scope.replace(/::$/, '')).some(key => testCfg(declarations.get(key)?.attributes ?? '') === false)) continue;
+    for (const key of parents(path)) {
+      const target = declarations.get(key);
+      if (target && testCfg(target.attributes) === false)
+        failures.add(`${file}: ${path} re-exports ${target.file}::${target.name}, which requires test-support under cfg(test)`);
+    }
+  }
+  if (failures.size) throw new Error([...failures].sort().join('\n'));
+  return exports.length;
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // Resolve every optional and target-specific edge, including registry crates.
   const child = spawn('cargo', ['metadata', '--locked', '--all-features', '--format-version', '1'],
@@ -96,4 +187,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const files = execFileSync('git', ['ls-files', '--', '*.rs'], {encoding: 'utf8'}).split('\n').filter(Boolean);
   const sources = files.map(file => [file, readFileSync(file, 'utf8')]);
   console.log(`test-support deserialized members: ${checkDeserializedTestSupport(sources)} Rust sources checked`);
+  console.log(`test-support exports: ${checkTestSupportExports(sources)} local re-exports checked`);
 }

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {checkDeserializedTestSupport, checkTestSupport} from './check-test-support.mjs';
+import {execFileSync} from 'node:child_process';
+import {readFileSync} from 'node:fs';
+import {checkDeserializedTestSupport, checkTestSupport, checkTestSupportExports} from './check-test-support.mjs';
 
 /** @param {{optional?: boolean, kind?: string | null, target?: string | null, alias?: string}} options */
 function fixture({optional = false, kind = null, target = null, alias = 'backend-alias'} = {}) {
@@ -70,4 +72,39 @@ test('deserialized request members never exist only under test-support', () => {
   const output = ['#[derive(Serialize)]', 'pub struct Reply {', '    #[cfg(feature = "test-support")]',
     '    probe: u64,', '}'].join('\n');
   assert.equal(checkDeserializedTestSupport([['reply.rs', output]]), 1);
+});
+
+test('test-visible re-exports require test-visible targets, including gated parent modules', () => {
+  const fixture = (target, exported = '') => [
+    ['demo/src/lib.rs', '#[cfg(any(test, feature = "test-support"))]\npub mod test_support;\nmod answer;'],
+    ['demo/src/answer.rs', `${target}\npub mod validation;`],
+    ['demo/src/test_support/mod.rs', `${exported}\npub use crate::answer::{validation as native_answer};`],
+  ];
+  for (const cfg of ['#[cfg(feature = "test-support")]',
+    '#[cfg(all(\n feature = "test-support", not(target_arch = "wasm32")\n))]',
+    '#[cfg(any(not(test), feature = "test-support"))]']) {
+    assert.throws(() => checkTestSupportExports(fixture(cfg)), /demo\/src\/answer.rs::validation.*requires test-support/);
+    assert.equal(checkTestSupportExports(fixture(cfg, '#[cfg(feature = "test-support")]')), 0);
+  }
+  assert.equal(checkTestSupportExports(fixture('#[cfg(any(test, feature = "test-support"))]')), 1);
+  // A platform predicate on the export must not conceal a feature-only target.
+  assert.throws(() => checkTestSupportExports(fixture('#[cfg(feature = "test-support")]', '#[cfg(windows)]')),
+    /requires test-support/);
+  const sources = fixture('');
+  sources[0][1] = '#[cfg(any(test, feature = "test-support"))]\npub mod test_support;\n#[cfg(feature = "test-support")]\nmod answer;';
+  assert.throws(() => checkTestSupportExports(sources), /demo\/src\/lib.rs::answer.*requires test-support/);
+  sources[0][1] = '#[cfg(feature = "test-support")]\npub mod test_support;\nmod answer;';
+  sources[1][1] = '#[cfg(feature = "test-support")]\npub mod validation;';
+  assert.equal(checkTestSupportExports(sources), 1);
+});
+
+test('workspace exports pass and restoring the original answer cfg is rejected', () => {
+  const files = execFileSync('git', ['ls-files', '--', '*.rs'], {encoding: 'utf8'}).split('\n').filter(Boolean);
+  const sources = files.map(file => [file, readFileSync(file, 'utf8')]);
+  assert.ok(checkTestSupportExports(sources) > 0, 'workspace re-export inventory must not be empty');
+  const answer = sources.find(([file]) => file === 'rust/crates/harness/src/local/host_process/children/answer.rs');
+  assert.ok(answer);
+  assert.match(answer[1], /#\[cfg\(any\(test, feature = "test-support"\)\)\]/);
+  answer[1] = answer[1].replace('#[cfg(any(test, feature = "test-support"))]', '#[cfg(feature = "test-support")]');
+  assert.throws(() => checkTestSupportExports(sources), /answer.rs::validation.*requires test-support/);
 });
