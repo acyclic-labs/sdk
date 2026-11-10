@@ -332,7 +332,9 @@ fn follow_up(host: &str, cwd: &Path) -> Result {
             );
             assert_eq!(fs::read(inner_view.join("turn-0"))?, b"turn");
             let mut command = completed_write(&inner_view, "nested.txt");
-            inner.process.spawn(&mut command, inner.claim.operation, None)?;
+            inner
+                .process
+                .spawn(&mut command, inner.claim.operation, None)?;
             wait_exit(&mut inner)?;
             finish_turn(&nested, "idle", &mut inner)?;
             let foreign = sessions
