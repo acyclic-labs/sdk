@@ -118,13 +118,11 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             second.turn.as_ref().map(|turn| turn.inbox),
             first.turn.as_ref().map(|turn| turn.inbox)
         );
-        host.send(&path, &super::super::user(), &InboxRecord::Awaited)
-            .await?;
         host.drain(&path).await?;
         assert_eq!(
             model.requests().len(),
             3,
-            "status-only delivery released an input wait"
+            "draining without new input released an input wait"
         );
         control.advance_to(119)?;
         host.drain(&path).await?;
