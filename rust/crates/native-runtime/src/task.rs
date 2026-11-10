@@ -53,7 +53,7 @@ where
 /// read may never return, is read on its own thread through [`crate::stdin`].
 pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(std::thread::available_parallelism()?.get())
+        .worker_threads(std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
         .max_blocking_threads(1)
         .enable_all()
         .build()
