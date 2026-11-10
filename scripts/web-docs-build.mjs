@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { globSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { workspaceManifests } from "./package-closure.mjs";
+import { packageClosure, workspaceManifests } from "./package-closure.mjs";
+import { releaseBuild } from "./release-build.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -29,17 +31,48 @@ export function webDocsCommands(operation, selected) {
   throw new Error("usage: web-docs-build.mjs build|check|typescript|readmes|package PACKAGE");
 }
 
+// Declare complete public build products, including generated source and buildinfo.
+// Cargo's target directory remains the shared compiler's private warm state.
+/** @param {string} [selected] */
+export function webDocsOutputs(selected) {
+  const packages = selected ? packageClosure(root, selected)
+    : new Set([...workspaceManifests(root).keys()].flatMap(name => [...packageClosure(root, name)]));
+  const outputs = ["generated", ".tools/sdk-readme-examples"];
+  for (const name of packages) {
+    const directory = `typescript/packages/${name}`;
+    outputs.push(...["dist", "generated", "src/generated", "test/generated", "tsconfig.tsbuildinfo"]
+      .map(suffix => `${directory}/${suffix}`));
+  }
+  // Ignored standalone projections have their canonical declaration in .gitignore.
+  for (const line of readFileSync(join(root, ".gitignore"), "utf8").split(/\r?\n/)) {
+    const match = /^\/typescript\/packages\/([^/]+)\/.*\.ts$/.exec(line);
+    if (match && packages.has(match[1])) outputs.push(line.slice(1));
+  }
+  for (const manifest of globSync("rust/crates/*/Cargo.toml", { cwd: root })) {
+    outputs.push(`${dirname(manifest).replaceAll("\\", "/")}/src/generated`);
+  }
+  return outputs.sort();
+}
+
 async function main() {
   const [operation, selected] = process.argv.slice(2);
   const commands = webDocsCommands(operation, selected);
+  const context = process.env.SDK_WEB_DOCS_BUILD_CONTEXT;
   let status = "FAIL";
   const started = performance.now();
   try {
-    for (const [command, ...args] of commands) {
-      const result = spawnSync(command === "node" ? process.execPath : command, args,
-        { cwd: root, stdio: "inherit" });
-      if (result.error) throw result.error;
-      if (result.status !== 0) { process.exitCode = result.status ?? 1; break; }
+    if (context && process.env.SDK_WEB_DOCS_BUILD_ACTIVE !== "1") {
+      process.exitCode = await releaseBuild({ id: `sdk/webdocs/${operation}/${selected ?? "all"}`,
+        command: process.execPath, args: [fileURLToPath(import.meta.url), operation, ...(selected ? [selected] : [])],
+        cwd: root, env: { ...process.env, SDK_WEB_DOCS_BUILD_ACTIVE: "1" }, context,
+        outputs: operation === "readmes" ? [".tools/sdk-readme-examples"] : webDocsOutputs(selected) });
+    } else {
+      for (const [command, ...args] of commands) {
+        const result = spawnSync(command === "node" ? process.execPath : command, args,
+          { cwd: root, stdio: "inherit" });
+        if (result.error) throw result.error;
+        if (result.status !== 0) { process.exitCode = result.status ?? 1; break; }
+      }
     }
     if (!process.exitCode) status = "PASS";
   } finally {

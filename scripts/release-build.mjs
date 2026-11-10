@@ -1,20 +1,21 @@
 // Release recipes use the shared artifact cache when the host admits a complete
-// builder/input closure. The host also owns the persistent checkout and target.
+// builder/input closure and supplies its provider module. The host also owns
+// the persistent checkout and target.
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export async function releaseBuild({ id, command, args, cwd, env = process.env, output, validate }) {
+export async function releaseBuild({ id, command, args, cwd, env = process.env, output, outputs,
+  context = env.SDK_RELEASE_BUILD_CONTEXT, validate }) {
   const started = performance.now();
   let status = 1;
   try {
     await validate?.();
-    if (env.SDK_RELEASE_BUILD_CONTEXT) {
-      const { artifactBuild } = await import(pathToFileURL(
-        env.SDK_ARTIFACT_BUILD_MODULE ?? "/mnt/bb/cx/artifact-build.mjs",
-      ));
+    if (context) {
+      if (!env.SDK_ARTIFACT_BUILD_MODULE) throw new Error("artifact context requires SDK_ARTIFACT_BUILD_MODULE");
+      const { artifactBuild } = await import(pathToFileURL(env.SDK_ARTIFACT_BUILD_MODULE));
       status = await artifactBuild({ id, command, args, cwd, env, output,
-        context: env.SDK_RELEASE_BUILD_CONTEXT });
+        ...(outputs ? { outputs } : {}), context });
     } else {
       const result = spawnSync(command, args, { cwd, env, stdio: "inherit" });
       if (result.error) throw result.error;

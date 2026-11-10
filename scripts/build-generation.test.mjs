@@ -156,7 +156,7 @@ test("native source roots cover the generators' transitive script imports", () =
       `scripts/build-${family}-native.mjs`, `scripts/assemble-${family}-native-package.mjs`,
       ...contractModules([...packageClosure(process.cwd(), family)]).map(name => "scripts/" + name)];
     check(sourceRoots, generators);
-    assert.throws(() => check(sourceRoots.filter(path => path !== "scripts/package-closure.mjs"), generators), /imports unattested scripts\/package-closure\.mjs/);
+    assert.throws(() => check(sourceRoots.filter(path => path !== "scripts"), generators), /imports unattested scripts\//);
     check(["scripts"], generators);
     const changed = new Map([["scripts/package-closure.mjs", 'import "../unattested-generator-helper.mjs";']]);
     assert.throws(() => check(["scripts"], generators, changed), /imports unattested unattested-generator-helper\.mjs/);
