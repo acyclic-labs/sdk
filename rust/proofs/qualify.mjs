@@ -15,6 +15,14 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "filesystem-lineage-canonical": [
+    "rust/crates/filesystem/src/workspace/identity.rs", "acyclic-fs",
+    "lineage::tests::persisted_lineage_names_require_exact_canonical_bytes",
+    "noncanonical lineage registration was accepted", ["--features", "local,memory,test-support,native-watch"],
+    { oracle: "rust/crates/filesystem/src/lineage/tests.rs",
+      mutations: [{ patch: "rust/crates/filesystem/fuzz/mutations/lineage_noncanonical_name.patch",
+        label: "noncanonical-lineage-name", diagnostic: "noncanonical lineage registration was accepted" }] },
+  ],
   "actors-live-update-canonical": [
     "rust/crates/actors/src/live_update.rs", "acyclic-codec-fuzz", "",
     "live-update document admission differs from canonical writer", [],

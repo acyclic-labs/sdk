@@ -120,13 +120,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         });
         let mut records = work.vec(usize::from(generation.is_some()))?;
         if let Some(generation) = generation {
-            records.push(
-                work.stream_bytes(
-                    LINEAGE_DOMAIN,
-                    &[generation.object_id().to_bytes().as_slice()],
-                )?
-                .into(),
-            );
+            records.push(encode_lineage_generation(generation, work)?.into());
         }
         let prior = source.as_ref().map(|(_, _, generation)| *generation);
         match source {

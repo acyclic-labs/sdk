@@ -177,8 +177,38 @@ fn save(
     Ok(())
 }
 
+fn capture_filesystem_records(
+    manifest: &mut String,
+) -> Result<std::collections::HashSet<String>, Box<dyn Error>> {
+    let seeds = acyclic_fs::kernel::decoder_fuzz::records::seeds()?;
+    let names = seeds
+        .iter()
+        .map(|(name, _)| format!("filesystem_codecs/{name}"))
+        .collect::<std::collections::HashSet<_>>();
+    *manifest = manifest
+        .lines()
+        .filter(|line| !names.contains(line.split('\t').next().unwrap_or(line)))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    for (name, bytes) in seeds {
+        save(
+            "filesystem_codecs",
+            &name,
+            &bytes,
+            "source fact, generation locator, lineage and publication gate production encoders; authored typed identities",
+            manifest,
+        )?;
+    }
+    Ok(names)
+}
+
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-filesystem-records") {
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
+        let names = capture_filesystem_records(&mut manifest)?;
+        return finish_selected(&manifest, |name| names.contains(name));
+    }
     if std::env::args().any(|arg| arg == "--only-model-usage") {
         let prefix = "harness_codecs/usage-";
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
@@ -516,6 +546,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
+    capture_filesystem_records(&mut manifest)?;
     for (name, bytes) in acyclic_fs::s3_http::codec_fuzz::seeds()? {
         save(
             "filesystem_codecs",

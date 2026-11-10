@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn decode_publication_gate(
     value: &[u8],
-) -> Result<Option<OperationId>, AuthorityStoreError> {
+) -> Result<Option<ReservedPublication>, AuthorityStoreError> {
     if value == PUBLICATION_GATE_FREE {
         return Ok(None);
     }
@@ -12,7 +12,7 @@ pub(super) fn decode_publication_gate(
         .ok_or_else(|| {
             AuthorityStoreError::Corrupt("invalid publication gate record".to_owned())
         })?;
-    Ok(Some(ReservedPublication::decode(reserved)?.operation))
+    Ok(Some(ReservedPublication::decode(reserved)?))
 }
 
 #[cfg(test)]
@@ -173,3 +173,41 @@ pub(super) fn decode_record<'a>(
     StreamsDurableRecord::decode_borrowed(&record.value, STREAM_RECORD_LIMIT)
         .map_err(|error| AuthorityStoreError::Corrupt(error.to_string()))
 }
+
+pub(super) fn encode_lineage_generation(
+    generation: GenerationId,
+    work: &mut AuthorityWork<'_>,
+) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
+    work.stream_bytes(
+        LINEAGE_DOMAIN,
+        &[generation.object_id().to_bytes().as_slice()],
+    )
+}
+
+pub(super) fn encode_publication_gate(
+    reserved: Option<ReservedPublication>,
+    work: &mut AuthorityWork<'_>,
+) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
+    match reserved {
+        Some(ReservedPublication {
+            operation,
+            head,
+            epoch_tail,
+        }) => work.stream_bytes(
+            PUBLICATION_GATE_ACTIVE,
+            &[
+                &operation.into_bytes(),
+                &head.epoch.get().to_le_bytes(),
+                &head.sequence.get().to_le_bytes(),
+                head.digest.as_bytes(),
+                &epoch_tail.to_le_bytes(),
+            ],
+        ),
+        None => Ok(acyclic_stream::OwnedBytes::from_static(
+            PUBLICATION_GATE_FREE,
+        )),
+    }
+}
+
+#[cfg(any(test, feature = "test-support", feature = "fuzzing"))]
+pub mod codec_fuzz;
