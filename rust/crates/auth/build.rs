@@ -8,7 +8,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let grpc = false;
     compiler.compile(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
         compiler.config(),
         acyclic_proto_build::services(grpc),
         &["proto/auth/v1/auth.proto"],
