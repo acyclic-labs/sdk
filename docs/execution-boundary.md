@@ -15,11 +15,12 @@ receive no additional write authority. Native volume callbacks still enforce
 path-level permissions. Landlock's additive rules do not subtract permissions
 from a read-only alias inside an otherwise writable primary tree; such a binding
 requires the native volume provider's existing checks.
-Only system runtime paths (/usr, /bin, /sbin, /lib, /lib64), loader data, CA
-certificates, DNS configuration and host-selected PATH directories are implicitly
-readable. Missing optional runtime paths are omitted. Host home, state, /tmp,
-procfs and filesystem root are not implicitly granted. Tools needing temporary
-files must select a directory in their workspace (for example TMPDIR=$PWD).
+The default preserves host filesystem reads, so installed tools and dependencies
+outside the checkout remain usable. It confines writes; it does not promise
+filesystem confidentiality. Explicit host grants can restrict reads as before.
+The command still receives only the host's ordinary environment, excluding secret
+variables and startup hooks. The default TMPDIR names the primary workspace, so standard temporary-file APIs
+remain inside the writable view without a separate mount or directory.
 The existing seccomp policy also denies filesystem metadata mutation such as
 chmod, including within the workspace; this limitation remains explicit.
 Unsupported kernels refuse before guest execution, with no unconfined fallback.

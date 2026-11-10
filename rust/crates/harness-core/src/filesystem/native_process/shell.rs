@@ -121,7 +121,7 @@ pub fn prepare<T>(
     invocation.standard_input =
         standard_input.map(acyclic_native_runtime::OwnedCaptureInput::Literal);
     if invocation.execution_grant.is_none() {
-        invocation.execution_grant = workspace_grant(mounts, &invocation.environment)?;
+        invocation.execution_grant = workspace_grant(mounts, &mut invocation.environment)?;
     }
     super::invocation::validate(
         &invocation.executable,
@@ -140,14 +140,16 @@ pub fn prepare<T>(
 #[doc(hidden)]
 pub fn workspace_grant<T>(
     mounts: &MountTable<T>,
-    environment: &std::collections::BTreeMap<String, String>,
+    environment: &mut std::collections::BTreeMap<String, String>,
 ) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
     #[cfg(target_os = "linux")]
     {
         use acyclic_native_runtime::execution::{
             ExecutionAccess, ExecutionGrant, ExecutionNetwork,
         };
-        let mut read = Vec::new();
+        // Workspace-write preserves host reads. Narrower explicit grants can
+        // restrict reads; this default boundary confines filesystem mutation.
+        let mut read = vec![std::path::PathBuf::from("/")];
         let mut write = Vec::new();
         let mut access = ExecutionAccess::ReadOnly;
         let io = Error::process_io;
@@ -168,39 +170,15 @@ pub fn workspace_grant<T>(
                 write.push(root);
             }
         }
-        // Computation/runtime data only: never implicitly admit home, /tmp,
-        // procfs, the host state directory or the filesystem root. PATH comes
-        // from the host's closed ordinary environment, never tool arguments.
-        for path in [
-            "/usr",
-            "/bin",
-            "/sbin",
-            "/lib",
-            "/lib64",
-            "/etc/ld.so.cache",
-            "/etc/ssl/certs",
-            "/etc/resolv.conf",
-            "/etc/hosts",
-            "/etc/nsswitch.conf",
-        ]
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .chain(
-            environment
-                .get("PATH")
-                .into_iter()
-                .flat_map(std::env::split_paths),
-        ) {
-            match std::fs::metadata(&path) {
-                Ok(_) if path.is_absolute() && path.parent().is_some() => read.push(path),
-                Ok(_) => return Err(Error::Unauthorized(
-                    "sandbox runtime root must be absolute and narrower than the filesystem root"
-                        .into(),
-                )),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(io(error)),
-            }
-        }
+        // Standard temporary-file APIs stay inside the same writable view;
+        // this adds no global /tmp allowance or per-agent mount/directory.
+        environment.insert(
+            "TMPDIR".into(),
+            primary
+                .to_str()
+                .ok_or_else(|| Error::Invalid("sandbox temporary directory is not UTF-8".into()))?
+                .into(),
+        );
         ExecutionGrant::composed(&primary, access, write, read, ExecutionNetwork::On)
             .map(Some)
             .map_err(io)
