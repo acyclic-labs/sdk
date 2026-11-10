@@ -78,9 +78,16 @@ impl CheckoutTools {
             let _stop = shell::StopOnDrop(control.clone());
             let wake = control.wake();
             let check = owner_check(Arc::clone(&workspace), control);
-            let execution = self.execution_grant.as_ref().map(|grant| {
+            let grant = match &self.execution_grant {
+                Some(grant) => Some(grant.clone()),
+                None => crate::filesystem::native_process::shell::workspace_grant(
+                    &state.mounts,
+                    &self.environment,
+                )?,
+            };
+            let execution = grant.map(|grant| {
                 Arc::new(crate::hooks::HookExecution {
-                    grant: grant.clone(),
+                    grant,
                     environment: self.environment.clone(),
                 })
             });
