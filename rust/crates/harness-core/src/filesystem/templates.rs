@@ -74,6 +74,13 @@ mod tests {
             TurnAdmission::LocalRoot,
         ));
         let parent = crate::templates::root()?;
+        // The shipped attention role is admitted through the same volume and
+        // template reader as worker forks, but starts with a fresh context.
+        let triager = templates
+            .child(&parent, &path, &volumes, "triager", None)
+            .await?;
+        assert_eq!(triager.context, SpawnContext::Fresh);
+        assert_eq!(triager.template.as_ref().unwrap().volume(), &seed);
         let original = templates
             .child(&parent, &path, &volumes, "worker", None)
             .await?;

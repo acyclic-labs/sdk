@@ -67,7 +67,9 @@ const FILES: &[(&str, &[u8])] = &[
     seed_file!("plugins/spawn/topologies/pipeline.md"),
     seed_file!("plugins/spawn/topologies/search-derived.md"),
     seed_file!("plugins/spawn/topologies/service.md"),
+    seed_file!("policy/attention.md"),
     skill!("advisor-consultation"),
+    skill!("attention"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
     skill!("debugging"),
@@ -100,6 +102,7 @@ const FILES: &[(&str, &[u8])] = &[
     seed_file!("templates/pipeline/AGENT.md"),
     seed_file!("templates/reviewer/AGENT.md"),
     seed_file!("templates/reviewer/agent.ts"),
+    seed_file!("templates/triager/AGENT.md"),
     seed_file!("templates/worker/AGENT.md"),
     seed_file!("templates/worker/agent.ts"),
 ];
