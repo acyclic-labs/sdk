@@ -271,8 +271,17 @@ async fn native_event_log_keeps_late_usage_and_resume_after_recovery() -> Result
         damaged.push(b'\n');
         damaged.extend_from_slice(claude);
         native_events::check_native_event_resume(&damaged);
+        let prefix = std::fs::read(
+            checkout
+                .path()
+                .join(".acyclic-sdk/host-processes")
+                .join(child.id().as_str())
+                .join(format!("events-{}.jsonl", claim.operation)),
+        )
+        .map_err(storage)?;
         let mut digest = Sha256::new();
-        let mut length = 0;
+        digest.update(&prefix);
+        let mut length = prefix.len() as u64;
         while length <= 4 * 1024 * 1024 {
             for line in codex.split_inclusive(|byte| *byte == b'\n') {
                 let line = line.strip_suffix(b"\n").unwrap_or(line);
