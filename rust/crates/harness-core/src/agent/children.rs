@@ -28,6 +28,12 @@ enum Node {
     },
 }
 
+impl Node {
+    fn encode(&self) -> Result<Vec<u8>, Error> {
+        serde_json::to_vec(&(1u32, self)).map_err(|_| Error::Record("child index does not encode"))
+    }
+}
+
 trait Storage: ProviderPlatform {
     fn load(&self, digest: Digest) -> BoxProviderFuture<'_, Result<Node, Error>>;
     fn save(&self, digest: Digest, bytes: Vec<u8>) -> BoxProviderFuture<'_, Result<(), Error>>;
@@ -183,8 +189,7 @@ impl Children {
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone();
             for (digest, node) in nodes {
-                let bytes = serde_json::to_vec(&(1u32, &node))
-                    .map_err(|_| Error::Record("child index does not encode"))?;
+                let bytes = node.encode()?;
                 storage.save(digest, bytes).await?;
             }
             self.nodes
@@ -211,8 +216,7 @@ impl Children {
             .await
     }
     async fn stage(&self, node: Node) -> Result<Digest, Error> {
-        let bytes =
-            serde_json::to_vec(&node).map_err(|_| Error::Record("child index does not encode"))?;
+        let bytes = node.encode()?;
         let digest = *blake3::hash(&bytes).as_bytes();
         if let Some(storage) = &self.storage {
             storage.save(digest, bytes).await?;
