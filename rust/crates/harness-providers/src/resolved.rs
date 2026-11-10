@@ -338,13 +338,14 @@ impl ModelProvider for ResolvedModel {
         ceiling: u64,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_harness_core::NativeFutureBundle<
+        acyclic_fs::NativeFutureBundle<
             'a,
             (ModelTokenCount, acyclic_fs::NativeAllocation),
+            acyclic_harness_core::Error,
         >,
     > {
         self.context_capacity_with_native_work(&request.request().model, work)?;
-        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let cancelled = work.cancellation_wait()?;
             let exchange = crate::counting::count(self, request, ceiling, Some(work));
             let cancelled = core::pin::pin!(cancelled);
@@ -374,9 +375,10 @@ impl ModelProvider for ResolvedModel {
         dispatch: ModelDispatch,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_harness_core::NativeFutureBundle<
+        acyclic_fs::NativeFutureBundle<
             'a,
             acyclic_harness_core::model::NativeModelStream<'a>,
+            acyclic_harness_core::Error,
         >,
     > {
         crate::native::generate(self, request, dispatch, work)
@@ -389,12 +391,13 @@ impl ModelProvider for ResolvedModel {
         _: &'a [ModelEvent],
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<
-        acyclic_harness_core::NativeFutureBundle<
+        acyclic_fs::NativeFutureBundle<
             'a,
             (Option<Vec<ModelEvent>>, acyclic_fs::NativeAllocation),
+            acyclic_harness_core::Error,
         >,
     > {
-        acyclic_harness_core::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?))
         })
     }

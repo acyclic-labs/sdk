@@ -30,6 +30,7 @@ impl Default for ThresholdCompaction {
 
 impl ThresholdCompaction {
     /// Reserves the selected output capacity before splitting remaining input.
+
     #[doc(hidden)]
     pub fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;

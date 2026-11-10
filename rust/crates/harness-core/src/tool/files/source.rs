@@ -85,7 +85,6 @@ impl FileReadSource {
         }
     }
 
-    #[cfg(feature = "filesystem")]
     pub(super) fn logical_owned_bytes(&self) -> Result<u64> {
         match self {
             Self::Content(file) => file.logical_owned_bytes(),

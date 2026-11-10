@@ -494,7 +494,7 @@ fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Re
     Ok(())
 }
 
-#[cfg(feature = "mcp-stdio")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -> Result<()> {
     let root = std::env::current_dir().map_err(Error::process_io)?;
@@ -544,7 +544,7 @@ fn resolved_stdio_binding_tracks_arguments_environment_directory_and_dialect() -
     Ok(())
 }
 
-#[cfg(feature = "mcp-http")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result<()> {
     let environment = |_: &str| None::<std::ffi::OsString>;
@@ -597,7 +597,7 @@ fn http_credentials_resolve_without_serializing_or_disclosing_values() -> Result
     Ok(())
 }
 
-#[cfg(feature = "mcp-http")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn http_binding_tracks_resolved_endpoint_and_credentials_but_not_header_order() -> Result<()> {
     use reqwest::header::{HeaderMap, HeaderValue};
@@ -621,7 +621,7 @@ fn http_binding_tracks_resolved_endpoint_and_credentials_but_not_header_order() 
     Ok(())
 }
 
-#[cfg(all(unix, feature = "mcp-stdio"))]
+#[cfg(all(unix, not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn configured_stdio_server_inherits_its_workspace_and_retains_one_session() -> Result<()> {
     use crate::native_settings::{NativeSettings, SettingsConfig};

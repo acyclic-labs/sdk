@@ -58,7 +58,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn for_checkout_candidate<W: crate::facade::FsWork>(
         workspace: &Workspace<A, O>,
         checkout: Checkout<A, O>,

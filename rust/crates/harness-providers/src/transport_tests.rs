@@ -43,7 +43,7 @@ impl HttpTransport for Counted {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
         self.sent.fetch_add(1, Ordering::SeqCst);
         self.inner.send_with_native_work(request, work)
     }
@@ -51,7 +51,7 @@ impl HttpTransport for Counted {
         &self,
         wait: std::time::Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
         self.inner.delay_with_native_work(wait, work)
     }
 }

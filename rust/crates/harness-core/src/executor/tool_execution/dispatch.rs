@@ -66,7 +66,7 @@ impl<'io> StockExecution<'io> {
                 }
                 Ok(preparation) => preparation?,
             };
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = self.io.filter(|io| io.original_native_work().is_some()) {
                 io.absorb_native_custody(custody.ok_or_else(|| {
                     stock_boundary(
@@ -76,7 +76,7 @@ impl<'io> StockExecution<'io> {
                     )
                 })?)?;
             }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            #[cfg(target_arch = "wasm32")]
             let _ = custody;
             match preparation {
                 crate::tool::ToolPreparation::Ready(result) => Some(result),
@@ -293,7 +293,7 @@ impl<'io> StockExecution<'io> {
             Ok(projected) => projected,
             Err(content) => return Ok(ToolInvocationOutcome::Settled(content, None)),
         };
-        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             match self
                 .complete_with_post_hook::<true>(
@@ -311,7 +311,7 @@ impl<'io> StockExecution<'io> {
             }
             Ok(ToolInvocationOutcome::Settled(content, Some(result)))
         }
-        #[cfg(not(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         {
             let publication = self
                 .publish_tool_completion(
@@ -342,7 +342,7 @@ impl<'io> StockExecution<'io> {
                 context,
                 self.io,
                 |context| tool.executor.execute(invocation.clone(), context),
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 |context, work| {
                     tool.executor
                         .execute_with_native_context(context, invocation, work)
@@ -355,7 +355,7 @@ impl<'io> StockExecution<'io> {
                 context,
                 self.io,
                 |context| tool.executor.reconcile(invocation.clone(), context),
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 |context, work| {
                     tool.executor
                         .reconcile_with_native_context(context, invocation, work)
@@ -396,7 +396,7 @@ impl<'io> StockExecution<'io> {
         ))
     }
 
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::executor) async fn complete_with_post_hook<const COMMIT_FIRST: bool>(
         &self,
         journal: &dyn ExecutionJournal,
@@ -687,7 +687,7 @@ impl<'io> StockExecution<'io> {
         if _code_mode {
             self.restore_js_context(&result.0.value, _hook_context)?;
         }
-        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let feedback = self
                 .tool_hook(

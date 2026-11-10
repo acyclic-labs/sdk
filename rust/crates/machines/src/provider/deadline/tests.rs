@@ -74,7 +74,6 @@ async fn original_alarm_terminal_reaches_active_and_late_observers()
     assert_eq!(first, late);
     assert!(matches!(first, DeadlineStop::SourceLost(_)));
 
-    #[cfg(feature = "grpc")]
     for after_dispatch in [false, true] {
         let (deadline, finish) = GuestDeadline::controlled();
         let cause = Arc::new(std::io::Error::from_raw_os_error(5));

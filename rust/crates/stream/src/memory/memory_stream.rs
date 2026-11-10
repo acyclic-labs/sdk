@@ -39,7 +39,7 @@ impl MemoryStream {
         Self::new_with_commit_clock(limits, Arc::clone(&clock), clock)
     }
 
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_commit_clock(&self, clock: Arc<dyn UnixMillisClock>) -> Self {
         Self {
             commit_clock: clock,
@@ -71,9 +71,8 @@ impl MemoryStream {
     /// issue and honour the same tokens.
     #[cfg(any(
         test,
-        feature = "local",
-        all(feature = "wasm-journal", target_arch = "wasm32"),
-        all(feature = "postgres", not(target_arch = "wasm32"))
+        not(target_arch = "wasm32"),
+        all(feature = "wasm-journal", target_arch = "wasm32")
     ))]
     #[must_use]
     pub(crate) fn with_authority(mut self, scope: crate::RevisionScope, incarnation: u128) -> Self {

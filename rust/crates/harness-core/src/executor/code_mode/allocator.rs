@@ -8,29 +8,25 @@ use std::{
 #[repr(C, align(16))]
 struct Header {
     size: usize,
-    #[cfg(feature = "filesystem")]
     custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[derive(Clone)]
 pub(super) struct EngineAllocator {
-    #[cfg(feature = "filesystem")]
     failure: std::sync::Arc<std::sync::Mutex<Option<acyclic_fs::NativeTreeMaterializationError>>>,
-    #[cfg(feature = "filesystem")]
     work: Option<acyclic_fs::NativeMaterializationWork>,
 }
 
 // The buffer retires before the ledger credit, including across the RPC channel.
 pub(super) struct BridgeText {
     pub(super) value: String,
-    _custody: crate::NativeCustody,
+    _custody: acyclic_fs::NativeCustody,
 }
 
 impl EngineAllocator {
     pub(super) fn copy_text(&self, text: &rquickjs::String<'_>) -> rquickjs::Result<BridgeText> {
         // QuickJS funds the temporary UTF-8 view through this same allocator.
         let text = text.clone().to_cstring()?;
-        #[cfg(feature = "filesystem")]
         let custody = self
             .work
             .as_ref()
@@ -40,8 +36,6 @@ impl EngineAllocator {
                 self.rejected(error);
                 rquickjs::Error::Unknown
             })?;
-        #[cfg(not(feature = "filesystem"))]
-        let custody = None;
         let mut value = String::new();
         value
             .try_reserve_exact(text.len())
@@ -52,24 +46,20 @@ impl EngineAllocator {
             _custody: custody,
         })
     }
-    pub(super) fn new(work: crate::NativeWork<'_>) -> Self {
+    pub(super) fn new(work: acyclic_fs::NativeWork<'_>) -> Self {
         let _ = work;
         Self {
-            #[cfg(feature = "filesystem")]
             failure: Default::default(),
-            #[cfg(feature = "filesystem")]
             work: work.cloned(),
         }
     }
 
-    #[cfg(feature = "filesystem")]
     pub(super) fn failure(
         &self,
     ) -> std::sync::Arc<std::sync::Mutex<Option<acyclic_fs::NativeTreeMaterializationError>>> {
         self.failure.clone()
     }
 
-    #[cfg(feature = "filesystem")]
     fn rejected(&self, error: acyclic_fs::NativeTreeMaterializationError) {
         let mut failure = self
             .failure
@@ -92,7 +82,6 @@ impl EngineAllocator {
         let Some(layout) = Self::layout(size) else {
             return ptr::null_mut();
         };
-        #[cfg(feature = "filesystem")]
         let custody = match self
             .work
             .as_ref()
@@ -117,11 +106,7 @@ impl EngineAllocator {
             return pointer;
         }
         unsafe {
-            pointer.cast::<Header>().write(Header {
-                size,
-                #[cfg(feature = "filesystem")]
-                custody,
-            });
+            pointer.cast::<Header>().write(Header { size, custody });
             pointer.add(size_of::<Header>())
         }
     }
@@ -162,7 +147,6 @@ unsafe impl Allocator for EngineAllocator {
         let Some(new_layout) = Self::layout(size) else {
             return ptr::null_mut();
         };
-        #[cfg(feature = "filesystem")]
         if let Some(custody) = &mut header.custody
             && size > header.size
             && let Err(error) = custody.grow((size - header.size) as u64)
@@ -174,7 +158,6 @@ unsafe impl Allocator for EngineAllocator {
         let _ = old_size;
         let moved = unsafe { realloc(base, old_layout, new_layout.size()) };
         if moved.is_null() {
-            #[cfg(feature = "filesystem")]
             if let Some(custody) = &mut header.custody
                 && size > old_size
             {
@@ -185,7 +168,6 @@ unsafe impl Allocator for EngineAllocator {
             return moved;
         }
         let header = unsafe { &mut *moved.cast::<Header>() };
-        #[cfg(feature = "filesystem")]
         if let Some(custody) = &mut header.custody
             && size < old_size
         {
@@ -202,7 +184,7 @@ unsafe impl Allocator for EngineAllocator {
     }
 }
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

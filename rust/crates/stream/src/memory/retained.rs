@@ -89,7 +89,7 @@ mod retained_owner {
         }
     }
 
-    #[cfg(any(test, feature = "local"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     impl RetainedFactWeak {
         pub(super) fn upgrade(&self) -> Option<RetainedFactRef> {
             self._fact.upgrade().map(|fact| RetainedFactRef(Some(fact)))

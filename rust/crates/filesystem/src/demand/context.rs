@@ -3,7 +3,7 @@ use crate::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
 };
-#[cfg(any(test, feature = "native-watch"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use std::sync::Arc;
 
 // Lock order: observer registry (35), source cursors (40), original leaf (50),
@@ -73,13 +73,13 @@ mod model_checking;
 
 pub(crate) struct CaptureTransientCustody {
     retained: AtomicU64,
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     header: crate::NativeAllocation,
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     retirement: Arc<super::NativeAllocationAccounting>,
 }
 impl CaptureTransientCustody {
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn new_native(
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, crate::NativeTreeMaterializationError> {
@@ -92,15 +92,15 @@ impl CaptureTransientCustody {
             retirement,
         }))
     }
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn owns_native_work(&self, work: &crate::NativeMaterializationWork) -> bool {
         self.header.work().shares_allocation_context(work)
     }
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn take_retained_bytes(&self) -> u64 {
         self.retained.swap(0, Ordering::AcqRel)
     }
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn transfer_retained_bytes(&self, bytes: u64) -> Result<(), crate::WorkError> {
         self.retained
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
@@ -128,7 +128,7 @@ impl CaptureTransientCustody {
     }
 }
 
-#[cfg(any(test, feature = "native-watch"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 impl Drop for CaptureTransientCustody {
     fn drop(&mut self) {
         let bytes = self.take_retained_bytes();

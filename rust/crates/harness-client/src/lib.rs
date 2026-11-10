@@ -11,50 +11,36 @@ pub use connection::{
 };
 
 /// The same preset and defaults applied by local and hosted harnesses.
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::preset::Preset;
 
-#[cfg(any(feature = "agents", feature = "wasm"))]
 mod control;
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use control::{
     AgentBinding, AgentCall, AgentControls, AgentExchangeError, PreparedAgentInvocation,
 };
 
-#[cfg(any(feature = "agents", feature = "wasm"))]
 mod command;
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use command::{
     AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
     MAX_READ_BYTES, PreparedCommand, ReadTarget,
 };
-#[cfg(any(feature = "agents", feature = "wasm"))]
 mod reply;
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use reply::{
     AgentControlFailure, AgentReply, ChildAgent, MAX_AGENT_REPLY_BYTES, PendingApproval,
     decode_agent_reply, encode_agent_reply, encoded_agent_reply_size,
 };
 
-#[cfg(any(feature = "agents", feature = "wasm"))]
 mod agents;
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::agent::{
     AgentId, AgentPath, AgentRecord, ConversationEntry, Delivered, Error as AgentError, IntentId,
     Phase, Reply, StatusRecord,
 };
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use acyclic_harness_core::{
     interaction::{ApprovalBinding, ApprovalVerdict, Interaction},
     model::ModelContent,
 };
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use agents::{AgentClient, AgentClientError, AgentDelivery, AgentEvent, AgentSelection};
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub mod acp;
-#[cfg(any(feature = "agents", feature = "wasm"))]
 mod event_projection;
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use event_projection::{
     ApprovalPayloadEvent, EventCursor, EventDrain, EventProjection, ExecutionPayloadEvent,
     ExecutionPosition, ExecutionQuery, ExecutionStreamEvent, StreamEvent,
@@ -63,12 +49,9 @@ pub mod reader;
 pub use reader::{Reader, ReaderPolicy};
 
 /// Agent tree and history renders over the reader.
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub mod explorer;
 /// Lazy private-volume UI projection and ordinary inbox replies.
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub mod ui;
-#[cfg(any(feature = "agents", feature = "wasm"))]
 pub use explorer::Explorer;
 
 mod demand;
@@ -76,30 +59,10 @@ pub use demand::{DemandError, DemandPolicy, ViewDemand};
 
 // Agent controls include Actors' wasm runtime. Session-only clients retain
 // their native transport boundary without implicitly selecting browser I/O.
-#[cfg(any(
-    feature = "agents",
-    feature = "wasm",
-    all(feature = "session", not(target_arch = "wasm32"))
-))]
 mod session;
-#[cfg(any(
-    feature = "agents",
-    feature = "wasm",
-    all(feature = "session", not(target_arch = "wasm32"))
-))]
 pub use session::{WireSession, WireSessionError};
 
-#[cfg(any(
-    feature = "agents",
-    feature = "wasm",
-    all(feature = "session", not(target_arch = "wasm32"))
-))]
 mod stream_view;
-#[cfg(any(
-    feature = "agents",
-    feature = "wasm",
-    all(feature = "session", not(target_arch = "wasm32"))
-))]
 pub use stream_view::{StreamView, StreamViewPolicy};
 
 #[cfg(test)]

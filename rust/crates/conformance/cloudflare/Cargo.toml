@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 acyclic-agent-host-conformance = { path = "../agent-host" }
 acyclic-actors = { path = "../../actors", features = ["conformance"] }
 acyclic-auth = { path = "../../auth", features = ["test-support"] }
-acyclic-harness-core = { path = "../../harness-core", features = ["filesystem"] }
+acyclic-harness-core = { path = "../../harness-core" }
 acyclic-harness-client = { path = "../../harness-client", features = ["wasm"] }
 acyclic-fs = { path = "../../filesystem", default-features = false }
 acyclic-stream = { path = "../../stream", default-features = false, features = ["wasm-journal", "wasm", "conformance"] }

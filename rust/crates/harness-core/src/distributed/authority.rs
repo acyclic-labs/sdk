@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(feature = "filesystem")]
 #[derive(Clone, Copy)]
 #[doc(hidden)]
 pub enum JournalWrite {

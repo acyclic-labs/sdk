@@ -253,7 +253,6 @@ fn call_boundaries_keep_signed_protocols_and_tight_budgets_drop_whole_units() ->
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn rejected_exchange_selection_releases_every_temporary_allocation() -> Result<()> {
     let (source, _) = transcript(&[(0, 2, false, true), (2, 1, true, false)], "opaque");
@@ -311,7 +310,6 @@ fn rejected_exchange_selection_releases_every_temporary_allocation() -> Result<(
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn incomplete_exchange_refusal_precedes_output_copy_and_releases_graph_custody() -> Result<()> {
     for provider in 0..3 {

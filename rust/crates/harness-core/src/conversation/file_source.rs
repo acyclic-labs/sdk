@@ -70,7 +70,6 @@ impl FilePathSelection {
         Ok(())
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         crate::core::owned_sum([
             self.volume.logical_owned_bytes()?,

@@ -159,12 +159,11 @@ demand_meter!(@impl NativeInvocationView,
         _ => DemandWork::byte_credit(kind),
     },
     |view: &NativeInvocationView| match view.read_credit {
-        #[cfg(any(test, feature = "distributed"))]
-        NativeResourceCredit::AuthorityReadBytes => Some(view.metadata.work().runtime_meter()),
+                NativeResourceCredit::AuthorityReadBytes => Some(view.metadata.work().runtime_meter()),
         _ => None,
     }
 );
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 demand_meter!(
     NativeSourceExecutionView,
     |view: &NativeSourceExecutionView| Some(view.metadata.work().runtime_meter())

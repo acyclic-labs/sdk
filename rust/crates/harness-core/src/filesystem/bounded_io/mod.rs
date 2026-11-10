@@ -236,7 +236,7 @@ impl PreparationIo {
         }
         Ok(custody)
     }
-    pub(crate) fn original_native_work(&self) -> crate::NativeWork<'_> {
+    pub(crate) fn original_native_work(&self) -> acyclic_fs::NativeWork<'_> {
         match self {
             Self::Owned { .. } => None,
             #[cfg(not(target_arch = "wasm32"))]

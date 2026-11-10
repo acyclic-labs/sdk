@@ -1,5 +1,5 @@
 use super::*;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::wire::ErrorCode::Unsupported;
 use futures::{FutureExt as _, future::Either};
 
@@ -210,7 +210,6 @@ impl StockExecution<'_> {
                 step,
                 request_digest,
             };
-            #[cfg(feature = "filesystem")]
             let _continuation_hold;
             let forced = self
                 .stock
@@ -244,13 +243,11 @@ impl StockExecution<'_> {
             let live = continuation.is_none() && purpose == ModelPurpose::Response;
             let mut clock = super::model_usage::CallClock::unknown();
             let stream = if let Some(continuation) = continuation {
-                #[cfg(feature = "filesystem")]
                 {
                     _continuation_hold = self.hold_continuation(&continuation)?;
                 }
                 Either::Left(continuation.into_iter())
             } else {
-                #[cfg(feature = "filesystem")]
                 {
                     _continuation_hold = None;
                 }
@@ -271,7 +268,7 @@ impl StockExecution<'_> {
                     ))
                     .await?;
                 clock.start();
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let generated = if let Some(work) = self.native_work() {
                     Either::Right(
                         attempt
@@ -287,7 +284,7 @@ impl StockExecution<'_> {
                 } else {
                     Either::Left(attempt.generate(self.stock.provider.as_ref(), &request, dispatch))
                 };
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let generated = attempt.generate(self.stock.provider.as_ref(), &request, dispatch);
                 Either::Right(generated)
             };
@@ -370,7 +367,6 @@ impl StockExecution<'_> {
         })
     }
 
-    #[cfg(feature = "filesystem")]
     fn hold_continuation(
         &self,
         continuation: &Vec<ModelEvent>,
@@ -463,9 +459,9 @@ impl StockExecution<'_> {
         dispatch: crate::model::ModelDispatch,
         replayed: &[ModelEvent],
     ) -> Result<Option<Vec<ModelEvent>>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = self.io;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let continuation = if let Some(work) = self.native_work() {
             let (continuation, custody) = self
                 .stock
@@ -484,7 +480,7 @@ impl StockExecution<'_> {
         } else {
             self.stock.provider.reconcile(dispatch, replayed).await?
         };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let continuation = self.stock.provider.reconcile(dispatch, &replayed).await?;
         Ok(continuation)
     }
@@ -731,7 +727,7 @@ impl StockExecution<'_> {
 
     async fn require_model_producer(&self) -> Result<()> {
         let io = self.io;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = self.native_work() {
             work.remaining()?;
             if !self.stock.provider.supports_native_model(work)? {
@@ -745,7 +741,7 @@ impl StockExecution<'_> {
         let _ = io;
         Ok(())
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn admit_model_event(
         &self,
         result: Result<(ModelEvent, acyclic_fs::NativeAllocation)>,

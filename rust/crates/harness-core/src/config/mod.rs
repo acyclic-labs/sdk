@@ -109,7 +109,7 @@ pub fn typescript() -> &'static str {
             Link,
             Form
         );
-        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         declarations!(
             crate::plugins::Plugins,
             crate::plugins::PluginEntry,

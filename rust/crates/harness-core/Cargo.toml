@@ -35,42 +35,23 @@ path = "tests/main.rs"
 research = ["acyclic-observability/research"]
 provenance-export = ["metrics-export", "dep:oxrdf", "dep:oxttl"]
 metrics-export = ["dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:parquet"]
-conformance = ["acyclic-stream/conformance", "acyclic-objects?/conformance", "acyclic-machines?/conformance"]
-oidc = ["filesystem", "dep:ring", "dep:p256"]
-oidc-http = ["oidc", "dep:reqwest"]
-tui = []
-test-support = ["acyclic-auth/test-support", "acyclic-machines?/test-support", "acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
-model-checking = ["acyclic-mcp/model-checking", "dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
-browser = ["wasm", "filesystem", "acyclic-fs/browser", "acyclic-model-render/browser"]
-wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-# Provider adapters. Each pulls only its own SDK family.
-filesystem = ["acyclic-fs/memory", "acyclic-fs/session", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-fs/session", "acyclic-stream/local", "acyclic-stream/session", "dep:dirs", "dep:getrandom", "dep:tempfile"]
-# Explicit native host composition; portable defaults never select it.
-native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio", "acyclic-machines?/local"]
-# Native lifecycle commands can also be embedded without filesystem mounts.
-hooks = ["dep:regex-lite", "dep:toml"]
-# Optional native HTTP I/O. Browser hosts implement the same portable boundary.
-mcp-http = ["dep:reqwest", "dep:toml"]
-mcp-stdio = ["acyclic-mcp/stdio", "tokio/process", "tokio/io-util", "dep:toml"]
-# Native environment access for acyclic-harness-search credentials.
-search-http = []
-mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls"]
-objects = ["dep:acyclic-objects"]
-machines = ["filesystem", "dep:acyclic-machines", "dep:tar"]
-grpc = ["acyclic-stream/grpc"]
+conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance", "acyclic-machines/conformance"]
+test-support = ["acyclic-auth/test-support", "acyclic-machines/test-support", "acyclic-actors/test-support", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
+model-checking = ["acyclic-mcp/model-checking", "dep:loom", "dep:same-file", "acyclic-fs/model-checking"]
+browser = ["wasm", "acyclic-fs/browser", "acyclic-model-render/browser"]
+wasm = ["acyclic-stream/wasm", "dep:tsify"]
 
 [dependencies]
-tar = { version = "=0.4.46", default-features = false, optional = true }
-acyclic-mcp = { version = "=0.2.0", path = "../mcp" }
+tar = { version = "=0.4.46", default-features = false }
+acyclic-mcp = { version = "=0.2.0", path = "../mcp", features = ["stdio"] }
 oxrdf = { version = "=0.3.5", default-features = false, optional = true }
 oxttl = { version = "=0.2.5", default-features = false, optional = true }
 arrow-array = { version = "=60.1.0", optional = true }
 arrow-schema = { version = "=60.1.0", optional = true }
 arrow-ipc = { version = "=60.1.0", default-features = false, optional = true }
 parquet = { version = "=60.1.0", default-features = false, features = ["arrow"], optional = true }
-ring = { version = "=0.17.14", features = ["wasm32_unknown_unknown_js"], optional = true }
-p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"], optional = true }
+ring = { version = "=0.17.14", features = ["wasm32_unknown_unknown_js"] }
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"] }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-model-render = { version = "=0.2.0", path = "../model-render" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
@@ -85,8 +66,8 @@ acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
-acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, optional = true }
-acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 base64 = "=0.23.1"
 blake3.workspace = true
@@ -98,9 +79,9 @@ httpdate = "1.0.3"
 serde-wasm-bindgen.workspace = true
 jsonschema.workspace = true
 rmp-serde = "=1.3.1"
-rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
-regex-lite = { version = "0.1.9", optional = true }
-js-sys = { workspace = true, optional = true }
+rmcp = { workspace = true, features = ["client", "transport-async-rw", "auth", "reqwest-tls-no-provider"] }
+regex-lite = { version = "0.1.9" }
+js-sys = { workspace = true }
 prost.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
 schemars = "=1.2.3"
@@ -110,15 +91,15 @@ serde-saphyr = { version = "=2.0.0", default-features = false, features = ["dese
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-toml = { workspace = true, optional = true }
+toml = { workspace = true }
 ts-rs = "=12.0.1"
 sse-stream.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time", "process", "io-util"] }
 uuid.workspace = true
 tsify = { workspace = true, optional = true }
-wasm-bindgen = { workspace = true, optional = true }
-wasm-bindgen-futures = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
 
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
@@ -137,16 +118,16 @@ oxc_semantic = { version = "=0.156.0", default-features = false }
 oxc_span = "=0.156.0"
 oxc_transformer = { version = "=0.156.0", default-features = false }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
-acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["grpc"], optional = true }
-dirs = { workspace = true, optional = true }
-tempfile = { version = "3.27.0", optional = true }
-getrandom = { workspace = true, optional = true }
+acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
+dirs = { workspace = true }
+tempfile = { version = "3.27.0" }
+getrandom = { workspace = true }
 loom = { version = "=0.7.3", optional = true }
 same-file = { version = "1.0.6", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
-reqwest = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true }
-tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "process"] }
 
 [dev-dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
@@ -160,17 +141,17 @@ diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["local", "test-support"] }
-acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["binary", "grpc", "local", "test-support"] }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["binary", "test-support"] }
 rcgen = "0.14.10"
 serde-saphyr = { version = "=2.0.0", default-features = false, features = ["serialize"] }
 shuttle = "=0.9.8"
 tracing-subscriber.workspace = true
 loom = { version = "0.7.3", features = ["futures"] }
-acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local", "test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
 tempfile = "3.27.0"
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
-tokio = { workspace = true, features = ["test-util", "process"] }
+tokio = { workspace = true, features = ["test-util", "process", "io-util"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }

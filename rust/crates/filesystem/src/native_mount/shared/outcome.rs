@@ -92,7 +92,7 @@ fn demand_failure(error: &crate::DemandError) -> CallbackFailure {
         E::StaleSource | E::StaleVersion | E::StaleCursor => F::Stale,
         E::Absent => F::NotFound,
         E::NotDirectory => F::NotDirectory,
-        #[cfg(feature = "native-watch")]
+        #[cfg(not(target_arch = "wasm32"))]
         E::Observation(error) => match error.as_ref() {
             crate::watch::NativeWatchError::Io(error) => F::io(error),
             crate::watch::NativeWatchError::Cancelled(_) => F::Cancelled,

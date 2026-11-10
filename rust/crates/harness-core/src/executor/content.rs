@@ -67,10 +67,8 @@ pub async fn verify_model_contents_with_summary_authorization<
         Ok(())
     }
     .await;
-    #[cfg(feature = "filesystem")]
     let owned = (summaries.capacity() * std::mem::size_of::<&FileRef>()) as u64;
     drop(summaries);
-    #[cfg(feature = "filesystem")]
     if RELEASE && let Some(io) = io {
         io.release(owned)?;
     }

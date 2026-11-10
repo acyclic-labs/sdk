@@ -44,17 +44,17 @@ pub fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
 
 pub(crate) enum NativeOpenOptions {
     Read,
-    #[cfg(any(test, feature = "local", feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     ReadWrite,
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     CreateNew,
-    #[cfg(any(test, feature = "local"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     ReadWriteCreateNew,
-    #[cfg(any(test, feature = "local", feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     ReadWriteCreate,
 }
 
-#[cfg(any(test, feature = "local"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) fn create_directories<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
@@ -193,11 +193,11 @@ fn open_native_leaf<W: NativeHostWork>(
     {
         let disposition = match options {
             NativeOpenOptions::Read => nt::FILE_OPEN,
-            #[cfg(any(test, feature = "local", feature = "native-mount"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             NativeOpenOptions::ReadWrite => nt::FILE_OPEN,
-            #[cfg(any(test, feature = "local", feature = "native-mount"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             NativeOpenOptions::ReadWriteCreate => nt::FILE_OPEN_IF,
-            #[cfg(any(test, feature = "local", feature = "native-mount"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             _ => nt::FILE_CREATE,
         };
         let access = if matches!(options, NativeOpenOptions::Read) {
@@ -218,13 +218,13 @@ fn open_native_leaf<W: NativeHostWork>(
     {
         let mode = match options {
             NativeOpenOptions::Read => libc::O_RDONLY,
-            #[cfg(any(test, feature = "local", feature = "native-mount"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             NativeOpenOptions::ReadWrite => libc::O_RDWR,
-            #[cfg(any(test, feature = "native-mount"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             NativeOpenOptions::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-            #[cfg(any(test, feature = "local"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             NativeOpenOptions::ReadWriteCreateNew => libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
-            #[cfg(any(test, feature = "local", feature = "native-mount"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             NativeOpenOptions::ReadWriteCreate => libc::O_RDWR | libc::O_CREAT,
         };
         let file = open_unix(
@@ -284,7 +284,7 @@ pub(crate) fn remove_leaf<W: NativeHostWork>(
     })
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn prepare_leaf<W: NativeHostWork>(
     name: &Path,
     work: &mut W,
@@ -299,7 +299,7 @@ pub(crate) fn prepare_leaf<W: NativeHostWork>(
     }
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn remove_prepared_leaf<W: NativeHostWork>(
     parent: &Dir,
     name: &[NativeUnit],
@@ -350,13 +350,13 @@ pub(super) fn remove_unix_named_leaf<W: NativeHostWork>(
 
 /// A terminated ASCII component whose validation and native encoding are owned
 /// by its constructor. Opening and retirement borrow the same prepared name.
-#[cfg(any(test, feature = "native-mount", feature = "fuzzing"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 #[derive(Debug)]
 pub(crate) struct PreparedAsciiLeaf<const N: usize> {
     units: [NativeUnit; N],
 }
 
-#[cfg(any(test, feature = "native-mount", feature = "fuzzing"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) fn prepare_ascii_leaf<const N: usize>(
     bytes: [u8; N],
     work: &NativeMaterializationWork,
@@ -403,7 +403,7 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
     Ok(PreparedAsciiLeaf { units: name })
 }
 
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) fn open_ascii_leaf<W: NativeHostWork, const N: usize>(
     parent: &Dir,
     name: &PreparedAsciiLeaf<N>,
@@ -420,7 +420,7 @@ pub(crate) fn open_ascii_leaf<W: NativeHostWork, const N: usize>(
     open_native_leaf(parent, name, options, work)
 }
 
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) fn remove_ascii_leaf<W: NativeHostWork, const N: usize>(
     parent: &Dir,
     name: &PreparedAsciiLeaf<N>,
@@ -541,7 +541,7 @@ mod regular_file_tests {
     fn assert_alias_is_not_a_held_root(alias: &Path) {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
         assert!(HostRoot::open(alias, &mut work).is_err());
-        #[cfg(feature = "native-watch")]
+        #[cfg(not(target_arch = "wasm32"))]
         assert!(HostRoot::open_search(alias, &mut work).is_err());
     }
 }

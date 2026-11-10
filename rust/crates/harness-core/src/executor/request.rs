@@ -310,12 +310,8 @@ impl StockExecution<'_> {
         prepared: &crate::model::PreparedModelRequest,
     ) -> Result<()> {
         let request = prepared.request();
-        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
-        #[cfg(feature = "filesystem")]
         let io = scope.io();
-        #[cfg(not(feature = "filesystem"))]
-        let io = self.io;
         let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
         // The authenticated prepared request owns its historical live tables.
         // Comparing those schemas with today's catalog would revoke a saved

@@ -615,7 +615,7 @@ impl ToolExecutor for AgentTool {
         if self.name != "wait" {
             return Ok(None);
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if io.is_some_and(|io| io.original_native_work().is_some()) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,

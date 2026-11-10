@@ -1,5 +1,5 @@
 //! Local defaults and the root agent host through the public API.
-#![cfg(feature = "filesystem-local")]
+#![cfg(not(target_arch = "wasm32"))]
 
 use crate as acyclic_harness;
 use crate::test_support::{ScriptedModelProvider, ScriptedTurn};

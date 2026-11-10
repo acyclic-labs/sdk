@@ -141,7 +141,7 @@ pub(crate) fn host_name_bytes_measured(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) fn host_name_bytes_with_native_work(
     name: &OsStr,
     profile: FilesystemProfile,
@@ -220,7 +220,7 @@ fn with_source_name_work<W: SourceDemandReadWork>(
     Ok((name, Some(allocation.ok_or(DemandError::InvalidRequest)?)))
 }
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn name_native_error(error: DemandError) -> crate::NativeTreeMaterializationError {
     match error {
         DemandError::InvalidRequest => crate::NativeTreeMaterializationError::InvalidLayout,

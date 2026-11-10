@@ -61,7 +61,7 @@ impl From<AuthorityRoot> for RuntimeAuthority {
 
 impl RuntimeAuthority {
     /// Observe the same authenticated trust publications as the retained owner.
-    #[cfg(all(target_os = "linux", feature = "native-execution"))]
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
     pub(crate) fn trust_changes(&self) -> Arc<dyn acyclic_auth::trust::ChangeSource> {
         match &self.custody {
             Custody::Native(root) => root.trust_changes(),

@@ -262,6 +262,5 @@ pub enum CheckpointError {
 }
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "tests/checkpoint.rs"]
 mod tests;

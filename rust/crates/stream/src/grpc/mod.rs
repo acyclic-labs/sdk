@@ -282,7 +282,6 @@ impl Client {
         }
     }
 
-    #[cfg(feature = "http")]
     pub(crate) fn with_session_verifier(
         mut self,
         verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
@@ -291,7 +290,6 @@ impl Client {
         self
     }
 
-    #[cfg(feature = "http")]
     pub(crate) fn with_operation_claims(mut self, claims: Arc<crate::OperationClaims>) -> Self {
         self.operation_claims = claims;
         self
