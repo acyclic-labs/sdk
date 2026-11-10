@@ -630,3 +630,10 @@ mod resolver_tests {
         Ok(())
     }
 }
+
+#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+impl crate::model::ModelResolver for ModelResolver {
+    fn resolve(&self, selection: &str) -> Result<crate::model::ModelBinding> {
+        self.resolve(selection)
+    }
+}

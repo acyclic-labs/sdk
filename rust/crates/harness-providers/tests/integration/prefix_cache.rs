@@ -251,6 +251,14 @@ fn resolve(
     prompt_cache: PromptCache,
     transport: Arc<Scripted>,
 ) -> TestResult<acyclic_harness_providers::ResolvedModel> {
+    Ok(registry(adapter, prompt_cache, transport)?.resolve("recorded/model")?)
+}
+
+fn registry(
+    adapter: Adapter,
+    prompt_cache: PromptCache,
+    transport: Arc<Scripted>,
+) -> TestResult<Registry> {
     let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
     registry.register(
         "recorded".into(),
@@ -287,7 +295,7 @@ fn resolve(
             prompt_cache,
         },
     )?;
-    Ok(registry.resolve("recorded/model")?)
+    Ok(registry)
 }
 
 fn intent(text: &str) -> IntentId {
@@ -808,3 +816,6 @@ async fn chat_prefixes_extend_byte_for_byte() -> TestResult {
     )
     .await
 }
+
+#[path = "prefix_cache/role_models.rs"]
+mod role_models;

@@ -195,6 +195,7 @@ struct WasmAgentRecord {
 pub struct WasmAgentRegistry {
     tools: ToolRegistry,
     model: Option<(Model, Arc<dyn ModelProvider>, CompactionPolicy)>,
+    models: Option<Arc<dyn crate::model::ModelResolver>>,
     workspace: Option<Workspace>,
 }
 
@@ -205,6 +206,11 @@ struct Workspace {
 }
 
 impl WasmAgentRegistry {
+    /// Retains the host catalog for durable per-agent selections.
+    pub fn bind_models(&mut self, models: Arc<dyn crate::model::ModelResolver>) {
+        self.models = Some(models);
+    }
+
     /// Retains the opener's admitted workspace executor as the home `target`.
     /// Machines hosts pass their `MachinesWorkspace` with `["shell"]`; each
     /// turn supplies its own task authority. Only the declared tools enter

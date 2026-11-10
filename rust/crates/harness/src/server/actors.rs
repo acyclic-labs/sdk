@@ -20,6 +20,8 @@ use std::sync::Arc;
 
 /// Execution and explicit policies supplied by the host.
 pub struct Execution {
+    /// Protected catalog for role, spawn and resumed model selections.
+    pub models: Option<Arc<dyn crate::model::ModelResolver>>,
     /// The selected model and its production provider; credentials stay there.
     pub model: (Model, Arc<dyn ModelProvider>),
     /// Model, content and tool policy.
@@ -175,6 +177,10 @@ where
             )
             .with_agent_tools(&selected)
             .with_templates();
+            let executors = match execution.models {
+                Some(models) => executors.with_models(models),
+                None => executors,
+            };
             let Placement {
                 filesystem,
                 provider,

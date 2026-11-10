@@ -442,7 +442,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         adopted.profile = self
             .templates
             .as_ref()
-            .map(|_| crate::templates::root())
+            .map(|templates| templates.root())
             .transpose()
             .map_err(|error| Error::Turn(Box::new(error)))?;
         self.agents.prepare_root(&self.within, intent, adopted)

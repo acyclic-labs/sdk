@@ -331,3 +331,10 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
     }
     Ok(())
 }
+
+impl acyclic_harness_core::model::ModelResolver for Registry {
+    fn resolve(&self, selection: &str) -> Result<acyclic_harness_core::model::ModelBinding> {
+        let provider = Arc::new(self.resolve(selection)?);
+        Ok((provider.model().clone(), provider))
+    }
+}

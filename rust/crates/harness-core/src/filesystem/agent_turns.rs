@@ -381,6 +381,11 @@ pub async fn agent_authority<'v>(
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.
 pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
+    /// Root model selected by this composition, pinned at root creation.
+    fn model_selection(&self) -> Option<String> {
+        None
+    }
+
     /// Publishes each bound workspace before the original turn becomes terminal.
     fn settle<'a>(
         &'a self,
@@ -513,11 +518,10 @@ where
         policy: crate::approvals::ApprovalPolicy,
     ) -> Self {
         let issuer = issuer.into();
-        let templates = Arc::new(super::Templates::new(
-            Arc::clone(&host),
-            issuer.clone(),
-            admission.clone(),
-        ));
+        let templates = Arc::new(
+            super::Templates::new(Arc::clone(&host), issuer.clone(), admission.clone())
+                .with_model(executors.model_selection()),
+        );
         Self {
             stream,
             within,

@@ -14,6 +14,7 @@ pub struct Templates<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
+    model: Option<String>,
 }
 
 #[cfg(test)]
@@ -344,6 +345,12 @@ mod tests {
 }
 
 impl<A, O> Templates<A, O> {
+    /// The root selection already admitted by the host configuration.
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
+    }
+
     /// Binds the host's verified admission; template text confers no authority.
     pub fn new(
         host: Arc<FilesystemHost<A, O>>,
@@ -354,6 +361,7 @@ impl<A, O> Templates<A, O> {
             host,
             issuer,
             admission,
+            model: None,
         }
     }
 }
@@ -361,6 +369,12 @@ impl<A, O> Templates<A, O> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTemplates
     for Templates<A, O>
 {
+    fn root(&self) -> Result<CreationConfig> {
+        let mut root = crate::templates::root()?;
+        root.model.clone_from(&self.model);
+        Ok(root)
+    }
+
     fn child<'a>(
         &'a self,
         creation: &'a CreationConfig,
@@ -397,14 +411,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
                 None,
             )?;
             crate::templates::admit_child(creation, reader.as_ref(), name, ceiling).await?;
-            crate::templates::select(
+            let mut selected = crate::templates::select(
                 reader.as_ref(),
                 &home.volume,
                 &seed,
                 name,
                 crate::conversation::ContentAccess { ceiling, io: None },
             )
-            .await
+            .await?;
+            selected.model = selected
+                .model
+                .or_else(|| creation.model.clone())
+                .or_else(|| self.model.clone());
+            Ok(selected)
         })
     }
 }

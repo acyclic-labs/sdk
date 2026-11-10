@@ -241,6 +241,10 @@ pub enum SpawnContext {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreationConfig {
+    /// Durable provider/model selection. Absent only for externally owned loops
+    /// or compositions that do not bind models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Present only on an explicitly continued decider, never inherited by spawns.
     pub continuation: Option<Box<super::Continuation>>,
     /// Conversation selected at creation, independent of a template name.
@@ -257,6 +261,11 @@ pub struct CreationConfig {
 
 /// A host's original template reader, shared by direct and model spawns.
 pub trait SpawnTemplates: acyclic_stream::ProviderPlatform {
+    /// Pins the host's root model in its creation record.
+    fn root(&self) -> crate::Result<CreationConfig> {
+        crate::templates::root()
+    }
+
     /// Reads one child template using the parent's original authority.
     fn child<'a>(
         &'a self,
