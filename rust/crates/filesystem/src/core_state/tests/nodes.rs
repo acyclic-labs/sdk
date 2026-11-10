@@ -216,6 +216,14 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     let directory = tempfile::tempdir().unwrap();
     let id = WorkspaceId::from_bytes([0xb1; 16]);
     let mut state = lazy_state(id, 1);
+    let cancellation = crate::CancellationToken::new();
+    state.source = crate::demand::SourceReference::pair(
+        [0xb3; 16],
+        &state.source,
+        &crate::demand::SourceReference::new([0xb4; 16], 2),
+        &mut unbounded_accounting(&cancellation),
+    )
+    .unwrap();
     let snapshot = crate::LazySnapshotRef::new(
         id,
         crate::GenerationId::new(Digest::from_bytes([0xb2; 32])),
@@ -229,7 +237,6 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
             crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
         )
     }));
-    let cancellation = crate::CancellationToken::new();
     let work = crate::materializer::NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
         &cancellation,
@@ -270,14 +277,32 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     assert_eq!(work.receipt().object_bytes_written, before);
     drop(store);
     let restarted = LocalCoreStateStore::new(directory.path());
+    let decoded_work = crate::materializer::NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .unwrap();
+    let mut decoded_accounting =
+        crate::kernel::KernelAccounting::native(&decoded_work, decoded_work.cancellation());
     let original = restarted
-        .load_lazy_workspace(id, &mut accounting)
+        .load_lazy_workspace(id, &mut decoded_accounting)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(original.selected_import_roots, state.selected_import_roots);
     assert_eq!(original.source, state.source);
     assert_eq!(original.workspace_id, id);
+    let held_cut = original.source.clone();
+    let held_roots = original.selected_import_roots.clone();
+    drop(original);
+    drop(restarted);
+    assert!(
+        decoded_work.live_allocation_bytes() > 0,
+        "returned source aliases retain their original decoded backing"
+    );
+    drop(held_cut);
+    drop(held_roots);
+    assert_eq!(decoded_work.live_allocation_bytes(), 0);
 }
 
 #[tokio::test]
