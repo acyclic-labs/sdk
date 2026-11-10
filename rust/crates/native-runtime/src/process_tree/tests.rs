@@ -60,7 +60,7 @@ fn closed_spawn_arguments_preserve_original_credit_and_unwind() -> io::Result<()
                     assert_eq!(payload.downcast::<&str>().ok(), Some(Box::new(expected)));
                 }
                 Ok(Err(error)) => {
-                    assert_eq!(cut, 1);
+                    assert_eq!(cut, 1, "unexpected closed-spawn failure: {error}");
                     assert!(!callback_panics);
                     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
                 }

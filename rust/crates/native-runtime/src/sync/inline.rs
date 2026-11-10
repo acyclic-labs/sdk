@@ -59,10 +59,10 @@ mod tests {
             }
         }
         let clean = Mutex::new(0);
-        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let failed = std::panic::catch_unwind(|| {
             let _during = DuringUnwind(&clean);
             panic!("original outer failure");
-        }));
+        });
         assert!(failed.is_err());
         assert_eq!(*clean.lock().unwrap(), 9);
     }
