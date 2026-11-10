@@ -55,15 +55,13 @@
         {
           "when": {
             "contains": [
-              "○"
-            ],
-            "absent": [
-              "Thinking"
+              "cancelled"
             ]
           },
           "prompt": "/quit "
         }
-      ]
+      ],
+      "exit": 2
     }
   ],
   "assert": {
