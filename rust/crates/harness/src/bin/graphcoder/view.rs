@@ -12,9 +12,7 @@ use acyclic_harness::local::{
 };
 use acyclic_harness::{
     agent::{AgentOutcome, ContextAction, ConversationEntry, IntentId, Phase, TurnOutcome},
-    client::commands::{
-        CommandCatalog, CommandQuery, CommandRequest, CommandResolution, DEFAULT_COMMANDS_JSON,
-    },
+    client::commands::{CommandCatalog, CommandQuery, CommandRequest, CommandResolution},
     executor::ToolCard,
     interaction::ApprovalBinding,
     tui::{
@@ -670,7 +668,6 @@ pub async fn run(
     };
     let mut older_future = std::pin::pin!(None);
     let mut output_rows = Vec::new();
-    let catalog = CommandCatalog::builtins()?;
     let mut input = PromptInput::default();
     ui.config
         .apply(&mut input, &profile)
@@ -689,7 +686,7 @@ pub async fn run(
             &mut overlay,
             &mut queries,
             query_future.as_mut(),
-            &catalog,
+            &ui.catalog,
             &input,
         );
     }
@@ -705,9 +702,7 @@ pub async fn run(
     let mut usage_stopped: Option<(UsageQuery, acyclic_harness::Error)> = None;
     // The message id and text of the prompt the host last refused.
     let mut unsent: Option<(String, String)> = None;
-    input
-        .completion
-        .set_file("commands/commands.json", Some(DEFAULT_COMMANDS_JSON))?;
+    ui.complete(&mut input)?;
     let mut viewport = Viewport::default();
     // An open panel's first shown row; panels open at their top.
     let mut overlay_top = 0usize;
@@ -820,13 +815,17 @@ pub async fn run(
                     != snapshot.files.get("layout.json").and_then(Option::as_ref).map(|file| &file.file);
                 ui.snapshot = snapshot;
                 ui.project()?;
+                ui.complete(&mut input)?;
+                if overlay.as_ref().is_some_and(|(title, _)| *title == "Help") {
+                    overlay = Some(("Help", View::help(&ui.catalog, &input)));
+                }
                 ui.config.apply(&mut input, &profile).map_err(|errors| format!("UI configuration: {errors:?}"))?;
                 view.transcript.set_theme(input.theme);
                 view.pending_dirty = true;
                 view.tail_dirty = true;
                 if layout_changed {
                     view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                        query_future.as_mut(), &catalog, &input).or(view.notice.take());
+                        query_future.as_mut(), &ui.catalog, &input).or(view.notice.take());
                     overlay_top = 0;
                 }
                 files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));
@@ -965,7 +964,7 @@ pub async fn run(
                                     }
                                     Ok(None) => {}
                                 }
-                                match catalog.resolve(&text, u64::MAX) {
+                                match ui.catalog.resolve(&text, u64::MAX) {
                                     Ok(None) => {}
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
                                         return view.exit();
@@ -975,7 +974,7 @@ pub async fn run(
                                             Ok(()) => {
                                                 selection_changed = true;
                                                 view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                                                    query_future.as_mut(), &catalog, &input).or(view.notice.take());
+                                                    query_future.as_mut(), &ui.catalog, &input).or(view.notice.take());
                                                 overlay_top = 0;
                                             }
                                             Err(error) => view.notice = Some(error.to_string()),
@@ -1030,7 +1029,7 @@ pub async fn run(
                                     Ok(()) => {
                                         selection_changed = true;
                                         view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                                            query_future.as_mut(), &catalog, &input).or(view.notice.take());
+                                            query_future.as_mut(), &ui.catalog, &input).or(view.notice.take());
                                         overlay_top = 0;
                                     }
                                     Err(error) => view.notice = Some(error.to_string()),
@@ -1069,6 +1068,7 @@ pub async fn run(
                     }
                 }
                 if selection_changed {
+                    ui.complete(&mut input)?;
                     ui.config.apply(&mut input, &profile)
                         .map_err(|errors| format!("UI configuration: {errors:?}"))?;
                     view.transcript.set_theme(input.theme);

@@ -127,6 +127,12 @@ impl CommandCatalog {
         }
         let specs: Vec<CommandSpec> = serde_json::from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("invalid command catalog: {error}")))?;
+        Self::from_specs(specs)
+    }
+
+    /// Validate already decoded descriptors from a versioned file projection.
+    /// The source reader owns byte admission; validation is shared with builtins.
+    pub fn from_specs(specs: Vec<CommandSpec>) -> Result<Self> {
         let mut names = name_index::NameIndex::default();
         let mut commands = BTreeMap::new();
         for mut spec in specs {
@@ -263,18 +269,12 @@ impl CommandCatalog {
     }
 
     /// The prompt command or skill name `input` selects and its arguments,
-    /// when it selects none of the built-ins and its name is well formed.
-    pub fn selected<'a>(
-        &self,
-        input: &'a str,
-        maximum_bytes: u64,
-    ) -> Result<Option<(String, &'a str)>> {
+    /// when its name is well formed. Client actions are resolved by the active
+    /// catalogue before prompt admission; the server reserves no builtin names.
+    pub fn selected(input: &str, maximum_bytes: u64) -> Result<Option<(String, &str)>> {
         let Some((name, arguments)) = syntax::split(input, maximum_bytes)? else {
             return Ok(None);
         };
-        if self.lookup(name).is_some() {
-            return Ok(None);
-        }
         // A leading path such as `/usr/bin` names no command: it is prose.
         let name = name.to_ascii_lowercase();
         Ok(validate_name(&name).is_ok().then_some((name, arguments)))
@@ -348,11 +348,14 @@ mod tests {
         assert_eq!(catalog.resolve("hello", 64)?, None);
         assert_eq!(catalog.resolve("/marker extra", 64)?, None);
         assert_eq!(
-            catalog.selected("/Marker extra", 64)?,
+            CommandCatalog::selected("/Marker extra", 64)?,
             Some(("marker".into(), "extra"))
         );
-        assert_eq!(catalog.selected("/help", 64)?, None);
-        assert_eq!(catalog.selected("/usr/bin/env x", 64)?, None);
+        assert_eq!(
+            CommandCatalog::selected("/help", 64)?,
+            Some(("help".into(), ""))
+        );
+        assert_eq!(CommandCatalog::selected("/usr/bin/env x", 64)?, None);
         assert!(catalog.complete("/com").any(|spec| spec.name == "compact"));
         Ok(())
     }

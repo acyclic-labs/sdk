@@ -203,7 +203,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                     path: &change.path,
                     bytes: change.text.as_bytes(),
                     media_type: "application/json",
-                    display_name: &change.path,
+                    display_name: change.path.rsplit('/').next().unwrap_or(&change.path),
                 },
             })
             .collect();

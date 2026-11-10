@@ -1591,7 +1591,7 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
 #[tokio::test]
 async fn a_replayed_command_answers_from_its_first_delivery_after_the_command_is_gone() -> Result<()>
 {
-    let (_directory, harness, _provider) = checkout_with(&[
+    let (_directory, harness, provider) = checkout_with(&[
         (
             ".claude/commands/marker.md".into(),
             b"MARKER $ARGUMENTS with @note.txt
@@ -1608,6 +1608,13 @@ async fn a_replayed_command_answers_from_its_first_delivery_after_the_command_is
     .await?;
     let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
     let mut observed = ObservedConversation::open(&harness).await?;
+    // A client-removed builtin must fail prompt admission, just like any
+    // unknown slash command, without spending a model request.
+    let before = provider.request_count();
+    for command in ["/view", "/help", "/no-such-command"] {
+        assert!(observed.conversation.send(command, command).await.is_err());
+    }
+    assert_eq!(provider.request_count(), before);
     let inbox = observed.conversation.send("marker", "/marker now").await?;
     let entry = observed.settled(inbox).await?;
     let client = observed.conversation;
