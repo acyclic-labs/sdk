@@ -1,7 +1,7 @@
 # Rescued filesystem regressions
 
 Run `bash rust/crates/filesystem/proofs/rescued-fixes/check.sh` on a disposable
-Linux checkout. The script records its source SHA, checks the filesystem crate,
+Linux checkout. The script records its source SHA, lints only the filesystem crate,
 runs the affected tests, then removes seven protections in one mutant build.
 Every original regression must fail at runtime; compilation errors do not count.
 The checkout is restored on exit.
