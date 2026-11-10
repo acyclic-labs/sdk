@@ -19,6 +19,7 @@ wasm-journal = ["browser", "acyclic-harness/wasm-journal"]
 fuzzing = ["acyclic-harness-core/test-support"]
 
 [dependencies]
+acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
 acyclic-model-render = { path = "../model-render", version = "=0.2.0" }
 acyclic-auth = { path = "../auth", version = "=0.2.0" }
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
@@ -40,7 +41,6 @@ acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = 
 acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0" }
 serde_path_to_error = "0.1.20"
 acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
-acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
 blake3.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
@@ -64,7 +64,6 @@ acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-f
 acyclic-actors = { path = "../actors", version = "=0.2.0" }
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
-acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
 acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0", features = ["test-support"] }
 prost.workspace = true
 tracing.workspace = true
