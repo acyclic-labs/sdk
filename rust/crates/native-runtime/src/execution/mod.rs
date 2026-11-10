@@ -368,6 +368,8 @@ impl ExecutionGrant {
     /// No ambient home, temporary directory or filesystem root is added.
     /// Invalid network authority refuses before binding paths or consuming
     /// the read-root iterator.
+    /// On Linux, construction also makes the trusted host process non-dumpable
+    /// to protect its environment and memory from read-capable guests.
     pub fn new(
         workspace: &Path,
         access: ExecutionAccess,
@@ -381,6 +383,8 @@ impl ExecutionGrant {
     /// Additional roots are explicit host authority, never command arguments.
     /// Read-only access removes mutation from every root together. Roots are
     /// pinned and indexed once; no process, mount, thread or watcher is created.
+    /// Linux construction makes the host non-dumpable for its remaining
+    /// lifetime. Embedders must not re-enable dumpability while guests exist.
     pub fn composed(
         workspace: &Path,
         access: ExecutionAccess,

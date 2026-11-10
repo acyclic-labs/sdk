@@ -121,9 +121,11 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
             crate::tools::ShellCommand::Source(
                 r#"printf inside > inside; printf volume > .volumes/data/written;
              printf temp > "$TMPDIR/tempfile";
+             test "$(/bin/cat "$OUTSIDE")" = original || exit 13;
+             /bin/cat /proc/self/environ >/dev/null 2>&1 || exit 14;
              (printf escaped > escape) 2>/dev/null && exit 10;
              /bin/sh -c 'printf escaped > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11;
-             /bin/cat "/proc/$OWNER/environ" 2>/dev/null && exit 12;
+             /bin/cat "/proc/$OWNER/environ" >/dev/null 2>&1 && exit 12;
              printf confined"#
                     .into(),
             ),
