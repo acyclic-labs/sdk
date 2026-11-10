@@ -39,7 +39,7 @@ pub async fn assert_canonical_tool_consumers(call: &crate::model::ToolCall) -> c
                     executable: "guard".into(),
                     argv: vec![],
                 },
-                timeout_ms: 1000,
+                timeout_ms: Some(1000),
                 failure: HookFailure::Block,
             }],
         }])?;

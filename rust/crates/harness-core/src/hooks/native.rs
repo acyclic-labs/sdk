@@ -111,7 +111,7 @@ pub(super) async fn run_hook(
         owner_check,
         wakes,
     };
-    let timeout = Duration::from_millis(hook.timeout_ms);
+    let timeout = hook.timeout_ms.map(Duration::from_millis);
     let (workspace, cwd, input) = request;
     let spawner = acyclic_native_runtime::TaskSpawner::current();
     // Spawning may block; the running hook then holds no worker.
@@ -149,7 +149,7 @@ pub(super) async fn run_hook(
             .map_err(Error::process_io)?;
             Ok(tree.capture(
                 &spawner,
-                CaptureSchedule::new(timeout),
+                timeout.map_or(CaptureSchedule::Unbounded, CaptureSchedule::new),
                 maximum_bytes,
                 Some(OwnedCaptureInput::Literal(input)),
                 handler,
@@ -300,7 +300,7 @@ mod tests {
                 command: "echo literal-source".into(),
                 shell: None,
             },
-            timeout_ms: 1_000,
+            timeout_ms: Some(1_000),
             failure: HookFailure::Report,
         };
         let command = hook_command(
@@ -354,7 +354,7 @@ mod tests {
                         matcher: String::new(),
                         hooks: vec![HookSpec {
                             run: HookRun::Executable { executable: name.clone(), argv: vec![] },
-                            timeout_ms: 1_000,
+                            timeout_ms: Some(1_000),
                             failure: HookFailure::Report,
                         }],
                     }])?,
