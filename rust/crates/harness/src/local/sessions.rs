@@ -94,7 +94,7 @@ pub struct Filter {
 }
 
 impl Filter {
-    fn metadata(&self, item: &crate::client::ChildAgent) -> bool {
+    fn metadata(&self, item: &acyclic_harness_client::ChildAgent) -> bool {
         (self.states.is_empty() || self.states.contains(&State::of(item.status.as_ref())))
             && self
                 .created_after
