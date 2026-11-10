@@ -125,7 +125,6 @@ impl ProgramLogs {
         source: &'de str,
         io: Option<&'a PreparationIo>,
     ) -> Result<(T, Option<crate::conversation::ContentHold<'a>>)> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             let (value, hold) = io.decode_seed(
                 std::marker::PhantomData::<T>,

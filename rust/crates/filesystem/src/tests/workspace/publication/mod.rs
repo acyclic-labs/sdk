@@ -2,7 +2,7 @@ use super::*;
 use acyclic_stream::StreamProviderExt as _;
 
 mod collection;
-#[cfg(all(feature = "local", feature = "test-support", any(unix, windows)))]
+#[cfg(all(feature = "test-support", any(unix, windows)))]
 mod commit_recovery;
 mod local_recovery;
 mod provider_cuts;

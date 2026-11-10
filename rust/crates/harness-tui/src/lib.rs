@@ -43,7 +43,7 @@ mod settings;
 pub use settings::{DEFAULT_SETTINGS, NotificationPolicy, UiSettings};
 #[cfg(not(target_arch = "wasm32"))]
 mod prompt_box;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod prompt_input;
 #[cfg(not(target_arch = "wasm32"))]
 mod query_controller;
@@ -65,9 +65,9 @@ mod thinking;
 mod transcript;
 #[cfg(not(target_arch = "wasm32"))]
 pub use thinking::Thinking;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use transcript::{BlockKind, TranscriptRows};
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod widget;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -93,7 +93,7 @@ pub use keymap::{ACTIONS, Action, AppAction, Binding, KEYMAP, keymap_help, named
 pub use layout::{Cell, Layout, Row};
 #[cfg(not(target_arch = "wasm32"))]
 pub use prompt_box::PromptBox;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use prompt_input::{InputEffect, PromptInput};
 #[cfg(not(target_arch = "wasm32"))]
 pub use ratatui;

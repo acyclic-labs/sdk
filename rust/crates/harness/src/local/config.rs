@@ -52,7 +52,7 @@ pub enum WorkspaceMounting {
 impl WorkspaceMounting {
     /// `Native` when this host admits a native projection; otherwise
     /// `Physical`, with the probe's reason for the caller to report.
-    #[cfg(feature = "native-execution")]
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn detect() -> (Self, Option<&'static str>) {
         match acyclic_fs::probe_native_mount().unavailable_reason {
@@ -101,9 +101,9 @@ pub struct LocalHarnessConfig {
     pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) environment_platform: crate::native_environment::PlatformPolicy,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) workspace_mounting: WorkspaceMounting,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) native_mount_probe: acyclic_fs::NativeMountProbe,
 }
 
@@ -244,14 +244,14 @@ impl LocalHarnessConfig {
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
             #[cfg(any(test, not(target_arch = "wasm32")))]
             environment_platform: crate::native_environment::PlatformPolicy::Native,
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             workspace_mounting: WorkspaceMounting::Native,
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             native_mount_probe: Default::default(),
         }
     }
     /// Selects how task views reach the host filesystem; `Native` by default.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     #[must_use]
     pub fn workspace_mounting(mut self, mounting: WorkspaceMounting) -> Self {
         self.workspace_mounting = mounting;
@@ -260,7 +260,7 @@ impl LocalHarnessConfig {
     /// Selects the host filesystem root whose native mount prerequisites are
     /// admitted. Root coordination still uses the existing physical checkout;
     /// only projected views and native shell tools require these capabilities.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     #[must_use]
     pub fn native_mount_probe(mut self, probe: acyclic_fs::NativeMountProbe) -> Self {
         self.native_mount_probe = probe;
@@ -506,7 +506,7 @@ impl LocalHarnessConfig {
         self
     }
     /// Selects protective MCP discovery-frame and tool-exchange bounds.
-    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn mcp_limits(mut self, limits: crate::mcp::McpClientLimits) -> Self {
         self.mcp_limits = limits;

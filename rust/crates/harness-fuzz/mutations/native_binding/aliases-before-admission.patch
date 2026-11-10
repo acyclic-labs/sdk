@@ -94,7 +94,7 @@
          Ok(())
      }
  
-@@ -183,17 +167,6 @@
+@@ -183,16 +167,5 @@
          revision: Option<&str>,
          io: Option<&crate::executor::PreparationIo>,
      ) -> Result<Option<&Tool>> {
@@ -109,7 +109,6 @@
 -        revision: Option<&str>,
 -        io: Option<&crate::executor::PreparationIo>,
 -    ) -> Result<Option<&Arc<Tool>>> {
-         #[cfg(feature = "filesystem")]
          if revision.is_none()
              && let Some(io) = io
 @@ -208,11 +181,7 @@

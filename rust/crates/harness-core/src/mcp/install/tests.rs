@@ -438,7 +438,7 @@ async fn startup_deadlines_and_required_failures_are_bounded_without_retries() -
     Ok(())
 }
 
-#[cfg(feature = "mcp-stdio")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn stdio_configuration_preserves_argv_scope_environment_and_project_root() -> Result<()> {
     let workspace = std::env::current_dir().map_err(Error::process_io)?;

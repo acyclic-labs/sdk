@@ -63,7 +63,7 @@ pub mod access;
 mod arc_layout;
 mod operation_claim;
 mod sync;
-#[cfg(all(any(test, feature = "native-watch"), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod watch_queue;
 pub use acyclic_stream::{
     OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
@@ -80,7 +80,7 @@ pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
 pub mod compat_wire;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod core_state;
 pub mod mount_qualification;
 #[cfg(not(target_arch = "wasm32"))]
@@ -196,14 +196,14 @@ pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;
 
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 /// Scopes authority writes that survive a crash of this process but wait
 /// for [`LocalFs::flush_deferred_authority`] to survive a power loss.
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_stream::deferring_durability as deferring_authority_durability;
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 #[cfg(not(target_arch = "wasm32"))]
 pub use async_storage::NativeAuthorityGuard;
@@ -216,7 +216,7 @@ pub use async_storage::{
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use core_state::{DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError};
 pub use distributed::{
     AuthorityPlacement, FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,
@@ -234,7 +234,7 @@ pub use facade::{
     StagedContent, Volume, VolumeInitialization,
 };
 pub use facade::{CreateSpec, ForkSpec, ForkedGeneration, RestoreSpec};
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use facade::{
     LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
     LocalOperationWindowStore, LocalOptions, LocalVolume,
@@ -290,7 +290,7 @@ pub use materializer::{
     NativeStageUncertainty, NativeTreeMaterializationBackend, NativeTreeMaterializationError,
     NativeWorkReservation, validate_native_preparation_location,
 };
-#[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use materializer::{
     NativeWorkspacePublication, NativeWorkspacePublicationError,
     load_native_materialization_journal, prepare_native_generation_transition,

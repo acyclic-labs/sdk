@@ -1148,7 +1148,7 @@ async fn multiple_results_reach_continuation_with_per_part_render_bounds() -> Re
     Ok(())
 }
 
-#[cfg(all(feature = "test-support", feature = "filesystem"))]
+#[cfg(feature = "test-support")]
 #[tokio::test]
 async fn real_console_frames_preserve_render_and_original_allocation_admission() {
     crate::executor::check_code_mode(include_bytes!(concat!(

@@ -150,12 +150,12 @@ impl LocalHarness {
                 _ => "policy-controlled approvals",
             };
             // A physical workspace projects no home volume.
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             let home = binding
                 .workspace
                 .as_ref()
                 .is_none_or(|workspace| workspace.mounting == super::WorkspaceMounting::Native);
-            #[cfg(not(any(test, feature = "native-execution")))]
+            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
             let home = true;
             let home = if home {
                 " .volumes/home is your private retained home volume and is never merged into the project."

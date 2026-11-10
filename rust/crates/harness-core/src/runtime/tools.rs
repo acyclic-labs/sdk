@@ -967,9 +967,9 @@ impl ToolContext {
                 }
                 Err(error) => return Err(error),
             };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let custody = {
             let _ = retained;
             None
@@ -981,9 +981,9 @@ impl ToolContext {
                 let (_, bytes, retained) = self
                     .read_tool_path_range(home, Some(&selected.generation), range, io)
                     .await?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let custody = {
                     let _ = retained;
                     None::<()>
@@ -1012,7 +1012,7 @@ impl ToolContext {
             drop(custody);
             return Ok((seed().into(), None));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let custody = {
             if let Some(custody) = custody {
                 custody.into_retained()?;

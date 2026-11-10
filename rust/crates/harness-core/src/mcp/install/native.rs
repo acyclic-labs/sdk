@@ -4,7 +4,6 @@ use crate::{
     mcp::{McpTransport, config::Dialect},
 };
 use futures::TryStreamExt;
-#[cfg(feature = "mcp-stdio")]
 use std::collections::BTreeSet;
 
 enum Connection {

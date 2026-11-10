@@ -199,7 +199,7 @@ Base: `6aaed7e3a49a609c8a62790356ce94588d2e44f5`, branch
 `codex/harness-mcp-transports`, 2026-10-08. This is development
 evidence, not final-source qualification or a landed capability.
 
-- Windows `cargo test -p acyclic-harness --no-default-features --features mcp-http --lib --locked -j 2`:
+- Windows `cargo test -p acyclic-harness --no-default-features --lib --locked -j 2`:
   231 passed, zero failed/ignored. Twelve MCP tests cover schema/namespace/authority,
   initialization, JSON/SSE, expired session, 64 replacement transitions and real
   loopback JSON/SSE/lost-response/redirect controls, bounded stdio stream cuts,
@@ -805,8 +805,8 @@ final-main CI. Integrate the optional protocol feature/dependency and generated
 WASM/public facade before running:
 
 ```sh
-cargo test -p acyclic-harness --no-default-features --features filesystem-local,native-execution,mcp-http,mcp-oauth --lib --tests --examples --locked
-cargo clippy -p acyclic-harness --no-default-features --features filesystem-local,native-execution,mcp-http,mcp-oauth --all-targets --locked -- -D warnings
+cargo test -p acyclic-harness --no-default-features --lib --tests --examples --locked
+cargo clippy -p acyclic-harness --no-default-features --all-targets --locked -- -D warnings
 bun scripts/build-wasm.mjs harness
 bun test typescript/packages/harness/test
 bun run --cwd typescript/packages/harness test:browser:mcp

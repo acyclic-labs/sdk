@@ -2,7 +2,7 @@ diff --git b/rust/crates/harness-core/src/model/instruction_index.rs a/rust/crat
 index 76ff05be8f..932d96fc23 100644
 --- b/rust/crates/harness-core/src/model/instruction_index.rs
 +++ a/rust/crates/harness-core/src/model/instruction_index.rs
-@@ -1,6 +1,257 @@
+@@ -1,6 +1,255 @@
 -//! Exact instruction source keys and original accounting observations.
 +//! Bounded radix lookup: at most 256 branches, independent of history length.
  use super::*;
@@ -30,7 +30,6 @@ index 76ff05be8f..932d96fc23 100644
 +}
 +impl<T: Copy> Index<T> {
 +    /// Visits live leaf entries when building an initial durable snapshot.
-+    #[cfg(any(test, feature = "filesystem"))]
 +    pub(crate) fn entries(&self) -> impl Iterator<Item = ([u8; 32], T)> + '_ {
 +        self.nodes
 +            .iter()
@@ -65,7 +64,6 @@ index 76ff05be8f..932d96fc23 100644
 +    }
 +
 +    /// Removes a key and its redundant branch without retaining tombstones.
-+    #[cfg(any(test, feature = "filesystem"))]
 +    pub(crate) fn remove(
 +        &mut self,
 +        domain: usize,
