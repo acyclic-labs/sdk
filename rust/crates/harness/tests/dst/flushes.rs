@@ -128,6 +128,10 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
         let window = |from: usize, to: usize| flushes(&writes[cuts[from]..cuts[to]]);
         if window(0, 1) != (7, 12) {
             eprintln!(
+                "fresh open directory: {:?}; cuts: {cuts:?}",
+                directory.path()
+            );
+            eprintln!(
                 "fresh open original calls: {:#?}",
                 &writes[cuts[0]..cuts[1]]
             );
