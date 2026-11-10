@@ -205,3 +205,22 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn watch_admission_stays_within_the_discovery_budget() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+    acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
+    let root = tempfile::tempdir().map_err(storage)?;
+    for name in ["one", "two"] {
+        std::fs::create_dir(root.path().join(name)).map_err(storage)?;
+    }
+    let watch = UserWatch::default();
+    let mut bounds = DiscoveryWork::default();
+    bounds.limits.directories = 3;
+    assert!(watch.arm(&[root.path().to_path_buf()], &bounds).is_some());
+    assert_eq!(watch.watches.lock().unwrap().len(), 3);
+    bounds.limits.directories = 2;
+    assert!(watch.arm(&[root.path().to_path_buf()], &bounds).is_none());
+    assert!(watch.watches.lock().unwrap().is_empty());
+    Ok(())
+}
