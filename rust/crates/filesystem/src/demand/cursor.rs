@@ -21,6 +21,23 @@ impl SourceCursor {
             native: None,
         }
     }
+
+    /// A pure view's next position. `Computed` binds this value to the source,
+    /// cut and directory before publishing it to a caller.
+    pub fn position(token: u64) -> Self {
+        Self::detached(
+            SourceReference {
+                identity: [0; 16],
+                epoch: 0,
+            },
+            token,
+        )
+    }
+
+    /// Position from a continuation already checked by `Computed`.
+    pub fn offset(&self) -> u64 {
+        self.token
+    }
 }
 
 impl std::fmt::Debug for SourceCursor {

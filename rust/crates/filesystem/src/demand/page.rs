@@ -14,6 +14,25 @@ pub struct SourceDirectoryPage {
     pub publication: Option<Box<SourceDirectoryPublication>>,
 }
 impl SourceDirectoryPage {
+    /// Copies one bounded borrowed page onto the caller's original ledger.
+    /// Names and entry backing are funded before their allocations occur.
+    pub fn copied<'a>(
+        entries: impl Iterator<Item = (&'a crate::kernel::LogicalName, SourceNode)> + Clone,
+        next: Option<SourceCursor>,
+        version: SourceVersion,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<Self, DemandError> {
+        let mut owned = crate::kernel::Owned::allocate(entries.clone().count(), accounting)?;
+        for (name, node) in entries {
+            let cancel = accounting.cancellation();
+            let (name, mut allocation) = name.clone_with_accounting(accounting, cancel)?;
+            owned.bytes += name.logical_owned_bytes();
+            owned.allocation.absorb(&mut allocation)?;
+            owned.push(SourceDirectoryEntry { name, node }, accounting)?;
+        }
+        Self::stateless(owned, next, version, accounting)
+    }
+
     /// Constructs a page without a producer transaction.
     pub fn stateless(
         mut entries: crate::kernel::Owned<Vec<SourceDirectoryEntry>>,
