@@ -157,7 +157,6 @@ impl FilePathSelection {
         self.path_selection().validate(work)
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.path_selection()
             .logical_owned_bytes(self.path.capacity())

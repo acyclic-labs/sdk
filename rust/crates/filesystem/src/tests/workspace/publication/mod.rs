@@ -347,7 +347,7 @@ async fn fork_through_every_cut(
     Ok(())
 }
 
-#[cfg(all(feature = "local", any(unix, windows)))]
+#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
 async fn close_local(
     fs: crate::Fs<crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
 ) -> Result<(), Box<dyn Error>> {

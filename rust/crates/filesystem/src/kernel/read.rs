@@ -239,6 +239,5 @@ pub enum TreeReadError {
 }
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "tests/read.rs"]
 mod tests;

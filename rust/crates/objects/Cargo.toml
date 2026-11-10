@@ -17,14 +17,11 @@ categories = ["api-bindings", "filesystem"]
 [[bench]]
 name = "objects"
 harness = false
-required-features = ["local"]
 
 [[bin]]
 name = "objects-rpc-inventory"
 path = "src/bin/objects-rpc-inventory.rs"
 test = false
-required-features = ["grpc", "http"]
-
 [features]
 # Canonical binary messages over an already admitted account transport, both
 # as a client and as the route dispatch serving one.
@@ -34,20 +31,14 @@ javascript = ["binary", "acyclic-auth/javascript", "acyclic-stream/js-bytes", "d
 # Request accounting over `acyclic_stream::testing::Counted`.
 conformance = ["acyclic-stream/conformance"]
 test-support = ["acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
-default = ["grpc"]
-grpc = ["acyclic-auth/grpc", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:http-body", "tokio/time"]
-json = ["dep:acyclic-protobuf-json", "dep:prost-reflect", "dep:serde_json"]
-http = ["json", "dep:reqwest", "reqwest/http2", "tokio/time"]
-local = ["dep:libc", "tokio/rt"]
-s3 = ["dep:object_store", "dep:reqwest-s3", "dep:quick-xml", "dep:rustls", "tokio/rt", "tokio/macros"]
 
 [dependencies]
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
-acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json", optional = true }
-acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
 pin-project-lite = "0.2.16"
-http-body = { version = "1", optional = true }
+http-body = { version = "1" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 async-trait.workspace = true
 blake3 = "1.8.2"
@@ -56,25 +47,25 @@ futures.workspace = true
 getrandom = { version = "=0.4.3", features = ["wasm_js"] }
 hex.workspace = true
 prost.workspace = true
-prost-reflect = { workspace = true, features = ["serde"], optional = true }
-serde_json = { workspace = true, optional = true }
+prost-reflect = { workspace = true, features = ["serde"] }
+serde_json = { workspace = true }
 thiserror.workspace = true
-tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
+tokio = { version = "1.48.0", default-features = false, features = ["sync", "time", "rt", "macros"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-libc = { version = "0.2.175", optional = true }
+libc = { version = "0.2.175" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"], optional = true }
-quick-xml = { version = "0.41.0", optional = true }
+object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"] }
+quick-xml = { version = "0.41.0" }
 # object_store uses reqwest 0.13; keep its TLS provider aligned with the SDK.
-reqwest-s3 = { package = "reqwest", version = "0.13.5", default-features = false, features = ["rustls-no-provider"], optional = true }
-tonic = { version = "0.14.6", features = ["tls-ring"], optional = true }
-tonic-prost = { workspace = true, optional = true }
+reqwest-s3 = { package = "reqwest", version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+tonic = { version = "0.14.6", features = ["tls-ring"] }
+tonic-prost = { workspace = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
-reqwest = { workspace = true, optional = true }
+reqwest = { workspace = true, features = ["http2"] }
 tracing.workspace = true
-rustls = { workspace = true, optional = true }
+rustls = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.67"

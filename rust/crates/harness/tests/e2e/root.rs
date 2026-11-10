@@ -418,6 +418,5 @@ fn run_scenarios(started: Instant) -> TestResult {
     Ok(())
 }
 
-#[cfg(all(feature = "grpc", feature = "objects"))]
 #[path = "remote_files.rs"]
 mod remote_files;

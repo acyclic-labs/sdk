@@ -106,7 +106,6 @@ pub struct NativeTools(Vec<Mapped>);
 
 /// Model-specific declarations. The fallible initializer owns the
 /// reservation before it reads the profile or decodes any declarations.
-#[cfg(any(feature = "filesystem", test))]
 #[derive(Default)]
 pub(crate) struct Cache(
     std::sync::Mutex<
@@ -114,7 +113,6 @@ pub(crate) struct Cache(
     >,
 );
 
-#[cfg(any(feature = "filesystem", test))]
 impl Cache {
     pub(crate) fn get(
         &self,

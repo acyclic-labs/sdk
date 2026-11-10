@@ -1,6 +1,6 @@
 //! Codex's multi-file envelope; all update hunks use the original patch engine.
 use super::{charge, invalid, reserve_vec};
-use crate::{NativeCustody, Result};
+use crate::Result;
 
 /// One borrowed operation from a completely validated patch envelope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,7 +51,7 @@ impl<'a> FileChange<'a> {
         self,
         source: &str,
         maximum_bytes: u64,
-        meter: &mut NativeCustody,
+        meter: &mut acyclic_fs::NativeCustody,
     ) -> Result<Option<String>> {
         match self {
             Self::Delete { .. } => Ok(None),
@@ -86,7 +86,7 @@ fn header(line: &str) -> bool {
         || line == "*** End Patch"
 }
 
-fn filename<'a>(line: &'a str, prefix: &str, meter: &NativeCustody) -> Result<&'a str> {
+fn filename<'a>(line: &'a str, prefix: &str, meter: &acyclic_fs::NativeCustody) -> Result<&'a str> {
     line.strip_prefix(prefix)
         .and_then(|line| line.strip_suffix('\n'))
         .filter(|path| !path.is_empty())
@@ -98,7 +98,7 @@ fn filename<'a>(line: &'a str, prefix: &str, meter: &NativeCustody) -> Result<&'
 /// authorization and immutable source selection belong to the original writer.
 pub fn parse_document<'a>(
     patch: &'a str,
-    meter: &mut NativeCustody,
+    meter: &mut acyclic_fs::NativeCustody,
 ) -> Result<Vec<FileChange<'a>>> {
     charge(meter, 0, patch.len() as u64)?;
     let mut lines = patch.split_inclusive('\n').peekable();

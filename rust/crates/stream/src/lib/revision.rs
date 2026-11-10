@@ -214,7 +214,7 @@ impl RevisionTracker {
 
     #[cfg(any(
         test,
-        all(feature = "session", not(target_arch = "wasm32")),
+        not(target_arch = "wasm32"),
         all(feature = "wasm", target_arch = "wasm32")
     ))]
     fn participants(
@@ -371,7 +371,7 @@ impl RevisionTracker {
     /// allocates nothing; a resume on another node carries the whole floor.
     #[cfg(any(
         test,
-        all(feature = "session", not(target_arch = "wasm32")),
+        not(target_arch = "wasm32"),
         all(feature = "wasm", target_arch = "wasm32")
     ))]
     pub(crate) fn raise_uncovered(

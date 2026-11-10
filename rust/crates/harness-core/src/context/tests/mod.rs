@@ -5,7 +5,6 @@ use crate::{
     model::{FileProjectionPolicy, ModelContentPart, ModelRole},
     resources::ProviderRef,
 };
-#[cfg(feature = "filesystem")]
 fn owned_context_budget() -> acyclic_fs::WorkBudget {
     acyclic_fs::WorkBudget {
         bytes_copied: 1_048_576,

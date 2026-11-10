@@ -28,7 +28,7 @@ impl LocalHarness {
     /// complete baseline the query refuses to certify a diff. Projection, disclosure
     /// authority and paging are the shared [`crate::hosting::DiffPages`],
     /// which retains this checkout's projection in `diffs`.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) async fn project_diff(
         &self,
         diffs: &crate::hosting::DiffPages,

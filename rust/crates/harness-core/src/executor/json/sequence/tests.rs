@@ -81,7 +81,7 @@ fn hashing_scratch_stays_flat_from_one_to_a_thousand_messages() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_ledgers_enforce_hash_cuts_and_release_sequence_scratch() -> Result<()> {
     let values = vec![serde_json::json!({"z": [1, true], "a": "\0é\\"}); 4];
@@ -148,7 +148,7 @@ fn shared_prefix_is_serialized_once_per_digest_pair() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_ledger_peak_is_independent_of_message_count() -> Result<()> {
     let value = serde_json::json!({"z": [1, true], "a": "\0é\\"});

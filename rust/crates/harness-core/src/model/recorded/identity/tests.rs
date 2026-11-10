@@ -224,7 +224,7 @@ fn admitted_keys_reuse_borrowed_values_and_invalidate_on_continuation() -> Resul
         ))?;
         input.sampling.temperature = Some(0.5);
         let prepared = PreparedModelRequest::prepare(input, Limits::default(), None)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let original = {
             use crate::executor::json::CodecOperation;
             let (original, cold) = acyclic_test_support::differential::observe::<
@@ -235,10 +235,10 @@ fn admitted_keys_reuse_borrowed_values_and_invalidate_on_continuation() -> Resul
             assert_eq!(cold, [CodecOperation::Serialize]);
             original?
         };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let original = prepared.replay_key()?;
         assert_eq!(original, encoded_key(prepared.request())?);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             use crate::executor::json::CodecOperation;
             let (reused, warm) = acyclic_test_support::differential::observe::<_, _, CodecOperation>(

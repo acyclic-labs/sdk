@@ -311,12 +311,8 @@ impl StockExecution<'_> {
         tools: &[crate::tool::ToolDefinition],
     ) -> Result<()> {
         let request = prepared.request();
-        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
-        #[cfg(feature = "filesystem")]
         let io = scope.io();
-        #[cfg(not(feature = "filesystem"))]
-        let io = self.io;
         // The authenticated prepared request owns its historical live tables.
         // Comparing those schemas with today's catalog would revoke a saved
         // result after removal. Fixed declarations must still match exactly.

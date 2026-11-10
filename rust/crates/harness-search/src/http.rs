@@ -48,9 +48,9 @@ impl HttpSearch {
         method: http::Method,
         endpoint: &Url,
         body: bytes::Bytes,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(Vec<u8>, crate::NativeCustody)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Vec<u8>, acyclic_fs::NativeCustody)> {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             work.admit(acyclic_fs::WorkCounters {
                 source_bytes_read: 1,
@@ -95,11 +95,11 @@ impl Exa {
     async fn run(
         &self,
         request: &SearchRequest,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(SearchResponse, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(SearchResponse, acyclic_fs::NativeCustody)> {
         request.validate_with_work(work)?;
         let _endpoint = crate::tool::edit::allocation(work, self.0.endpoint.as_str().len())?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             work.charge(acyclic_fs::WorkCounters {
                 allocation_operations: 1,
@@ -136,8 +136,8 @@ impl TinyFish {
     async fn run(
         &self,
         request: &SearchRequest,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(SearchResponse, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(SearchResponse, acyclic_fs::NativeCustody)> {
         request.validate_with_work(work)?;
         // Reserve both old and replacement URL buffers while the URL serializer
         // grows its percent-encoded query. This remains separate from response IO.
@@ -145,7 +145,7 @@ impl TinyFish {
             work,
             (self.0.endpoint.as_str().len() + 7 + request.query.len() * 3) * 3,
         )?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
             // Cloning and geometric growth of the serializer's private String.
             let bound = self.0.endpoint.as_str().len() + 7 + request.query.len() * 3;
@@ -186,9 +186,9 @@ struct Contents {
 
 fn request_body(
     value: &impl serde::Serialize,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<bytes::Bytes> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         let bytes = io.encode(value, MAXIMUM_RESPONSE_BYTES as u64, false)?;
@@ -202,9 +202,9 @@ fn request_body(
 
 async fn await_io<F: std::future::Future>(
     future: F,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<F::Output> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         work.remaining()?;
         return tokio::select! {
@@ -217,8 +217,8 @@ async fn await_io<F: std::future::Future>(
     Ok(future.await)
 }
 
-pub(crate) fn transport_error(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) fn transport_error(work: acyclic_fs::NativeWork<'_>, reason: &'static str) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
     if work.is_some() {
         return Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage,
@@ -250,18 +250,24 @@ impl SearchProvider for Exa {
         Box::pin(async move { self.run(request, None).await.map(|r| r.0) })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_search(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;
         Ok(true)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn search_with_native_work<'a>(
         &'a self,
         request: &'a SearchRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (SearchResponse, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (SearchResponse, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let (response, held) = self.run(request, Some(work)).await?;
             Ok((
                 response,
@@ -291,8 +297,8 @@ pub fn decode_search_http_response(
     bytes: &[u8],
     maximum: u32,
     exa: bool,
-    work: crate::NativeWork<'_>,
-) -> Result<(SearchResponse, crate::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(SearchResponse, acyclic_fs::NativeCustody)> {
     if exa {
         codec::exa(bytes, maximum, work)
     } else {
@@ -308,18 +314,24 @@ impl SearchProvider for TinyFish {
         Box::pin(async move { self.run(request, None).await.map(|r| r.0) })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_search(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;
         Ok(true)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn search_with_native_work<'a>(
         &'a self,
         request: &'a SearchRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (SearchResponse, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (SearchResponse, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let (response, held) = self.run(request, Some(work)).await?;
             Ok((
                 response,
@@ -332,7 +344,7 @@ impl SearchProvider for TinyFish {
 }
 
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native_tests;
 #[cfg(test)]
 mod tests;

@@ -4,7 +4,7 @@ use super::*;
 pub(crate) struct AuthorityScope<'w, 'a> {
     work: &'w mut AuthorityWork<'a>,
     previous_floor: u64,
-    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "distributed")))]
+    #[cfg(not(target_arch = "wasm32"))]
     previous_request: Option<crate::NativeAllocation>,
 }
 
@@ -34,7 +34,7 @@ impl AuthorityScope<'_, '_> {
 impl<'a> AuthorityWork<'a> {
     pub(crate) fn scope(&mut self) -> Result<AuthorityScope<'_, 'a>, AuthorityStoreError> {
         self.check()?;
-        #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "distributed")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let previous_request = self
             .request_allocation
             .as_mut()
@@ -45,7 +45,7 @@ impl<'a> AuthorityWork<'a> {
         Ok(AuthorityScope {
             work: self,
             previous_floor,
-            #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "distributed")))]
+            #[cfg(not(target_arch = "wasm32"))]
             previous_request,
         })
     }
@@ -67,7 +67,7 @@ impl std::ops::DerefMut for AuthorityScope<'_, '_> {
 
 impl Drop for AuthorityScope<'_, '_> {
     fn drop(&mut self) {
-        #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "distributed")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             // Earlier backing remains paid outside this call, including when a
             // nested request transfers or releases all of its own capacity.

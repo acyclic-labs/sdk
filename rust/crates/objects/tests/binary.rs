@@ -1,5 +1,5 @@
 //! Shared real-account conformance through the portable binary client.
-#![cfg(all(feature = "binary", feature = "json"))]
+#![cfg(feature = "binary")]
 
 use acyclic_objects::{
     Availability, Blobs, ByteRange, Digest, Error, MemoryMedium, MemoryObjects, RootId, Store,

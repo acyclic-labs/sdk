@@ -21,7 +21,7 @@ pub(super) enum AuthoredTransactionInput<'a> {
         allocation: &'a mut KernelOwnedAllocation,
         capacity: usize,
     },
-    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-watch")))]
+    #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
     Borrowed(&'a [AuthoredMutation]),
 }
 
@@ -29,7 +29,7 @@ impl AuthoredTransactionInput<'_> {
     pub(super) fn mutations(&self) -> &[AuthoredMutation] {
         match self {
             Self::Owned { mutations, .. } => mutations.as_slice(),
-            #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-watch")))]
+            #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
             Self::Borrowed(mutations) => mutations,
         }
     }
@@ -37,7 +37,7 @@ impl AuthoredTransactionInput<'_> {
     pub(super) fn capacity(&self) -> usize {
         match self {
             Self::Owned { capacity, .. } => *capacity,
-            #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-watch")))]
+            #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
             Self::Borrowed(mutations) => mutations.len(),
         }
     }
@@ -63,7 +63,7 @@ impl AuthoredTransactionInput<'_> {
                     accounting,
                 )
             }
-            #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-watch")))]
+            #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
             Self::Borrowed(_) => Ok(()),
         }
     }
@@ -174,7 +174,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
 
     /// Borrows producer-owned authored paths and opaque payloads on the original
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) async fn apply_borrowed_authored_transaction_with_native_work(
         &mut self,
         authored: &[AuthoredMutation],
@@ -307,7 +307,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     let allocation = split_allocation(allocation, bytes)?;
                     Owned::new(mutation, allocation, bytes)
                 }
-                #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-watch")))]
+                #[cfg(all(not(target_arch = "wasm32"), any(test, not(target_arch = "wasm32"))))]
                 AuthoredTransactionInput::Borrowed(mutations) => {
                     accounting.check()?;
                     clone_borrowed_authored_descriptor(
@@ -429,7 +429,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
 
     /// The compiler's already-bound retry identity, not a publication grant.
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) const fn bound_authored_operation_id(&self) -> Option<OperationId> {
         self.authored_operation_id
     }

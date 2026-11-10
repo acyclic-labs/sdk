@@ -221,7 +221,7 @@ impl StockExecution<'_> {
             prior_messages,
             hook_context,
         );
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if self.native_work().is_some() {
             return crate::obs::traced_future(span, call)
                 .await

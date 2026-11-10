@@ -1,6 +1,6 @@
 //! Local-only Linux qualification for exact native working-set costs.
 
-#![cfg(all(target_os = "linux", feature = "native-mount"))]
+#![cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 
 #[path = "support/native_access.rs"]
 mod native_access;

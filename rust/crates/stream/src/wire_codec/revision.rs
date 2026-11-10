@@ -64,12 +64,11 @@ pub fn selection_from_opened(
 }
 
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 /// Admits the original selection before data or its revision can be observed.
 /// Sessions and injected provider ports use the same request/receipt contract.
-#[cfg(any(feature = "session", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) fn selection_for_follow(
     value: &wire::SessionOpened,
     follow: &wire::SessionFollow,

@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
 -> Result<(), Box<dyn Error>> {

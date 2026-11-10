@@ -11,19 +11,19 @@ description = "Internal black-box conformance suites for Acyclic service provide
 readme = "README.md"
 
 [features]
-local-hotpath = ["acyclic-harness/filesystem-local", "acyclic-fs/local", "acyclic-objects/local", "acyclic-stream/local"]
+local-hotpath = []
 local-hotpath-proofs = ["local-hotpath", "acyclic-stream/test-support"]
 inference = ["dep:acyclic-harness-providers"]
-client-session = ["acyclic-harness-client/grpc", "acyclic-stream/grpc"]
-actors-hosting = ["client-session", "acyclic-harness/serve", "acyclic-harness/conformance", "dep:acyclic-auth"]
-storage-backends = ["acyclic-objects/s3", "acyclic-stream/postgres", "acyclic-fs/conformance", "acyclic-stream/local", "acyclic-harness/serve", "dep:acyclic-harness-client", "dep:acyclic-auth", "dep:tempfile", "dep:object_store", "dep:async-trait", "dep:rustls"]
-harness-accounting = ["acyclic-harness/filesystem"]
-local-runner = ["acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
-s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum", "dep:s3s"]
+client-session = []
+actors-hosting = ["client-session", "acyclic-harness/conformance", "dep:acyclic-auth"]
+storage-backends = ["acyclic-fs/conformance", "dep:acyclic-harness-client", "dep:acyclic-auth", "dep:tempfile", "dep:object_store", "dep:async-trait", "dep:rustls"]
+harness-accounting = []
+local-runner = ["dep:tempfile", "dep:rusqlite", "dep:notify"]
+s3-fixture = ["local-runner", "dep:async-trait", "dep:axum", "dep:s3s"]
 # Drives a built `graphcoder` binary against the local harness, its
 # self-hosted endpoint, and the same server through injected seams
 # (`graphcoder-seams`; see tests/graphcoder_backends.rs).
-graphcoder-backends = ["dep:acyclic-auth", "dep:axum", "dep:tempfile", "dep:acyclic-plugin", "acyclic-harness/serve", "acyclic-native-runtime/test-support"]
+graphcoder-backends = ["dep:acyclic-auth", "dep:axum", "dep:tempfile", "dep:acyclic-plugin", "acyclic-native-runtime/test-support"]
 
 [dependencies]
 acyclic-actors = { version = "=0.2.0", path = "../actors" }

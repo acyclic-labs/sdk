@@ -65,7 +65,7 @@ struct LocalUser {
     harness: Weak<LocalHarness>,
     /// The root's retained diff projection, which its continuation pages
     /// read without projecting again.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     diffs: crate::hosting::DiffPages,
 }
 
@@ -106,7 +106,7 @@ impl crate::hosting::Platform for LocalUser {
     /// server rechecked this session's credential and policy for this page,
     /// and the shared producer checks the owner's file authority before
     /// disclosing any path or content, retained continuation pages included.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn diff<'a>(
         &'a self,
         _: &'a acyclic_stream::session::CallAuthorization,
@@ -189,7 +189,7 @@ impl TurnContext for LocalContext {
             ));
             // SessionStart runs once per agent, keyed by the agent itself, so
             // a forked child (which inherits its parent's tail) runs its own.
-            #[cfg(any(test, feature = "hooks"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             let executor = executor
                 .with_agent_hooks(
                     &context,
@@ -199,7 +199,7 @@ impl TurnContext for LocalContext {
                     hooks.as_ref(),
                 )
                 .await?;
-            #[cfg(not(any(test, feature = "hooks")))]
+            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
             let _ = (context, input);
             Ok(executor)
         })
@@ -241,7 +241,7 @@ impl LocalHarness {
                 .map(|binding| &binding.volume)
                 .ok_or_else(|| Error::Invalid("agent has no home volume".into()))?;
             let verifier = authority.issuer.verifier(&mut None)?;
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             let journal = agent
                 .volumes
                 .iter()
@@ -251,14 +251,14 @@ impl LocalHarness {
             let context = super::context::Binding {
                 project,
                 scratch,
-                #[cfg(any(test, feature = "native-execution"))]
+                #[cfg(any(test, not(target_arch = "wasm32")))]
                 journal,
                 reader: authority.content.reader.as_ref(),
-                #[cfg(any(test, feature = "native-execution"))]
+                #[cfg(any(test, not(target_arch = "wasm32")))]
                 verifier: verifier.clone(),
-                #[cfg(any(test, feature = "native-execution"))]
+                #[cfg(any(test, not(target_arch = "wasm32")))]
                 scope: &authority.scope,
-                #[cfg(any(test, feature = "native-execution"))]
+                #[cfg(any(test, not(target_arch = "wasm32")))]
                 workspace: self.workspace.clone(),
             };
             if project == &self.project && scratch == &self.scratch {
@@ -267,7 +267,7 @@ impl LocalHarness {
                     context,
                 });
             }
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             if let Some(workspace) = &self.workspace {
                 let view = workspace.spawned_project_view(project).await?;
                 let owner = super::workspace::owner::AgentOwner(agent.path.clone());
@@ -393,7 +393,7 @@ impl LocalHarness {
 
 impl LocalHarness {
     /// Guest sources use the same public enrollment producer as hosted trees.
-    #[cfg(all(target_os = "linux", feature = "native-execution"))]
+    #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
     pub(super) async fn guest_session(
         self: &Arc<Self>,
         enrollment: crate::filesystem::hosting::LocalGuestEnrollment,
@@ -508,13 +508,13 @@ impl LocalHarness {
         // A checkout's spawned children fork its retained lazy cut, so each
         // child's project is a related fork the parent can diff and merge.
         // Only native execution has checkouts; a configured volume has none.
-        #[cfg(any(test, feature = "native-execution"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         let cuts = self.workspace().map(|workspace| {
             Arc::new(crate::local::workspace::LocalVolumeResources(Arc::clone(
                 workspace,
             ))) as Arc<dyn crate::filesystem::VolumeResources>
         });
-        #[cfg(not(any(test, feature = "native-execution")))]
+        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
         let cuts: Option<Arc<dyn crate::filesystem::VolumeResources>> = None;
         let bound = if let Some(verifier) = &self.served {
             let caller = verifier.caller(
@@ -546,7 +546,7 @@ impl LocalHarness {
         .map_err(storage)?;
         let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser {
             harness: Arc::downgrade(self),
-            #[cfg(any(test, feature = "native-execution"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             diffs: crate::hosting::DiffPages::default(),
         });
         // A reopened root keeps the policy it was created with: the agent
@@ -606,7 +606,7 @@ impl LocalHarness {
 }
 
 /// The operation keying `agent`'s one `SessionStart`.
-#[cfg(any(test, feature = "hooks"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn session_operation(agent: &crate::agent::AgentPath) -> OperationId {
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.agent.session-start/v1");
     hasher.update(agent.as_str().as_bytes());

@@ -8,10 +8,10 @@ use crate::{
     filesystem::FilesystemContentVerifier,
 };
 
-#[cfg(any(test, feature = "native-execution"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod checkout;
 mod commands;
-#[cfg(any(test, feature = "native-execution"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod environment;
 pub(super) mod skills;
 
@@ -20,14 +20,14 @@ pub(super) mod skills;
 pub(super) struct Binding<'a> {
     pub(super) project: &'a VolumeRef,
     pub(super) scratch: &'a VolumeRef,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) journal: &'a VolumeRef,
     pub(super) reader: &'a dyn ContentResidencyVerifier,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) verifier: AuthorityVerifier,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) scope: &'a Scope,
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) workspace: Option<Arc<LocalWorkspace>>,
 }
 
@@ -408,7 +408,7 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
         work: &mut crate::context::DiscoveryWork,
     ) -> Result<DiscoveredContext> {
-        #[cfg(any(test, feature = "native-execution"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         if self.checkout_context
             && let Some(workspace) = &binding.workspace
         {
@@ -694,7 +694,7 @@ pub(in crate::local) fn copy_name(path: &str) -> String {
 impl LocalHarness {
     /// A checkout's mentioned files, copied onto the root's private volume
     /// below the message's `base` directory: their root.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn checkout_mentions(
         &self,
         base: &str,
@@ -712,7 +712,7 @@ impl LocalHarness {
         }))
     }
 
-    #[cfg(not(any(test, feature = "native-execution")))]
+    #[cfg(not(any(test, not(target_arch = "wasm32"))))]
     async fn checkout_mentions(
         &self,
         _: &str,
@@ -787,7 +787,7 @@ mod tests {
                 &'static dyn ContentPublisher,
             )| local.context_epoch(agent, binding, publisher),
         );
-        #[cfg(feature = "native-execution")]
+        #[cfg(not(target_arch = "wasm32"))]
         let catalog = retained_operation_bytes(
             |(sources, root, view, work): (
                 &'static crate::context::native_skills::NativeSkills,
@@ -796,16 +796,16 @@ mod tests {
                 &'static mut crate::context::DiscoveryWork,
             )| sources.catalog(root, view, work),
         );
-        #[cfg(feature = "native-execution")]
+        #[cfg(not(target_arch = "wasm32"))]
         let users = retained_operation_bytes(
             |(sources, work): (
                 &'static crate::context::native_skills::NativeSkills,
                 &'static mut crate::context::DiscoveryWork,
             )| sources.user_catalog(work),
         );
-        #[cfg(feature = "native-execution")]
+        #[cfg(not(target_arch = "wasm32"))]
         let sizes = [manifest, catalog, users];
-        #[cfg(not(feature = "native-execution"))]
+        #[cfg(target_arch = "wasm32")]
         let sizes = [manifest];
         eprintln!("context retained bytes: {sizes:?}");
         assert!(

@@ -26,12 +26,12 @@ use futures::{StreamExt as _, stream};
 #[cfg(test)]
 use prost::Message;
 
-#[cfg(all(loom, feature = "local"))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 pub(crate) mod parking_model;
 // Recovery tests exercise snapshots even without the local storage backend.
-#[cfg(any(test, feature = "local"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 mod snapshot;
-#[cfg(all(any(test, feature = "test-support"), feature = "local"))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 pub(crate) use snapshot::check_codec as check_snapshot_codec;
 
 use crate::{
@@ -43,7 +43,7 @@ use crate::{
     SystemUnixMillisClock, UnixMillisClock,
 };
 
-#[cfg(all(loom, feature = "local"))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 /// Models checked cursor preparation and publication interests against recovery.
 pub mod browser_follow_model;
 #[cfg(test)]
@@ -51,7 +51,7 @@ mod tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use prepared::PreparedCommit;
 
 include!("memory_limits.rs");

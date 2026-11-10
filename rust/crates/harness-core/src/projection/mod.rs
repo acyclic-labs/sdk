@@ -3,10 +3,10 @@
 mod artifacts;
 mod attachments;
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod custody_tests;
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod recorded_invocation_tests;
 mod selection;
 #[cfg(test)]
@@ -69,9 +69,9 @@ impl SelectedModelContext {
         let last = self.messages.last().filter(|last| {
             self.messages.len() == self.selection.message_ids.len() && last.role == ModelRole::User
         });
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let native = io.and_then(PreparationIo::original_native_work);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = native {
             work.remaining()?;
             if last.is_some() {
@@ -82,7 +82,7 @@ impl SelectedModelContext {
             }
         }
         let matches = last.is_some_and(|last| &last.content == input);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if last.is_some()
             && let Some(work) = native
         {

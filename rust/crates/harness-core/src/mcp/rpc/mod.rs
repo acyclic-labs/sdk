@@ -1,13 +1,13 @@
 //! Shared admitted JSON-RPC boundary.
 use super::{charge, error};
-use crate::{Error, NativeWork, OperationId, Result, wire::ErrorCode};
+use crate::{Error, OperationId, Result, wire::ErrorCode};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 pub(super) fn rpc_result(
     mut value: Value,
     operation: OperationId,
-    work: NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<Value> {
     charge(work, 6, 0, 0)?;
     let fields = value.as_object_mut().ok_or_else(|| {
@@ -64,7 +64,7 @@ pub(super) fn request(operation: OperationId, method: &str, params: Value) -> Re
     .map_err(|error| Error::Invalid(error.to_string()))
 }
 
-pub(super) fn notification(value: &Value, work: NativeWork<'_>) -> Result<()> {
+pub(super) fn notification(value: &Value, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
     charge(work, 5, 0, 0)?;
     if value.get("method").and_then(Value::as_str).is_none()
         || value.get("result").is_some()
@@ -85,7 +85,7 @@ pub(super) fn notification(value: &Value, work: NativeWork<'_>) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn initialization(value: &Value, work: NativeWork<'_>) -> Result<()> {
+pub(super) fn initialization(value: &Value, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
     charge(work, 6, 0, 0)?;
     if value
         .get("instructions")
@@ -114,9 +114,9 @@ pub(super) fn initialization(value: &Value, work: NativeWork<'_>) -> Result<()> 
 
 pub(super) fn check<T: DeserializeOwned + crate::HeapLayout>(
     value: &Value,
-    work: NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         use std::{borrow::Cow, mem::size_of};
         let remaining = work.remaining()?;

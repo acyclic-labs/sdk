@@ -45,9 +45,9 @@ where
         operation: OperationId,
         digest: [u8; 32],
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, (), crate::Error>> {
         let io = PreparationIo::from_native_work(work)?;
-        crate::NativeFutureBundle::new(work, || async move {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             self.verify_tool_approval_with_io(id, operation, digest, Some(&io))
                 .await
         })

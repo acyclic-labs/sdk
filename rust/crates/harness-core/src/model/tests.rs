@@ -559,7 +559,6 @@ fn continuation_metadata_is_bounded_and_bound_to_the_prepared_request() -> Resul
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn short_request_cannot_hide_excess_string_capacity() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();

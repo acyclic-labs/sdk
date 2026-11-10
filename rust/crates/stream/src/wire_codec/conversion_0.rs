@@ -219,16 +219,6 @@ pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceip
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    feature = "postgres",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(
-        any(feature = "wasm", feature = "wasm-journal"),
-        target_arch = "wasm32"
-    )
-))]
 /// Decodes an append request from its generated wire representation.
 pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendRequest, StreamError> {
     Ok(crate::AppendRequest {
@@ -243,16 +233,6 @@ pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendReque
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    feature = "postgres",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(
-        any(feature = "wasm", feature = "wasm-journal"),
-        target_arch = "wasm32"
-    )
-))]
 /// Decodes a fork request from its generated wire representation.
 pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, StreamError> {
     Ok(crate::ForkRequest {
@@ -270,7 +250,7 @@ pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, St
 
 /// Decodes a read request from its generated wire representation. Like
 /// [`follow_from_wire`], it is transport-free: every host of the shared
-/// provider cursor compiles it, with or without a transport feature.
+/// provider cursor compiles it on every target.
 pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
         key: read_key_from_wire(value.key)?,

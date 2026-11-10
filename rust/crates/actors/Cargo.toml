@@ -24,8 +24,7 @@ test-support = [
     "acyclic-grpc-observability/test-support",
     "acyclic-native-runtime/test-support",
     "acyclic-objects/test-support",
-    "acyclic-stream/test-support",
-]
+    "acyclic-stream/test-support"]
 
 [dependencies]
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
@@ -56,7 +55,7 @@ tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
 # Actor sockets are channels of the in-process session protocol.
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "session"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 tokio = { version = "1.48.0", default-features = false, features = ["time"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
@@ -81,7 +80,7 @@ acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 http-body-util = "0.1.5"
 async-trait.workspace = true
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "conformance", "test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance", "test-support"] }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }

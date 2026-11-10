@@ -48,13 +48,9 @@ mod tests {
 /// An authenticated backend cut. Only the backend can construct its evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PolicyCut {
-    #[cfg(any(test, feature = "distributed"))]
     pub(crate) owner: [u8; 16],
-    #[cfg(any(test, feature = "distributed"))]
     pub(crate) authority: AuthorityId,
-    #[cfg(any(test, feature = "distributed"))]
     pub(crate) head: Head,
-    #[cfg(any(test, feature = "distributed"))]
     pub(crate) epoch_tail: u64,
 }
 
@@ -65,7 +61,6 @@ thread_local! {
 }
 
 impl PolicyCut {
-    #[cfg(any(test, feature = "distributed"))]
     pub(crate) fn new(
         owner: [u8; 16],
         authority: AuthorityId,

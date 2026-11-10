@@ -546,7 +546,7 @@ fn finish(
         origin,
     })
 }
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const fn lexical_json_diagnostic_bytes() -> u64 {
     "JSON exceeds declared structural bound".len() as u64
 }

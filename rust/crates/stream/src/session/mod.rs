@@ -4,7 +4,7 @@ use crate::StreamProvider;
 use crate::StreamProviderExt as _;
 use crate::{StreamError, StreamPath, wire, wire_codec};
 use bytes::Bytes;
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use futures::stream::BoxStream;
 use futures::{StreamExt, future, stream};
 use prost::Message as _;
@@ -51,17 +51,17 @@ mod policy;
 mod queue;
 pub use frame::Frame;
 mod runtime;
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod service;
 use crate::runtime::{signal, sync};
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use client::Cache;
 pub use client::transport;
 pub use client::{
     ActorSocket, ActorSocketSender, ApplicationDelivery, ApplicationSubscription, CallInputSender,
     Client,
 };
-#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 pub use client::{
     verify_abandoned_reconnect, verify_cache, verify_cancel_before_open,
     verify_cancelled_queued_open, verify_follow_data, verify_initial_retry_yield,
@@ -70,7 +70,7 @@ pub use client::{
 };
 #[cfg(loom)]
 pub use client::{verify_admission_binding, verify_admission_cancellation};
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use service::Service;
 const DATA_FRAME_BYTES: usize = crate::MAX_RECORD_BYTES + 128;
 const RECEIVE_FRAMES: usize = 2;
