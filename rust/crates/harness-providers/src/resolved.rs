@@ -4,7 +4,7 @@ use acyclic_harness_core::{
     context::{ModelContextCapacity, ModelTokenCount},
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
 };
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// One selection's calibration and authoritative usage anchor. Reader-bound
 /// copies retain this owner together, without separate allocation/refcounts.
@@ -24,6 +24,9 @@ impl Accounting {
 
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
+    // A selected model can use the registry's host, but cannot extend its lifetime.
+    pub(crate) resolver: Option<Weak<dyn crate::CredentialResolver>>,
+    pub(crate) unbound_transport: Arc<dyn HttpTransport>,
     pub(crate) inputs: Option<Arc<crate::credentials::CredentialInputs>>,
     pub(crate) credential_config: Option<Arc<ProviderSpec>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -60,6 +63,8 @@ impl ResolvedModel {
         files: crate::files::Files,
     ) -> Self {
         Self {
+            resolver: self.resolver.clone(),
+            unbound_transport: self.unbound_transport.clone(),
             inputs: self.inputs.clone(),
             credential_config: self.credential_config.clone(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -130,6 +135,29 @@ impl ResolvedModel {
                 ..config.as_ref().clone()
             });
         }
+        let resolver = self
+            .resolver
+            .as_ref()
+            .map(|resolver| {
+                resolver
+                    .upgrade()
+                    .ok_or_else(|| acyclic_harness_core::Error::ModelDiagnostic {
+                        code: acyclic_harness_core::wire::ErrorCode::Unavailable,
+                        message: "model credential owner closed".into(),
+                        custody: None,
+                    })
+            })
+            .transpose()?;
+        let binding = crate::authorization::bind(
+            &current.config,
+            current.key.take(),
+            resolver.as_deref(),
+            self.unbound_transport.clone(),
+        )?;
+        let (key, scope, transport) = binding.into_parts();
+        current.key = key;
+        current.credential_scope = scope;
+        current.transport = crate::deadline::Bounded::new(transport, current.config.timeouts);
         Ok(current)
     }
 

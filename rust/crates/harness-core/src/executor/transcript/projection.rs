@@ -1,10 +1,21 @@
-//! The single durable projection codec retains main's inline context schema.
+//! Versioned projections retain the original admitted request header and context.
 use super::*;
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
 mod tests;
 
 impl ResponseProjection {
+    /// Recover the admitted steering without imposing a new context policy.
+    pub(crate) async fn steering_snapshot(
+        journal: &dyn ExecutionJournal,
+        reference: &FileRef,
+    ) -> Result<Option<crate::agent::SteeringSnapshot>> {
+        Ok(load_projection_record(journal, reference, None)
+            .await?
+            .projection
+            .steering)
+    }
+
     pub(in crate::executor) async fn continuation_metadata(
         journal: &dyn ExecutionJournal,
         reference: &FileRef,
@@ -16,7 +27,9 @@ impl ResponseProjection {
         let io = scope.io();
         #[cfg(not(feature = "filesystem"))]
         let io = original;
-        let stored = retain_preparation(load_json::<Self>(journal, reference, io).await?)?;
+        let stored = load_projection_record(journal, reference, io)
+            .await?
+            .projection;
         let projection = Self {
             context: crate::context::Context {
                 messages: Vec::new(),
@@ -62,15 +75,17 @@ pub(crate) async fn load_projection<'a>(
     let io = scope.io();
     #[cfg(not(feature = "filesystem"))]
     let io = original;
-    let projection =
-        retain_preparation(load_json::<ResponseProjection>(journal, reference, io).await?)?;
+    let projection = load_projection_record(journal, reference, io)
+        .await?
+        .projection;
     #[cfg(feature = "filesystem")]
-    let retained = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+    let retained = projection
+        .decoded_owned_bytes()?
+        .ok_or_else(|| invalid(io))?;
     crate::context::validate_projected_context(&projection.context, limits, io)?;
     #[cfg(feature = "filesystem")]
     let hold = {
-        // The decoder already inventoried this graph. Transfer its original
-        // storage; only validation scratch belongs to the temporary scope.
+        // The header is no longer retained by checkpoint readers.
         scope.finish(retained)?;
         original.map(|io| io.guard_owned(retained)).transpose()?
     };
@@ -85,13 +100,38 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         reference: &FileRef,
     ) -> Result<(ResponseProjection, crate::model::PreparedModelRequest)> {
-        let mut projection = retain_preparation(
-            load_projection(journal, reference, self.stock.limits, self.io).await?,
-        )?;
-        let request =
-            self.request_from_messages(std::mem::take(&mut projection.context.messages))?;
-        let prepared =
-            crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
+        #[cfg(feature = "filesystem")]
+        let scope = crate::filesystem::PreparationScope::new(self.io)?;
+        #[cfg(feature = "filesystem")]
+        let io = scope.io();
+        #[cfg(not(feature = "filesystem"))]
+        let io = self.io;
+        let ProjectionRecord {
+            header,
+            mut projection,
+            ..
+        } = load_projection_record(journal, reference, io).await?;
+        crate::context::validate_projected_context(&projection.context, self.stock.limits, io)?;
+        let request = ModelRequest {
+            summary: header.summary,
+            compose_tools: header.compose_tools,
+            model: header.model,
+            tools: header.tools,
+            sampling: header.sampling,
+            max_output_tokens: header.max_output_tokens,
+            messages: std::mem::take(&mut projection.context.messages),
+        };
+        let prepared = crate::model::PreparedModelRequest::prepare(request, self.stock.limits, io)?;
+        #[cfg(feature = "filesystem")]
+        {
+            let retained = crate::core::owned_sum([
+                projection
+                    .decoded_owned_bytes()?
+                    .ok_or_else(|| invalid(io))?,
+                io.map_or(Ok(0), |io| prepared.preparation_owned_bytes(io))?,
+            ])?;
+            scope.finish(retained)?;
+        }
         Ok((projection, prepared))
     }
 }

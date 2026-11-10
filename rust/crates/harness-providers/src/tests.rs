@@ -354,6 +354,8 @@ pub(super) fn provider_with(
     transport: Arc<dyn HttpTransport>,
 ) -> ResolvedModel {
     ResolvedModel {
+        resolver: None,
+        unbound_transport: transport.clone(),
         #[cfg(not(target_arch = "wasm32"))]
         account_pin: Arc::new(std::sync::OnceLock::new()),
         inputs: None,

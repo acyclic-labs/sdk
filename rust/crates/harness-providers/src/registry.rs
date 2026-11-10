@@ -231,6 +231,8 @@ impl Registry {
         )?;
         let transport = crate::deadline::Bounded::new(transport, config.timeouts);
         Ok(ResolvedModel {
+            resolver: self.resolver.as_ref().map(Arc::downgrade),
+            unbound_transport: self.transport.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             account_pin: codex_login
                 .as_ref()
@@ -258,7 +260,7 @@ impl Registry {
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-mod credential_tests;
+pub(crate) mod credential_tests;
 
 /// The built-in Responses route that a native Codex CLI login may replace.
 #[cfg(not(target_arch = "wasm32"))]

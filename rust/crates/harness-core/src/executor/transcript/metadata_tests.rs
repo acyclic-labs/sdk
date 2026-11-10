@@ -406,11 +406,26 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
         check_decode(&projection, 16 * 1024 * 1024, true)?;
         check_scratch_control(&projection)?;
         let journal = storage.journal();
-        let saved = stage_json(
+        let prepared = crate::model::PreparedModelRequest::prepare(
+            ModelRequest {
+                summary: false,
+                compose_tools: false,
+                model: Model::new("fixture".into(), "projection".into(), "1".into())?,
+                messages: projection.context.messages.clone(),
+                tools: Vec::new(),
+                sampling: Default::default(),
+                max_output_tokens: None,
+            },
+            Limits::default(),
+            None,
+        )?;
+        let saved = stage_projection(
             journal.as_ref(),
             OperationId::new(),
             "metadata-working",
             &projection,
+            &prepared,
+            projection.accounting.as_ref(),
             None,
         )
         .await?;

@@ -308,6 +308,7 @@ impl StockExecution<'_> {
     pub(super) fn validate_response_request(
         &self,
         prepared: &crate::model::PreparedModelRequest,
+        tools: &[crate::tool::ToolDefinition],
     ) -> Result<()> {
         let request = prepared.request();
         #[cfg(feature = "filesystem")]
@@ -316,7 +317,6 @@ impl StockExecution<'_> {
         let io = scope.io();
         #[cfg(not(feature = "filesystem"))]
         let io = self.io;
-        let tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?;
         // The authenticated prepared request owns its historical live tables.
         // Comparing those schemas with today's catalog would revoke a saved
         // result after removal. Fixed declarations must still match exactly.
@@ -345,7 +345,7 @@ impl StockExecution<'_> {
         if request.summary != self.summary.is_some()
             || request.model != self.stock.model
             || (!request.compose_tools && !definitions_match)
-            || request.compose_tools != self.code_composition(&tools)?
+            || request.compose_tools != self.code_composition(tools)?
             || request.max_output_tokens != self.output_tokens()
             || request.sampling != self.sampling()?
         {

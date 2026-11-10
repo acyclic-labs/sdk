@@ -180,7 +180,8 @@ fn recovered_requests_must_match_the_selected_header() -> Result<()> {
         ToolRegistry::default(),
     );
     let execution = StockExecution::ordinary(&executor);
-    execution.validate_response_request(&prepared)?;
+    let tools = execution.request_tools()?;
+    execution.validate_response_request(&prepared, &tools)?;
     for field in ["model", "tools", "output", "composition", "summary"] {
         let mut changed = prepared.request().clone();
         match field {
@@ -202,7 +203,9 @@ fn recovered_requests_must_match_the_selected_header() -> Result<()> {
         let changed =
             crate::model::PreparedModelRequest::prepare(changed, Limits::default(), None)?;
         assert!(
-            execution.validate_response_request(&changed).is_err(),
+            execution
+                .validate_response_request(&changed, &tools)
+                .is_err(),
             "{field}"
         );
     }

@@ -164,6 +164,56 @@ struct HeaderView<'a> {
     max_output_tokens: Option<u32>,
 }
 
+impl<'a> HeaderView<'a> {
+    fn new(request: &'a ModelRequest) -> Self {
+        Self {
+            version: 1,
+            summary: request.summary,
+            compose_tools: request.compose_tools,
+            model: &request.model,
+            tools: &request.tools,
+            sampling: request.sampling,
+            max_output_tokens: request.max_output_tokens,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct ProjectionRecord {
+    #[serde(rename = "$version")]
+    version: u32,
+    header: RequestHeader,
+    projection: ResponseProjection,
+}
+
+#[derive(Serialize)]
+struct ProjectionRecordView<'a> {
+    #[serde(rename = "$version")]
+    version: u32,
+    header: HeaderView<'a>,
+    projection: ProjectionView<'a>,
+}
+
+#[cfg(feature = "filesystem")]
+impl PreparationRecord for ProjectionRecord {
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::ProjectionRecord
+    }
+}
+
+async fn load_projection_record(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+    io: Option<&PreparationIo>,
+) -> Result<ProjectionRecord> {
+    let record = retain_preparation(load_json::<ProjectionRecord>(journal, reference, io).await?)?;
+    if record.version != 1 || record.header.version != 1 {
+        return Err(invalid(io));
+    }
+    Ok(record)
+}
+
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct MessagePrefix {
@@ -411,15 +461,7 @@ async fn stage_request_inner(
     if previous.is_none() {
         return stage_json(journal, operation, key, request, io).await;
     }
-    let header = HeaderView {
-        version: 1,
-        summary: request.summary,
-        compose_tools: request.compose_tools,
-        model: &request.model,
-        tools: &request.tools,
-        sampling: request.sampling,
-        max_output_tokens: request.max_output_tokens,
-    };
+    let header = HeaderView::new(request);
     let header_digest = preparation_digest(&header, io)?;
     let previous =
         previous_manifest(journal, previous, prepared.admitted_limits(), verifier, io).await?;
@@ -687,17 +729,21 @@ pub(super) async fn stage_projection(
         journal,
         operation,
         key,
-        &ProjectionView {
-            context: ContextView {
-                messages,
-                metadata: &projection.context.metadata,
-                current_input_index: projection.context.current_input_index,
+        &ProjectionRecordView {
+            version: 1,
+            header: HeaderView::new(prepared.request()),
+            projection: ProjectionView {
+                context: ContextView {
+                    messages,
+                    metadata: &projection.context.metadata,
+                    current_input_index: projection.context.current_input_index,
+                },
+                steering: &projection.steering,
+                canonical: &projection.canonical,
+                checkpoint: &projection.checkpoint,
+                working: &projection.working,
+                accounting,
             },
-            steering: &projection.steering,
-            canonical: &projection.canonical,
-            checkpoint: &projection.checkpoint,
-            working: &projection.working,
-            accounting,
         },
         io,
     )
@@ -716,8 +762,9 @@ pub(super) async fn working_reference(
     let io = scope.io();
     #[cfg(not(feature = "filesystem"))]
     let io = original;
-    let stored =
-        retain_preparation(load_json::<ResponseProjection>(journal, reference, io).await?)?;
+    let stored = load_projection_record(journal, reference, io)
+        .await?
+        .projection;
     let working = stored.working;
     drop((
         stored.context,
