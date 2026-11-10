@@ -116,7 +116,7 @@ mod descriptor;
 pub use descriptor::{
     ADMITTED_DESCRIPTORS_VARIABLE, CACHED_DESCRIPTORS_VARIABLE, CachedFile, DescriptorAdmission,
     DescriptorCost, FileFlush, FileLease, WriteAt, admit_descriptors, admitted_descriptor_capacity,
-    cached_descriptor_capacity, cached_descriptors,
+    cached_descriptor_capacity, cached_descriptors, raise_descriptor_limit,
 };
 mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};

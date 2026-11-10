@@ -42,7 +42,9 @@ where
 /// fixed service through [`spawn_persistence`]. Its one blocking slot runs only
 /// work that completes on its own, in submission order; an open stdin, whose
 /// read may never return, is read on its own thread through [`crate::stdin`].
+/// The process's descriptor limit is raised before the runtime opens any.
 pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    crate::raise_descriptor_limit();
     tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)
         .enable_all()

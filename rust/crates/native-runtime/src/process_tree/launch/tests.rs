@@ -226,3 +226,32 @@ async fn a_failed_spawn_is_indeterminate_with_its_handler() -> io::Result<()> {
     assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     Ok(())
 }
+
+/// Launches return the process to its open-descriptor count. The raised
+/// descriptor limit is headroom for real work, never cover for a leak.
+#[cfg(unix)]
+#[tokio::test]
+async fn repeated_launches_return_every_descriptor() -> io::Result<()> {
+    async fn launch(root: &std::path::Path) -> io::Result<()> {
+        let Ok(launched) = command(root).capture(Recorder::default()).await else {
+            panic!("launch failed");
+        };
+        launched.await?.result.map_err(io::Error::other)?;
+        Ok(())
+    }
+    fn open_descriptors() -> io::Result<usize> {
+        Ok(std::fs::read_dir("/dev/fd")?.count())
+    }
+    assert!(crate::raise_descriptor_limit() > 256);
+    crate::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("work"))?;
+    // The first launch starts the shared services, which keep theirs.
+    launch(root.path()).await?;
+    let baseline = open_descriptors()?;
+    for _ in 0..8 {
+        launch(root.path()).await?;
+    }
+    assert_eq!(open_descriptors()?, baseline, "launches leaked descriptors");
+    Ok(())
+}
