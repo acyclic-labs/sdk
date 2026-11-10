@@ -507,10 +507,11 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
                 let digest = intent_digest(&(value.id, &Intent::Create(&request)))?;
                 // The local factory enrolls an existing workspace. It never fabricates
                 // another filesystem view or an immutable image capture.
-                if request
-                    .image
-                    .as_ref()
-                    .is_some_and(|image| image != &value.contract.image)
+                if !request.secrets.is_empty()
+                    || request
+                        .image
+                        .as_ref()
+                        .is_some_and(|image| image != &value.contract.image)
                     || request.selected_volume_ref != value.contract.selected_volume_ref
                     || request.network_policy_digest != value.contract.network_policy_digest
                     || request.suspension != value.contract.suspension

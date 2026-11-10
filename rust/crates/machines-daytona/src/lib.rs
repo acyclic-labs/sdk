@@ -461,13 +461,14 @@ impl MachinesProvider for DaytonaProvider {
             .clone()
             .ok_or_else(|| invalid("Daytona requires an admitted immutable image"))?;
         let snapshot = self.snapshot(&image)?;
-        if request.selected_volume_ref.is_some()
+        if !request.secrets.is_empty()
+            || request.selected_volume_ref.is_some()
             || request.suspension != SuspensionPolicy::Manual
             || request.expiration != ExpirationPolicy::Never
             || request.budgets != Budgets::default()
             || matches!(&request.compatibility, CompatibilityPolicy::Require(required) if !required.is_empty())
         {
-            return Err(ProviderError::Unsupported("Daytona create cannot honor requested native mechanisms; recovery: use manual lifetime, copied workspace and supported capabilities".into()));
+            return Err(ProviderError::Unsupported("Daytona create cannot honor selected secrets or requested native mechanisms; recovery: use hosted secret admission or a supported request".into()));
         }
         if request.network_policy_digest == [0; 32]
             || request.network_policy_digest != self.config.block_all_network_policy

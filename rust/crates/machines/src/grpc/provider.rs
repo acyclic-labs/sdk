@@ -153,6 +153,11 @@ machine_mutations! {
                     idempotency_key: Some(encode_key(key)),
                     image: request.image.as_ref().map(encode_image).transpose()?,
                     selected_volume_ref: request.selected_volume_ref.clone(),
+                    secrets: request.secrets.iter().map(|(name, reference)| (name.clone(), wire::selection::SecretRef {
+                        scope: reference.scope().to_owned(),
+                        name: reference.name().to_owned(),
+                        version: reference.version(),
+                    })).collect(),
                     compatibility: Some(encode_compatibility(&request.compatibility)?),
                     suspension: Some(encode_suspension(request.suspension)?),
                     expiration: Some(encode_expiration(request.expiration)?),

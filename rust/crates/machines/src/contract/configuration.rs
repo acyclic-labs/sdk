@@ -99,6 +99,10 @@ pub struct CreateMachine {
     /// Exact canonical volume reference, admitted by the service under the original scope.
     /// The reference carries no authority or physical guest mapping capability.
     pub selected_volume_ref: Option<wire::selection::VolumeRef>,
+    /// Environment properties selected from immutable SDK secret references.
+    /// Hosted providers admit these before boot; values are never request data.
+    #[serde(default)]
+    pub secrets: BTreeMap<String, acyclic_auth::secrets::SecretRef>,
     /// Capability policy.
     pub compatibility: CompatibilityPolicy,
     /// Suspension policy.
@@ -122,6 +126,7 @@ impl CreateMachine {
             idempotency_key,
             image,
             selected_volume_ref: None,
+            secrets: BTreeMap::new(),
             compatibility: CompatibilityPolicy::BestEffort,
             suspension: SuspensionPolicy::AfterIdle(DEFAULT_IDLE_SUSPEND),
             expiration: ExpirationPolicy::Never,

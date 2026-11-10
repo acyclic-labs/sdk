@@ -46,12 +46,29 @@ async fn create_binds_image_and_canonical_selected_volume_without_redispatch()
     let (provider, shutdown, server) = serve_operation_service(service).await?;
     let mut default = CreateMachine::new(key, None, [8; 32]);
     default.selected_volume_ref = Some(volume.clone());
+    default.secrets.insert(
+        "TOKEN".into(),
+        acyclic_auth::secrets::SecretRef::new("models".into(), "credential".into(), 7)?,
+    );
     let MutationOutcome::Created(created) = provider.create(default).await? else {
         panic!("create did not settle");
     };
     assert_eq!(created.id, machine);
     assert_eq!(created.contract.image, Image::custom([7; 32])?);
     assert_eq!(created.contract.selected_volume_ref, Some(volume.clone()));
+    assert_eq!(
+        script
+            .lock()
+            .map_err(|_| "observation script poisoned")?
+            .selected_secrets
+            .first()
+            .and_then(|secrets| secrets.get("TOKEN")),
+        Some(&wire::selection::SecretRef {
+            scope: "models".into(),
+            name: "credential".into(),
+            version: 7,
+        })
+    );
     let mut exact = CreateMachine::new(key, Some(created.contract.image.clone()), [8; 32]);
     exact.selected_volume_ref = Some(volume.clone());
     assert_eq!(

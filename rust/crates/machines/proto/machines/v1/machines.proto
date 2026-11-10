@@ -174,6 +174,10 @@ message CreateMachineRequest {
   // Selects the authenticated host's canonical workspace view. This is a
   // reference, never a capability, filesystem locator or guest mapping fence.
   acyclic.harness.v2.VolumeRef selected_volume_ref = 10;
+  // Environment properties bound to immutable secret references. Values never
+  // enter this request. The hosted deployment requires secrets/use on each
+  // reference and refuses boot or restore without its admission grant.
+  map<string, acyclic.harness.v2.SecretRef> secrets = 11;
 }
 message MachineMutationRequest {
   ProtocolVersion protocol = 1;

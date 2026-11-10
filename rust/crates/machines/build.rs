@@ -7,6 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiler = acyclic_proto_build::Compiler::new()?;
     let grpc = std::env::var_os("CARGO_FEATURE_GRPC").is_some();
     let mut config = compiler.config();
+    config.btree_map([".acyclic.machines.v1.CreateMachineRequest.secrets"]);
     config.type_attribute(
         ".acyclic.harness.v2",
         "#[derive(serde::Serialize, serde::Deserialize)]",
