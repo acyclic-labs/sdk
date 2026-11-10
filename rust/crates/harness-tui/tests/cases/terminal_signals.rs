@@ -66,7 +66,7 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
     let mut handoff_deadline = false;
     loop {
         let deadline = Instant::now() + Duration::from_millis(20);
-        let events = match tty.read_events(deadline) {
+        let events = match tty.read_events(Some(deadline)) {
             Err(error)
                 if mode == "rejected-paste" && error.kind() == io::ErrorKind::InvalidData =>
             {

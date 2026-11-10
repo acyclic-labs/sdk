@@ -102,13 +102,18 @@ impl<S: Sources<N>, const N: usize> Readiness<S, N> {
     /// Wait for enabled original sources, timeout or interruption. The mask
     /// can disable a source; it cannot replace its original descriptor.
     /// False means the timeout elapsed; readiness or interruption returns true.
-    pub fn wait(&mut self, enabled: [bool; N], timeout: Duration) -> io::Result<bool> {
-        let seconds = timeout.as_secs().min(MAX_SECONDS);
-        let mut timeval = libc::timeval {
-            tv_sec: libc::time_t::try_from(seconds).map_err(|_| io::ErrorKind::InvalidInput)?,
-            tv_usec: libc::suseconds_t::try_from(timeout.subsec_micros())
-                .map_err(|_| io::ErrorKind::InvalidInput)?,
-        };
+    /// None waits indefinitely on the enabled descriptors.
+    pub fn wait(&mut self, enabled: [bool; N], timeout: Option<Duration>) -> io::Result<bool> {
+        let mut timeval = timeout
+            .map(|timeout| -> io::Result<_> {
+                Ok(libc::timeval {
+                    tv_sec: libc::time_t::try_from(timeout.as_secs().min(MAX_SECONDS))
+                        .map_err(|_| io::ErrorKind::InvalidInput)?,
+                    tv_usec: libc::suseconds_t::try_from(timeout.subsec_micros())
+                        .map_err(|_| io::ErrorKind::InvalidInput)?,
+                })
+            })
+            .transpose()?;
         for (number, enabled) in self.fds.iter().zip(enabled) {
             if enabled {
                 self.words[number / WORD_BITS] |= 1 << (number % WORD_BITS);
@@ -120,7 +125,7 @@ impl<S: Sources<N>, const N: usize> Readiness<S, N> {
         } else {
             (std::ptr::null_mut(), selected)
         };
-        let result = select_unlimited(self.nfds, read, write, &mut timeval);
+        let result = select_unlimited(self.nfds, read, write, timeval.as_mut());
         // Clear only our original source bits, including previously-ready
         // sources disabled on the next wait. No descriptor-set scan.
         for number in self.fds {
@@ -146,7 +151,7 @@ fn select_unlimited(
     nfds: libc::c_int,
     read: *mut libc::fd_set,
     write: *mut libc::fd_set,
-    timeout: &mut libc::timeval,
+    timeout: Option<&mut libc::timeval>,
 ) -> libc::c_int {
     // SAFETY: `select$DARWIN_EXTSN` is libSystem's select(2) without the
     // FD_SETSIZE check (the symbol C code binds under
@@ -164,7 +169,15 @@ fn select_unlimited(
     // SAFETY: exactly one of read/write points at nfds.div_ceil(32) or more
     // owned, initialized words, sized from the highest original descriptor.
     // Other sets are null and timeval is live and exclusive.
-    unsafe { select(nfds, read, write, std::ptr::null_mut(), timeout) }
+    unsafe {
+        select(
+            nfds,
+            read,
+            write,
+            std::ptr::null_mut(),
+            timeout.map_or(std::ptr::null_mut(), |timeout| timeout),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -193,23 +206,23 @@ mod tests {
         drop(write);
         let mut wait = Readiness::writable([high])?;
         for _ in 0..2 {
-            assert!(wait.wait([true], Duration::from_secs(5))?);
+            assert!(wait.wait([true], None)?);
         }
         let (reader, mut writer) = std::io::pipe()?;
         let input = std::fs::File::from(rustix::io::fcntl_dupfd_cloexec(&reader, 1500)?);
         let (changed, mut notify) = std::io::pipe()?;
         let mut readable = Readiness::readable([input.as_fd(), changed.as_fd()])?;
         writer.write_all(b"x")?;
-        assert!(readable.wait([true, false], Duration::ZERO)?);
+        assert!(readable.wait([true, false], Some(Duration::ZERO))?);
         // A ready terminal disabled for suspension cannot leave a stale bit.
-        assert!(!readable.wait([false, true], Duration::ZERO)?);
+        assert!(!readable.wait([false, true], Some(Duration::ZERO))?);
         notify.write_all(b"x")?;
-        assert!(readable.wait([false, true], Duration::ZERO)?);
+        assert!(readable.wait([false, true], Some(Duration::ZERO))?);
         let mut byte = [0];
         (&input).read_exact(&mut byte)?;
         assert_eq!(&byte, b"x");
         drop(writer);
-        assert!(readable.wait([true, false], Duration::ZERO)?);
+        assert!(readable.wait([true, false], Some(Duration::ZERO))?);
         assert_eq!((&input).read(&mut byte)?, 0);
         let mut words = [0u32; 1500 / WORD_BITS + 1];
         if let Some(word) = words.get_mut(1500 / WORD_BITS) {

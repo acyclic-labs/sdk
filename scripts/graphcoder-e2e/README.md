@@ -5,7 +5,7 @@ Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
 `acyclic-harness-providers` example `credential-fixture`. It uses a unique
 provider entry in the real OS keychain, selects `chosen` instead of the catalog
 default `tiny`, and requires both launches to send the selected model. It proves
-headless refusal with a remedy, cancellation at model and hidden-key entry,
+headless refusal with a remedy, early startup keys and cancellation, cancellation at hidden-key entry,
 invalid choices and empty/multiline key correction, and the first answer's delta
 before turn settlement. Cancelled input never reaches storage or the model. It then
 removes that entry through the shared credentials API. On Linux run in

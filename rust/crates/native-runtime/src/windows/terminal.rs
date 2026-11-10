@@ -14,7 +14,7 @@ use windows_sys::Win32::{
             SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
         },
         IO::CancelSynchronousIo,
-        Threading::{SetEvent, WaitForMultipleObjects},
+        Threading::{INFINITE, SetEvent, WaitForMultipleObjects},
     },
 };
 
@@ -132,11 +132,12 @@ pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
 
 /// Read VT bytes directly into the caller's buffer. A native call consumes at
 /// most u32::MAX bytes; larger buffers continue in the caller's next read.
+/// None waits indefinitely on the original console input or close event.
 pub fn console_read(
     input: usize,
     closed: &ConsoleClose,
     bytes: &mut [u8],
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> io::Result<usize> {
     let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
     if bytes.is_empty() {
@@ -206,20 +207,22 @@ impl ConsoleClose {
         Ok(())
     }
 
-    fn wait(&self, input: usize, deadline: Instant) -> io::Result<bool> {
+    fn wait(&self, input: usize, deadline: Option<Instant>) -> io::Result<bool> {
         let handles = [self.event.as_raw_handle() as HANDLE, input as HANDLE];
         loop {
             let now = Instant::now();
-            if now >= deadline {
+            if deadline.is_some_and(|deadline| now >= deadline) {
                 return Ok(false);
             }
-            let remaining = deadline - now;
             // Round up to the OS millisecond unit; never turn a remaining
             // fraction into an immediate readiness recheck. The OS maximum
             // is a wait chunk, not an earlier caller deadline.
-            let milliseconds =
-                remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
-            let timeout = milliseconds.min(u128::from(u32::MAX - 1)) as u32;
+            let timeout = deadline.map_or(INFINITE, |deadline| {
+                let remaining = deadline - now;
+                let milliseconds =
+                    remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
+                milliseconds.min(u128::from(u32::MAX - 1)) as u32
+            });
             // SAFETY: both original handles are retained by their owners;
             // this fixed array lives through the wait. Close has priority
             // when both sources are ready.

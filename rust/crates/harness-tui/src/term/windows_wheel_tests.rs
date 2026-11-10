@@ -29,7 +29,7 @@ pub(super) fn read_bursts(tty: &mut Tty, report: &Path) -> io::Result<()> {
         let deadline = Instant::now() + Duration::from_millis(500);
         let mut events = Vec::with_capacity(count);
         while events.len() < count && Instant::now() < deadline {
-            events.extend(tty.read_events(deadline)?);
+            events.extend(tty.read_events(Some(deadline))?);
         }
         assert_eq!(
             events.len(),

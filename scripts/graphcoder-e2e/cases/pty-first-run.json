@@ -13,8 +13,8 @@
     { "mode": "headless", "args": ["-p", "must not prompt"], "exit": 1,
       "stderr_contains": ["provider key unavailable", "recovery:"],
       "stdout_absent": ["GraphCoder first run", "API key (hidden)"] },
-    { "mode": "pty", "exit": 1, "actions": [
-      { "when": { "contains": ["GraphCoder first run", "Provider:"] }, "send": "2\r" },
+    { "mode": "pty", "text": "\u0003", "exit": 1, "actions": [] },
+    { "mode": "pty", "text": "2\r", "exit": 1, "actions": [
       { "when": { "contains": ["Model:"] }, "assert": { "absent": ["API key (hidden)"] }, "send": "\u0003" }
     ] },
     { "mode": "pty", "exit": 1, "actions": [

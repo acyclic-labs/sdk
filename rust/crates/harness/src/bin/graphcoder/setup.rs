@@ -83,8 +83,7 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
         return Err(KEYS.into());
     }
     let mut terminal = Tty::open()?;
-    terminal.negotiate(&acyclic_harness::tui::term::Environment::capture())?;
-    terminal.enable_mode(2004)?;
+    let mut input = onboarding::Input::new(&mut terminal)?;
     print!("GraphCoder first run: choose a provider\r\n");
     let providers: Vec<String> = registry
         .catalog()
@@ -92,7 +91,7 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
         .filter(|(_, spec)| !spec.models.is_empty())
         .map(|(name, _)| name.clone())
         .collect();
-    let index = onboarding::choose(&mut terminal, "Provider", &providers)?;
+    let index = input.choose("Provider", &providers)?;
     let provider = providers
         .get(index)
         .ok_or("provider selection unavailable")?;
@@ -105,7 +104,7 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
         .keys()
         .map(|model| format!("{provider}/{model}"))
         .collect();
-    let index = onboarding::choose(&mut terminal, "Model", &models)?;
+    let index = input.choose("Model", &models)?;
     let selected = models
         .get(index)
         .ok_or("model selection unavailable")?
@@ -114,10 +113,11 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
         if !Credentials::keychain_available() {
             return Err("OS keychain unavailable; recovery: unlock/start the OS credential service, or configure an environment key or --credentials FILE before starting graphcoder".into());
         }
-        let key = onboarding::read_secret(&mut terminal, "API key (hidden)")?;
+        let key = input.read_secret("API key (hidden)")?;
         Credentials::store_api_key(provider, &key)?;
         print!("Key saved in OS keychain service acyclic-harness.\r\n");
     }
+    drop(input);
     // Discard cached missing-source observations after publishing a credential,
     // and admit the exact selection before making it the next launch's default.
     let refreshed = self::registry(args)?;

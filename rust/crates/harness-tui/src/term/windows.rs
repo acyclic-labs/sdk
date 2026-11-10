@@ -256,15 +256,22 @@ impl Tty {
         Owner::close(&self.owner, ConsoleIo::restore)
     }
     /// Read classified VT input; the decoder coalesces ConPTY CR/LF.
-    pub fn read_events(&mut self, deadline: Instant) -> io::Result<Vec<InputEvent>> {
+    /// None waits on input or owner close without a readiness deadline.
+    pub fn read_events(&mut self, deadline: Option<Instant>) -> io::Result<Vec<InputEvent>> {
         let events = self.decoder.take_events();
         if !events.is_empty() {
             return Ok(events);
         }
         let mut bytes = [0; 1024];
-        let count = self.receive(&mut bytes, self.decoder.input_deadline(deadline))?;
+        self.owner.check_open()?;
+        let count = ffi::console_read(
+            self.reader.as_raw_handle() as usize,
+            &self.closed,
+            &mut bytes,
+            self.decoder.input_deadline(deadline),
+        )?;
         self.decoder.feed(&bytes[..count])?;
-        if count == 0 || Instant::now() >= deadline {
+        if count == 0 || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             self.decoder.finish_input()?;
         }
         Ok(self.decoder.take_events())
@@ -306,7 +313,7 @@ impl ProbeIo for Tty {
             self.reader.as_raw_handle() as usize,
             &self.closed,
             bytes,
-            deadline,
+            Some(deadline),
         )
     }
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
@@ -421,7 +428,7 @@ mod tests {
                 tty.reader.as_raw_handle() as usize,
                 &tty.closed,
                 &mut [0; 24],
-                Instant::now() + Duration::from_secs(5),
+                None,
             );
             assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::NotConnected));
             // Removing only the published event fails that same close oracle
@@ -432,7 +439,7 @@ mod tests {
                     tty.reader.as_raw_handle() as usize,
                     &unpublished,
                     &mut [0; 24],
-                    Instant::now() + Duration::from_millis(1),
+                    Some(Instant::now() + Duration::from_millis(1)),
                 )?,
                 0
             );

@@ -40,12 +40,12 @@ impl acyclic_native_runtime::terminal::Sources<1> for Input {
 }
 
 pub(crate) trait InputReadiness {
-    fn wait(&mut self, active: bool, deadline: Instant) -> io::Result<bool>;
+    fn wait(&mut self, active: bool, deadline: Option<Instant>) -> io::Result<bool>;
 }
 
 impl InputReadiness for InputWait {
-    fn wait(&mut self, active: bool, deadline: Instant) -> io::Result<bool> {
-        let timeout = deadline.saturating_duration_since(Instant::now());
+    fn wait(&mut self, active: bool, deadline: Option<Instant>) -> io::Result<bool> {
+        let timeout = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
         #[cfg(target_vendor = "apple")]
         return self.readiness.wait([active, true], timeout);
         #[cfg(not(target_vendor = "apple"))]
@@ -60,8 +60,11 @@ impl InputReadiness for InputWait {
             } else {
                 &mut sources[..1]
             };
-            let timeout = Timespec::try_from(timeout).map_err(|_| io::ErrorKind::InvalidInput)?;
-            match poll(sources, Some(&timeout)) {
+            let timeout = timeout
+                .map(Timespec::try_from)
+                .transpose()
+                .map_err(|_| io::ErrorKind::InvalidInput)?;
+            match poll(sources, timeout.as_ref()) {
                 Ok(count) => Ok(count != 0),
                 Err(rustix::io::Errno::INTR) => Ok(true),
                 Err(error) => Err(error.into()),
@@ -348,7 +351,7 @@ mod darwin {
                         Err(error) => Err(error.into()),
                     }
                 }
-                Self::Select(writable) => writable.wait([true], remaining).map(|_| ()),
+                Self::Select(writable) => writable.wait([true], Some(remaining)).map(|_| ()),
             }
         }
     }
