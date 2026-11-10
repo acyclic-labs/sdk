@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_transport(std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32")
         .server_mod_attribute(".", "#[cfg(not(target_arch = \"wasm32\"))]");
     compiler.compile(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
         config,
         services,
         &["proto/machines/v1/machines.proto"],
