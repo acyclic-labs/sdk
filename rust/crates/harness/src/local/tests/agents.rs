@@ -36,8 +36,10 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         ]),
         ScriptedTurn::Text("approved".into()),
     ]);
+    eprintln!("APPROVAL_PROBE starting; awaiting volume");
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
+    eprintln!("APPROVAL_PROBE awaiting LocalHarness::open");
     let harness = Arc::new(
         LocalHarness::open(
             volume_config(directory.path(), project, provider.clone())?
@@ -61,7 +63,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let (id, published_binding, delivery) = loop {
         eprintln!("APPROVAL_PROBE awaiting next_projected approval status");
         let (event, delivery) = observed.observer.next_projected().await?;
-        eprintln!("APPROVAL_PROBE projected event: {event:?}");
+        eprintln!("APPROVAL_PROBE projected event received");
         if let Some(crate::local::Event::Status(status)) = event? {
             if let Some(reason) = crate::local::agent_conversation::ended(&status) {
                 return Err(Error::Conflict(reason));
@@ -92,12 +94,14 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     assert_eq!(pending.status, sequence);
     assert_eq!(Some(&pending.binding), published_binding.as_ref());
     assert!(serde_json::to_vec(&pending).map_err(agent)?.len() < 1024);
+    eprintln!("APPROVAL_PROBE awaiting approval_prompt");
     let preview = client.approval_prompt(&id).await?;
     let before = projection.cursor(&delivery.resource);
     let checkpoint = serde_json::to_vec(&projection).map_err(agent)?;
     let mut bytes = Vec::new();
     let (length, after) = loop {
         let offset = bytes.len() as u64;
+        eprintln!("APPROVAL_PROBE awaiting approval_request offset {offset}");
         let (chunk, length) = client.approval_request(sequence, offset).await?;
         assert!(chunk.len() as u64 <= MAX_READ_BYTES);
         let event = projection
@@ -140,6 +144,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     assert_eq!(pending.binding.operation_id, operation_id);
     assert_eq!(pending.binding.action_digest, action_digest);
     assert_eq!(saved, arguments);
+    eprintln!("APPROVAL_PROBE awaiting approval_request boundary controls");
     assert_eq!(
         client.approval_request(sequence, length).await?,
         (Vec::new(), length)
@@ -155,6 +160,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     };
     let mut different = binding.clone();
     different.action_digest[0] ^= 1;
+    eprintln!("APPROVAL_PROBE awaiting mismatched decision refusal");
     assert!(
         client
             .decide_with_binding(&id, different, true.into())
@@ -162,6 +168,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
             .is_err()
     );
     assert_eq!(provider.request_count(), 1);
+    eprintln!("APPROVAL_PROBE awaiting accepted decision");
     client
         .decide_with_binding(&id, binding.clone(), true.into())
         .await?;
