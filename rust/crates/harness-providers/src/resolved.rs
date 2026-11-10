@@ -88,7 +88,7 @@ impl ResolvedModel {
         let (Some(inputs), Some(config)) = (&self.inputs, &self.credential_config) else {
             return Ok(current);
         };
-        if config.authentication.secret_reference().is_some() {
+        if config.authentication.secret_reference().is_some() || self.credential_scope.is_some() {
             return Ok(current);
         }
         let credential = inputs.select(&self.model.provider)?.for_config(config);
