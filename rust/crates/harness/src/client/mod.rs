@@ -28,4 +28,6 @@ pub use acyclic_harness_client::{
     CREDENTIAL_ENV, ConnectionConfigError, ConnectionOptions, DEFAULT_ENDPOINT, DemandError,
     DemandPolicy, ENDPOINT_ENV, ViewDemand, resolve_connection_options,
 };
+#[cfg(any(feature = "hosting", feature = "wasm"))]
+pub use acyclic_harness_client::{explorer, ui};
 pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};

@@ -83,9 +83,8 @@ impl Connection {
 
     /// Select an existing descendant: a connection that drives and observes
     /// it. A remote endpoint's credential already reaches the tree, so this
-    /// rebinds the same session. A local credential observes exactly the
-    /// agent it was minted for, so the in-process harness mints the
-    /// descendant's own instead of handing back a binding it cannot follow.
+    /// rebinds the same session. The local harness binds the descendant's own
+    /// scope and volumes, retaining its policy and observation lifetime.
     pub async fn select(&self, agent: AgentPath) -> Result<Self> {
         if let Some(host) = &self._host {
             if !self.root.contains(&agent) {

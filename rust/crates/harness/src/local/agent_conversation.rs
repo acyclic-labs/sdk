@@ -140,8 +140,28 @@ impl Conversation {
         Ok(Self::open(self.connection.observation().await?))
     }
 
-    fn agent(&self) -> &AgentPath {
+    /// The selected agent; navigation never reconstructs identity from UI text.
+    pub fn agent(&self) -> &AgentPath {
         self.connection.root()
+    }
+
+    /// The same authenticated tree connection, selected at an existing node.
+    pub async fn select(&self, agent: AgentPath) -> Result<Arc<Self>> {
+        Ok(Self::open(self.connection.select(agent).await?))
+    }
+
+    /// A lazy sidebar on this session's primitives. No descendant is read
+    /// until the shared explorer plans a visible row or lookahead page.
+    pub fn tree(
+        &self,
+    ) -> Result<acyclic_harness_client::explorer::LiveExplorer<acyclic_stream::session::ReadProvider>>
+    {
+        acyclic_harness_client::explorer::LiveExplorer::children(
+            acyclic_harness_client::ReaderPolicy::default(),
+            self.agent(),
+            Arc::new(self.connection.session.read_provider()),
+        )
+        .map_err(failed)
     }
 
     /// The root agent's id in operation form: the task its failures name.

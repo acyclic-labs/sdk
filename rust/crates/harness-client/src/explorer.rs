@@ -3,7 +3,7 @@
 //! A swarm is a stream subtree and an agent fork is a stream fork, so this
 //! layer adds no data API: it lists `harness/agents` and `<agent>/children`
 //! with `children_page` (projecting each child's `conversation` head), reads
-//! `harness/status/<id>` heads and conversation ranges with `read`, follows
+//! ancestry-scoped status heads and conversation ranges with `read`, follows
 //! only the displayed live tails. The reader learns each stream's exact
 //! inherited cut from the primitive Head/origin, so opening a forked child
 //! reuses cached history without reconstructing lineage from agent records.
@@ -16,6 +16,54 @@ use crate::reader::{Priority, Reader, ReaderPolicy, Want};
 use acyclic_harness_core::agent::{AGENTS, AgentPath, AgentRecord, StatusRecord};
 use acyclic_stream::{StreamError, StreamPath};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
+use std::task::{Context, Poll};
+
+/// A scoped explorer driven by its original provider events. Native and web
+/// renderers share its reader, scheduling, cache and follow ownership.
+pub struct LiveExplorer<P: acyclic_stream::StreamProvider + ?Sized> {
+    /// The only tree collector; callers set the viewport and navigation intent.
+    pub view: Explorer,
+    driver: crate::reader::Driver<P>,
+    reported: u64,
+}
+
+impl<P: acyclic_stream::StreamProvider + ?Sized> LiveExplorer<P> {
+    /// Open a scoped tree without reading or collecting any children yet.
+    pub fn children(
+        policy: ReaderPolicy,
+        agent: &AgentPath,
+        provider: Arc<P>,
+    ) -> Result<Self, StreamError> {
+        let mut view = Explorer::children(policy, agent)?;
+        let mut driver = crate::reader::Driver::new(provider);
+        driver.attach(view.reader(), 0);
+        let reported = view.reader_ref().generation();
+        Ok(Self {
+            view,
+            driver,
+            reported,
+        })
+    }
+
+    /// Wait on the existing source work or follows. Calling this with an
+    /// unchanged source registers its wake and returns Pending; no probe runs.
+    pub fn poll_changed(&mut self, now: u64, cx: &mut Context<'_>) -> Poll<()> {
+        self.driver.step(self.view.reader(), now, cx);
+        let generation = self.view.reader_ref().generation();
+        if generation == self.reported {
+            Poll::Pending
+        } else {
+            self.reported = generation;
+            Poll::Ready(())
+        }
+    }
+
+    /// Existing read deadlines and transient transport backoff, when needed.
+    pub fn next_deadline(&self) -> Option<u64> {
+        self.view.reader_ref().next_deadline()
+    }
+}
 
 /// Rows of lookahead in the scroll direction, at most.
 const MAX_LOOKAHEAD: usize = 256;
@@ -55,6 +103,126 @@ mod tests {
     use acyclic_stream::{
         AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _,
     };
+
+    #[tokio::test]
+    async fn scoped_ten_thousand_child_tree_reads_only_the_visible_window()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_harness_core::agent::Phase;
+        use acyclic_stream::{CommitMutation, CommitRequest, testing::Counted};
+        async fn open(
+            count: u64,
+        ) -> Result<
+            (
+                LiveExplorer<Counted<MemoryStream>>,
+                acyclic_stream::testing::Requests,
+            ),
+            Box<dyn std::error::Error>,
+        > {
+            let root = AgentPath::root(&AgentId::from_bytes([1; 16]));
+            let memory = MemoryStream::default();
+            let status = StatusRecord {
+                child_wakes: Vec::new(),
+                phase: Phase::Idle,
+                cursor: 0,
+                conversation: 0,
+            };
+            memory
+                .append(AppendRequest {
+                    path: root.status()?,
+                    records: vec![status.append_record()?],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(b"parent".to_vec())?,
+                })
+                .await?;
+            // Batch fixture publication, never a per-agent task or thread.
+            for first in (0..count).step_by(100) {
+                let mut mutations = Vec::new();
+                for number in first..(first + 100).min(count) {
+                    let id = AgentId::try_from(format!("{:032x}", number + 2))?;
+                    let child = root.child(&id)?;
+                    mutations.push(CommitMutation::Append {
+                        path: StreamPath::new(child.as_str())?,
+                        records: vec![b"child".as_slice().into()],
+                    });
+                    mutations.push(CommitMutation::Append {
+                        path: child.status()?,
+                        records: vec![status.append_record()?],
+                    });
+                }
+                let committed = memory
+                    .commit(CommitRequest {
+                        deadline_unix_millis: None,
+                        conditions: Vec::new(),
+                        mutations,
+                        idempotency_key: IdempotencyKey::new(first.to_be_bytes().to_vec())?,
+                    })
+                    .await?;
+                assert!(matches!(
+                    committed,
+                    acyclic_stream::CommitOutcome::Committed(_)
+                ));
+            }
+            let provider = Arc::new(Counted::new(memory));
+            let mut live =
+                LiveExplorer::children(ReaderPolicy::default(), &root, provider.clone())?;
+            live.view.set_viewport(5, 0, 16);
+            loop {
+                live.view.frame(0);
+                if live.view.rows().len() == 5
+                    && live.view.rows().iter().all(|(_, row)| {
+                        matches!(
+                            row,
+                            Row::Agent {
+                                status: Some(_),
+                                ..
+                            }
+                        )
+                    })
+                {
+                    break;
+                }
+                futures::future::poll_fn(|cx| live.poll_changed(0, cx)).await;
+            }
+            assert!(live.view.reader_ref().issues().next().is_none());
+            assert!(live.view.reader_ref().cache().indexed_children() <= 64);
+            let requests = provider.requests();
+            // Redraw at the start cannot escape into the root's parent listing.
+            live.view.scroll(-100);
+            live.view.frame(0);
+            assert!(live.view.rows().iter().all(|(_, row)| matches!(row, Row::Agent { path, .. } if root.contains(path) && path != &root)));
+            Ok((live, requests))
+        }
+        let (small, small_work) = open(10).await?;
+        let (mut large, large_work) = open(10_000).await?;
+        assert_eq!(
+            small.view.reader_ref().issued(),
+            large.view.reader_ref().issued()
+        );
+        assert_eq!(small_work, large_work);
+        assert!(large.view.reader_ref().issued() <= 16);
+        let before = large.view.reader_ref().issued();
+        large.view.scroll(64);
+        loop {
+            large.view.frame(0);
+            if large.view.rows().len() == 5
+                && large.view.rows().iter().all(|(_, row)| {
+                    matches!(
+                        row,
+                        Row::Agent {
+                            status: Some(_),
+                            ..
+                        }
+                    )
+                })
+            {
+                break;
+            }
+            futures::future::poll_fn(|cx| large.poll_changed(0, cx)).await;
+        }
+        assert!(matches!(&large.view.rows()[0].0, Pos::Row { page: 1, .. }));
+        assert!(large.view.reader_ref().issued() - before <= 16);
+        Ok(())
+    }
 
     #[test]
     fn history_seeks_preserve_exclusive_ends_at_the_sequence_boundary() {
@@ -516,7 +684,20 @@ impl Explorer {
     /// # Errors
     /// Refuses an invalid policy.
     pub fn new(policy: ReaderPolicy) -> Result<Self, StreamError> {
-        let root = StreamPath::new(AGENTS)?;
+        Self::listing(policy, StreamPath::new(AGENTS)?)
+    }
+
+    /// Explore only the selected agent's descendants. No global directory or
+    /// sibling authority is required to open a sidebar for one served tree.
+    pub fn children(policy: ReaderPolicy, agent: &AgentPath) -> Result<Self, StreamError> {
+        let root = agent.children().map_err(|error| match error {
+            acyclic_harness_core::agent::Error::Stream(error) => error,
+            _ => StreamError::InvalidResponse,
+        })?;
+        Self::listing(policy, root)
+    }
+
+    fn listing(policy: ReaderPolicy, root: StreamPath) -> Result<Self, StreamError> {
         Ok(Self {
             reader: Reader::new(policy)?,
             anchor: Pos::Gap {
@@ -670,6 +851,14 @@ impl Explorer {
     /// Where `agent` is listed, using retained page membership.
     fn locate(&self, agent: &AgentPath) -> Option<Pos> {
         let parent = parent_listing(agent)?;
+        if parent != self.root
+            && !parent
+                .as_str()
+                .strip_prefix(self.root.as_str())
+                .is_some_and(|suffix| suffix.starts_with('/'))
+        {
+            return None;
+        }
         let hint = self.expanded.get(agent).copied();
         // Keep an expanded row's exact page while present; otherwise seek its
         // retained membership without visiting unrelated pages.
@@ -766,6 +955,9 @@ impl Explorer {
     }
 
     fn up(&self, parent: &StreamPath) -> Option<Pos> {
+        if parent == &self.root {
+            return None;
+        }
         let owner = owner(parent)?;
         match self.locate(&owner)? {
             Pos::Row {
@@ -806,7 +998,9 @@ impl Explorer {
                 },
             });
         }
-        owner(parent).and_then(|owner| self.locate(&owner))
+        (parent != &self.root)
+            .then(|| owner(parent).and_then(|owner| self.locate(&owner)))
+            .flatten()
     }
 
     /// The last row shown under `pos`, through expanded descendants.

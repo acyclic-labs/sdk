@@ -13,6 +13,7 @@ pub(super) struct Session {
     pub snapshot: ClientFiles,
     pub config: ConfigView,
     open_view: Option<String>,
+    pub tree: Option<bool>,
 }
 
 fn paths() -> Vec<String> {
@@ -34,12 +35,28 @@ impl Session {
             snapshot,
             config: ConfigView::default(),
             open_view: None,
+            tree: None,
         };
         session.project()?;
         Ok(session)
     }
 
     pub fn project(&mut self) -> Result<(), Failure> {
+        self.tree = self
+            .snapshot
+            .files
+            .get("layout.json")
+            .and_then(Option::as_ref)
+            .map(|file| -> Result<Option<bool>, Failure> {
+                let layout: Value = serde_json::from_str(&file.text)?;
+                match layout.get("tree") {
+                    None => Ok(None),
+                    Some(Value::Bool(value)) => Ok(Some(*value)),
+                    Some(_) => Err("layout.json tree must be boolean".into()),
+                }
+            })
+            .transpose()?
+            .flatten();
         self.open_view = self
             .snapshot
             .files
@@ -74,6 +91,23 @@ impl Session {
         conversation: &Conversation,
         query: Option<&CommandQuery>,
     ) -> Result<(), Failure> {
+        self.change(conversation, query, None).await
+    }
+
+    pub async fn show_tree(
+        &mut self,
+        conversation: &Conversation,
+        shown: bool,
+    ) -> Result<(), Failure> {
+        self.change(conversation, None, Some(shown)).await
+    }
+
+    async fn change(
+        &mut self,
+        conversation: &Conversation,
+        query: Option<&CommandQuery>,
+        tree: Option<bool>,
+    ) -> Result<(), Failure> {
         let mut snapshot = CommandFileSnapshot::new();
         if let Some(file) = self
             .snapshot
@@ -87,7 +121,18 @@ impl Session {
             );
         }
         let operation = OperationId::new();
-        let changes = view_changes(&snapshot, query, operation)?;
+        let changes = if let Some(shown) = tree {
+            let mut changes = CommandResolution::Select {
+                query: CommandQuery::Tree,
+            }
+            .file_changes(&snapshot, operation)?;
+            for change in &mut changes {
+                change.contents["tree"] = Value::Bool(shown);
+            }
+            changes
+        } else {
+            view_changes(&snapshot, query, operation)?
+        };
         let changes = changes
             .into_iter()
             .map(|change| {

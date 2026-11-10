@@ -39,6 +39,7 @@ use acyclic_harness::completion::Exit;
 mod diff;
 mod query;
 mod session;
+mod tree;
 
 async fn usage(mut query: UsageQuery) -> (UsageQuery, acyclic_harness::Result<bool>) {
     let result = query.advance().await;
@@ -630,11 +631,13 @@ fn terminal_events(
 /// turns, paged in from the stream as they show, otherwise the view starts
 /// empty.
 pub async fn run(
-    conversation: Arc<Conversation>,
+    mut conversation: Arc<Conversation>,
     inline: bool,
     resume: bool,
     terminal: Option<Tty>,
 ) -> Result<(), Failure> {
+    let root = Arc::clone(&conversation);
+    let mut sidebar = tree::Sidebar::new(&conversation)?;
     let mut ui = session::Session::open(&conversation).await?;
     if !resume && ui.open_view().is_some() {
         ui.select(&conversation, None).await?;
@@ -715,6 +718,24 @@ pub async fn run(
     loop {
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let size: Size = size()?;
+        let shown = ui.tree.unwrap_or_else(|| sidebar.has_children());
+        sidebar.frame(
+            now,
+            if shown && size.width >= 80 {
+                size.height
+            } else {
+                4
+            },
+        );
+        let tree_shown = ui.tree.unwrap_or_else(|| sidebar.has_children());
+        let tree_rows = sidebar.rows(root.agent(), tree_shown);
+        let transcript_width = size
+            .width
+            .saturating_sub(if tree_shown && size.width >= 80 {
+                size.width / 3
+            } else {
+                0
+            });
         usage_page.wrap(size.width);
         let busy = view.busy();
         input.busy = busy;
@@ -738,9 +759,14 @@ pub async fn run(
         }
         let (areas, page) = {
             let status = Line::raw(view.status());
+            let mut header = view.header();
+            header
+                .spans
+                .push(Span::raw(format!(" · {}", conversation.agent().id())));
             let mut screen = Screen {
-                header: view.header(),
-                transcript: view.rows(size.width.saturating_sub(1)),
+                header,
+                transcript: view.rows(transcript_width.saturating_sub(1)),
+                tree: &tree_rows,
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
                 usage: if usage_stopped.is_some() {
@@ -813,7 +839,18 @@ pub async fn run(
                 view.top,
             )));
         }
+        let tree_deadline = sidebar.source.next_deadline();
         tokio::select! {
+            () = futures::future::poll_fn(|cx| sidebar.source.poll_changed(now, cx)), if sidebar.failure.is_none() => {}
+            () = async {
+                if let Some(deadline) = tree_deadline {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(
+                        start + std::time::Duration::from_millis(deadline)
+                    )).await;
+                } else {
+                    std::future::pending().await
+                }
+            }, if sidebar.failure.is_none() => {}
             snapshot = &mut files_future => {
                 let snapshot = snapshot?;
                 let layout_changed = ui.snapshot.files.get("layout.json").and_then(Option::as_ref).map(|file| &file.file)
@@ -925,6 +962,41 @@ pub async fn run(
             batch = keys.next() => {
                 let mut selection_changed = false;
                 for event in batch.ok_or("terminal input ended")?? {
+                    if let Some(intent) = sidebar.event(&event, &input.keymap, tree_shown, areas.tree) {
+                        let attach = match intent {
+                            tree::Intent::Toggle => {
+                                let shown = !tree_shown;
+                                ui.show_tree(&conversation, shown).await?;
+                                sidebar.focused = shown;
+                                selection_changed = true;
+                                None
+                            }
+                            tree::Intent::Attach(agent) => Some(agent),
+                            tree::Intent::Parent => conversation.agent().parent()
+                                .filter(|agent| root.agent().contains(agent)),
+                            tree::Intent::Input | tree::Intent::Consumed => None,
+                        };
+                        if let Some(agent) = attach {
+                            let selected = root.select(agent).await?;
+                            let from = selected.settled().await?.saturating_sub(1);
+                            events = selected.observe(Some(from)).await?;
+                            conversation = selected;
+                            view = View { top: events.seen(), floor: 0, pending_dirty: true, tail_dirty: true, ..View::default() };
+                            ui = session::Session::open(&conversation).await?;
+                            queries.close(query_future.as_mut());
+                            overlay = None;
+                            older_future.set(None);
+                            output_rows.clear();
+                            usage_stopped = None;
+                            usage_page = QueryPage::new(vec![Line::raw("Loading usage…")], None, false);
+                            usage_future.set(Some(usage(conversation.usage_query())));
+                            sidebar.focused = false;
+                            input.editor = Editor::default();
+                            unsent = None;
+                            selection_changed = true;
+                        }
+                        continue;
+                    }
                     let effects = areas
                         .event(&mut input, event, &mut viewport, now, &mut |_| None)
                         .collect::<Vec<_>>();

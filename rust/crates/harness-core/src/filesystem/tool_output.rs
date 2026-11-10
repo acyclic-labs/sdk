@@ -103,6 +103,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     .map_err(|error| Error::Invalid(format!("agent stream: {error}")))
             };
         let (conversation, status) = (stream(agent.conversation())?, stream(agent.status())?);
+        let children = stream(agent.children())?;
         let tree = agent.depth() == 0;
         let membership = stream(if tree {
             agent.membership_tree()
@@ -110,11 +111,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             agent.membership()
         })?;
         let follow: &[&str] = &["streams/follow"];
+        let explore: &[&str] = &["streams/list", "streams/follow"];
         let read: &[&str] = &["fs/list", "fs/read"];
         let invoke: &[&str] = &["actors/invoke"];
         let mut grants = vec![
             (conversation.as_str(), false, follow),
-            (status.as_str(), false, follow),
+            (status.as_str(), true, follow),
+            (children.as_str(), true, explore),
             (membership.as_str(), tree, follow),
             (resource.as_str(), true, read),
         ];
