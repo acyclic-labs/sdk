@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 /// One tool assembled from three independently replaceable values.
 #[derive(Clone)]
@@ -48,6 +49,7 @@ impl ModelSelection {
 pub struct ToolRegistry {
     data: Arc<RegistryData>,
     sources: Vec<Arc<dyn ToolSource>>,
+    source_ceiling: Option<Arc<BTreeSet<String>>>,
 }
 
 /// A shared, event-invalidated tool catalog. Refresh runs before model dispatch;
@@ -77,6 +79,20 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
 }
 
 impl ToolRegistry {
+    pub(crate) fn restrict_sources(&mut self, allowed: &[String]) {
+        let allowed = allowed
+            .iter()
+            .filter(|name| self.source_allowed(name))
+            .cloned()
+            .collect();
+        self.source_ceiling = Some(Arc::new(allowed));
+    }
+
+    pub(super) fn source_allowed(&self, name: &str) -> bool {
+        self.source_ceiling
+            .as_ref()
+            .is_none_or(|allowed| allowed.contains(name))
+    }
     pub(crate) fn fixed_definitions(
         &self,
         grants: &crate::Capabilities,
@@ -85,6 +101,7 @@ impl ToolRegistry {
         Self {
             data: self.data.clone(),
             sources: Vec::new(),
+            source_ceiling: None,
         }
         .definitions_for_grants(grants, io)
     }
@@ -93,6 +110,9 @@ impl ToolRegistry {
         tool: &ToolDefinition,
         grants: &crate::Capabilities,
     ) -> Result<bool> {
+        if !self.source_allowed(&tool.name) {
+            return Ok(false);
+        }
         for source in &self.sources {
             let snapshot = source.snapshot()?;
             if source
@@ -175,7 +195,9 @@ impl ToolRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<Arc<Tool>>> {
         for source in &self.sources {
-            if let Some(tool) = source.snapshot()?.resolve(name, io)? {
+            if let Some(tool) = source.snapshot()?.resolve(name, io)?
+                && self.source_allowed(&tool.definition.name)
+            {
                 return Ok(Some(tool));
             }
         }

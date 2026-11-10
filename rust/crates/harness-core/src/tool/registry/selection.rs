@@ -271,11 +271,15 @@ impl ToolRegistry {
                 .is_some_and(|grant| grants.contains(grant))
             {
                 for definition in snapshot.definitions(io)? {
-                    crate::executor::stock_vec_push(&mut definitions, definition, io)?;
+                    if self.source_allowed(&definition.name) {
+                        crate::executor::stock_vec_push(&mut definitions, definition, io)?;
+                    }
                 }
             } else {
                 for definition in snapshot.definitions_for_grants(grants, io)? {
-                    crate::executor::stock_vec_push(&mut definitions, definition, io)?;
+                    if self.source_allowed(&definition.name) {
+                        crate::executor::stock_vec_push(&mut definitions, definition, io)?;
+                    }
                 }
             }
         }
