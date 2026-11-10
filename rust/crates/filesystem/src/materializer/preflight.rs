@@ -371,10 +371,21 @@ mod tests {
         );
         assert_eq!(original.receipt().bytes_encoded, 2 * "known".len() as u64);
         use std::os::unix::ffi::OsStrExt as _;
+        // Native volumes may require valid Unicode. Keep the unrepresentable
+        // byte-name control at the encoding boundary before any host I/O.
+        assert!(matches!(
+            crate::native_name::host_name_bytes_with_native_work(
+                std::ffi::OsStr::from_bytes(b"raw-\xff"),
+                config.profile,
+                config.limits.maximum_component_bytes,
+                &original,
+            ),
+            Err(NativeTreeMaterializationError::InvalidLayout)
+        ));
+        assert_eq!(original.live_allocation_bytes(), retained);
         for (name, unknown) in [
             (std::ffi::OsStr::new("explicit-utf8"), false),
-            (std::ffi::OsStr::new("KNOWN"), true),
-            (std::ffi::OsStr::from_bytes(b"raw-\xff"), true),
+            (std::ffi::OsStr::new("unmapped-λ"), true),
         ] {
             let path = directory.path().join(name);
             std::fs::write(&path, "must survive")?;
@@ -386,6 +397,15 @@ mod tests {
             assert_eq!(std::fs::read(&path)?, b"must survive");
             std::fs::remove_file(&path)?;
         }
+        // Renaming changes the stored spelling even on a case-insensitive
+        // host. Writing through the alias would retain the authored spelling.
+        let known = directory.path().join("known");
+        let alias = directory.path().join("KNOWN");
+        std::fs::rename(&known, &alias)?;
+        assert!(host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
+        assert_eq!(original.live_allocation_bytes(), retained);
+        assert_eq!(std::fs::read(&alias)?, b"physical");
+        std::fs::rename(&alias, &known)?;
         std::fs::write(directory.path().join("foreign"), "must survive")?;
         assert!(host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
         assert_eq!(
