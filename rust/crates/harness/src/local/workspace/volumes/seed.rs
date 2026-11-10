@@ -111,7 +111,7 @@ pub(in crate::local::workspace) async fn adopt_home(
     .await
     .map_err(storage)?;
     let committed = checkout
-        .checkpoint(
+        .commit_even_if_unchanged(
             acyclic_fs::OperationId::from_bytes(key),
             None,
             None,

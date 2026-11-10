@@ -50,7 +50,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
 
     /// Records this operation even when its authored root is unchanged. Uses
     /// the same conditional publication and replay contract as `commit`.
-    pub async fn checkpoint<E, F, Fut>(
+    pub async fn commit_even_if_unchanged<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
         operation_context: Option<Digest>,
