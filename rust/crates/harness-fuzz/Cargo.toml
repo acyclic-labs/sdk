@@ -380,14 +380,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "config_module"
-path = "fuzz_targets/config_module.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "file_version"
 path = "fuzz_targets/file_version.rs"
 required-features = ["filesystem-access"]
