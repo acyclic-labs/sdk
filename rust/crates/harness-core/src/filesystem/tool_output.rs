@@ -15,7 +15,7 @@ pub struct AgentObservation {
     /// The `fs:/` resource of [`TOOL_OUTPUT`]; a turn's output is under
     /// `{resource}/{turn}`.
     pub resource: String,
-    /// Sealed credential to follow the agent's conversation and status and to
+    /// Sealed credential to read and follow the agent's conversation and status and to
     /// list and read under `resource`, bound to the agent's audience; it lives
     /// no longer than the agent's scope and is revoked with it.
     pub credential: Vec<u8>,
@@ -126,15 +126,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         } else {
             agent.membership()
         })?;
-        let follow: &[&str] = &["streams/follow"];
-        let explore: &[&str] = &["streams/list", "streams/follow"];
+        let observe: &[&str] = &["streams/read", "streams/follow"];
+        let explore: &[&str] = &["streams/list", "streams/read", "streams/follow"];
         let read: &[&str] = &["fs/list", "fs/read"];
         let invoke: &[&str] = &["actors/invoke"];
         let mut grants = vec![
-            (conversation.as_str(), false, follow),
-            (status.as_str(), true, follow),
+            (conversation.as_str(), false, observe),
+            (status.as_str(), true, observe),
             (children.as_str(), true, explore),
-            (membership.as_str(), tree, follow),
+            (membership.as_str(), tree, observe),
             (resource.as_str(), true, read),
         ];
         if let Some(calls) = calls {
@@ -148,7 +148,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(directory) = directory {
             grants.push((directory, false, invoke));
             for stream in &directory_streams {
-                grants.push((stream.as_str(), true, follow));
+                grants.push((stream.as_str(), true, observe));
             }
             grants.push(("fs:/", true, read));
         }

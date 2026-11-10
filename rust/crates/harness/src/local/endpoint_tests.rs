@@ -17,6 +17,13 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     let harness =
         Arc::new(LocalHarness::open(volume_config(directory.path(), project, text())?).await?);
     let connection = harness.connect().await?;
+    let mut observer = Observer::open(&connection, 0, 0)?;
+    loop {
+        if matches!(observer.next().await?, Event::Status(status) if matches!(status.phase, crate::agent::Phase::Idle))
+        {
+            break;
+        }
+    }
     let reader = connection.session.read_provider();
     let head = reader
         .head(connection.root.status().map_err(exchange)?)
