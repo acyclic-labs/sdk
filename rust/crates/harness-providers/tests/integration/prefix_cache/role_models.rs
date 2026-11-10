@@ -304,6 +304,27 @@ async fn run_roles(adapter: Adapter, misroute: bool, copy_root_budgets: bool) ->
         catalog.resolve("workers/replacement")?,
     ))?)?;
     resumed.agents().drain(&kid).await?;
+    if copy_root_budgets {
+        let acyclic_harness::agent::Phase::Done {
+            outcome: acyclic_harness::agent::AgentOutcome::Failed { message },
+        } = resumed.agents().state(&kid).await?.phase
+        else {
+            panic!("copying the root's budgets did not fail the smaller worker");
+        };
+        assert!(
+            message.contains("compaction budgets exceed selected model capacity"),
+            "unexpected negative-control failure: {message}"
+        );
+        assert!(
+            child
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .2
+                .is_empty()
+        );
+        return Ok(true);
+    }
     drop(resumed);
     let resumed = make_bound(make_executors(root_model.clone())?)?;
     // No model on the worker seed: descendants inherit their actual parent.
@@ -419,14 +440,9 @@ async fn role_models_route_across_providers_and_resume_with_stable_prefixes() ->
         run_roles(Adapter::Responses, true, false).await?,
         "negative control did not expose forced parent routing"
     );
-    let refusal = run_roles(Adapter::Responses, false, true)
-        .await
-        .expect_err("copying the large root's compaction budgets must reject the smaller worker");
     assert!(
-        refusal
-            .to_string()
-            .contains("compaction budgets exceed selected model capacity"),
-        "unexpected negative-control refusal: {refusal}"
+        run_roles(Adapter::Responses, false, true).await?,
+        "negative control did not expose copied root compaction budgets"
     );
     Ok(())
 }
