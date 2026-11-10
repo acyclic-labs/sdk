@@ -47,16 +47,6 @@ const WRITE: u64 = (1 << 1)
 const FILE: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14);
 const CONNECT_TCP: u64 = 1 << 1;
 
-pub(super) fn protect_owner() -> io::Result<()> {
-    // A read-capable guest must not recover host secrets through procfs
-    // environ/mem/fd aliases. This protects the whole trusted host process,
-    // including its threads, before any guest can be launched. Do not restore
-    // dumpability when a command exits: other confined commands may be active.
-    // SAFETY: PR_SET_DUMPABLE takes an integer mode and no pointer arguments.
-    syscall(|| unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0).into() })?;
-    Ok(())
-}
-
 pub(super) fn open_beneath(
     root: &File,
     relative: &Path,
@@ -251,15 +241,7 @@ impl Policy {
                 0
             };
         // The caller has just bound and verified this original workspace.
-        let primary = if grant.workspace_write {
-            workspace
-        } else {
-            READ
-        };
-        prepared.path(root, primary, grant.workspace.is_dir, meter)?;
-        for root in grant.write.entries() {
-            prepared.path(&root.bind_controlled(meter)?, workspace, root.is_dir, meter)?;
-        }
+        prepared.path(root, workspace, grant.workspace.is_dir, meter)?;
         // The kernel ruleset owns the inserted inode reference. The grant
         // independently pins every original object against identity reuse;
         // another live descriptor per rule buys no additional guarantee.
@@ -372,7 +354,7 @@ impl Prepared {
             Some(policy) => {
                 // Retention saves compilation, never the original path fences.
                 // A replaced read root refuses before any child can launch.
-                for root in grant.write.entries().iter().chain(grant.read.entries()) {
+                for root in grant.read.entries() {
                     drop(root.bind_controlled(meter)?);
                 }
                 PolicyOwner::Shared(Arc::clone(policy))
@@ -381,15 +363,9 @@ impl Prepared {
         };
         // Resolve once beneath the original verified workspace. Both cold and
         // retained policies use this same cwd owner and final-child handoff.
-        let cwd = cwd.unwrap_or(&grant.workspace);
-        let selected = grant.cwd_root(cwd)?;
-        let root = if std::ptr::eq(selected, &grant.workspace) {
-            root
-        } else {
-            selected.bind_controlled(meter)?
-        };
         let relative = cwd
-            .strip_prefix(&selected.path)
+            .unwrap_or(&grant.workspace)
+            .strip_prefix(&grant.workspace.path)
             .map_err(|_| refused("execution working directory escapes the granted workspace"))?;
         let cwd = if relative.as_os_str().is_empty() {
             root

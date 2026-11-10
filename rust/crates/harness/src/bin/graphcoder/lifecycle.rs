@@ -7,11 +7,9 @@ use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer, Registry, layer::SubscriberExt as _};
 
 #[cfg(test)]
-use acyclic_harness::completion::observe;
-#[cfg(all(test, unix))]
-use acyclic_harness::completion::{CliCompletion, FailureReport, report_failure};
+use acyclic_harness::completion::{CliCompletion, FailureReport, observe, report_failure};
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 type Failure = Box<dyn std::error::Error>;
 
 /// Refusal to admit explicitly configured diagnostic text before dispatch.
