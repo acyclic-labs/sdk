@@ -44,7 +44,9 @@ that same executable. A distinct-byte input exercises unequal locator words.
 Several patches can be compiled together; the environment selects one original
 source defect at a time to avoid repeated compilation. Production source is
 restored after controls. Require original writer admission before and after the
-negative phase; a compiler error is not mutation detection.
+negative phase; a compiler error is not mutation detection. Require a panic in the
+original decoder, shape, fixed-record or differential oracle, rather than matching
+one incidental assertion message. Print unmatched diagnostics before failing.
 
 No product syscall, durability barrier, RPC, allocation, copy or wait is added.
 Lineage and gate encoding use the same original buffer, field slices and funded
