@@ -218,12 +218,17 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             hierarchy_version: None,
             limit: 1,
         })
-        .await?;
+        .await
+        .map_err(|_| Failure::Invariant(
+            "children_page must accept after without hierarchy_version as a seek within the current snapshot",
+        ))?;
     if !matches!(live_page.children.as_slice(), [child]
         if child.path == path("conformance/paging-new")?
             && live_page.next_after.as_ref() == Some(&child.path))
     {
-        return Err(violated!());
+        return Err(Failure::Invariant(
+            "children_page after without hierarchy_version must seek within the current snapshot, including newly created children",
+        ));
     }
     if provider
         .children_page(ChildrenPageRequest {

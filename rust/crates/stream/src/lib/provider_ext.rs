@@ -33,6 +33,8 @@ pub trait StreamProviderExt: StreamProvider {
         request: ForkRequest,
     ) -> impl std::future::Future<Output = Result<ForkReceipt, StreamError>> + ProviderTask;
     /// Canonical commit publication, preserving its genuine retry family.
+    /// Results, including skipped soft appends, follow canonical path order
+    /// from [`crate::request::validate_commit`], not caller mutation order.
     fn commit(
         &self,
         request: CommitRequest,
@@ -81,6 +83,8 @@ pub trait StreamProviderExt: StreamProvider {
     ) -> impl std::future::Future<Output = Result<Option<DurableReceipt>, StreamError>> + ProviderTask;
 
     /// One bounded direct-child page at a coherent authority snapshot.
+    /// `after` without `hierarchy_version` is a valid exclusive seek within the
+    /// current snapshot; the provider must accept it.
     fn children_page(
         &self,
         request: ChildrenPageRequest,

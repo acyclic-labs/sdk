@@ -72,6 +72,8 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// establish this guarantee. Denial refuses the whole view, never absence.
     /// Trusted in-process results use the caller's result budget; encoded-size
     /// protection is enforced only when the view crosses a transport boundary.
+    /// For child pages, `after` without `hierarchy_version` is a valid exclusive
+    /// seek within the current snapshot; providers must accept it.
     async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError>;
     /// Exact Auth source used by this provider's transport, when configured.
     /// Forwarding adapters preserve it. Subscribe before resolving a lease or
@@ -99,6 +101,10 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     ) -> Result<Option<IdempotencyObservation>, StreamError>;
     /// Publishes one genuine request family without translating its retry identity.
     /// Dispatch chooses the concrete future before its sole heap allocation.
+    /// For Commit requests, providers must normalize through
+    /// [`request::validate_commit`](crate::request::validate_commit) before
+    /// settling soft appends. Results, including skipped paths, use canonical
+    /// path order produced by that validation, not caller mutation order.
     fn write(
         &self,
         request: WriteRequest,
