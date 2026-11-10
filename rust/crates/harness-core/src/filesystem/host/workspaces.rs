@@ -249,6 +249,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+            let metadata_workspace = invalidate_metadata.then_some(workspace);
             let workspace = self.open(workspace, None).await?;
             let key = filesystem_key(idempotency_key);
             let mut transaction = match expected_generation {
@@ -280,7 +281,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Self::stage_unmeasured(
                 &mut transaction,
                 mutations,
-                invalidate_metadata,
+                metadata_workspace,
                 budget,
                 &cancellation,
             )?
@@ -345,7 +346,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn stage_mutation_unmeasured(
         transaction: &mut acyclic_fs::Transaction<A, O>,
         mutation: &WorkspaceMutation,
-        invalidate_metadata: bool,
+        metadata_workspace: Option<&WorkspaceRef>,
         budget: acyclic_fs::WorkBudget,
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<()> {
@@ -377,11 +378,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         // Raw mutations do not carry a descriptor or write publication.
         // Invalidate the old index atomically, including same-byte writes.
         // The content writer supplies its own metadata in this transaction.
-        if invalidate_metadata
+        if let Some(workspace) = metadata_workspace
             && let WorkspaceMutation::PutFile { path, .. } | WorkspaceMutation::Remove { path } =
                 mutation
         {
-            let metadata = content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+            let namespace = std::str::from_utf8(workspace.as_resource().key())
+                .map_err(|_| Error::Invalid("workspace name is not UTF-8".into()))?;
+            let metadata = super::keys::content_metadata_path_in_namespace_io(
+                namespace,
+                path.trim_start_matches('/'),
+                true,
+                None,
+            )?;
             match unmeasured_workspace_operation(|| {
                 transaction.remove(&metadata, budget, cancellation)
             })?
@@ -398,14 +406,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     fn stage_unmeasured<'a>(
         transaction: &'a mut acyclic_fs::Transaction<A, O>,
         mutations: &'a [WorkspaceMutation],
-        invalidate_metadata: bool,
+        metadata_workspace: Option<&'a WorkspaceRef>,
         budget: acyclic_fs::WorkBudget,
         cancellation: &'a acyclic_fs::CancellationToken,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         // Construction returns before polling this concrete publication graph.
         crate::conversation::BoundedContentFuture::new(None, || async move {
             #[cfg(not(target_arch = "wasm32"))]
-            let batched = !invalidate_metadata
+            let batched = metadata_workspace.is_none()
                 && crate::conversation::BoundedContentFuture::new(None, || {
                     Self::stage_publication_batch(transaction, mutations, None, cancellation)
                 })?
@@ -417,7 +425,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     Self::stage_mutation_unmeasured(
                         transaction,
                         mutation,
-                        invalidate_metadata,
+                        metadata_workspace,
                         budget,
                         cancellation,
                     )

@@ -25,44 +25,114 @@ pub fn filesystem_key(key: &IdempotencyKey) -> FilesystemKey {
 }
 
 pub(in crate::filesystem) fn content_metadata_path_io(
+    volume: &VolumeRef,
+    path: &str,
+    digest: Option<&[u8; 32]>,
+    absolute: bool,
+    io: Option<&PreparationIo>,
+) -> Result<String> {
+    let namespace = crate::executor::with_history_io(io, |work| volume.storage_name(work))?;
+    let _hold = io
+        .map(|io| io.guard_owned(namespace.capacity() as u64))
+        .transpose()?;
+    let directory = content_metadata_path_in_namespace_io(&namespace, path, absolute, io)?;
+    let _directory_hold = io
+        .map(|io| io.guard_owned(directory.capacity() as u64))
+        .transpose()?;
+    // Internal host-owned files cannot be imported or delegated. Their index
+    // is also the bounded-read recovery receipt. Ordinary paths select a
+    // content version, so an imported replacement cannot select an older
+    // destination index that happened to survive the join.
+    let leaf = if crate::conversation::is_internal_path(path)
+        || path.starts_with(InternalContentClass::ToolResult.prefix())
+    {
+        stock_string_copy("publication.json", io)?
+    } else {
+        let digest = digest.ok_or_else(|| {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "file metadata lookup requires its content version",
+            )
+        })?;
+        bounded_io::hex_key(digest, io)?
+    };
+    let _leaf_hold = io
+        .map(|io| io.guard_owned(leaf.capacity() as u64))
+        .transpose()?;
+    let result = crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(format_args!("{directory}/{leaf}"), work)
+    })?;
+    Ok(result)
+}
+
+// Publication indexes are volume-local, even when a fork or join inherits
+// their containing tree. A path-only key aliases the source's FileRef in the
+// destination. Bind custody at addressing time, before either record is read.
+pub(super) fn content_metadata_path_in_namespace_io(
+    namespace: &str,
     path: &str,
     absolute: bool,
     io: Option<&PreparationIo>,
 ) -> Result<String> {
-    content_identity_path_io(path, absolute, ".system/harness-file-metadata/", io)
+    content_identity_path_io(
+        path,
+        Some(namespace),
+        absolute,
+        ".system/harness-file-metadata/v1/",
+        "",
+        io,
+    )
 }
 
 /// Internal publications already have a path identity. Their canonical metadata
 /// is also their recovery receipt; only caller-selected upload keys need an index.
 pub(in crate::filesystem) fn content_receipt_path_io(
+    volume: &VolumeRef,
     identity: &str,
     internal: bool,
     absolute: bool,
     io: Option<&PreparationIo>,
 ) -> Result<String> {
     if internal {
-        content_metadata_path_io(identity, absolute, io)
+        content_metadata_path_io(volume, identity, None, absolute, io)
     } else {
-        content_identity_path_io(identity, absolute, ".system/harness-uploads/", io)
+        content_identity_path_io(
+            identity,
+            None,
+            absolute,
+            ".system/harness-uploads/",
+            ".json",
+            io,
+        )
     }
 }
 
 fn content_identity_path_io(
     path: &str,
+    namespace: Option<&str>,
     absolute: bool,
     prefix: &str,
+    suffix: &str,
     io: Option<&PreparationIo>,
 ) -> Result<String> {
-    const SUFFIX: &str = ".json";
-    let capacity = usize::from(absolute) + prefix.len() + 64 + SUFFIX.len();
+    let capacity = usize::from(absolute) + prefix.len() + 64 + suffix.len();
     let hash_work = acyclic_fs::WorkCounters {
-        bytes_hashed: path.len() as u64,
+        bytes_hashed: path.len() as u64 + namespace.map_or(0, |name| name.len() as u64 + 1),
         ..Default::default()
     };
     if let Some(io) = io {
         io.preflight(hash_work)?;
     }
-    let hash = blake3::hash(path.as_bytes());
+    let hash = if let Some(namespace) = namespace {
+        let mut hash = blake3::Hasher::new_derive_key("acyclic harness file index v1");
+        hash.update(namespace.as_bytes());
+        hash.update(&[0]);
+        hash.update(path.as_bytes());
+        hash.finalize()
+    } else {
+        blake3::hash(path.as_bytes())
+    };
     if let Some(io) = io {
         io.charge(hash_work)?;
         io.retain_owned(capacity as u64)?;
@@ -78,7 +148,7 @@ fn content_identity_path_io(
     }
     encoded.push_str(prefix);
     encoded.push_str(&hash.to_hex());
-    encoded.push_str(SUFFIX);
+    encoded.push_str(suffix);
     if let Some(io) = io {
         if encoded.capacity() > capacity {
             io.retain_owned((encoded.capacity() - capacity) as u64)?;

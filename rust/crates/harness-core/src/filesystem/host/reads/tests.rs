@@ -41,8 +41,14 @@ fn grants(volume: &VolumeRef) -> Result<(ContentGrant, ContentGrant)> {
     ))
 }
 
-#[tokio::test]
-async fn forked_metadata_stays_in_custody_during_concurrent_publication() -> Result<()> {
+#[test]
+fn forked_metadata_stays_in_custody_during_concurrent_publication() -> Result<()> {
+    acyclic_native_runtime::testing::seeded_runtime(0x5052_4956)
+        .map_err(|error| Error::Storage(error.to_string()))?
+        .block_on(concurrent_publication())
+}
+
+async fn concurrent_publication() -> Result<()> {
     let provider = ProviderRef::new("custody".into(), "filesystem".into(), "1".into(), &mut None)?;
     let mut host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let volume = |id: &str, byte| {
@@ -126,47 +132,81 @@ async fn forked_metadata_stays_in_custody_during_concurrent_publication() -> Res
                 crate::conversation::ContentAccess::default(),
             )
             .await;
+        let result = async {
+            let (file, bytes) = inherited?;
+            assert_eq!(file.volume(), &child);
+            assert_eq!(bytes.as_ref(), b"original");
+            let own = host
+                .put_content(
+                    &child,
+                    &child_write,
+                    "GOAL.md",
+                    b"child replacement",
+                    "text/markdown",
+                    "GOAL.md",
+                    64,
+                    &IdempotencyKey::new("child-replacement")?,
+                    None,
+                    crate::conversation::ContentAccess::default(),
+                )
+                .await?;
+            assert_eq!(
+                host.read_content(&own, &child_read, 64, None)
+                    .await?
+                    .as_ref(),
+                b"child replacement"
+            );
+            // Import while the destination still has its original publication
+            // metadata. The joined payload must not select that stale descriptor
+            // or the child's foreign FileRef, even though both indexes are inherited.
+            let source = host.file_generation(&own, None)?;
+            let plan = host
+                .prepare_volume_import(&child, &child_read, &source, &parent, &parent_write)
+                .await?;
+            let outcome = plan
+                .apply(
+                    acyclic_fs::ApplyOptions {
+                        if_target: plan.target_head(),
+                        idempotency_key: filesystem_key(&IdempotencyKey::new("import")?),
+                    },
+                    BTreeMap::new(),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                )
+                .await?;
+            assert!(matches!(outcome, acyclic_fs::JoinOutcome::Applied(_)));
+            let (imported, bytes) = host
+                .read_private_path(
+                    &parent,
+                    &parent_read,
+                    "GOAL.md",
+                    None,
+                    64,
+                    crate::conversation::ContentAccess::default(),
+                )
+                .await?;
+            assert_eq!(imported.volume(), &parent);
+            assert_eq!(bytes.as_ref(), b"child replacement");
+            // A later publication must not change the original fork's unit.
+            assert_eq!(
+                host.read_private_path(
+                    &child,
+                    &child_read,
+                    "GOAL.md",
+                    Some(&fork.generation),
+                    64,
+                    crate::conversation::ContentAccess::default()
+                )
+                .await?
+                .1
+                .as_ref(),
+                b"original"
+            );
+            Ok::<_, Error>(())
+        }
+        .await;
         // Release even when the negative control observes the old custody error.
         release.send(()).unwrap();
-        let (file, bytes) = inherited?;
-        assert_eq!(file.volume(), &child);
-        assert_eq!(bytes.as_ref(), b"original");
-        let own = host
-            .put_content(
-                &child,
-                &child_write,
-                "GOAL.md",
-                b"child replacement",
-                "text/markdown",
-                "GOAL.md",
-                64,
-                &IdempotencyKey::new("child-replacement")?,
-                None,
-                crate::conversation::ContentAccess::default(),
-            )
-            .await?;
-        assert_eq!(
-            host.read_content(&own, &child_read, 64, None)
-                .await?
-                .as_ref(),
-            b"child replacement"
-        );
-        // A later publication must not change the original fork's unit.
-        assert_eq!(
-            host.read_private_path(
-                &child,
-                &child_read,
-                "GOAL.md",
-                Some(&fork.generation),
-                64,
-                crate::conversation::ContentAccess::default()
-            )
-            .await?
-            .1
-            .as_ref(),
-            b"original"
-        );
-        Ok::<_, Error>(())
+        result
     };
     let (written, read) = futures::join!(writer, reader);
     written?;

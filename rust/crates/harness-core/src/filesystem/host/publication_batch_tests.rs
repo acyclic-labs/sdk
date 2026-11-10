@@ -511,8 +511,8 @@ impl InternalPublicationCase<'_> {
     }
 
     async fn single_record(&self, workspace: &WorkspaceRef, path: &str) -> Result<bool> {
-        let metadata_path = content_metadata_path_io(path, true, None)?;
-        let receipt_path = content_receipt_path_io(path, true, true, None)?;
+        let metadata_path = content_metadata_path_io(self.volume, path, None, true, None)?;
+        let receipt_path = content_receipt_path_io(self.volume, path, true, true, None)?;
         let obsolete = format!(
             "/.system/harness-uploads/{}.json",
             blake3::hash(path.as_bytes()).to_hex()

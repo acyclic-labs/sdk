@@ -44,7 +44,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         range: acyclic_fs::ByteRange,
         io: &PreparationIo,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        let metadata_path = content_metadata_path_io(reference.path(), true, Some(io))?;
+        let metadata_path = content_metadata_path_io(
+            reference.volume(),
+            reference.path(),
+            Some(reference.descriptor().sha256()),
+            true,
+            Some(io),
+        )?;
         const MAXIMUM_METADATA: u64 = 6
             * (crate::conversation::MAX_PATH_BYTES as u64
                 + 32 * crate::conversation::MAX_LABEL_BYTES as u64
