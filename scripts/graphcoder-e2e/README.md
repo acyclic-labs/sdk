@@ -45,6 +45,13 @@ Install `scripts/graphcoder-pty` with its frozen Bun lockfile and lifecycle scri
 The terminal package is required for PTY cases and the complete helper suite;
 headless selections load only their own runtime dependencies.
 
+`node scripts/test-graphcoder-entry.mjs /absolute/graphcoder /absolute/acyclic`
+launches bare GraphCoder and the explicit preset through this same PTY owner,
+checks their first TUI frame and clean exit, and checks headless EOF with pipes.
+The binaries read an ordinary isolated catalog through `ACYCLIC_CATALOG`;
+any model connection fails the check. This covers entry and terminal selection,
+not provider responses, hosted deployment or shared live-path admission.
+
 ```sh
 node scripts/node-tests.mjs --only scripts/graphcoder-e2e
 # Linux/Linux: real FUSE mount custody, including the process-only negative control.
@@ -97,6 +104,34 @@ receipt has `qualification: false`; a successful selection never qualifies the
 complete platform. The full run requires both passing cases and coverage.
 Known product failures retain their assertions and fail normally.
 
+R17's `shell-background-job` keeps the shipping JSONL connection open across
+committed turns. Two real shell children wait on TCP gates while a later
+foreground command completes in a later committed turn. Writing one original
+cancellation path stops only that job. A final model turn waits for both original
+private terminal files, requires the sibling's successful zero exit before EOF,
+and verifies complete spill beyond the preview boundary. The spill oracle rejects
+those original bytes with one byte deleted; the terminal oracle rejects the
+original successful result changed to a failed exit. Gate waits end on caller
+cancellation or conversation exit. Both workspace variants use this case.
+The shared read route `.volumes/output/` selects the calling agent's original
+private output volume before workspace routing, retaining its directory grants
+and version-pinned pagination. It adds no guest mount. File mutations refuse
+this route before reading or publishing; the case includes an edit refusal.
+`read` with `wait: true` waits on the same filesystem's existing Streams change
+history for an absent current path. It subscribes before checking, rechecks only
+after a committed event, adds no deadline, and releases the interest on
+cancellation. Pinned-version reads do not accept waiting. Local, served Actors
+and browser hosts supply their original backing Streams owner; a content backend
+without that capability refuses it explicitly.
+`shell-no-deadline` exercises omitted and explicit >300-second lifetimes through
+the shipping model tool. Its exact unbounded-schedule guarantee is proved without
+waiting five minutes by the preparation property
+`filesystem::native_process::shell::tests::bound_volume_cwd_keeps_its_authority`;
+it checks omitted lifetimes and generated explicit values above 300,000 ms.
+Build both shipping binaries with Cargo JSON output, then run
+`node scripts/qualify-shell-lifetime.mjs CARGO_JSON FRESH_DIRECTORY` for just
+these cases and `bash-capture`, including physical variants on Linux.
+
 `child-result` keeps a JSONL connection open while the spawn turn commits, then
 waits for the mock's acknowledged parent `child_done` request before submitting
 the reporting turn. It requires the real child result and the parent's read of
@@ -147,6 +182,7 @@ request-count and final project-byte assertions.
 | --- | --- |
 | `E2E_PLUGIN_BINARY` | Matching normal `acyclic` executable |
 | `E2E_PROVIDER_TEST_BINARY` | `acyclic-harness-providers` library test executable |
+| `E2E_TUI_TEST_BINARY` | `acyclic-harness-tui --features tui` library test executable (`tui-render-work`, including its two negative controls) |
 | `E2E_CODEX`, `E2E_CLAUDE`, `E2E_PI` | Optional declared package entries; default pinned `plugin/tests/hosts/node_modules/` installation |
 
 The driver admits the hosts required by the selected cases before execution,

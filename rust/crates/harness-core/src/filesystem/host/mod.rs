@@ -6,6 +6,7 @@ use crate::conversation::{PublicationDomain, PublicationWitness};
 pub struct FilesystemHost<A: 'static, O: 'static> {
     pub(in crate::filesystem) filesystem: Fs<A, O>,
     pub(in crate::filesystem) provider: ProviderRef,
+    pub(in crate::filesystem) changes: Option<Arc<dyn acyclic_stream::StreamProvider>>,
     publication_domain: Arc<PublicationDomain>,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
     #[cfg(test)]
@@ -54,6 +55,7 @@ impl<A, O> FilesystemHost<A, O> {
             Ok(Arc::new(Self {
                 filesystem,
                 provider,
+                changes: None,
                 publication_domain,
                 workspace_binding: None,
                 #[cfg(test)]
@@ -71,6 +73,31 @@ impl<A, O> FilesystemHost<A, O> {
                 _native_custody,
             }))
         })
+    }
+
+    /// Binds this filesystem's existing Streams owner for event-based reads.
+    /// This port adds no journal, scan, timer or standing task.
+    pub fn with_changes(
+        mut self: Arc<Self>,
+        streams: Arc<dyn acyclic_stream::StreamProvider>,
+    ) -> Result<Arc<Self>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        if self.filesystem.operation_claims().owner_identity()
+            != streams.context().operation_claims().owner_identity()
+        {
+            return Err(Error::Unauthorized(
+                "filesystem changes belong to another owner".into(),
+            ));
+        }
+        Arc::get_mut(&mut self)
+            .ok_or_else(|| {
+                Error::Conflict("bind filesystem changes before sharing the host".into())
+            })?
+            .changes = Some(streams);
+        Ok(self)
     }
 }
 
@@ -109,6 +136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(Arc::new(Self {
             filesystem: self.filesystem.clone(),
             provider: self.provider.clone(),
+            changes: self.changes.clone(),
             publication_domain: Arc::clone(&self.publication_domain),
             workspace_binding: Some((
                 workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?,

@@ -2,6 +2,7 @@ use super::*;
 
 /// Actual failed constructor and retained owners.
 pub struct NativeMountStartupFailure {
+    pub(super) operation: &'static str,
     pub(super) error: NativeMountError,
     pub(super) owner: NativeMountSession,
     pub(super) _custody: crate::NativeAllocation,
@@ -28,6 +29,8 @@ impl std::fmt::Debug for NativeMountStartupFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("NativeMountStartupFailure")
+            .field("operation", &self.operation)
+            .field("destination", &self.owner.request.destination)
             .field("error", self.error())
             .field("owner", &self.owner().cleanup_state())
             .finish()
@@ -35,7 +38,13 @@ impl std::fmt::Debug for NativeMountStartupFailure {
 }
 impl std::fmt::Display for NativeMountStartupFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self.error(), formatter)
+        write!(
+            formatter,
+            "{} at {:?}: {}",
+            self.operation,
+            self.owner.request.destination,
+            self.error()
+        )
     }
 }
 impl std::error::Error for NativeMountStartupFailure {
@@ -84,6 +93,7 @@ impl PreparedNativeMountStart {
         self,
         error: NativeMountError,
         owner: NativeMountSession,
+        operation: &'static str,
     ) -> Box<NativeMountStartupFailure> {
         let Self {
             buffer,
@@ -93,6 +103,7 @@ impl PreparedNativeMountStart {
         Box::write(
             buffer,
             NativeMountStartupFailure {
+                operation,
                 error,
                 owner,
                 _custody: custody,
@@ -163,7 +174,7 @@ impl PreparedNativeMountStart {
         let mut owner = NativeMountSession::new(request, None, Some(destination_custody));
         owner.retained_source = startup_source_watch.map(retirement::RetainedSource::Watch);
         owner.measured_cleanup_failed = true;
-        NativeMountError::StartupFailed(self.failed(error, owner))
+        NativeMountError::StartupFailed(self.failed(error, owner, "construct native mount source"))
     }
 }
 

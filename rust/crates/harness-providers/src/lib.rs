@@ -230,9 +230,12 @@ fn excerpt_text(body: &[u8]) -> std::borrow::Cow<'_, str> {
 }
 
 fn json(bytes: &[u8]) -> Result<Value> {
+    decode_json(bytes).map_err(|error| invalid(error.to_string()))
+}
+
+fn decode_json(bytes: &[u8]) -> serde_json::Result<Value> {
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let value = acyclic_harness_core::deserialize_json_value(&mut decoder)
-        .map_err(|error| invalid(error.to_string()))?;
-    decoder.end().map_err(|error| invalid(error.to_string()))?;
+    let value = acyclic_harness_core::deserialize_json_value(&mut decoder)?;
+    decoder.end()?;
     Ok(value)
 }

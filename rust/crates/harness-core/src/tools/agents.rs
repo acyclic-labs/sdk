@@ -47,7 +47,7 @@ use std::{
 };
 
 /// Revision of the agent tools, selected for the model over other revisions.
-pub const REVISION: &str = "agent-2";
+pub const REVISION: &str = "agent-3";
 /// Names of the agent tools; every agent turn is granted them.
 pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 
@@ -55,6 +55,9 @@ pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnAgentInput {
+    /// Optional provider/model overriding the role's model and parent inheritance.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Child name, unique under this agent; reusable after a setup failure
     /// before any reply or agent action committed. It names the child's path and branch.
     pub name: String,
@@ -213,6 +216,12 @@ impl AgentTool {
                     Ok(profile) => profile,
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
+                if let Some(model) = input.model {
+                    if let Err(error) = crate::model::selection::validate(&model) {
+                        return Ok(super::rejected_input(error));
+                    }
+                    profile.model = Some(model);
+                }
                 profile.peers = peers;
                 // The agent's hard limit: a spawn the step would refuse is
                 // refused here, before the model is told it succeeded.
@@ -936,11 +945,7 @@ mod tests {
             deadline_unix_millis: None,
             idempotency_key: acyclic_stream::IdempotencyKey::new(b"sibling".to_vec())
                 .map_err(|error| Error::Storage(error.to_string()))?,
-            conditions: effects
-                .iter()
-                .flat_map(|effect| effect.conditions.clone())
-                .collect(),
-            mutations: effects.into_iter().map(|effect| effect.mutation).collect(),
+            effects: effects.into(),
         };
         assert!(matches!(
             crate::agent::submit(&*children.stream, request)

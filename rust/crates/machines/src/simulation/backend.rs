@@ -141,7 +141,7 @@ impl MachinesProvider for SimulatedMachines {
             ProviderError::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                if request.selected_volume_ref.is_some() {
+                if request.selected_volume_ref.is_some() || !request.secrets.is_empty() {
                     return Err(ProviderError::Unsupported(
                 "the simulator has no hosted guest admission; recovery: use a physical Machines provider".into(),
             ));

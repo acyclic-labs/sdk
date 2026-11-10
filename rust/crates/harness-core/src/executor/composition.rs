@@ -24,6 +24,7 @@ impl StockExecutor {
             provider,
             context,
             tools,
+            epoch_tools: None,
             #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             hooks: None,
             #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
@@ -79,6 +80,19 @@ impl StockExecutor {
         self.compaction = Some(policy);
         self
     }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn with_automatic_compaction(mut self) -> Result<Self> {
+        if self.compaction.is_none() {
+            self.compaction = Some(crate::context::CompactionPolicy::for_output(
+                None,
+                &self.model,
+                self.provider.as_ref(),
+                self.max_output_tokens,
+            )?);
+        }
+        Ok(self)
+    }
     /// Appends one validated context stage to the existing ordered pipeline.
     pub fn with_context_stage(
         mut self,
@@ -94,22 +108,32 @@ impl StockExecutor {
         Ok(self)
     }
 
-    /// Binds request assembly and tool selection to one authenticated immutable manifest.
-    pub async fn with_context_manifest(
+    /// Binds request assembly and tool selection to one frozen context epoch:
+    /// every request of this executor renders exactly its manifest as the
+    /// prefix, whatever its sources hold now.
+    pub async fn with_context_epoch(
         mut self,
-        reference: FileRef,
+        epoch: &crate::context::ContextEpoch,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
     ) -> Result<Self> {
+        let reference = epoch.manifest().clone();
         if self.context.contains_stage("context-manifest") {
             return Err(Error::Conflict(
                 "executor already has a context manifest".into(),
             ));
         }
-        let (tools, stage) = crate::context::ContextManifest::bind(
+        let bytes = reader
+            .read(&reference, self.limits.render_bytes, None, None)?
+            .await?;
+        let manifest = crate::context::ContextManifest::decode(&bytes, self.limits)?;
+        self.epoch_tools = Some(Arc::new(manifest.tools));
+        let (tools, stage) = crate::context::ContextManifest::bind_observed(
             reference,
             reader.as_ref(),
             self.tools,
             self.limits,
+            None,
+            false,
         )
         .await?;
         self.tools = tools;
@@ -130,6 +154,7 @@ impl StockExecutor {
 
     /// Removes fresh tool-call grants while preserving the pinned catalog and admitted versions.
     pub(crate) fn without_tool_authority(mut self) -> Self {
+        self.tools.restrict_sources(&[]);
         self.tool_scope
             .grants
             .0
@@ -140,6 +165,7 @@ impl StockExecutor {
     /// Intersect an immutable role ceiling with both model and executable
     /// authority. A missing grant is never supplied by a template's prose.
     pub(crate) fn with_tool_ceiling(mut self, allowed: &[String]) -> Result<Self> {
+        self.tools.restrict_sources(allowed);
         self.tool_scope.grants.0.retain(|grant| {
             grant
                 .strip_prefix("tool:call:")

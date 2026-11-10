@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::layers::{EFFECTIVE_PATH, HOME_PATH, SEED_PATH, SYSTEM_PATH};
+use crate::layers::{EFFECTIVE_PATH, HOME_PATH, OUTPUT_PATH, SEED_PATH, SYSTEM_PATH};
 
 impl TaskContext {
     /// Retains complete tool output through the existing volume publisher.
@@ -959,6 +959,15 @@ impl ToolContext {
         ) {
             return Ok((&system.volume, std::borrow::Cow::Borrowed(relative)));
         }
+        // Resolve output before workspace routing: the journal and the home
+        // are different volumes. The ordinary read path still checks this
+        // original volume's directory grant and pinned source generation.
+        if let Some(relative) = path.strip_prefix(OUTPUT_PATH) {
+            return Ok((
+                &self.task().output_content.volume,
+                std::borrow::Cow::Borrowed(relative),
+            ));
+        }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let work = io.and_then(crate::executor::PreparationIo::original_native_work);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -1263,6 +1272,102 @@ impl ToolContext {
                 self.effective_scope(),
                 io,
             )
+            .await
+    }
+
+    /// Waits on the original bound reader's event under this exact read grant.
+    pub(crate) async fn wait_tool_path(
+        &self,
+        path: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        if let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) {
+            if !crate::layers::layered(relative) {
+                let (selected, _) = self.effective_tool_path(path, None, io).await?;
+                return self.wait_concrete_tool_path(&selected, None, io).await;
+            }
+            let home = format!("{HOME_PATH}{relative}");
+            loop {
+                // Capture the home generation before resolving the view. A
+                // publication between either read and subscription then makes
+                // the conditional wait immediately ready, without a lost wake.
+                let current = match self
+                    .read_tool_path_range(
+                        &home,
+                        None,
+                        acyclic_fs::ByteRange {
+                            offset: 0,
+                            length: 0,
+                        },
+                        io,
+                    )
+                    .await
+                {
+                    Ok((selected, _, retained)) => {
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
+                        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                        let _ = retained;
+                        Some(selected.generation)
+                    }
+                    Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
+                    Err(error) => return Err(error),
+                };
+                let resolved: Result<()> = async {
+                    let (selected, authored) = self.effective_tool_path(path, None, io).await?;
+                    if authored.is_none() {
+                        let (_, _, retained) = self
+                            .read_tool_path_range(
+                                &selected,
+                                None,
+                                acyclic_fs::ByteRange {
+                                    offset: 0,
+                                    length: 0,
+                                },
+                                io,
+                            )
+                            .await?;
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
+                        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                        let _ = retained;
+                    }
+                    Ok(())
+                }
+                .await;
+                match resolved {
+                    Ok(()) => return Ok(()),
+                    Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+                self.wait_concrete_tool_path(&home, current.as_ref(), io)
+                    .await?;
+            }
+        }
+        self.wait_concrete_tool_path(path, None, io).await
+    }
+
+    async fn wait_concrete_tool_path(
+        &self,
+        path: &str,
+        after: Option<&crate::resources::GenerationRef>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        self.task()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::tool_rejected("selected content reader is not bound"))?
+            .reader
+            .wait_private_path(
+                volume,
+                relative.rsplit_once('/').map_or("", |(parent, _)| parent),
+                &relative,
+                after,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(self.effective_scope().grants()),
+                    io,
+                },
+            )?
             .await
     }
 

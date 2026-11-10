@@ -13,16 +13,24 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod adapter;
-#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    any(test, feature = "test-support"),
+    not(target_arch = "wasm32")
+))]
 mod allocation;
 mod arguments;
 /// Exercises production native declarations with hostile argument values.
-#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 #[doc(hidden)]
 pub use allocation::check as check_native_arguments;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(feature = "filesystem", test, not(target_arch = "wasm32")))]
 mod arguments_tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(feature = "filesystem", test, not(target_arch = "wasm32")))]
 mod tests;
 
 /// Exact source declarations in the profile's registration order: the
@@ -96,19 +104,38 @@ type Mapped = (
 /// One profile's mapped declarations, decoded and checked once.
 pub struct NativeTools(Vec<Mapped>);
 
-/// One immutable selection's declarations. The fallible initializer owns the
+/// Model-specific declarations. The fallible initializer owns the
 /// reservation before it reads the profile or decodes any declarations.
 #[cfg(any(feature = "filesystem", test))]
 #[derive(Default)]
-pub(crate) struct Cache(once_cell::sync::OnceCell<Option<Arc<NativeTools>>>);
+pub(crate) struct Cache(
+    std::sync::Mutex<
+        std::collections::BTreeMap<(String, String, String), Option<Arc<NativeTools>>>,
+    >,
+);
 
 #[cfg(any(feature = "filesystem", test))]
 impl Cache {
     pub(crate) fn get(
         &self,
+        model: &crate::model::Model,
         binding: impl FnOnce() -> Result<Option<Arc<NativeTools>>>,
     ) -> Result<Option<Arc<NativeTools>>> {
-        self.0.get_or_try_init(binding).cloned()
+        let mut cache = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (
+            model.provider.clone(),
+            model.name.clone(),
+            model.revision.clone(),
+        );
+        if let Some(native) = cache.get(&key) {
+            return Ok(native.clone());
+        }
+        let native = binding()?;
+        cache.insert(key, native.clone());
+        Ok(native)
     }
 }
 

@@ -35,7 +35,7 @@ pub use acyclic_harness_client::ExecutionQuery;
 use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
-pub use history::HistoryPage;
+pub use history::{HistoryPage, PreparedHistoryAction};
 use std::sync::Arc;
 pub use usage_query::UsageQuery;
 
@@ -623,6 +623,20 @@ impl Conversation {
         Ok(self.settlement().await?.0)
     }
 
+    /// Observes new turns and the latest status, returning the current phase
+    /// from the same settlement that selected both opening positions. A
+    /// reconnecting client can admit input before consuming its first event.
+    ///
+    /// # Errors
+    /// Session, host, decoding or follow admission failures.
+    pub async fn observe_current(&self) -> Result<(super::Observer, Phase)> {
+        let (settled, statuses, phase) = self.settlement().await?;
+        Ok((
+            super::Observer::open(&self.connection, settled, statuses.saturating_sub(1))?,
+            phase,
+        ))
+    }
+
     /// Every settled turn from conversation sequence `from`, or from the current
     /// settled tail when `None`, together with the agent's latest phase and its
     /// newest tool call's output. The default turn cursor and status cursor come
@@ -743,7 +757,7 @@ fn finished(phase: &Phase) -> Option<String> {
 mod tests {
     use super::*;
     use acyclic_harness_client::CommandError;
-    use acyclic_stream::{CommitRequest, IdempotencyKey, StreamError};
+    use acyclic_stream::{CommitEffect, CommitRequest, IdempotencyKey, StreamError};
 
     #[test]
     fn only_a_host_refusal_settles_a_send() -> Result<()> {
@@ -771,8 +785,7 @@ mod tests {
         // may each have committed it.
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: Vec::new(),
+            effects: vec![CommitEffect::hard(Vec::new(), Vec::new())],
             idempotency_key: IdempotencyKey::new(b"message".to_vec()).map_err(failed)?,
         };
         let unknown = AgentControlFailure::Unknown(Box::new(request));

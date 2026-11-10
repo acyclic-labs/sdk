@@ -15,6 +15,7 @@ impl ContextManifest {
         mut tools: ToolRegistry,
         limits: Limits,
         io: Option<&PreparationIo>,
+        pin_tools: bool,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
         crate::executor::with_history_io(io, |work| limits.validate_record(&reference, work))?;
         if reference.descriptor().media_type() != "application/json"
@@ -49,7 +50,9 @@ impl ContextManifest {
             manifest.validate_observed(limits, io)?;
         }
         drop(bytes);
-        tools.pin_model_definitions(&manifest.tools, io)?;
+        if pin_tools {
+            tools.pin_model_definitions(&manifest.tools, io)?;
+        }
         let mut messages = Vec::new();
         crate::executor::with_history_io(io, |work| {
             compaction::reserve_vector(

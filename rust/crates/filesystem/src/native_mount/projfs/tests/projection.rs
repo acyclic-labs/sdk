@@ -55,6 +55,62 @@ fn materialization_queue_retains_original_errors_and_retires_panicking_items() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn concurrent_revalidations_observe_the_same_failed_cache_clear()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = windows_checkout_source().await?;
+    let (_root, _destination, mut session) = mount_source(&source)?;
+    let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+    let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
+    let denied = crate::NativeMaterializationWork::new(
+        crate::WorkBudget {
+            backend_write_operations: 0,
+            ..crate::WorkBudget::UNBOUNDED
+        },
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
+    let scope = session.begin_original_work(&denied)?;
+    let tree = lock_recover(&runtime.projector.tree);
+    lock_recover(&runtime.projector.state).negative_cache_dirty = true;
+    std::thread::scope(|threads| {
+        let first = threads.spawn(|| runtime.projector.settle());
+        let second = threads.spawn(|| runtime.projector.settle());
+        let mut state = lock_recover(&runtime.projector.state);
+        while state.settlers != 2 {
+            state = runtime
+                .projector
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        drop(state);
+        // Both controls now wait on the same real, work-denied native clear.
+        drop(tree);
+        let first = first
+            .join()
+            .expect("first control panicked")
+            .expect_err("clear was admitted");
+        let second = second
+            .join()
+            .expect("second control panicked")
+            .expect_err("clear was admitted");
+        assert_eq!(first.to_string(), second.to_string());
+    });
+    assert_eq!(denied.receipt().backend_write_operations, 0);
+    {
+        let state = lock_recover(&runtime.projector.state);
+        assert_eq!(state.settlers, 0);
+        assert!(state.failure.is_none());
+        assert!(state.negative_cache_dirty);
+    }
+    drop(scope);
+    session.revalidate(&setup_work()?)?;
+    assert!(!lock_recover(&runtime.projector.state).negative_cache_dirty);
+    drop(runtime);
+    session.stop()?;
+    Ok(())
+}
+#[tokio::test(flavor = "multi_thread")]
 async fn a_failed_negative_cache_clear_is_retried_without_a_source_change()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = windows_checkout_source().await?;
@@ -358,9 +414,18 @@ async fn a_projected_directory_link_leads_into_its_directory()
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn sharing_denied_entries_are_retired_only_after_the_original_handle_closes()
+#[test]
+fn sharing_denied_entries_are_retired_only_after_the_original_handle_closes()
 -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(mode) = std::env::var_os(super::metadata_client::MODE) {
+        return super::metadata_client::execute(&mode);
+    }
+    held_entry_workload()
+}
+
+#[tokio::main(flavor = "multi_thread")]
+async fn held_entry_workload() -> Result<(), Box<dyn std::error::Error>> {
+    const TEST: &str = "native_mount::projfs::tests::projection::sharing_denied_entries_are_retired_only_after_the_original_handle_closes";
     #[derive(Clone, Copy, Debug)]
     enum Replacement {
         Removed,
@@ -392,63 +457,73 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
             })?;
             let projected = destination.join("name");
             let mut released_at = 0;
-            super::metadata::client::run("held-entry", &projected, || {
-                let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
-                let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
-                let context = driver.context.ok_or("missing ProjFS context")?;
-                let tree = lock_recover(&runtime.projector.tree);
-                source.remove(&name, None, &work)?;
-                match replacement {
-                    Replacement::Removed => {}
-                    Replacement::File => {
-                        source.create_file(&name, FileMetadata::default(), None, &work)?;
-                        source.write_range(&name, 0, Bytes::from_static(b"newer"))?;
+            // ProjFS suppresses the provider's own handle notifications, so an
+            // external client holds the real sharing-denied handle.
+            super::metadata_client::run_with_release(
+                TEST,
+                "held-entry",
+                &projected,
+                |mut release| {
+                    let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+                    let runtime =
+                        Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
+                    let context = driver.context.ok_or("missing ProjFS context")?;
+                    let tree = lock_recover(&runtime.projector.tree);
+                    source.remove(&name, None, &work)?;
+                    match replacement {
+                        Replacement::Removed => {}
+                        Replacement::File => {
+                            source.create_file(&name, FileMetadata::default(), None, &work)?;
+                            source.write_range(&name, 0, Bytes::from_static(b"newer"))?;
+                        }
+                        Replacement::Directory => {
+                            source.create_directory(&name, FileMetadata::default(), &work)?;
+                            let inner = name.child(windows_name("inner.txt"));
+                            source.create_file(&inner, FileMetadata::default(), None, &work)?;
+                            source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+                        }
                     }
-                    Replacement::Directory => {
-                        source.create_directory(&name, FileMetadata::default(), &work)?;
-                        let inner = name.child(windows_name("inner.txt"));
-                        source.create_file(&inner, FileMetadata::default(), None, &work)?;
-                        source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+                    runtime.projector.materialize_locked(
+                        Projection {
+                            runtime: &runtime,
+                            work: &work,
+                            context,
+                            starting: false,
+                        },
+                        vec![MountPath::root()],
+                    )?;
+                    let target = {
+                        let state = lock_recover(&runtime.projector.state);
+                        assert!(
+                            state.processed < state.notified,
+                            "the changed view must await its original worker"
+                        );
+                        state.notified
+                    };
+                    drop(tree);
+                    let mut state = lock_recover(&runtime.projector.state);
+                    while state.processed < target && state.failure.is_none() && !state.stopping {
+                        state = runtime
+                            .projector
+                            .changed
+                            .wait(state)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                     }
-                }
-                runtime.projector.materialize_locked(
-                    Projection {
-                        runtime: &runtime,
-                        work: &work,
-                        context,
-                        starting: false,
-                    },
-                    vec![MountPath::root()],
-                )?;
-                let target = {
-                    let state = lock_recover(&runtime.projector.state);
                     assert!(
-                        state.processed < state.notified,
-                        "the changed view must await its original worker"
+                        state.failure.is_none() && !state.stopping,
+                        "the original worker must complete"
                     );
-                    state.notified
-                };
-                drop(tree);
-                let mut state = lock_recover(&runtime.projector.state);
-                while state.processed < target && state.failure.is_none() && !state.stopping {
-                    state = runtime
-                        .projector
-                        .changed
-                        .wait(state)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
-                assert!(
-                    state.failure.is_none() && !state.stopping,
-                    "the original worker must complete"
-                );
-                assert!(state.processed >= target);
-                assert!(
-                    state.pending.contains_key(&name),
-                    "the worker must retain the held incarnation"
-                );
-                released_at = state.releases;
-                Ok(())
-            })
+                    assert!(state.processed >= target);
+                    assert!(
+                        state.pending.contains_key(&name),
+                        "the worker must retain the held incarnation"
+                    );
+                    released_at = state.releases;
+                    drop(state);
+                    std::io::Write::write_all(&mut release, b"g")?;
+                    Ok(())
+                },
+            )
             .map_err(|error| {
                 format!("hold and change entry, link={link}, {replacement:?}: {error}")
             })?;
@@ -476,14 +551,20 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
                 );
                 assert!(!state.pending.contains_key(&name));
             }
-            match replacement {
-                Replacement::Removed => assert!(sorted_names(&destination)?.is_empty()),
-                Replacement::File => assert_eq!(std::fs::read(&projected)?, b"newer"),
-                Replacement::Directory => {
-                    assert!(std::fs::symlink_metadata(&projected)?.is_dir());
-                    assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+            let observed = || -> std::io::Result<()> {
+                match replacement {
+                    Replacement::Removed => assert!(sorted_names(&destination)?.is_empty()),
+                    Replacement::File => assert_eq!(std::fs::read(&projected)?, b"newer"),
+                    Replacement::Directory => {
+                        assert!(std::fs::symlink_metadata(&projected)?.is_dir());
+                        assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+                    }
                 }
-            }
+                Ok(())
+            };
+            observed().map_err(|error| {
+                format!("observe settled entry, link={link}, {replacement:?}: {error}")
+            })?;
             session.stop().map_err(|error| {
                 format!("stop settled entry, link={link}, {replacement:?}: {error}")
             })?;

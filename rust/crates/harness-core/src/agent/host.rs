@@ -42,6 +42,16 @@ pub enum Delivered {
     Closed,
 }
 
+/// Input settlement and producer lifetime from one original actor observation.
+pub struct InputProgress {
+    /// The input has settled, or archive has retired its remaining work.
+    pub settled: bool,
+    /// Archive closed the producer. Consuming an input never closes it.
+    pub closed: bool,
+    /// Wait for a change after this same observation.
+    pub follow: acyclic_stream::FollowRequest,
+}
+
 /// One runtime for every agent in one account and namespace.
 pub struct AgentHost<P: crate::store::JournalProvider + ?Sized + 'static> {
     provider: Arc<P>,
@@ -52,6 +62,7 @@ pub struct AgentHost<P: crate::store::JournalProvider + ?Sized + 'static> {
     /// The creation reader shared with this host's turns; `None` disables
     /// template creation.
     templates: Option<Arc<dyn SpawnTemplates>>,
+    model: Option<String>,
 }
 
 /// The agents' actor store in `provider`'s domain, under [`super::ACTORS`].
@@ -153,6 +164,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             within,
             lifecycle: None,
             templates: None,
+            model: None,
         })
     }
 
@@ -177,7 +189,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         )?;
         host.lifecycle.clone_from(&self.lifecycle);
         host.templates.clone_from(&self.templates);
+        host.model.clone_from(&self.model);
         Ok(host)
+    }
+
+    /// Pins the root model even when the host enables no child templates.
+    #[must_use]
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
     }
 
     /// Uses the host's original admitted template reader for child creation.
@@ -258,7 +278,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         &self,
         agent: &AgentPath,
         input: u64,
-    ) -> Result<(bool, acyclic_stream::FollowRequest), Error> {
+    ) -> Result<InputProgress, Error> {
         let snapshot = self
             .runtime
             .store()
@@ -272,21 +292,27 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .get(INBOX)
             .filter(|subscription| subscription.path == inbox)
             .ok_or(Error::Record("agent inbox subscription differs"))?;
-        let settled = if let Some(checkpoint) = state.checkpoint() {
+        let (settled, closed) = if let Some(checkpoint) = state.checkpoint() {
             let observed = super::checkpoint_state(checkpoint)?;
             if &observed.path != agent || observed.parent != agent.parent() {
                 return Err(Error::Record("agent state binding differs"));
             }
-            if observed.closed && input >= subscription.cursor {
-                return Err(Error::Record("usage input source is closed"));
-            }
-            input < observed.settled_before(subscription.cursor)
+            // Archive retires the producer, not its durable observations. At
+            // its tail this is an ordinary terminal frontier for every query.
+            (
+                observed.closed || input < observed.settled_before(subscription.cursor),
+                observed.closed,
+            )
         } else if subscription.cursor > input {
             return Err(Error::Record("consumed input has no agent checkpoint"));
         } else {
-            false
+            (false, false)
         };
-        Ok((settled, snapshot.follow_request()))
+        Ok(InputProgress {
+            settled,
+            closed,
+            follow: snapshot.follow_request(),
+        })
     }
 
     /// The committed reply to `agent`'s message `id` at inbox sequence `inbox`
@@ -424,7 +450,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// `adopted.agent` in this host's account and namespace (see
     /// [`AgentHandler::prepare_root`](super::AgentHandler::prepare_root)).
     /// [`Self::create`] is exactly this request submitted once. The root's
-    /// creation config is this host's ([`Self::with_templates`]): `adopted.profile` must
+    /// creation config is this host's model and templates: `adopted.profile` must
     /// be `None`, and the host pins it.
     ///
     /// # Errors
@@ -439,12 +465,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 "a root's creation config is admitted by its host",
             ));
         }
-        adopted.profile = self
-            .templates
-            .as_ref()
-            .map(|_| crate::templates::root())
-            .transpose()
-            .map_err(|error| Error::Turn(Box::new(error)))?;
+        if self.templates.is_some() || self.model.is_some() {
+            let mut profile =
+                crate::templates::root().map_err(|error| Error::Turn(Box::new(error)))?;
+            profile.model.clone_from(&self.model);
+            adopted.profile = Some(profile);
+        }
         self.agents.prepare_root(&self.within, intent, adopted)
     }
 
@@ -550,8 +576,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         let inbox = to.inbox()?;
         let actor = self.actor(to)?;
         request
-            .mutations
-            .push(self.runtime.store().activation(&actor).mutation);
+            .effects
+            .push(self.runtime.store().activation(&actor));
         match submit(&*self.provider, request).await? {
             Submitted::Committed(receipt) => {
                 let append = receipt

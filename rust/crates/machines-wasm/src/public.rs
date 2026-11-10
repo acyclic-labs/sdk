@@ -476,6 +476,9 @@ pub struct CreateIn {
     image: Option<ImageIn>,
     #[tsify(optional)]
     selected_volume_ref: Option<acyclic_machines::wire::selection::VolumeRef>,
+    #[serde(default)]
+    #[tsify(optional)]
+    secrets: std::collections::BTreeMap<String, acyclic_machines::wire::selection::SecretRef>,
     compatibility: CompatibilityIn,
     suspension: SuspensionIn,
     expiration: ExpirationIn,
@@ -487,6 +490,19 @@ fn create_in(value: CreateIn) -> Result<CreateMachine, JsValue> {
         idempotency_key: key(value.idempotency_key)?,
         image: value.image.map(image_in).transpose()?,
         selected_volume_ref: value.selected_volume_ref,
+        secrets: value
+            .secrets
+            .into_iter()
+            .map(|(name, reference)| {
+                acyclic_auth::secrets::SecretRef::new(
+                    reference.scope,
+                    reference.name,
+                    reference.version,
+                )
+                .map(|reference| (name, reference))
+                .map_err(|cause| err(cause.to_string()))
+            })
+            .collect::<Result<_, _>>()?,
         compatibility: compatibility_in(value.compatibility)?,
         suspension: suspension_in(value.suspension)?,
         expiration: expiration_in(value.expiration)?,

@@ -24,7 +24,20 @@ async fn check(mode: u8) -> Result<()> {
         let mut history = Some(io.history_io());
         let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
         let (key, held) = crate::distributed::digest_key(&[mode; 32], &mut work)?;
-        let mut request = commit_request(key, held, &mut work);
+        let before_request = original.live_allocation_bytes();
+        let before_operations = original.receipt().allocation_operations;
+        let mut request = commit_request(key, held, &mut work)?;
+        assert_eq!(
+            original.live_allocation_bytes() - before_request,
+            (request.0.effects.capacity() * std::mem::size_of::<acyclic_stream::CommitEffect>())
+                as u64,
+            "request storage must remain funded before native admission"
+        );
+        assert_eq!(
+            original.receipt().allocation_operations - before_operations,
+            1,
+            "request construction must account for its one allocation"
+        );
         add_condition(
             &mut request.0,
             &mut request.1,
@@ -33,9 +46,8 @@ async fn check(mode: u8) -> Result<()> {
         let mut records = Vec::new();
         request.1.reserve(1, &mut records)?;
         records.push(OwnedBytes::from_static(b"original immutable record").into());
-        request.1.reserve(1, &mut request.0.mutations)?;
-        request
-            .0
+        request.1.reserve(1, &mut request.0.effects[0].mutations)?;
+        request.0.effects[0]
             .mutations
             .push(CommitMutation::Append { path, records });
         request.0.deadline_unix_millis = Some(u64::MAX - 1);

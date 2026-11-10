@@ -46,6 +46,7 @@ macro_rules! records {
 }
 records!(
     crate::Capabilities => None,
+    Vec<crate::tool::ToolDefinition> => ToolDefinitions,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
     crate::core::ExtensionConfiguration => None,
     FileRef => None, Vec<crate::conversation::Attachment> => None,

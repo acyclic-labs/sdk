@@ -50,6 +50,8 @@ pub mod distributed;
 mod effects;
 pub mod executor;
 pub mod experiments;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod input_watch;
 #[cfg(feature = "metrics-export")]
 pub use executor::metrics;
 pub mod extension;
@@ -86,6 +88,7 @@ pub mod model;
 pub mod native_environment;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_future;
+pub mod native_host;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
@@ -101,7 +104,6 @@ pub mod oidc;
 pub mod plugins;
 pub mod preset;
 /// Pure resolution of versioned model and role files at epoch admission.
-#[cfg(feature = "filesystem")]
 pub mod profile;
 pub mod projection;
 pub mod registry;

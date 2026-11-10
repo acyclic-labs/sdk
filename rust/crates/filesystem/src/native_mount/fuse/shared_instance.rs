@@ -111,18 +111,28 @@ pub(in crate::native_mount) struct SharedFuseView {
 }
 
 impl SharedFuseInstance {
-    fn start(registration: Registration<Self>) -> Result<Self, NativeMountError> {
+    fn start(
+        registration: Registration<Self>,
+        operation: &std::cell::Cell<&'static str>,
+    ) -> Result<Self, NativeMountError> {
         let root = registration.root();
+        operation.set("admit shared FUSE root");
         let cancellation = crate::CancellationToken::new();
         let work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| NativeMountError::from(cause))?;
+        operation.set("recover disconnected shared FUSE root");
+        super::super::recover_disconnected_native_mount_destination(root)
+            .map_err(|error| error.during("probe/reclaim disconnected shared mountpoint", root))?;
         // A fence whose lock is free belongs to a dead owner: detach its
         // mount first, so a crash never leaves a root mounted for good.
         let [fence, ..] = native_mount_control_paths(root)?;
         if fence.try_exists()? {
             detach_native_mount_destination_after_crash(root)?;
         }
-        let metadata = std::fs::metadata(root)?;
+        operation.set("stat shared FUSE root before mount");
+        let metadata = std::fs::metadata(root).map_err(|error| {
+            NativeMountError::host_operation("stat shared mountpoint before mount", root, error)
+        })?;
         let path = std::ffi::CString::new(root.as_os_str().as_bytes())
             .map_err(|_| NativeMountError::InvalidDestination)?;
         let mut instance = SharedFuseRoot {
@@ -142,9 +152,11 @@ impl SharedFuseInstance {
         let views = Arc::clone(&instance.views);
         let work = instance.work.clone();
         let state = &mut instance.state;
+        operation.set("acquire shared FUSE destination fence");
         MountDestinationGuard::acquire_with_work(root, true, &work, &mut state.guard, false)?;
         super::session::map_read_buffers();
         let mut received = None;
+        operation.set("open and mount shared FUSE device");
         let opened = state.mount.open_into(
             root,
             true,
@@ -169,25 +181,38 @@ impl SharedFuseInstance {
                 .as_ref()
                 .ok_or(NativeMountError::FuseShutdownFailed)?,
         );
+        operation.set("prepare shared FUSE device transport");
         let session = super::host_session::HostSession::new(
             super::packet_router::PacketRouter::Shared(Arc::clone(&views)),
             descriptor,
-            state.mount.take_connection(),
             &work,
-        )?;
-        session.initialize()?;
+        )
+        .map_err(|error| error.during("prepare shared FUSE device transport", root))?;
         let notifier = session.notifier();
         state.transport = Some(session.transport());
         views.set_notifier(notifier.clone());
         #[cfg(test)]
         let worker_lifetime = session.worker_lifetime();
-        state.worker =
-            Some(session.start(std::thread::Builder::new().name("acyclic-fuse".to_owned()))?);
+        session.start_mount(
+            root,
+            std::thread::Builder::new().name("acyclic-fuse".to_owned()),
+            &mut state.worker,
+            operation,
+        )?;
         // The router answers the root itself, from no view's state, so this
         // one query cannot wait on any view's owner.
-        let device = std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(root)?);
+        operation.set("stat shared FUSE root after INIT");
+        let device =
+            std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(root).map_err(|error| {
+                NativeMountError::host_operation(
+                    "stat shared mountpoint after FUSE INIT",
+                    root,
+                    error,
+                )
+            })?);
         #[cfg(test)]
         let exit_action_id = state.mount.exit_action_id();
+        operation.set("spawn shared FUSE retirement owner");
         let invalidator = std::thread::Builder::new()
             .name("acyclic-fuse-invalidator".to_owned())
             .spawn(move || {
@@ -275,13 +300,21 @@ impl SharedFuseView {
     /// instance at its parent, starting the instance if none is live.
     pub(super) fn start(
         destination: &Path,
-        build: impl FnOnce(u64) -> Result<Arc<ProjectionCore>, NativeMountError>,
+        operation: &std::cell::Cell<&'static str>,
+        build: impl FnOnce(u64, (u32, u32)) -> Result<Arc<ProjectionCore>, NativeMountError>,
     ) -> Result<Self, NativeMountError> {
         let (Some(root), Some(name)) = (destination.parent(), destination.file_name()) else {
             return Err(NativeMountError::InvalidDestination);
         };
-        let instance = INSTANCES.acquire(root, SharedFuseInstance::start)?;
-        let entry = instance.views.insert(name.as_bytes(), build)?;
+        operation.set("acquire physical shared FUSE root");
+        let instance = INSTANCES.acquire(root, |registration| {
+            SharedFuseInstance::start(registration, operation)
+        })?;
+        let owner = (instance.views.root_attr.uid, instance.views.root_attr.gid);
+        operation.set("insert shared FUSE view");
+        let entry = instance
+            .views
+            .insert(name.as_bytes(), |base| build(base, owner))?;
         Ok(Self { entry, instance })
     }
 

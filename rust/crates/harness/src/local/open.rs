@@ -113,7 +113,11 @@ impl Opening {
         let preset = config.preset_value();
         let tools = configure_tools(&mut config)?;
         let compaction = if let Some((model, provider)) = &config.model {
-            compaction::select(config.compaction.clone(), model, provider.as_ref())?
+            crate::context::CompactionPolicy::for_model(
+                config.compaction.clone(),
+                model,
+                provider.as_ref(),
+            )?
         } else {
             crate::context::CompactionPolicy::Disabled
         };
@@ -150,13 +154,11 @@ impl Opening {
             let mut opening = self;
             let installation = match &opening.settings {
                 Some(settings) => {
-                    let mcp =
-                        crate::native_settings::NativeSettings::load_mcp(Arc::clone(settings))
-                            .await?;
                     let root = std::fs::canonicalize(opening.config.project.root())
                         .map_err(Error::process_io)?;
-                    mcp.install(
+                    crate::mcp::McpConfig::install_watched(
                         opening.tools,
+                        Arc::clone(settings),
                         &root,
                         opening.config.mcp_limits,
                         Arc::new(crate::secrets::EnvSecrets),
@@ -271,7 +273,8 @@ impl Opening {
         .map_err(storage)?;
         let volume_stream = filesystem.stream_provider();
         let provider_ref = owner.project.provider();
-        let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
+        let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?
+            .with_changes(filesystem.stream_provider())?;
         let issuer = AuthorityRoot::bootstrap(
             "acyclic.local",
             &owner.key_ref,
@@ -495,7 +498,7 @@ impl Opening {
             agent_settings::plugins(&settings_tree, owner.agent, self.config.clock.as_ref())
                 .await?;
         // `agent.ts` selects the model and its sampling as the session starts.
-        let (agent, sampling, compaction) = match self.config.model.clone() {
+        let (agent, sampling) = match self.config.model.clone() {
             Some(started) => {
                 #[cfg(not(any(test, feature = "hooks")))]
                 let settings_tree = agent_settings::Tree::new(&volumes).await?;
@@ -524,9 +527,9 @@ impl Opening {
                     self.config.clock.as_ref(),
                 )
                 .await?;
-                (Some(settings.model), settings.sampling, settings.compaction)
+                (Some(settings.model), settings.sampling)
             }
-            None => (None, None, self.compaction),
+            None => (None, None),
         };
         Ok(LocalHarness {
             files,
@@ -553,6 +556,15 @@ impl Opening {
                 .collect(),
             approval_models: self.config.approval_models,
             agent,
+            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            models: self.models,
+            #[cfg(not(any(
+                test,
+                feature = "hooks",
+                feature = "mcp-stdio",
+                feature = "mcp-http"
+            )))]
+            models: None,
             sampling,
             served: self.config.served,
             active_directory: self.config.active_directory,
@@ -566,14 +578,13 @@ impl Opening {
             #[cfg(any(test, feature = "hooks"))]
             plugin_hooks,
             limits: self.config.limits,
-            compaction,
+            compaction: self.compaction_choice,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             mcp_diagnostics: self.diagnostics,
             goal_continuations: self.config.goal_continuations,
             #[cfg(any(test, feature = "native-execution"))]
             workspace,
-            #[cfg(test)]
-            environment_reads: std::sync::atomic::AtomicUsize::new(0),
+            told: std::sync::Mutex::default(),
             clock: self.config.clock,
             #[cfg(any(test, feature = "native-execution"))]
             environment_platform: self.config.environment_platform,

@@ -8,10 +8,12 @@ use crate::{Error, Result, approvals::ApprovalGate, context::ModelContextCapacit
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeSet, io::Write};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem"))]
 mod tests;
 
+#[cfg(feature = "filesystem")]
 mod binding;
+#[cfg(feature = "filesystem")]
 pub use binding::{BoundTools, ToolBinding};
 mod native;
 pub use native::NativeToolProfile;

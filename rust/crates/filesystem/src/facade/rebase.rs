@@ -218,11 +218,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Decided, FsError> {
-        crate::heap_future::in_borrowed_frame!(
+        crate::heap_future::in_borrowed_frame!(accounting, |accounting| self.rebase_head_in_frame(
+            maximum_conflicts,
             accounting,
-            |accounting| self.rebase_head_in_frame(maximum_conflicts, accounting, cancellation),
-            erase_task
-        )
+            cancellation
+        ))
     }
 
     async fn rebase_head_in_frame(
@@ -459,20 +459,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         )>,
         FsError,
     > {
-        crate::heap_future::in_borrowed_frame!(
-            accounting,
-            |accounting| async move {
-                self.prepare_rebased_head_inner(
-                    candidate_object,
-                    maximum_conflicts,
-                    certificate,
-                    accounting,
-                    cancellation,
-                )
-                .await
-            },
-            erase_task
-        )
+        crate::heap_future::in_borrowed_frame!(accounting, |accounting| async move {
+            self.prepare_rebased_head_inner(
+                candidate_object,
+                maximum_conflicts,
+                certificate,
+                accounting,
+                cancellation,
+            )
+            .await
+        })
     }
 
     async fn prepare_rebased_head_inner(
@@ -596,20 +592,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         ),
         FsError,
     > {
-        crate::heap_future::in_borrowed_frame!(
-            accounting,
-            |accounting| async move {
-                self.probe_rebase_head_inner(
-                    candidate_object,
-                    dependencies,
-                    maximum_conflicts,
-                    accounting,
-                    cancellation,
-                )
-                .await
-            },
-            erase_task
-        )
+        crate::heap_future::in_borrowed_frame!(accounting, |accounting| async move {
+            self.probe_rebase_head_inner(
+                candidate_object,
+                dependencies,
+                maximum_conflicts,
+                accounting,
+                cancellation,
+            )
+            .await
+        })
     }
 
     async fn probe_rebase_head_inner<'d>(

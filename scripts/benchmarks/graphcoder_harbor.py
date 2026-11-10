@@ -12,7 +12,14 @@ from .contracts import Artifact, catalog, doctor_command, run_command
 
 
 class GraphCoder(BaseInstalledAgent):
-    """Harbor 0.24 installed-agent interface, with no optional execution path."""
+    """Harbor 0.24 installed-agent interface, with no optional execution path.
+
+    The root uses Harbor's model_name and endpoint kwargs. The optional providers
+    list supplies additional models using those same public endpoint fields,
+    e.g. model_name="deepseek/worker", base_url="http://127.0.0.1:9/deepseek/v1",
+    adapter="chat", context_tokens=100, output_tokens=10. Task role files can
+    select these provider-qualified names from the one uploaded catalog.
+    """
 
     capabilities = AgentCapabilities(skills=True)
 
@@ -22,7 +29,8 @@ class GraphCoder(BaseInstalledAgent):
 
     def __init__(self, *args, graphcoder_binary: str, graphcoder_sha256: str,
                  source_sha: str, base_url: str, context_tokens: int,
-                 output_tokens: int, adapter: str | None = None, **kwargs):
+                 output_tokens: int, adapter: str | None = None,
+                 providers: list[dict] | None = None, **kwargs):
         self.artifact = Artifact.read(graphcoder_binary, graphcoder_sha256, source_sha)
         if kwargs.get("version") not in (None, source_sha):
             raise ValueError("GraphCoder version must be the artifact source SHA")
@@ -33,7 +41,10 @@ class GraphCoder(BaseInstalledAgent):
         if self.mcp_servers:
             raise ValueError("this benchmark adapter does not project task MCP servers")
         self.provider_catalog = catalog(self.model_name, base_url, context_tokens, output_tokens,
-                                        adapter=adapter)
+                                        adapter=adapter, providers=providers)
+        # The run's compaction policy also applies to spawned workers.
+        self.compaction = all(entry["token_counter"] is not None
+                              for entry in self.provider_catalog.values())
         self.state = "/installed-agent/graphcoder-" + uuid.uuid4().hex
         self.binary = self.state + "/graphcoder"
         self._installed_environment = None
@@ -72,7 +83,7 @@ class GraphCoder(BaseInstalledAgent):
             "CODEX_HOME=" + self.state + "/fixture-codex", self.binary, "--version"]))
         # GraphCoder's own startup checks list every missing prerequisite at once.
         await self.exec_as_agent(environment, command=doctor_command(
-            self.binary, self.state, self.model_name))
+            self.binary, self.state, self.model_name, compaction=self.compaction))
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         (self.logs_dir / "artifact.json").write_text(json.dumps({
             "source_sha": self.artifact.source_sha, "sha256": self.artifact.sha256,
@@ -86,4 +97,5 @@ class GraphCoder(BaseInstalledAgent):
         if self._installed_environment is not environment:
             raise RuntimeError("GraphCoder artifact was not installed and verified")
         await self.exec_as_agent(environment, command=run_command(
-            self.binary, self.state, str(self.environment_logs_dir), self.model_name, instruction))
+            self.binary, self.state, str(self.environment_logs_dir), self.model_name, instruction,
+            compaction=self.compaction))

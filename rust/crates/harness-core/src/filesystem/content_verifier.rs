@@ -424,6 +424,82 @@ where
         })
     }
 
+    fn wait_private_path<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        after: Option<&'a GenerationRef>,
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>
+    where
+        'io: 'a,
+    {
+        use acyclic_stream::StreamProviderExt as _;
+        use futures::TryStreamExt as _;
+        let streams = self.host.changes.as_ref().ok_or_else(|| {
+            stock_boundary(
+                access.io,
+                crate::wire::ErrorCode::Unsupported,
+                "content provider has no path change event",
+            )
+        })?;
+        crate::conversation::BoundedContentFuture::new(access.io, || async move {
+            let exists = || async {
+                match self
+                    .read_private_range(
+                        volume,
+                        granted_prefix,
+                        path,
+                        None,
+                        acyclic_fs::ByteRange {
+                            offset: 0,
+                            length: 0,
+                        },
+                        access,
+                    )?
+                    .await
+                {
+                    Ok((selected, _, _)) => Ok(after != Some(&selected.generation)),
+                    Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
+                        Ok(after.is_some())
+                    }
+                    Err(error) => Err(error),
+                }
+            };
+            if exists().await? {
+                return Ok(());
+            }
+            let reference =
+                super::bounded_io::content_workspace(&self.host.provider, volume, access.io)?;
+            let workspace = self.host.open(&reference, access.io).await?;
+            let changes = acyclic_fs::session::changes_path(
+                &self.host.filesystem,
+                workspace.id().volume_id(),
+            )
+            .map_err(Error::from)?;
+            let tail = streams.tail(changes.clone()).await.map_err(Error::from)?;
+            let mut updates = acyclic_stream::records_only(
+                streams
+                    .follow(acyclic_stream::FollowRequest::new(changes, tail))
+                    .await
+                    .map_err(Error::from)?,
+            );
+            loop {
+                if exists().await? {
+                    return Ok(());
+                }
+                updates
+                    .try_next()
+                    .await
+                    .map_err(Error::from)?
+                    .ok_or_else(|| {
+                        Error::Storage("content change stream ended before path publication".into())
+                    })?;
+            }
+        })
+    }
+
     fn read_private_range<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,

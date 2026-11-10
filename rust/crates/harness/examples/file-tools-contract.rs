@@ -98,6 +98,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         &mut None,
     )?;
     let read_input = ReadFileInput {
+        wait: false,
         path: file.path().into(),
         version: Some(serde_json::to_string(&file)?),
         range: Some(TextRange { start: 5, end: 9 }),
@@ -158,6 +159,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         value: value(&search)?,
     };
     let exact_input = ReadFileInput {
+        wait: false,
         path: file.path().into(),
         version: Some(serde_json::to_string(&file)?),
         range: None,

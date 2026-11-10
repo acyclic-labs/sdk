@@ -371,10 +371,12 @@ fn failed_view_startup_retains_directory_until_original_physical_retirement()
         let cause = std::fs::read(root.path().join("absent-startup-input"))
             .expect_err("actual missing startup input");
         let code = cause.raw_os_error();
-        let mut failed = prepared.failed(cause.into(), owner);
+        let mut failed = prepared.failed(cause.into(), owner, "read startup input");
         assert!(
             matches!(failed.error(), NativeMountError::Io(cause) if cause.raw_os_error() == code)
         );
+        assert_eq!(failed.operation, "read startup input");
+        assert_eq!(&failed.owner().request.destination, &destination);
         // The negative restores post-start ownership: returning the failure
         // drops the issuance before the driver's physical retirement.
         assert_eq!(destination.is_dir(), handoff);

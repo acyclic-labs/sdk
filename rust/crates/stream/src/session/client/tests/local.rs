@@ -143,6 +143,7 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
                         generation: 1,
                     },
                     original,
+                    None,
                     Some(&path),
                     false,
                 )

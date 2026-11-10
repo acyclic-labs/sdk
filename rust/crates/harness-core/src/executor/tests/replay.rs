@@ -639,7 +639,6 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
                 tooling: None,
                 current_date: "2026-10-22".into(),
                 timezone: "UTC".into(),
-                git_status: None,
                 model: "model".into(),
             }),
             ..Default::default()
@@ -677,7 +676,10 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
             ToolRegistry::default(),
         )
         .with_limits(limits)
-        .with_context_manifest(manifest_file, journal.clone())
+        .with_context_epoch(
+            &crate::context::ContextEpoch::from_manifest(manifest_file),
+            journal.clone(),
+        )
         .await;
         let Some(expect_environment) = expect_environment else {
             assert!(matches!(bound, Err(Error::Invalid(reason))

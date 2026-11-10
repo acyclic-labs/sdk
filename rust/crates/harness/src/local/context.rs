@@ -1,6 +1,9 @@
 use super::*;
 use crate::{
-    context::{ContextDiscoveryLimits, ContextDiscoveryPolicy, ContextManifest, DiscoveredContext},
+    context::{
+        ContextDiscoveryLimits, ContextDiscoveryPolicy, ContextEpoch, ContextManifest,
+        DiscoveredContext,
+    },
     conversation::{ContentResidencyVerifier, FileRef},
     filesystem::FilesystemContentVerifier,
 };
@@ -37,15 +40,39 @@ pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     OperationId::from_bytes(bytes)
 }
 
-fn manifest_operation(operation: OperationId) -> OperationId {
-    publication_operation(
-        b"acyclic.local.context-manifest/v1\0",
-        &operation.into_bytes(),
-    )
+/// What one agent was last told of its epoch's model-visible sources.
+pub(super) struct Told {
+    epoch: FileRef,
+    file: Option<FileRef>,
+    state: ToldState,
+    /// Exclusive inbox cursor after the last committed notice. Every turn
+    /// preparation fences its first request with it, so a retried
+    /// preparation still admits a notice an earlier attempt sent; a reload
+    /// recovers it by resending the retained outbox entry.
+    through: Option<u64>,
 }
 
-fn manifest_path(operation: OperationId) -> String {
-    format!("inputs/{operation}.manifest.json")
+impl Told {
+    fn delivered(&mut self, delivery: crate::agent::Delivered) -> Result<()> {
+        if let crate::agent::Delivered::Committed { inbox } = delivery {
+            let cursor = inbox
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("context delivery cursor overflow".into()))?;
+            self.through = Some(self.through.map_or(cursor, |previous| previous.max(cursor)));
+        }
+        Ok(())
+    }
+}
+
+/// The durable delivery frontier, including the outbox entry that must be
+/// resent after a crash. Publishing it precedes the idempotent inbox send.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToldState {
+    version: u8,
+    digests: std::collections::BTreeMap<String, [u8; 32]>,
+    sent: u64,
+    pending: Option<crate::agent::InboxRecord>,
 }
 
 impl LocalHarness {
@@ -61,204 +88,317 @@ impl LocalHarness {
         )
     }
 
-    async fn observe_context_manifest(
-        &self,
-        operation: OperationId,
-        publisher: &dyn ContentPublisher,
-    ) -> Result<Option<FileRef>> {
-        let (reference, _) = publisher
-            .observe_staged_once(
-                manifest_operation(operation),
-                None,
-                // The manifest is a harness record bounded by what it
-                // renders, not admitted content under the file bound.
-                crate::conversation::MAX_EXACT_JS_INTEGER,
-                crate::conversation::ContentAccess::default(),
-            )?
-            .await?;
-        if let Some(reference) = &reference {
-            self.limits.validate_record(reference, &mut None)?;
-        }
-        if reference
-            .as_ref()
-            .is_some_and(|file| file.path() != manifest_path(operation))
-        {
-            return Err(Error::Conflict(
-                "retained context manifest has another path".into(),
-            ));
-        }
-        Ok(reference)
+    /// The complete tool array every request of an epoch declares. The agent
+    /// tools bind per turn, outside the registry; a turn binds each over any
+    /// registered tool of its name, so the array lists it in that tool's place.
+    pub(super) fn declared_tools(&self) -> Result<Vec<crate::tool::ToolDefinition>> {
+        let agent_tools = crate::tools::agent_tool_definitions(&self.agent_tools)?;
+        let mut tools = self.tools().definitions(None)?;
+        tools.retain(|tool| agent_tools.iter().all(|agent| agent.name != tool.name));
+        tools.extend(agent_tools);
+        Ok(tools)
     }
 
-    /// Pins the live file conventions once per admission, alongside instructions.
+    /// `agent`'s frozen context epoch: rendered from the live sources and
+    /// staged once at session start and after each compaction (its context
+    /// checkpoint), and replayed unchanged by every other turn, so the cached
+    /// prefix never changes between compactions.
     #[inline(never)]
-    pub(super) fn stage_context_manifest_with<'a>(
+    pub(super) fn context_epoch<'a>(
         &'a self,
-        operation: OperationId,
+        agent: &'a crate::agent::AgentState,
         binding: &'a Binding<'a>,
         publisher: &'a dyn ContentPublisher,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ContextEpoch>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
-            if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
-                return Ok(reference);
-            }
-            let path = manifest_path(operation);
-            if path.len() > self.limits.path_bytes {
-                return Err(Error::Invalid(
-                    "context manifest path exceeds path bound".into(),
-                ));
-            }
-            #[cfg(any(test, feature = "hooks"))]
-            let hook_configuration = {
-                // The user's imported host hooks rank above every plugin.
-                let mut hooks = match &self.settings {
-                    Some(settings) => {
-                        crate::native_settings::NativeSettings::load_hooks(Arc::clone(settings))
-                            .await?
-                    }
-                    None => crate::hooks::Hooks::default(),
-                };
-                hooks.append(self.plugin_hooks.clone());
-                if hooks.is_empty() {
-                    None
-                } else {
-                    Some(hooks.publish(publisher, self.limits).await?)
-                }
-            };
-            let policy = ContextDiscoveryPolicy::default();
-            let limits = ContextDiscoveryLimits::default();
-            let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
-            let mut work = crate::context::DiscoveryWork {
-                limits: ContextDiscoveryLimits {
-                    instruction_bytes: maximum,
-                    ..limits
-                },
-                ..Default::default()
-            };
-            let discovery = self
-                .instructions(binding, &policy.instruction_names, publisher, &mut work)
-                .await?;
-            let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
-            let mode = match self.preset.approval_policy.approvers.as_slice() {
-                [
-                    crate::approvals::Approver::Rules {
-                        rules,
-                        fallback: crate::approvals::RuleVerdict::Allow,
-                        ..
-                    },
-                ] if rules.is_empty() => "all admitted actions allowed",
-                _ => "policy-controlled approvals",
-            };
-            // A physical workspace projects no home volume.
-            #[cfg(any(test, feature = "native-execution"))]
-            let home = binding
-                .workspace
-                .as_ref()
-                .is_none_or(|workspace| workspace.mounting == super::WorkspaceMounting::Native);
-            #[cfg(not(any(test, feature = "native-execution")))]
-            let home = true;
-            let home = if home {
-                " .volumes/home is your private retained home volume and is never merged into the project."
-            } else {
-                ""
-            };
-            let sandbox = if cfg!(any(target_os = "linux", target_os = "macos")) {
-                "Shell commands and lifecycle hooks run in a workspace-write OS sandbox."
-            } else {
-                "Shell commands retain the host boundary; native OS confinement is not yet available."
-            };
-            manifest.conventions.push(format!(
-                "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home}"
-            ));
-            // The agent tools bind per turn, outside the registry; the model
-            // sees them through the manifest like every other tool. A turn
-            // binds each over any registered tool of its name, so the manifest
-            // lists it in that tool's place.
-            let agent_tools = crate::tools::agent_tool_definitions(&self.agent_tools)?;
-            manifest
-                .tools
-                .retain(|tool| agent_tools.iter().all(|agent| agent.name != tool.name));
-            manifest.tools.extend(agent_tools);
-            #[cfg(any(test, feature = "native-execution"))]
-            if let Some(workspace) = &binding.workspace {
-                manifest
-                    .conventions
-                    .push(workspace.context_line().to_owned());
-                if self.checkout_context {
-                    #[cfg(test)]
-                    self.environment_reads
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let (selected, _) = workspace.selected_view().await?;
-                    let view = selected.as_ref().unwrap_or_else(|| workspace.view());
-                    // A selected branch can use a separate physical mount. Reuse
-                    // that admitted handle; never report the base mount for it.
-                    let selected_mount = if let Some(view) = &selected
-                        && workspace.mounted.is_some()
-                    {
-                        workspace
-                            .state
-                            .lock()
-                            .await
-                            .workspace
-                            .as_ref()
-                            .filter(|(id, _)| *id == view.workspace().id())
-                            .map(|(_, mounted)| Arc::clone(mounted))
-                    } else {
-                        None
-                    };
-                    let cwd = if selected.is_none() || workspace.mounted.is_none() {
-                        Some(workspace.path.as_path())
-                    } else {
-                        selected_mount
-                            .as_ref()
-                            .map(|mounted| mounted.path.as_path())
-                    };
-                    let compatibility = acyclic_fs::GitCompatStore::load(
-                        &workspace.store,
-                        workspace.view().workspace().id(),
-                    )
-                    .await
-                    .map_err(storage)?;
-                    let (model, _) = self.agent()?;
-                    let mut facts = environment::gather(
-                        cwd,
-                        self.clock.now_unix_millis(),
-                        &model.name,
-                        &self.environment_platform,
-                        compatibility.is_none(),
-                    )
-                    .await?;
-                    if let Some(compatibility) = compatibility {
-                        use acyclic_fs::facade::FsWork as _;
-                        let cancellation = acyclic_fs::CancellationToken::new();
-                        let snapshot = view
-                            .snapshot(
-                                &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
-                            )
-                            .await?;
-                        facts.git_status = Some(environment::sdk_status(
-                            &compatibility,
-                            acyclic_fs::GitTreeRef::Lazy(snapshot),
-                        )?);
-                    }
-                    manifest.environment = Some(facts);
-                }
-            }
-            #[cfg(any(test, feature = "hooks"))]
-            manifest.sources.extend(hook_configuration);
-            let bytes = manifest.encode(self.limits)?;
-            Ok(publisher
-                .stage_once(
-                    manifest_operation(operation),
-                    &path,
-                    &bytes,
-                    "application/json",
-                    "context-manifest.json",
-                    crate::conversation::ContentAccess::default(),
-                )?
-                .await?
-                .0)
+            let tools = self.declared_tools()?;
+            let operation = ContextEpoch::operation(agent.path.as_str(), agent.checkpoint)?;
+            ContextEpoch::open(publisher, operation, self.limits, || {
+                self.live_manifest(binding, publisher, tools)
+            })
+            .await
         })
+    }
+
+    /// Tells `agent`, as appended quiet notices, each model-visible source
+    /// change since its epoch froze that it was not told yet. Its requests
+    /// keep the epoch's prefix and see each change after it. A notice's
+    /// intent binds the epoch, the source, both digests and the durable
+    /// count. The retained outbox recovers a send interrupted by a crash;
+    /// unchanged requests use the in-memory frontier without storage reads.
+    pub(super) async fn announce_changes(
+        &self,
+        agent: &crate::agent::AgentState,
+        epoch: &ContextEpoch,
+        binding: &Binding<'_>,
+        publisher: &dyn ContentPublisher,
+        reader: &dyn ContentResidencyVerifier,
+    ) -> Result<Option<u64>> {
+        let Some(hosted) = self.agents.get() else {
+            return Ok(None);
+        };
+        let live = self.live_manifest(binding, publisher, Vec::new()).await?;
+        let cached = self
+            .told
+            .lock()
+            .map_err(|_| Error::Storage("context change lock poisoned".into()))?
+            .remove(&agent.path)
+            .filter(|told| told.epoch == *epoch.manifest());
+        let path = format!("{}.told.v1.json", epoch.manifest().path());
+        let mut told = match cached {
+            Some(told) => told,
+            None => {
+                let retained = reader
+                    .read_private_path(
+                        publisher.volume(),
+                        "inputs",
+                        &path,
+                        None,
+                        crate::conversation::MAX_EXACT_JS_INTEGER,
+                        crate::conversation::ContentAccess::default(),
+                    )?
+                    .await?;
+                let (file, state) = match retained {
+                    Some((file, bytes, _)) => {
+                        let state: ToldState = serde_json::from_slice(&bytes).map_err(storage)?;
+                        if state.version != 1 {
+                            return Err(Error::Invalid(
+                                "unsupported context delivery version".into(),
+                            ));
+                        }
+                        (Some(file), state)
+                    }
+                    None => (
+                        None,
+                        ToldState {
+                            version: 1,
+                            digests: epoch.digests(reader, self.limits).await?,
+                            sent: 0,
+                            pending: None,
+                        },
+                    ),
+                };
+                Told {
+                    epoch: epoch.manifest().clone(),
+                    file,
+                    state,
+                    through: None,
+                }
+            }
+        };
+        let by = crate::agent::Sender::Agent {
+            path: agent.path.clone(),
+        };
+        if let Some(pending) = told.state.pending.take() {
+            told.delivered(
+                hosted
+                    .agents()
+                    .send(&agent.path, &by, &pending)
+                    .await
+                    .map_err(storage)?,
+            )?;
+        }
+        for change in ContextEpoch::changes(&told.state.digests, &live, reader).await? {
+            let mut hash = blake3::Hasher::new_derive_key("acyclic.local.context-change.v1");
+            hash.update(epoch.manifest().descriptor().sha256());
+            hash.update(&(change.source.len() as u64).to_le_bytes());
+            hash.update(change.source.as_bytes());
+            hash.update(told.state.digests.get(&change.source).unwrap_or(&[0; 32]));
+            hash.update(change.digest.as_ref().unwrap_or(&[0; 32]));
+            hash.update(&told.state.sent.to_le_bytes());
+            let id = crate::agent::IntentId::try_from(format!(
+                "context:{}",
+                &hash.finalize().to_hex()[..32]
+            ))
+            .map_err(storage)?;
+            let operation =
+                publication_operation(b"acyclic.local.context-told/v1\0", id.as_str().as_bytes());
+            let record = crate::agent::InboxRecord::Notice {
+                id,
+                notice: crate::agent::NoticePayload::Quiet(change.notice),
+            };
+            match change.digest {
+                Some(digest) => told.state.digests.insert(change.source, digest),
+                None => told.state.digests.remove(&change.source),
+            };
+            told.state.sent += 1;
+            told.state.pending = Some(record.clone());
+            let bytes = serde_json::to_vec(&told.state).map_err(storage)?;
+            // The generation check prevents two writers from advancing the
+            // same frontier; the operation receipt recovers an uncertain write.
+            let (file, _) = match &told.file {
+                Some(file) => {
+                    publisher
+                        .stage_at(operation, file, &bytes, None, None)?
+                        .await?
+                }
+                None => {
+                    publisher
+                        .stage_once(
+                            operation,
+                            &path,
+                            &bytes,
+                            "application/json",
+                            "context-delivery.json",
+                            crate::conversation::ContentAccess::default(),
+                        )?
+                        .await?
+                }
+            };
+            told.file = Some(file);
+            told.delivered(
+                hosted
+                    .agents()
+                    .send(&agent.path, &by, &record)
+                    .await
+                    .map_err(storage)?,
+            )?;
+            told.state.pending = None;
+        }
+        let through = told.through;
+        self.told
+            .lock()
+            .map_err(|_| Error::Storage("context change lock poisoned".into()))?
+            .insert(agent.path.clone(), told);
+        Ok(through)
+    }
+
+    /// This turn's hook configuration: the live one, pinned once per turn so
+    /// a resumed turn binds the hooks it started with. Hooks are behaviour,
+    /// not prefix, so they change at the next turn, never waiting for an
+    /// epoch.
+    #[cfg(any(test, feature = "hooks"))]
+    pub(super) async fn turn_hooks(
+        &self,
+        turn: OperationId,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<Option<FileRef>> {
+        let operation = publication_operation(b"acyclic.local.turn-hooks/v1\0", &turn.into_bytes());
+        if let Some(hooks) = self.observe_manifest(operation, publisher).await? {
+            return Ok(Some(hooks));
+        }
+        // The user's imported host hooks rank above every plugin.
+        let mut hooks = match &self.settings {
+            Some(settings) => {
+                crate::native_settings::NativeSettings::load_hooks(Arc::clone(settings)).await?
+            }
+            None => crate::hooks::Hooks::default(),
+        };
+        hooks.append(self.plugin_hooks.clone());
+        let bytes = hooks.encode(self.limits.file_bytes)?;
+        let path = format!("inputs/{turn}.hooks.json");
+        let staged = publisher
+            .stage_once(
+                operation,
+                &path,
+                &bytes,
+                crate::hooks::Hooks::MEDIA_TYPE,
+                "hooks.json",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await;
+        match staged {
+            Ok((hooks, _)) => Ok(Some(hooks)),
+            Err(error) => self
+                .observe_manifest(operation, publisher)
+                .await?
+                .map(Some)
+                .ok_or(error),
+        }
+    }
+    /// The manifest the live sources render now, as `binding` sees them.
+    pub(super) async fn live_manifest(
+        &self,
+        binding: &Binding<'_>,
+        publisher: &dyn ContentPublisher,
+        tools: Vec<crate::tool::ToolDefinition>,
+    ) -> Result<ContextManifest> {
+        let policy = ContextDiscoveryPolicy::default();
+        let limits = ContextDiscoveryLimits::default();
+        let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
+        let mut work = crate::context::DiscoveryWork {
+            limits: ContextDiscoveryLimits {
+                instruction_bytes: maximum,
+                ..limits
+            },
+            ..Default::default()
+        };
+        let discovery = self
+            .instructions(binding, &policy.instruction_names, publisher, &mut work)
+            .await?;
+        let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        manifest.tools = tools;
+        let mode = match self.preset.approval_policy.approvers.as_slice() {
+            [
+                crate::approvals::Approver::Rules {
+                    rules,
+                    fallback: crate::approvals::RuleVerdict::Allow,
+                    ..
+                },
+            ] if rules.is_empty() => "all admitted actions allowed",
+            _ => "policy-controlled approvals",
+        };
+        // A physical workspace projects no home volume.
+        #[cfg(any(test, feature = "native-execution"))]
+        let home = binding
+            .workspace
+            .as_ref()
+            .is_none_or(|workspace| workspace.mounting == super::WorkspaceMounting::Native);
+        #[cfg(not(any(test, feature = "native-execution")))]
+        let home = true;
+        let home = if home {
+            " .volumes/home is your private retained home volume and is never merged into the project."
+        } else {
+            ""
+        };
+        let sandbox = if cfg!(any(target_os = "linux", target_os = "macos")) {
+            "Shell commands and lifecycle hooks run in a workspace-write OS sandbox."
+        } else {
+            "Shell commands retain the host boundary; native OS confinement is not yet available."
+        };
+        manifest.conventions.push(format!(
+            "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home}"
+        ));
+        #[cfg(any(test, feature = "native-execution"))]
+        if let Some(workspace) = &binding.workspace {
+            manifest
+                .conventions
+                .push(workspace.context_line().to_owned());
+            if self.checkout_context {
+                let (selected, _) = workspace.selected_view().await?;
+                // A selected branch can use a separate physical mount. Reuse
+                // that admitted handle; never report the base mount for it.
+                let selected_mount = if let Some(view) = &selected
+                    && workspace.mounted.is_some()
+                {
+                    workspace
+                        .state
+                        .lock()
+                        .await
+                        .workspace
+                        .as_ref()
+                        .filter(|(id, _)| *id == view.workspace().id())
+                        .map(|(_, mounted)| Arc::clone(mounted))
+                } else {
+                    None
+                };
+                let cwd = if selected.is_none() || workspace.mounted.is_none() {
+                    Some(workspace.path.as_path())
+                } else {
+                    selected_mount
+                        .as_ref()
+                        .map(|mounted| mounted.path.as_path())
+                };
+                let (model, _) = self.agent()?;
+                manifest.environment = Some(environment::gather(
+                    cwd,
+                    self.clock.now_unix_millis(),
+                    &model.name,
+                    &self.environment_platform,
+                )?);
+            }
+        }
+        Ok(manifest)
     }
 
     async fn instructions(
@@ -638,33 +778,14 @@ mod tests {
     }
 
     #[test]
-    fn manifest_children_retain_only_owned_polling_handles() {
-        let observation = retained_operation_bytes(
-            |(local, publisher): (&'static LocalHarness, &'static dyn ContentPublisher)| {
-                local.observe_context_manifest(OperationId::from_bytes([1; 16]), publisher)
-            },
-        );
-        eprintln!("manifest observation retained bytes: {observation}");
-        assert!(
-            observation <= 512,
-            "manifest embeds a concrete observation future"
-        );
-    }
-
-    #[test]
     fn context_boundaries_retain_only_owned_polling_handles() {
         let manifest = retained_operation_bytes(
-            |(local, binding, publisher): (
+            |(local, agent, binding, publisher): (
                 &'static LocalHarness,
+                &'static crate::agent::AgentState,
                 &'static Binding<'static>,
                 &'static dyn ContentPublisher,
-            )| {
-                local.stage_context_manifest_with(
-                    OperationId::from_bytes([1; 16]),
-                    binding,
-                    publisher,
-                )
-            },
+            )| local.context_epoch(agent, binding, publisher),
         );
         #[cfg(feature = "native-execution")]
         let catalog = retained_operation_bytes(
@@ -709,23 +830,21 @@ mod tests {
             }
         }
 
-        // Property: generated request paths round-trip their exact operation,
-        // remain in the private input subtree, and cannot alias another turn.
+        // Property: an epoch's path stays in the private input subtree within
+        // the path bound, and agents or checkpoints never share an epoch.
         #[test]
-        fn manifest_paths_round_trip(operation in any::<[u8;16]>(), other in any::<[u8;16]>()) {
-            let operation = OperationId::from_bytes(operation);
-            let other = OperationId::from_bytes(other);
-            let path = manifest_path(operation);
+        fn epochs_are_distinct_per_agent_and_checkpoint(agent in "[a-z]{1,16}", other in "[a-z]{1,16}", checkpoint in proptest::option::of(any::<u64>()), next in any::<u64>()) {
+            let operation = ContextEpoch::operation(&agent, checkpoint)?;
+            let path = ContextEpoch::path(operation);
             crate::conversation::validate_content_path(&path, &mut None)?;
-            let name = path.strip_prefix("inputs/").unwrap().strip_suffix(".manifest.json").unwrap();
-            let decoded: OperationId = serde_json::from_value(serde_json::Value::String(name.into()))?;
-            prop_assert_eq!(decoded, operation);
             prop_assert!(path.len() <= Limits::default().path_bytes);
-            prop_assert_eq!(manifest_path(operation), path.clone());
-            if operation != other {
-                prop_assert_ne!(path, manifest_path(other));
+            prop_assert_eq!(ContextEpoch::operation(&agent, checkpoint)?, operation);
+            if agent != other {
+                prop_assert_ne!(ContextEpoch::operation(&other, checkpoint)?, operation);
             }
-            prop_assert_eq!(manifest_operation(operation), manifest_operation(decoded));
+            if checkpoint != Some(next) {
+                prop_assert_ne!(ContextEpoch::operation(&agent, Some(next))?, operation);
+            }
         }
     }
 }

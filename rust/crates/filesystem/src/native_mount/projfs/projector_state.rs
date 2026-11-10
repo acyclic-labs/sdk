@@ -198,6 +198,8 @@ pub(super) struct ProjectorState {
     pub(super) retry: bool,
     pub(super) notified: Option<ViewStamp>,
     pub(super) processed: Option<ViewStamp>,
+    pub(super) settlers: usize,
+    pub(super) failure_observed: bool,
     pub(super) failure: Option<String>,
     pub(super) stopping: bool,
     /// Release events so far: handle closes and capture drains, each of
@@ -206,6 +208,12 @@ pub(super) struct ProjectorState {
 }
 
 impl ProjectorState {
+    pub(super) fn report_failure(&mut self) -> Option<String> {
+        let failure = self.failure.clone()?;
+        self.failure_observed = true;
+        Some(failure)
+    }
+
     /// Records an entry left held by an attempt that began at release
     /// `since`. A release since then may already have freed it, so it is
     /// retried now; otherwise the next release retries it. Returns whether

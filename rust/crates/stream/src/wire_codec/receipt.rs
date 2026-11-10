@@ -32,21 +32,13 @@ pub fn receipt_from_wire(value: wire::CommitReceipt) -> Result<crate::CommitRece
             Ok(fork)
         })
         .collect::<Result<Vec<_>, StreamError>>()?;
-    if appends.is_empty() && forks.is_empty() {
-        return Err(StreamError::Unavailable);
-    }
-    let skipped = value
-        .skipped
-        .into_iter()
-        .map(path)
-        .collect::<Result<Vec<_>, StreamError>>()?;
     let receipt = crate::CommitReceipt {
         commit_id: id,
         committed_at_micros: value.committed_at_micros,
         appends,
         forks,
         revision,
-        skipped,
+        skipped: value.skipped_effects,
     };
     receipt.validate().map_err(|_| StreamError::Unavailable)?;
     Ok(receipt)
@@ -90,10 +82,6 @@ pub fn receipt_to_wire(value: crate::CommitReceipt) -> wire::CommitReceipt {
             })
             .collect(),
         revision: Some(revision_to_wire(&value.revision)),
-        skipped: value
-            .skipped
-            .into_iter()
-            .map(|path| path.to_string())
-            .collect(),
+        skipped_effects: value.skipped,
     }
 }

@@ -38,7 +38,7 @@ impl Conversation {
     }
 
     /// Query a bounded original execution page. A quiet live request parks on
-    /// the original journal and actor events; the source's closure is an error.
+    /// the original journal and actor events; an archived source ends normally.
     ///
     /// # Errors
     /// Original source, credential, policy or cursor refusal.

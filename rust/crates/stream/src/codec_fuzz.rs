@@ -409,8 +409,8 @@ fn commands(
     value: Option<crate::OwnedBytes>,
 ) -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
     use crate::{
-        AppendRequest, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey, OwnedBytes,
-        StreamPath, WriteRequest,
+        AppendRequest, CommitEffect, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey,
+        OwnedBytes, StreamPath, WriteRequest,
     };
     let headers = match &value {
         None => crate::RecordHeaders::default(),
@@ -457,15 +457,18 @@ fn commands(
             "commit",
             WriteRequest::Commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: Vec::new(),
-                mutations: vec![CommitMutation::Append {
-                    path: StreamPath::new("codec/events")?,
-                    records: vec![crate::AppendRecord {
-                        value: value
-                            .unwrap_or_else(|| OwnedBytes::from_static(b"committed codec corpus")),
-                        headers,
+                effects: vec![CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: StreamPath::new("codec/events")?,
+                        records: vec![crate::AppendRecord {
+                            value: value.unwrap_or_else(|| {
+                                OwnedBytes::from_static(b"committed codec corpus")
+                            }),
+                            headers,
+                        }],
                     }],
-                }],
+                )],
                 idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"commit"))?,
             }),
         ),

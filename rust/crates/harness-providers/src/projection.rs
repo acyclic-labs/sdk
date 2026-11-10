@@ -26,15 +26,23 @@ use serde_json::{Value, json};
 use wire::{Item, Message, Request};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
-    let mut base = validate_url(&provider.config.base_url)?;
+    endpoint_for(
+        provider.config.adapter,
+        &provider.config.base_url,
+        &provider.model.name,
+    )
+}
+
+pub(crate) fn endpoint_for(adapter: Adapter, base: &str, model: &str) -> Result<String> {
+    let mut base = validate_url(base)?;
     let path = format!("{}/", base.path().trim_end_matches('/'));
     base.set_path(&path);
-    let suffix = match provider.config.adapter {
+    let suffix = match adapter {
         Adapter::Anthropic => "messages".into(),
         Adapter::Responses => "responses".into(),
         Adapter::Chat => "chat/completions".into(),
         Adapter::Gemini => {
-            let name = &provider.model.name;
+            let name = model;
             #[cfg(all(test, not(target_arch = "wasm32")))]
             let name = if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL
                 .with(std::cell::Cell::get)
@@ -136,6 +144,10 @@ pub(crate) fn body_named<'a>(
     files: &mut FileText,
 ) -> Result<Request<'a>> {
     let adapter = provider.config.adapter;
+    // A route's prompt layout is fixed before credential discovery. A login
+    // appearing later may change authentication, never the cached system span.
+    let login_route = adapter == Adapter::Responses
+        && provider.config.authentication == crate::Authentication::ApiKeyOrCodexLogin;
     let (conversation, instruction) = request.split_summary_instruction()?;
     let rendered = acyclic_model_render::Provenance {
         family: adapter,
@@ -221,8 +233,7 @@ pub(crate) fn body_named<'a>(
             effective_effort = Some(*effort);
             continue;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if provider.codex_login.is_some() && message.role == ModelRole::System {
+        if login_route && message.role == ModelRole::System {
             system.push(text_content(&message.content, files)?);
             continue;
         }
@@ -301,13 +312,15 @@ pub(crate) fn body_named<'a>(
             fields.insert(Field::Stream, json!(true));
             fields.insert(Field::Store, json!(false));
             fields.insert(Field::MaxOutputTokens, json!(max));
-            #[cfg(not(target_arch = "wasm32"))]
-            if provider.codex_login.is_some() {
-                fields.remove(Field::MaxOutputTokens);
+            if login_route {
                 fields.insert(
                     Field::Instructions,
                     serde_json::Value::String(text::join(system, "\n\n")),
                 );
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if provider.codex_login.is_some() {
+                fields.remove(Field::MaxOutputTokens);
                 fields.insert(Field::ToolChoice, json!("auto"));
                 fields.insert(Field::ParallelToolCalls, json!(true));
             }

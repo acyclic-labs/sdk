@@ -52,6 +52,14 @@ impl CredentialResolver for Host {
         let reference = match source {
             CredentialSource::ApiKey(key) => {
                 self.secrets.lock().unwrap().native_bindings += 1;
+                if origin == self.origin {
+                    return self.bind(
+                        CredentialSource::SecretReference(&reference("primary")),
+                        origin,
+                        scheme,
+                        transport,
+                    );
+                }
                 return Ok(CredentialBinding::api_key(key, transport));
             }
             CredentialSource::SecretReference(reference) => reference,
@@ -194,6 +202,13 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
         "reference never selects the native key"
     );
     let original_scope = provider.reasoning_origin(None, None);
+    // A host may protect an ordinary API key too. Run the first real exchange
+    // through that binding; Protected::send rejects any raw credential header.
+    let mut native_spec = spec.clone();
+    native_spec.authentication = Authentication::Optional;
+    registry.register("openai".into(), native_spec)?;
+    let protected_key = registry.resolve("openai/gpt-5")?;
+    assert!(protected_key.current_credentials()?.key.is_none());
     let (started, accepted) = tokio::sync::oneshot::channel();
     let server_state = secrets.clone();
     let server = tokio::spawn(async move {
@@ -259,12 +274,13 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
             socket.shutdown().await.unwrap();
         }
     });
-    let (request, dispatch) = crate::tests::request(&provider)?;
-    let events = provider
+    let (request, dispatch) = crate::tests::request(&protected_key)?;
+    let events = protected_key
         .generate(&request, dispatch)
         .try_collect::<Vec<_>>()
         .await?;
     assert!(events.iter().any(|event| matches!(event, acyclic_harness_core::model::ModelEvent::Content { delta } if delta.contains("Hello"))));
+    let (request, dispatch) = crate::tests::request(&provider)?;
     assert_eq!(
         provider.reasoning_origin(None, None),
         original_scope,

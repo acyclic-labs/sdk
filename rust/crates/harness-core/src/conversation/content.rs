@@ -302,6 +302,28 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Waits for an authorized current path to exist, using its provider's
+    /// change event. Dropping the future releases that interest. This never
+    /// waits for a pinned historical generation to change.
+    /// With `after`, waits for a different generation or removal of that path.
+    fn wait_private_path<'a, 'io>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _granted_prefix: &'a str,
+        _path: &'a str,
+        _after: Option<&'a GenerationRef>,
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, ()>>
+    where
+        'io: 'a,
+    {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "content provider has no path change event",
+        ))
+    }
+
     /// Reads one interval and returns the very same immutable selection.
     /// Implementations must not reselect head or derive identity by reading the
     /// rest of the body. Unsupported providers refuse before reading.
@@ -894,6 +916,26 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
     {
         self.bound_reader(volume, access.io)?
             .select_private_generation(volume, granted_prefix, path, expected_generation, access)
+    }
+
+    fn wait_private_path<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        after: Option<&'a GenerationRef>,
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, ()>>
+    where
+        'io: 'a,
+    {
+        self.bound_reader(volume, access.io)?.wait_private_path(
+            volume,
+            granted_prefix,
+            path,
+            after,
+            access,
+        )
     }
 
     fn read_private_range<'a, 'io>(

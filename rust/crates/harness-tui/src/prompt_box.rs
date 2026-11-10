@@ -39,14 +39,20 @@ impl<'a> PromptBox<'a> {
         let maximum =
             crate::widget::cells(usize::from(screen_height).saturating_mul(percent) / 100);
         PromptWidget::new(&self.input.editor)
-            .height(width.saturating_sub(2), maximum.saturating_sub(2))
-            .saturating_add(2)
+            .height(width.saturating_sub(1), maximum.saturating_sub(1))
+            .saturating_add(1)
             .min(maximum)
     }
 
     /// Inner area used for shared mouse hit testing.
     pub fn input_area(area: Rect) -> Rect {
-        Block::default().borders(Borders::ALL).inner(area)
+        let inner = Block::default().borders(Borders::TOP).inner(area);
+        Rect::new(
+            inner.x + u16::from(inner.width > 0),
+            inner.y,
+            inner.width.saturating_sub(1),
+            inner.height,
+        )
     }
 }
 
@@ -87,10 +93,10 @@ impl StatefulWidget for PromptBox<'_> {
         };
         let block = Block::default()
             .style(self.style)
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .border_style(style)
             .title(labels.join(" · "));
-        let inner = block.inner(area);
+        let inner = Self::input_area(area);
         block.render(area, buffer);
         let mut widget = PromptWidget::new(&self.input.editor);
         widget.placeholder = self.placeholder;

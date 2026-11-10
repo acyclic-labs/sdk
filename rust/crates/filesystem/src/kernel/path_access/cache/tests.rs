@@ -145,7 +145,6 @@ async fn owned_cache_batches_preserve_original_funding_at_every_capacity()
             for maximum_page_items in [1, 2] {
                 let (decoded, allocation) =
                     crate::kernel::persistent_io::read_page_with_accounting::<
-                        _,
                         crate::kernel::tree_mutation::TreeFormat,
                     >(
                         &cache,

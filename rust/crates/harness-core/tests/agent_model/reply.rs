@@ -5,7 +5,8 @@ use super::{Result, create, driver::file, id, intent, user};
 use acyclic_harness_core::agent::*;
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream, StreamProvider,
+    CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, MemoryStream,
+    StreamProvider,
 };
 
 fn message(name: &str) -> Result<TurnInput> {
@@ -37,14 +38,16 @@ async fn append(provider: &MemoryStream, path: &AgentPath, records: Vec<Vec<u8>>
     let conversation = path.conversation()?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![CommitCondition::Tail {
-            path: conversation.clone(),
-            expected: 0,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: conversation,
-            records: records.into_iter().map(Into::into).collect(),
-        }],
+        effects: vec![CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: conversation.clone(),
+                expected: 0,
+            }],
+            vec![CommitMutation::Append {
+                path: conversation,
+                records: records.into_iter().map(Into::into).collect(),
+            }],
+        )],
         idempotency_key: intent_key(path.as_str(), &[])?,
     };
     assert!(matches!(
@@ -165,7 +168,13 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
         submit(&provider, send(&path, &user(), &record)?).await?;
     }
     let mut state = AgentState::adopted(path.clone(), &super::adopted(id(11))).expect("adopts");
-    let selected = select_boundary(&provider, &state.path, 2, Some(3)).await?;
+    let selected = select_boundary(
+        &provider,
+        &state.path,
+        2,
+        acyclic_harness_core::agent::BoundaryEnd::Exact(3),
+    )
+    .await?;
     assert_eq!(selected.inputs.len(), 1);
     let mut settled = ConversationEntry::decode(&entry(1, message("initial")?)?)?;
     settled.steering = Some(SteeringTranscript {

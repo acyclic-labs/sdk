@@ -363,6 +363,10 @@ impl FileTool {
 }
 
 impl ToolExecutor for FileTool {
+    fn cancellable_on_drop(&self) -> bool {
+        self.is_read()
+    }
+
     fn authorize(
         &self,
         scope: Option<&RuntimeScope>,

@@ -132,6 +132,7 @@ pub enum AgentReply {
         /// Exact original inbox sequence, at or after this agent's fork cut.
         input: u64,
         /// One fixed journal page; None marks the current committed inbox tail.
+        /// At that tail, `settled` means the agent has been archived.
         page: Option<acyclic_harness_core::executor::ModelUsagePage>,
         /// The original actor checkpoint consumed this input and retains no
         /// paused, queued or overflowed work at or before it. A short page or
@@ -146,6 +147,7 @@ pub enum AgentReply {
         /// A finite export freezes this cut; later inputs cannot extend it.
         inbox_tail: u64,
         /// One bounded source page. None marks the current committed inbox tail.
+        /// At that tail, `settled` means the agent has been archived.
         page: Option<acyclic_harness_core::executor::ExecutionEventPage>,
         /// Original consumed-input fence, with no retained work at or before it.
         settled: bool,
@@ -368,10 +370,20 @@ pub fn decode_agent_reply(
             if request.deadline_unix_millis.is_some() {
                 return Err(CommandError::Invalid);
             }
+            let conditions: usize = request
+                .effects
+                .iter()
+                .map(|effect| effect.conditions.len())
+                .sum();
+            let mutations: usize = request
+                .effects
+                .iter()
+                .map(|effect| effect.mutations.len())
+                .sum();
             if request.encoded_len() > acyclic_stream::MAX_COMMAND_BYTES
-                || request.conditions.len() > acyclic_stream::MAX_ITEMS
-                || request.mutations.is_empty()
-                || request.mutations.len() > acyclic_stream::MAX_ITEMS
+                || conditions > acyclic_stream::MAX_ITEMS
+                || mutations == 0
+                || mutations > acyclic_stream::MAX_ITEMS
             {
                 return Err(CommandError::Capacity);
             }
@@ -528,7 +540,7 @@ fn validate_reply(
                 ..
             },
         ) => {
-            return if input >= requested && *after == 0 && !wait && !settled {
+            return if input >= requested && *after == 0 && (!wait || *settled) {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
@@ -581,7 +593,10 @@ fn validate_reply(
                 ..
             },
         ) => {
-            return if input >= requested && input == inbox_tail && *after == 0 && !wait && !settled
+            return if input >= requested
+                && input == inbox_tail
+                && *after == 0
+                && (!wait || *settled)
             {
                 Ok(())
             } else {
@@ -825,14 +840,16 @@ mod tests {
         let path = StreamPath::new("agent/inbox")?;
         Ok(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Tail {
-                path: path.clone(),
-                expected: 7,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path,
-                records: vec![AppendRecord::from("exact original payload")],
-            }],
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: 7,
+                }],
+                vec![CommitMutation::Append {
+                    path,
+                    records: vec![AppendRecord::from("exact original payload")],
+                }],
+            )],
             idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"original-key"))?,
         })
     }
@@ -1444,19 +1461,23 @@ mod tests {
             through: 3,
             file: settled.output.clone(),
         });
+        // Seal the admission index through the same rule as the real writer.
+        let settled = settled.with_observed_prefix(0);
         let conversation = agent.conversation()?;
         assert!(matches!(
             provider
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![CommitCondition::Tail {
-                        path: conversation.clone(),
-                        expected: 0
-                    }],
-                    mutations: vec![CommitMutation::Append {
-                        path: conversation,
-                        records: vec![settled.encode()?.into()]
-                    }],
+                    effects: vec![acyclic_stream::CommitEffect::hard(
+                        vec![CommitCondition::Tail {
+                            path: conversation.clone(),
+                            expected: 0
+                        }],
+                        vec![CommitMutation::Append {
+                            path: conversation,
+                            records: vec![settled.encode()?.into()]
+                        }]
+                    )],
                     idempotency_key: intent_key("settlement", &[])?,
                 })
                 .await?,
@@ -1514,7 +1535,7 @@ mod tests {
     fn failed_export_does_not_consume_uncertain_custody() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut original = request()?;
-        let CommitMutation::Append { records, .. } = &mut original.mutations[0] else {
+        let CommitMutation::Append { records, .. } = &mut original.effects[0].mutations[0] else {
             return Err("expected append".into());
         };
         *records = vec![AppendRecord::from(bytes::Bytes::from(vec![

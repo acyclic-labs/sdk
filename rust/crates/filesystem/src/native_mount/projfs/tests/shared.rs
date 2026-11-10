@@ -42,7 +42,7 @@ fn mount_shared(
 /// the instance's root.
 // Synchronous startup must use its projector, leaving no pending callback
 // future on the calling current-thread executor.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn shared_views_serve_their_own_sources_and_retire_without_trace()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;

@@ -158,10 +158,10 @@ async fn lazy_native_key_read_pins_inherited_cut_and_exact_key_bytes() -> Memory
         from: 0,
         limit: 10,
         at_least: Default::default(),
-        key: Some(crate::ReadKeySeek {
-            key: OwnedBytes::from_static(b"a"),
-            before: u64::MAX,
-        }),
+        key: Some(crate::ReadKeySeek::exact(
+            OwnedBytes::from_static(b"a"),
+            u64::MAX,
+        )),
     };
     let expected =
         futures::TryStreamExt::try_collect::<Vec<_>>(provider.read(request.clone()).await?).await?;

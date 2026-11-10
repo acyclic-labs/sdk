@@ -17,6 +17,16 @@ mod page;
 pub use page::*;
 mod contracts;
 pub use contracts::*;
+mod computed;
+pub use computed::*;
+mod fold;
+pub use fold::*;
+mod empty;
+pub use empty::Empty;
+mod routed;
+pub use routed::Routed;
+#[cfg(test)]
+mod computed_tests;
 
 /// Native provider backed by a held, no-follow directory capability.
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]

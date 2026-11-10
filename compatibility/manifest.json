@@ -19,7 +19,8 @@
     "harness": {
       "version": "0.2.0",
       "schemaDigest": "sha256:28a79433948148e7e2f03807367c17b049e2e70eaf8c8d143454051ec520114f",
-      "conformanceDigest": "sha256:3da8cc65b19c2b710c3922b621fc28afd75268a7b7c66959cbb3a24472e95340"
+      "conformanceDigest": "sha256:3da8cc65b19c2b710c3922b621fc28afd75268a7b7c66959cbb3a24472e95340",
+      "descriptorDigest": "sha256:53db9b56b8d175d2f14796328ad569e2ff0172e03fc0c69e0faec32b956ff5c6"
     },
     "filesystem": {
       "version": "0.2.0",
@@ -31,9 +32,9 @@
     "stream": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:9a1be5b90df18240834c62d2b1b5c87f3d92475440743cbb3680ad7a1c8155c6",
-      "descriptorDigest": "sha256:915d61853b61ee2a32caf09544fa78ca11577fb0a5c94bd3afc8771e3d759a39",
-      "conformanceDigest": "sha256:5a4743ac5153ebfdf9a08897615bb55e770c03c654725ecb1988f52cfed8acef"
+      "schemaDigest": "sha256:d1ed7913aebda6ab16f8273fdf75eef3387be8775d2ca934aa436852a5bb962d",
+      "descriptorDigest": "sha256:06efc580cddb12bf8afe94a0dba8d88f9001e7d7ed7e7ee0799bdfa60b7b72d3",
+      "conformanceDigest": "sha256:d28314f2f12da7eda3f3cd3df4bd257233d925f84bc9026cfd79abea2b098f70"
     },
     "objects": {
       "version": "0.2.0",
@@ -44,8 +45,8 @@
     },
     "machines": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:207caede3e4a27635dcf80c3c5744270aafb22a9794b546e371a820f3da95512",
-      "descriptorDigest": "sha256:c81dd76eda846a4e02b711b3290e47dd07bfa52389ff0169ca01b03878219659",
+      "schemaDigest": "sha256:55ac56ca88f62d351da1f8b3334456c26c08320ca709f2190a162cbc0c2a7f5f",
+      "descriptorDigest": "sha256:e78206399cf77cf4ac55091e1aef57acd5ee8b8cc56157ace1f881491ce65ae8",
       "conformanceDigest": "sha256:607266d2c608460ae9d6a14409007fd91a33d78e7acabb52989881920a782dca"
     },
     "inference": {

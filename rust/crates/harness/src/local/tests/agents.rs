@@ -18,16 +18,52 @@ async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> 
 
 #[tokio::test]
 async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() -> Result<()> {
-    use crate::model::{ModelEvent, ToolCall};
+    use crate::model::{ModelContent, ModelEvent, ToolCall};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
-    use acyclic_harness_client::{EventProjection, MAX_READ_BYTES};
+    use acyclic_harness_client::{AgentCommand, AgentReply, EventProjection, MAX_READ_BYTES};
 
-    let arguments = serde_json::json!({"text": "request".repeat(12_000)});
-    let provider = super::scripted([
+    let arguments = serde_json::json!({
+        "path": "approval-request.txt",
+        "content": "request".repeat(12_000),
+    });
+    let provider = super::scripted([ScriptedTurn::Text("ready".into())]);
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .approval_policy(crate::approvals::ApprovalPolicy::default()),
+        )
+        .await?,
+    );
+    // The root orchestrator admits delegation, not file writes. Select an
+    // actual worker before observing the original write approval.
+    let connection = harness.connect().await?;
+    let AgentReply::Spawned {
+        agent: worker,
+        delivery: crate::agent::Delivered::Committed { .. },
+    } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: connection.root().clone(),
+            id: crate::agent::IntentId::try_from("approval-worker").map_err(agent)?,
+            brief: ModelContent::Text("prepare the write".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("approval worker did not open".into()));
+    };
+    let client = Conversation::open(connection.select(worker.clone()).await?);
+    // Spawn's receipt names the parent's inbox. Join the worker's own
+    // committed input frontier rather than treating that receipt as its input.
+    settled(&harness, &worker).await?;
+    let opened_calls = provider.request_count();
+    provider.extend([
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                "echo-request".into(),
-                "example.echo".into(),
+                "write-request".into(),
+                "write".into(),
                 arguments.clone(),
             ))),
             ScriptedEvent::Event(ModelEvent::Completed {
@@ -36,18 +72,6 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         ]),
         ScriptedTurn::Text("approved".into()),
     ]);
-    let directory = tempfile::tempdir().map_err(agent)?;
-    let project = volume(directory.path()).await?;
-    let harness = Arc::new(
-        LocalHarness::open(
-            volume_config(directory.path(), project, provider.clone())?
-                .compaction(crate::context::CompactionPolicy::Disabled)
-                .tool(super::tool("example.echo"))
-                .approval_policy(crate::approvals::ApprovalPolicy::default()),
-        )
-        .await?,
-    );
-    let client = conversation(&harness).await?;
     let mut projection = EventProjection::new("approval-export".into());
     let mut observed = ObservedConversation {
         conversation: Arc::clone(&client),
@@ -56,12 +80,31 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let inbox = client.send("approval-input", "echo the request").await?;
     let (id, published_binding, delivery) = loop {
         let (event, delivery) = observed.observer.next_projected().await?;
-        if let Some(crate::local::Event::Status(StatusRecord {
-            phase: crate::agent::Phase::WaitingApproval { id, binding },
-            ..
-        })) = event?
-        {
-            break (id, binding, delivery);
+        match event? {
+            Some(crate::local::Event::Status(StatusRecord {
+                phase: crate::agent::Phase::WaitingApproval { id, binding },
+                ..
+            })) => break (id, binding, delivery),
+            Some(crate::local::Event::Turn(entry)) if entry.inbox == inbox => {
+                let journal = client.execution_page(inbox, 0, false).await?;
+                let failures: Vec<_> = journal
+                    .page
+                    .iter()
+                    .flat_map(|page| &page.items)
+                    .filter_map(|record| match &record.event {
+                        crate::executor::ExecutionEvent::ToolFailed { reason, cause, .. } => {
+                            Some((reason, cause))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                return Err(Error::Invalid(format!(
+                    "input settled before its expected approval: {:?}; {}; original tool failures: {failures:?}",
+                    entry.outcome,
+                    client.turn(&entry).await?.answer
+                )));
+            }
+            _ => {}
         }
         let after = projection.event(&delivery).after;
         projection.accepted(&delivery.resource, after);
@@ -73,6 +116,12 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let pending = client.pending_approval(&id).await?.ok_or_else(|| {
         Error::Invalid("original approval binding is absent from the pending query".into())
     })?;
+    let (_opening, phase) = client.observe_current().await?;
+    assert!(matches!(
+        phase,
+        crate::agent::Phase::WaitingApproval { id: opening_id, binding }
+            if opening_id == id && binding.as_ref() == Some(&pending.binding)
+    ));
     assert_eq!(pending.status, sequence);
     assert_eq!(Some(&pending.binding), published_binding.as_ref());
     assert!(serde_json::to_vec(&pending).map_err(agent)?.len() < 1024);
@@ -130,7 +179,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     );
     assert!(client.approval_request(sequence, length + 1).await.is_err());
     assert!(client.approval_request(0, 0).await.is_err());
-    assert_eq!(provider.request_count(), 1);
+    assert_eq!(provider.request_count(), opened_calls + 1);
     projection.accepted(&delivery.resource, Some(after));
     assert_eq!(projection.cursor(&delivery.resource).next, sequence + 1);
     let binding = crate::interaction::ApprovalBinding {
@@ -145,11 +194,12 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
             .await
             .is_err()
     );
-    assert_eq!(provider.request_count(), 1);
+    assert_eq!(provider.request_count(), opened_calls + 1);
     client
         .decide_with_binding(&id, binding.clone(), true)
         .await?;
-    let (agents, root) = harness.agents().await?;
+    let (agents, _) = harness.agents().await?;
+    let root = &worker;
     observed.settled(inbox).await?;
     assert!(client.pending_approval(&id).await?.is_none());
     assert!(client.approval_prompt(&id).await?.is_none());
@@ -494,15 +544,20 @@ pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Re
             .await
             .map_err(agent)?;
         loop {
-            let (settled, cut) = agents
+            let progress = agents
                 .input_progress(root, inbox.saturating_sub(1))
                 .await
                 .map_err(agent)?;
-            if settled {
+            if progress.settled {
                 return records(&**agents.provider(), root.conversation().map_err(agent)?).await;
             }
-            let mut changes =
-                acyclic_stream::records_only(agents.provider().follow(cut).await.map_err(agent)?);
+            let mut changes = acyclic_stream::records_only(
+                agents
+                    .provider()
+                    .follow(progress.follow)
+                    .await
+                    .map_err(agent)?,
+            );
             changes.try_next().await.map_err(agent)?.ok_or_else(|| {
                 Error::Storage("agent state follow ended before settlement".into())
             })?;
@@ -1545,6 +1600,8 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
     let harness = Arc::new(
         LocalHarness::open(
             super::checkout_config(directory.path(), (super::model()?, provider))?
+                // This control exercises physical ownership, without invoking tools.
+                .without_default_tools()
                 .workspace_mounting(crate::local::WorkspaceMounting::Physical),
         )
         .await?,
@@ -1569,6 +1626,16 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
         };
         let history = settled(&harness, &child).await?;
         let state = agents.state(&child).await.map_err(agent)?;
+        let first = usize::try_from(state.conversation_base).map_err(agent)?;
+        let entry =
+            ConversationEntry::decode(history.get(first).expect("child's original brief turn"))
+                .map_err(agent)?;
+        assert!(matches!(&entry.input, TurnInput::Brief { .. }), "{entry:?}");
+        assert_eq!(
+            entry.outcome,
+            crate::agent::TurnOutcome::Completed,
+            "child {name} must complete its original model turn before archive: {entry:?}"
+        );
         let project = state
             .volumes
             .iter()
@@ -1587,9 +1654,9 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
             std::fs::read(path.join("kept.txt")).map_err(agent)?,
             b"inherited"
         );
-        children.push((child, path, history, state.volumes));
+        children.push((child, path, history, state.volumes, entry));
     }
-    let (child, path, history, bindings) = &children[0];
+    let (child, path, history, bindings, entry) = &children[0];
     agents
         .archive(
             child,
@@ -1610,11 +1677,16 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
         records(&**agents.provider(), child.conversation().map_err(agent)?).await?,
         *history
     );
-    let entry = ConversationEntry::decode(&history[0]).map_err(agent)?;
-    let output =
-        Conversation::read(&connection, child, ReadTarget::File { file: entry.output }).await?;
+    let output = Conversation::read(
+        &connection,
+        child,
+        ReadTarget::File {
+            file: entry.output.clone(),
+        },
+    )
+    .await?;
     let output: crate::executor::TurnOutput = serde_json::from_slice(&output).map_err(agent)?;
-    assert_eq!(output.text, "first");
+    assert_eq!(output.text, "first", "{entry:?}; {output:?}");
     assert_eq!(
         std::fs::read(children[1].1.join("kept.txt")).map_err(agent)?,
         b"inherited"
@@ -2327,7 +2399,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
     assert!(context.contains("final message is your report"));
     assert!(context.contains(&format!("Use send with agent {root}")));
     assert!(checked.load(std::sync::atomic::Ordering::SeqCst));
-    assert!(context.contains("git_status"));
+    assert!(context.contains("<environment_context>"));
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Brief { brief: file } = entry.input else {
         return Err(Error::Invalid(
@@ -2846,9 +2918,18 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     );
     let older = next.ok_or_else(|| Error::Invalid("older continuation missing".into()))?;
     let expected = client.project_heads().await?;
-    let inbox = client
-        .restore("apply", 0, RestoreMode::Both, expected)
-        .await?;
+    let mut prepared = client.prepare_restore("apply", 0, RestoreMode::Both, expected)?;
+    let receipt = prepared.execute().await.map_err(agent)?;
+    let crate::client::AgentReply::Delivered {
+        delivery: Delivered::Committed { inbox },
+    } = receipt
+    else {
+        return Err(Error::Invalid("prepared restore did not commit".into()));
+    };
+    let replay = prepared.execute().await.map_err(agent)?;
+    assert!(
+        matches!(replay, crate::client::AgentReply::Delivered { delivery: Delivered::Committed { inbox: repeated } } if repeated == inbox)
+    );
     settlement(&mut observed, inbox).await?;
     let entries = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
     assert_eq!(entries.len(), 3);
@@ -3154,6 +3235,95 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
                 .as_ref(),
             expected,
             "fork must retain the selected files while its parent keeps later edits"
+        );
+    }
+    Ok(())
+}
+
+/// Editing AGENTS.md between turns keeps the cached span (system block and
+/// tools) of the first request byte-identical in the second, and appends the
+/// edit as a notice the second request carries. Negative control: rendering
+/// the live manifest per request (origin/main) changes the second request's
+/// system block, failing the prefix assertion.
+#[tokio::test]
+async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> Result<()> {
+    use crate::test_support::ScriptedTurn;
+    let provider = super::scripted(
+        ["one", "two", "three", "four", "five"].map(|text| ScriptedTurn::Text(text.into())),
+    );
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let workspace = directory.path().join("work");
+    std::fs::create_dir_all(workspace.join(".git")).map_err(agent)?;
+    let open = || {
+        Ok::<_, Error>(LocalHarness::open(
+            super::checkout_config(&workspace, (super::model()?, provider.clone()))?
+                .state_directory(directory.path().join("state")),
+        ))
+    };
+    let harness = Arc::new(open()?.await?);
+    let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
+    std::fs::write(checkout.join("AGENTS.md"), b"RULE_ONE\n").map_err(agent)?;
+    let mut client = ObservedConversation::open(&harness).await?;
+    assert_eq!(
+        client.send("one", "FIRST_PROMPT").await?.outcome,
+        crate::agent::TurnOutcome::Completed,
+        "the instruction proof must reach model dispatch"
+    );
+    std::fs::write(checkout.join("AGENTS.md"), b"RULE_TWO\n").map_err(agent)?;
+    client.send("two", "SECOND_PROMPT").await?;
+    let request = |index| {
+        provider
+            .request(index)
+            .ok_or_else(|| Error::NotFound(format!("model request {index}")))
+    };
+    let (first, second) = (request(0)?, request(1)?);
+    let prefix = |request: &crate::model::ModelRequest| {
+        let system = request
+            .messages
+            .iter()
+            .take_while(|message| matches!(message.role, crate::model::ModelRole::System))
+            .collect::<Vec<_>>();
+        serde_json::to_value((system, &request.tools)).map_err(agent)
+    };
+    assert!(
+        super::request_text(&harness, &first)
+            .await?
+            .contains("RULE_ONE")
+    );
+    assert_eq!(prefix(&second)?, prefix(&first)?);
+    let appended = super::request_text(&harness, &second).await?;
+    assert!(appended.contains("RULE_TWO"), "{appended}");
+
+    // Return to the frozen value while closed, then repeat the same transition.
+    // The durable frontier must correct B -> A and give A -> B a new intent.
+    std::fs::write(checkout.join("AGENTS.md"), b"RULE_ONE\n").map_err(agent)?;
+    drop(client);
+    drop(harness);
+    let harness = Arc::new(open()?.await?);
+    let mut client = ObservedConversation::open(&harness).await?;
+    client.send("three", "AFTER_REOPEN").await?;
+    let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
+    std::fs::write(checkout.join("AGENTS.md"), b"RULE_TWO\n").map_err(agent)?;
+    client.send("four", "REPEAT_EDIT").await?;
+    client.send("five", "UNCHANGED").await?;
+    for (index, expected) in [
+        (2, vec!["RULE_TWO\n", "RULE_ONE\n"]),
+        (3, vec!["RULE_TWO\n", "RULE_ONE\n", "RULE_TWO\n"]),
+        (4, vec!["RULE_TWO\n", "RULE_ONE\n", "RULE_TWO\n"]),
+    ] {
+        let current = request(index)?;
+        assert_eq!(prefix(&current)?, prefix(&first)?);
+        let edits = current
+            .messages
+            .iter()
+            .filter_map(|message| message.content.notice_parts())
+            .flat_map(|(notices, _)| notices)
+            .filter(|notice| notice.kind == crate::context::CONTEXT_CHANGED)
+            .filter_map(|notice| notice.body.get("text").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            edits, expected,
+            "request {index} must deliver each transition once"
         );
     }
     Ok(())

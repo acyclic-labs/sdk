@@ -431,7 +431,7 @@ pub async fn verify_recovery(backend: &dyn Backend) -> Result {
 }
 
 fn approval_wake(request: &CommitRequest) -> bool {
-    request.mutations.iter().any(|mutation| match mutation {
+    request.mutations().any(|mutation| match mutation {
         CommitMutation::Append { records, .. } => records.iter().any(|record| {
             matches!(
                 InboxRecord::decode(record.value.as_ref()),

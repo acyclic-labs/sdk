@@ -12,6 +12,8 @@ fn skill(path: String) -> Result<SkillMetadata> {
         name: "inspect".into(),
         description: "Inspect files".into(),
         fields: BTreeMap::new(),
+        identity: serde_json::to_string(&path)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
         source: PinnedContextPath {
             generation: GenerationRef::new(&provider, &[1], None, None)?.0,
             root: ContextRoot {
@@ -304,5 +306,39 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
             );
         }
     }
+    Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> Result<()> {
+    let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+    let reader = storage.content_bindings().reader;
+    let mut manifest = ContextManifest::default();
+    manifest.discovery.skills = vec![
+        skill("user/inspect/SKILL.md".into())?,
+        skill("project/inspect/SKILL.md".into())?,
+    ];
+    let told = manifest.digests()?;
+    manifest.discovery.skills[0].description = "changed user skill".into();
+    // Retention selects another immutable body path, never another source.
+    manifest.discovery.skills[0].source.path = "retained/new-version/SKILL.md".into();
+    let changed = ContextEpoch::changes(&told, &manifest, reader.as_ref()).await?;
+    assert_eq!(changed.len(), 1);
+    assert_eq!(
+        changed[0].notice.body["skill"]["source"]["path"],
+        "retained/new-version/SKILL.md"
+    );
+    let told = manifest.digests()?;
+    manifest.discovery.skills.remove(0);
+    let removed = ContextEpoch::changes(&told, &manifest, reader.as_ref()).await?;
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].source, changed[0].source);
+    assert_eq!(
+        removed[0].notice.body["skill"]["identity"],
+        serde_json::to_string("user/inspect/SKILL.md")
+            .map_err(|error| Error::Invalid(error.to_string()))?
+    );
+    assert_eq!(removed[0].notice.body["removed"], true);
     Ok(())
 }

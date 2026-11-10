@@ -15,7 +15,7 @@ const interrupted = JSON.parse(readFileSync(new URL("./fixtures/interrupted-term
 const command = JSON.parse(readFileSync(new URL("./fixtures/native-command-refusal.json", import.meta.url), "utf8"));
 // Refine the retained capture with the current native renderer's exact marker.
 // This is a source-derived mutation, not a newly captured native journey.
-const nativeView = readFileSync(new URL("../../rust/crates/harness/src/bin/graphcoder/view.rs", import.meta.url), "utf8");
+const nativeView = readFileSync(new URL("../../plugin/src/runner/view.rs", import.meta.url), "utf8");
 const refusalFormat = /fn refusal\([^]*?Some\(format!\("([^"]*)"\)\)/.exec(nativeView)?.[1];
 assert.ok(refusalFormat?.endsWith("{reason}"), "retain the native refusal renderer source join");
 const refusalPrefix = refusalFormat.slice(0, -"{reason}".length)

@@ -29,6 +29,8 @@ pub struct Decoder {
     bytes: usize,
     cr: bool,
     started: bool,
+    json_document: bool,
+    json: bool,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -48,6 +50,31 @@ impl Default for Line {
 }
 
 impl Decoder {
+    /// Accept a single JSON object as well as SSE data events. This is opt-in
+    /// for protocols whose streaming endpoint may return a complete response.
+    /// Both forms share the byte limit, UTF-8 validation and native custody.
+    #[must_use]
+    pub fn with_json_document(mut self) -> Self {
+        self.json_document = true;
+        self
+    }
+
+    fn frame(&mut self) -> Result<Frame> {
+        let data = String::from_utf8(std::mem::take(&mut self.buffer))
+            .map_err(|_| self.failure("SSE is not UTF-8"))?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = self
+            .custody
+            .as_mut()
+            .map(|owner| owner.split_off(data.capacity() as u64))
+            .transpose()?;
+        Ok(Frame {
+            data,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            _custody: custody,
+        })
+    }
+
     fn failure(&self, reason: &'static str) -> Error {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.custody.is_some() {
@@ -230,6 +257,10 @@ where
             loop {
                 if chunk.is_empty() {
                     let Some(next) = body.next().await else {
+                        if decoder.json && !decoder.buffer.is_empty() {
+                            let frame = decoder.frame()?;
+                            return Ok(Some((frame, (body, chunk, decoder))));
+                        }
                         if decoder.line_has_bytes || !decoder.buffer.is_empty() {
                             return Err(decoder.truncated());
                         }
@@ -242,6 +273,26 @@ where
                     owner.work().remaining()?;
                 }
                 while chunk.has_remaining() {
+                    if decoder.json_document && !decoder.started {
+                        let byte = chunk[0];
+                        if byte.is_ascii_whitespace() {
+                            decoder.add_bytes(1, maximum)?;
+                            chunk.advance(1);
+                            continue;
+                        }
+                        decoder.json = byte == b'{';
+                        // SSE still handles its own BOM and first field byte.
+                        if decoder.json {
+                            decoder.started = true;
+                        }
+                        decoder.json_document = false;
+                    }
+                    if decoder.json {
+                        decoder.add_bytes(chunk.len(), maximum)?;
+                        decoder.append(&chunk, true)?;
+                        chunk.clear();
+                        continue;
+                    }
                     if let Line::Data { leading } = decoder.line {
                         let length = chunk
                             .iter()
@@ -277,19 +328,7 @@ where
                         decoder.bytes = 0;
                         if !decoder.buffer.is_empty() {
                             decoder.buffer.pop();
-                            let data = String::from_utf8(std::mem::take(&mut decoder.buffer))
-                                .map_err(|_| decoder.failure("SSE is not UTF-8"))?;
-                            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                            let custody = decoder
-                                .custody
-                                .as_mut()
-                                .map(|owner| owner.split_off(data.capacity() as u64))
-                                .transpose()?;
-                            let frame = Frame {
-                                data,
-                                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                                _custody: custody,
-                            };
+                            let frame = decoder.frame()?;
                             return Ok(Some((frame, (body, chunk, decoder))));
                         }
                     } else {

@@ -30,6 +30,7 @@ struct ObservationScript {
     inspections: std::collections::VecDeque<Result<wire::OperationState, Code>>,
     calls: Vec<&'static str>,
     selected_volumes: Vec<Option<wire::selection::VolumeRef>>,
+    selected_secrets: Vec<BTreeMap<String, wire::selection::SecretRef>>,
     current_contract: Option<wire::MachineContract>,
     started: Arc<tokio::sync::Notify>,
 }
@@ -146,6 +147,7 @@ operation_service! {
         if let WatchReply::Script(script) = &self.watch {
             let mut script = script.lock().expect("observation script");
             script.selected_volumes.push(request.selected_volume_ref);
+            script.selected_secrets.push(request.secrets);
             script.calls.push(
                 if request.image.is_none() { "create_default" } else { "create_explicit" }
             );
@@ -473,6 +475,7 @@ fn scripted_operation_service(
         inspections: inspections.into(),
         calls: Vec::new(),
         selected_volumes: Vec::new(),
+        selected_secrets: Vec::new(),
         current_contract: None,
         started: Arc::new(tokio::sync::Notify::new()),
     }));

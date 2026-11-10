@@ -142,14 +142,18 @@ pub fn workspace_grant<T>(
     mounts: &MountTable<T>,
     environment: &mut std::collections::BTreeMap<String, String>,
 ) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
         use acyclic_native_runtime::execution::{
             ExecutionAccess, ExecutionGrant, ExecutionNetwork,
         };
         // Workspace-write preserves host reads. Narrower explicit grants can
         // restrict reads; this default boundary confines filesystem mutation.
+        #[cfg(unix)]
         let mut read = vec![std::path::PathBuf::from("/")];
+        #[cfg(windows)]
+        let mut read =
+            acyclic_native_runtime::execution::ambient_read_roots().map_err(Error::process_io)?;
         let mut write = Vec::new();
         let mut access = ExecutionAccess::ReadOnly;
         let io = Error::process_io;
@@ -184,11 +188,17 @@ pub fn workspace_grant<T>(
                 .ok_or_else(|| Error::Invalid("sandbox temporary directory is not UTF-8".into()))?
                 .into(),
         );
+        #[cfg(windows)]
+        {
+            let temporary = environment["TMPDIR"].clone();
+            environment.insert("TEMP".into(), temporary.clone());
+            environment.insert("TMP".into(), temporary);
+        }
         ExecutionGrant::composed(&primary, access, write, read, ExecutionNetwork::On)
             .map(Some)
             .map_err(io)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = (mounts, environment);
         Ok(None)

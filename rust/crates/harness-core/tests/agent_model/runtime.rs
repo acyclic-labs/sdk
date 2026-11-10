@@ -85,13 +85,16 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
         let Delivered::Committed { inbox } = host.send(&root, &user(), &record).await? else {
             return Err("input was refused".into());
         };
-        let (ready, cut) = host.input_progress(&root, inbox).await?;
-        assert!(!ready);
+        let progress = host.input_progress(&root, inbox).await?;
+        assert!(!progress.settled);
+        assert!(!progress.closed);
         assert!(!settled(&provider, &within, &root).await?.settled);
-        let mut changes = acyclic_stream::records_only(provider.follow(cut).await?);
+        let mut changes = acyclic_stream::records_only(provider.follow(progress.follow).await?);
         assert!(host.runtime().drain().await.is_empty());
         assert!(changes.try_next().await?.is_some());
-        assert!(host.input_progress(&root, inbox).await?.0);
+        let progress = host.input_progress(&root, inbox).await?;
+        assert!(progress.settled);
+        assert!(!progress.closed);
         assert_eq!(
             settled(&provider, &within, &root).await?,
             Settlement {
@@ -1135,6 +1138,7 @@ async fn reply_waits_require_original_committed_requests() -> Result {
     }
     let request = InboxRecord::Spawn(SpawnRequest {
         profile: acyclic_harness_core::agent::CreationConfig {
+            model: None,
             continuation: None,
             context: acyclic_harness_core::agent::SpawnContext::Fork,
             template: None,
@@ -1227,6 +1231,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                model: None,
                 continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
@@ -1273,6 +1278,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                model: None,
                 continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,

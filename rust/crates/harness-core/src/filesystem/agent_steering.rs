@@ -25,6 +25,7 @@ struct Selected {
 
 #[derive(Default)]
 struct Admitted {
+    prepared_sources: Option<u64>,
     through: Option<u64>,
     step: Option<u32>,
     selected: Option<Selected>,
@@ -111,32 +112,25 @@ where
                 .through
                 .unwrap_or_else(|| self.inbox.saturating_add(1).max(self.agent.steered_through))
         };
-        // The first request uses the turn's frozen original input and Notice
-        // selection. Arrivals become steering only after that request's next
-        // model boundary; a resumed first request cannot gain a newer prefix.
-        if step == 0 {
-            if frozen.is_some_and(|cut| cut.from != from || cut.through != from) {
-                return Err(Error::Storage(
-                    "initial request has a nonempty steering range".into(),
-                ));
-            }
-            return Ok(Selected {
-                step,
-                cut: BoundaryCut {
-                    from,
-                    through: from,
-                },
-                messages: Vec::new(),
-            });
-        }
-        let selection = crate::agent::select_boundary(
-            &*self.stream,
-            &self.agent.path,
-            from,
-            frozen.map(|cut| cut.through),
-        )
-        .await
-        .map_err(agent_error)?;
+        // Preparation may publish source deltas behind other arrivals. Include
+        // their ordered prefix, but do not replace the turn's original frozen
+        // notice frontier with unrelated arrivals before the first dispatch.
+        // Replay always uses ContextPrepared's exact original cut.
+        let until = match frozen {
+            Some(cut) => crate::agent::BoundaryEnd::Exact(cut.through),
+            None if step == 0 => crate::agent::BoundaryEnd::Fence(
+                self.admitted
+                    .lock()
+                    .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?
+                    .prepared_sources
+                    .unwrap_or(from)
+                    .max(from),
+            ),
+            None => crate::agent::BoundaryEnd::Open,
+        };
+        let selection = crate::agent::select_boundary(&*self.stream, &self.agent.path, from, until)
+            .await
+            .map_err(agent_error)?;
         let initial_notices = crate::agent::turn_notices(&self.agent).map_err(agent_error)?;
         let inputs = selection.inputs.into_iter().filter(|(inbox, input)| {
             !matches!(input, crate::agent::InboxRecord::Notice {
@@ -295,6 +289,25 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn include_prepared_sources(&self, operation: OperationId, through: u64) -> Result<()> {
+        self.require_operation(operation)?;
+        let mut admitted = self
+            .admitted
+            .lock()
+            .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?;
+        if admitted.step.is_some() {
+            return Err(Error::Conflict(
+                "initial request is already admitted".into(),
+            ));
+        }
+        admitted.prepared_sources = Some(
+            admitted
+                .prepared_sources
+                .map_or(through, |previous| previous.max(through)),
+        );
+        Ok(())
+    }
+
     fn messages(
         &self,
         operation: OperationId,

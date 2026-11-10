@@ -49,6 +49,8 @@ pub struct FrameEffects {
     pub cursor_hidden: bool,
     /// The frame sets scrolling margins (DECSTBM), resetting them itself.
     pub margins: bool,
+    /// The frame opens OSC 8 links, closing them before completion.
+    pub hyperlinks: bool,
 }
 
 impl<P: Present + ?Sized> Present for &mut P {
@@ -180,7 +182,10 @@ impl<D: Present> FrameOutput<D> {
         let mut frame = std::mem::take(&mut self.frame);
         // Transfer the effect with its bytes. If the writer unwinds, a later
         // cursor-only frame must not discharge the guard's pending reset.
-        let effects = self.effects;
+        let effects = FrameEffects {
+            hyperlinks: frame.windows(4).any(|part| part == b"\x1b]8;"),
+            ..self.effects
+        };
         self.effects.margins = false;
         let presented = self
             .device
@@ -326,6 +331,7 @@ pub struct FrameTerminal<D: Present> {
     drawing: bool,
     repaired: Vec<usize>,
     cursor: Vec<u8>,
+    links: crate::Hyperlinks,
     #[cfg(test)]
     work: FrameWork,
 }
@@ -375,6 +381,7 @@ impl<D: Present> FrameTerminal<D> {
             drawing: false,
             repaired: Vec::new(),
             cursor: Vec::new(),
+            links: crate::Hyperlinks::default(),
             #[cfg(test)]
             work: FrameWork::default(),
         })
@@ -398,6 +405,20 @@ impl<D: Present> FrameTerminal<D> {
         size: Size,
         scroll: Option<RegionScroll>,
         render: impl FnOnce(&mut Frame<'_>),
+    ) -> io::Result<()> {
+        self.draw_linked(size, scroll, |frame| {
+            render(frame);
+            crate::Hyperlinks::default()
+        })
+    }
+
+    /// Present printable cells and their OSC 8 destinations in the same
+    /// retained frame. Plain draws use this same implementation with no links.
+    pub fn draw_linked(
+        &mut self,
+        size: Size,
+        scroll: Option<RegionScroll>,
+        render: impl FnOnce(&mut Frame<'_>) -> crate::Hyperlinks,
     ) -> io::Result<()> {
         let backend = self.terminal.backend_mut();
         let outside = backend.output.device.outside_writes();
@@ -462,7 +483,12 @@ impl<D: Present> FrameTerminal<D> {
             backend.output.reset_margins();
         }
         backend.output.frame.extend_from_slice(b"\x1b[2J");
-        let encoded = encode_diff(&self.staging, &self.shown, &mut backend.output.frame);
+        let encoded = encode_diff(
+            &self.staging,
+            &self.shown,
+            &mut backend.output.frame,
+            &self.links,
+        );
         backend.shown = Shown {
             attributes: true,
             ..Shown::default()
@@ -473,7 +499,7 @@ impl<D: Present> FrameTerminal<D> {
     fn scroll_and_draw(
         &mut self,
         scroll: Option<RegionScroll>,
-        render: impl FnOnce(&mut Frame<'_>),
+        render: impl FnOnce(&mut Frame<'_>) -> crate::Hyperlinks,
     ) -> io::Result<()> {
         // A failed abort or writer unwind can leave the device's margins set.
         // Reset before autoresize/clear/repaint and journal the reset itself.
@@ -535,12 +561,16 @@ impl<D: Present> FrameTerminal<D> {
         } else {
             false
         };
+        if margins && let Some(scroll) = scroll {
+            self.links.scroll(scroll);
+        }
         let Self {
             terminal,
             shown,
             staging,
             repaired,
             cursor,
+            links,
             ..
         } = self;
         #[cfg(test)]
@@ -553,12 +583,14 @@ impl<D: Present> FrameTerminal<D> {
             .draw(|frame| {
                 std::mem::swap(frame.buffer_mut(), staging);
                 let render_buffer = RenderBuffer { frame, staging };
-                render(render_buffer.frame);
+                let next_links = render(render_buffer.frame);
                 let next = render_buffer.frame.buffer_mut();
                 repair_wide_trails(shown, next, repaired);
+                next_links.repair(links, next, repaired);
                 // Ratatui's Buffer::diff_iter remains the encoder input. Owning its
                 // baseline lets scrolling rotate cells and retain heap symbols.
-                encoded = encode_diff(shown, next, &mut bytes);
+                encoded = encode_diff(shown, next, &mut bytes, &next_links);
+                *links = next_links;
                 #[cfg(test)]
                 {
                     work.diff = shown.content.len().min(next.content.len());
@@ -609,12 +641,39 @@ impl<D: Present> FrameTerminal<D> {
 
 // Empty diffs must not invoke crossterm's formatting/reset path. Both ordinary
 // rendering and checked full-screen recovery use this encoder choke point.
-fn encode_diff(previous: &Buffer, next: &Buffer, bytes: &mut Vec<u8>) -> io::Result<()> {
+fn encode_diff(
+    previous: &Buffer,
+    next: &Buffer,
+    bytes: &mut Vec<u8>,
+    links: &crate::Hyperlinks,
+) -> io::Result<()> {
     let mut content = previous.diff_iter(next).peekable();
     if content.peek().is_none() {
         return Ok(());
     }
-    CrosstermBackend::new(bytes).draw(content)
+    if links.is_empty() {
+        return CrosstermBackend::new(bytes).draw(content);
+    }
+    while let Some((x, y, cell)) = content.next() {
+        let target = links.at(x, y);
+        let mut group = vec![(x, y, cell)];
+        while content
+            .peek()
+            .is_some_and(|(x, y, _)| links.at(*x, *y) == target)
+        {
+            if let Some(cell) = content.next() {
+                group.push(cell);
+            }
+        }
+        if let Some(target) = target {
+            write!(bytes, "\x1b]8;;{target}\x1b\\")?;
+        }
+        CrosstermBackend::new(&mut *bytes).draw(group.into_iter())?;
+        if target.is_some() {
+            bytes.extend_from_slice(b"\x1b]8;;\x1b\\");
+        }
+    }
+    Ok(())
 }
 
 /// A wide glyph paints its style over trailing cells even though the logical

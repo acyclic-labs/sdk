@@ -24,6 +24,8 @@
       "owner": "tool-latency",
       "cases": [
         "bash-capture",
+        "shell-background-job",
+        "shell-no-deadline",
         "shell-gemini-signed",
         "file-tools-responses",
         "file-tools-chat",
@@ -203,6 +205,7 @@
         "pty-conversation",
         "pty-help",
         "pty-markdown",
+        "pty-code-highlight",
         "pty-stream-delta",
         "pty-tool-cards",
         "pty-image-attach",
@@ -215,7 +218,8 @@
       "target": "Source-anchored viewport and bounded transcripts",
       "owner": "client-perf (#1425)",
       "cases": [
-        "pty-scrolling"
+        "pty-scrolling",
+        "tui-render-work"
       ],
       "gaps": [
         "A 50-line scroll screenshot does not prove large-transcript bounds, source anchors or resize stability."

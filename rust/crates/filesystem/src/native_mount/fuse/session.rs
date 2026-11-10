@@ -170,14 +170,18 @@ impl FuseSession {
         work: &NativeMaterializationWork,
         out: &mut Option<Self>,
         retirement: &mut Option<NativeMountRetirement>,
+        operation: &std::cell::Cell<&'static str>,
         prepare: impl FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError>,
     ) -> Result<(), NativeMountError> {
         if out.is_some() {
             return Err(NativeMountError::ControlPending);
         }
+        operation.set("admit FUSE mount source");
         fuse_native_source_original(source.as_ref(), Some(work))?;
         work.admit(WorkCounters::UNCHARGED)?;
+        operation.set("read FUSE source view stamp");
         let stamp = source.view_stamp_with_meter(work)?;
+        operation.set("lookup FUSE source root");
         let root = source
             .lookup_with_meter(&MountPath::root(), work)?
             .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
@@ -187,13 +191,36 @@ impl FuseSession {
             ));
         }
         if request.shared {
-            return Self::start_shared_into(request, source, work, out, retirement, root, stamp);
+            return Self::start_shared_into(
+                request,
+                source,
+                work,
+                out,
+                retirement,
+                (root, stamp),
+                operation,
+            );
         }
+        operation.set("recover disconnected FUSE destination");
+        super::super::recover_disconnected_native_mount_destination(&request.destination).map_err(
+            |error| {
+                error.during(
+                    "probe/reclaim disconnected mountpoint",
+                    &request.destination,
+                )
+            },
+        )?;
+        operation.set("stat FUSE mountpoint before mount");
         let metadata = crate::native_host::unix_name(
             request.destination.as_os_str(),
             &mut &*work,
             fuse_recovery_stat,
-        )?;
+        )
+        .map_err(|error| {
+            NativeMountError::from(error)
+                .during("stat mountpoint before mount", &request.destination)
+        })?;
+        operation.set("construct FUSE projection core");
         let core = ProjectionCore::new(
             source,
             root,
@@ -208,8 +235,10 @@ impl FuseSession {
         )?;
         let _startup = NativeMountWorkScope::new(&core, work)?;
         let observer: Arc<dyn ViewObserver> = core.clone();
+        operation.set("observe FUSE source changes");
         core.source
             .observe_view_with_meter(Arc::downgrade(&observer), work)?;
+        operation.set("admit FUSE session state");
         let allocation = work.claim(
             (std::mem::size_of::<Mutex<FuseSessionState>>()
                 + std::mem::size_of::<(Arc<ProjectionCore>, Arc<Mutex<FuseSessionState>>)>()
@@ -246,6 +275,7 @@ impl FuseSession {
         let job = (Arc::clone(&core), Arc::clone(&state));
         let mut started = state.lock().unwrap_or_else(PoisonError::into_inner);
         work.charge(WriteOperations.delta(1))?;
+        operation.set("spawn FUSE retirement owner");
         let invalidator = std::thread::Builder::new().spawn(move || run_fuse_session(job))?;
         *out = Some(Self {
             core: Arc::clone(&core),
@@ -257,6 +287,7 @@ impl FuseSession {
             if let Some(packet) = started.retirement.as_mut() {
                 prepare(packet)?;
             }
+            operation.set("prepare FUSE reader buffers");
             map_read_buffers();
             work.charge(WriteOperations.delta(2))?;
             let filesystem = FuseProjection {
@@ -269,6 +300,7 @@ impl FuseSession {
                 ..
             } = &mut *started;
             let mut received = None;
+            operation.set("open and mount FUSE device");
             let opened = mount.open_into(
                 &request.destination,
                 request.writable,
@@ -293,22 +325,34 @@ impl FuseSession {
                     .as_ref()
                     .ok_or(NativeMountError::FuseShutdownFailed)?,
             );
+            operation.set("prepare FUSE device transport");
             let session = super::host_session::HostSession::new(
                 super::packet_router::PacketRouter::Single(filesystem),
                 descriptor,
-                mount.take_connection(),
                 work,
-            )?;
-            session.initialize().map_err(|error| {
-                core.take_handler_failure()
-                    .map_or(error, |failure| failure.0)
-            })?;
+            )
+            .map_err(|error| error.during("prepare FUSE device transport", &request.destination))?;
             started.notifier = Some(session.notifier());
             let _ = core.notifier.set(session.notifier());
             // Retain the join handle through unmount refusal and physical exit.
-            started.worker = Some(session.start(std::thread::Builder::new())?);
+            session
+                .start_mount(
+                    &request.destination,
+                    std::thread::Builder::new(),
+                    &mut started.worker,
+                    operation,
+                )
+                .map_err(|error| {
+                    core.take_handler_failure()
+                        .map_or(error, |failure| failure.0)
+                })?;
+            operation.set("open FUSE mountpoint after INIT");
             let (directory, identity) =
-                crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
+                crate::native_host::open_root_directory(&request.destination, &mut &*work)
+                    .map_err(|error| {
+                        NativeMountError::from(error)
+                            .during("open/stat mountpoint after FUSE INIT", &request.destination)
+                    })?;
             started.identity = Some(identity);
             close_root.attempt(|| drop(directory)).1?;
             Ok(())
@@ -328,17 +372,12 @@ impl FuseSession {
         work: &NativeMaterializationWork,
         out: &mut Option<Self>,
         retirement: &mut Option<NativeMountRetirement>,
-        root: MountLookup,
-        stamp: Option<ViewStamp>,
+        (root, stamp): (MountLookup, Option<ViewStamp>),
+        operation: &std::cell::Cell<&'static str>,
     ) -> Result<(), NativeMountError> {
+        operation.set("admit shared FUSE view");
         let _services = crate::native_mount::adapter::CallbackRuntime::existing()?;
         work.state.lock().check()?;
-        let parent = request
-            .destination
-            .parent()
-            .ok_or(NativeMountError::InvalidDestination)?;
-        let metadata =
-            crate::native_host::unix_name(parent.as_os_str(), &mut &*work, fuse_recovery_stat)?;
         let allocation = work.claim(
             std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
             1,
@@ -358,25 +397,31 @@ impl FuseSession {
         let mut startup = None;
         // The core observes its source before the view is listed, as a
         // standalone mount's core does before it mounts.
-        let view = super::shared_instance::SharedFuseView::start(&request.destination, |base| {
-            let core = ProjectionCore::new(
-                source,
-                root,
-                stamp,
-                ProjectionConfig {
-                    writable: request.writable,
-                    owner: (metadata.st_uid, metadata.st_gid),
-                    inode_base: base,
-                    cache: ProjectionCache::Notifications,
-                },
-                work,
-            )?;
-            startup = Some(NativeMountWorkScope::new(&core, work)?);
-            let observer: Arc<dyn ViewObserver> = core.clone();
-            core.source
-                .observe_view_with_meter(Arc::downgrade(&observer), work)?;
-            Ok(core)
-        })?;
+        let view = super::shared_instance::SharedFuseView::start(
+            &request.destination,
+            operation,
+            |base, owner| {
+                operation.set("construct shared FUSE projection core");
+                let core = ProjectionCore::new(
+                    source,
+                    root,
+                    stamp,
+                    ProjectionConfig {
+                        writable: request.writable,
+                        owner,
+                        inode_base: base,
+                        cache: ProjectionCache::Notifications,
+                    },
+                    work,
+                )?;
+                startup = Some(NativeMountWorkScope::new(&core, work)?);
+                let observer: Arc<dyn ViewObserver> = core.clone();
+                operation.set("observe shared FUSE source changes");
+                core.source
+                    .observe_view_with_meter(Arc::downgrade(&observer), work)?;
+                Ok(core)
+            },
+        )?;
         let core = Arc::clone(view.core());
         let identity = view.root_identity();
         let state = Arc::new(Mutex::new(FuseSessionState {
