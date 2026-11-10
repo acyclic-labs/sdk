@@ -230,6 +230,15 @@ pub enum Error {
     /// Durable provider operation failed.
     #[error("storage failure: {0}")]
     Storage(String),
+    /// A selected follow failed, retaining its resource and original Stream cause.
+    #[error("follow failed for {resource}: {source}")]
+    StreamFollow {
+        /// The canonical resource whose producer failed.
+        resource: String,
+        /// The original provider classification and refusal diagnostics.
+        #[source]
+        source: acyclic_stream::StreamError,
+    },
     /// Native process creation, capture, or hook configuration IO failed.
     #[error("process: {0}")]
     Process(#[from] crate::ProcessError),
@@ -725,7 +734,10 @@ impl Error {
                 ErrorCode::InteractionExpired
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
-            Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
+            Self::Storage(_)
+            | Self::StreamFollow { .. }
+            | Self::Allocation(_)
+            | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process(_) => ErrorCode::Invalid,
             Self::Indeterminate(_)
             | Self::CommandIndeterminate { .. }
@@ -811,6 +823,7 @@ impl Error {
             Self::Indeterminate(_)
                 | Self::CommandIndeterminate { .. }
                 | Self::Storage(_)
+                | Self::StreamFollow { .. }
                 | Self::Cancelled
                 | Self::Boundary {
                     code: crate::wire::ErrorCode::Indeterminate | crate::wire::ErrorCode::Cancelled,
@@ -959,6 +972,7 @@ impl Error {
             | Self::Cancelled
             | Self::InteractionRejected(_)
             | Self::Storage(_)
+            | Self::StreamFollow { .. }
             | Self::Indeterminate(_)
             | Self::CommandIndeterminate { .. }
             | Self::UnsupportedRecordVersion(_)
