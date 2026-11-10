@@ -42,10 +42,14 @@ impl LazyDirectoryCursor {
             work,
             cancellation: work.cancellation(),
         };
-        let input = crate::kernel::decode_owned(&mut ctx, |mut observe| {
+        let mut input = crate::kernel::decode_owned(&mut ctx, |mut observe| {
             decode_fields(bytes, profile, limits, &mut observe)
         })?;
-        let directory = NamespacePath::parse_in_profile(
+        input.0.0.source.retain_decoded(&mut input.1, &mut ctx)?;
+        if let LazyDirectoryPhase::Source(Some(cursor)) = &mut input.0.2 {
+            cursor.source.retain_decoded(&mut input.1, &mut ctx)?;
+        }
+        let mut directory = NamespacePath::parse_in_profile(
             &input.0.1,
             profile,
             limits,
@@ -53,17 +57,15 @@ impl LazyDirectoryCursor {
             work.cancellation(),
         )?;
         let bytes = input.0.1.capacity() as u64;
-        let mut allocation = input.1;
-        let temporary = crate::kernel::split_allocation(&mut allocation, bytes)?;
+        let temporary = crate::kernel::split_allocation(&mut input.1, bytes)?;
         drop(input.0.1);
         crate::kernel::retire_allocation(temporary, bytes, &mut ctx)?;
-        let mut directory_allocation = directory.1;
-        allocation.absorb(&mut directory_allocation)?;
+        input.1.absorb(&mut directory.1)?;
         Ok(Self {
             cut: input.0.0,
             directory: directory.0,
             phase: input.0.2,
-            allocation,
+            allocation: input.1,
         })
     }
 }

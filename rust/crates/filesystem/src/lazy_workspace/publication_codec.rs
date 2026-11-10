@@ -146,7 +146,7 @@ pub(super) fn decode_publication_context(
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<NativeSnapshotContext, crate::FsError> {
     let maximum = bytes.len();
-    crate::kernel::decode_owned(ctx, |mut observe| {
+    let mut decoded = crate::kernel::decode_owned(ctx, |mut observe| {
         let mut decoder = crate::kernel::Decoder::new::<crate::FsError>(
             bytes,
             SNAPSHOT_DOMAIN,
@@ -218,8 +218,13 @@ pub(super) fn decode_publication_context(
         }
         decoder.finish()?;
         Ok(context)
-    })
-    .map(|(context, _)| context)
+    })?;
+    if let NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } =
+        &mut decoded.0
+    {
+        cut.source.retain_decoded(&mut decoded.1, ctx)?;
+    }
+    Ok(decoded.0)
 }
 fn invalid_context() -> crate::FsError {
     crate::kernel::CanonicalDecodeError::Invariant(crate::kernel::CanonicalInvariant::Static(

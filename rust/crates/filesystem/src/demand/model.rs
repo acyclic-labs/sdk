@@ -57,6 +57,35 @@ impl SourceReference {
         }
         Ok(reference)
     }
+    /// Transfer freshly decoded backing out of its enclosing read allocation
+    /// before a reference can be cloned or retained independently of that read.
+    pub(crate) fn retain_decoded(
+        &mut self,
+        allocation: &mut crate::kernel::KernelOwnedAllocation,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if self.components.is_empty() {
+            return Ok(());
+        }
+        let bytes = std::mem::take(&mut self.components)
+            .try_into_ordinary_vec()
+            .map_err(|bytes| {
+                self.components = bytes;
+                crate::FsError::from(crate::kernel::CanonicalDecodeError::Invariant(
+                    crate::kernel::CanonicalInvariant::Static(
+                        "decoded source cut backing is shared",
+                    ),
+                ))
+            })?;
+        let capacity = bytes.capacity() as u64;
+        let guard = crate::kernel::split_allocation(allocation, capacity)?;
+        self.components = crate::kernel::Retained::from_owned(
+            crate::kernel::Owned::new(bytes, guard, capacity),
+            ctx,
+        )?
+        .into_owned_bytes((), ctx)?;
+        Ok(())
+    }
     fn valid(&self) -> bool {
         if self.components.is_empty() {
             return true;
