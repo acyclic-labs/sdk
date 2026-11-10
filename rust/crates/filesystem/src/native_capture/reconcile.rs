@@ -305,7 +305,10 @@ impl CaptureBatch<'_> {
             // the same inode-reuse protection and identity as lazy reads.
             #[cfg(target_os = "linux")]
             let identity_metadata = {
-                let observed = self.source_root.stat(&host_path, &mut self.meter.clone())?;
+                let observed = self
+                    .source_root
+                    .stat(&host_path, &mut self.meter.clone())
+                    .map_err(capture_demand_error)?;
                 ensure_same_host_node(&metadata, &observed)?;
                 observed
             };
