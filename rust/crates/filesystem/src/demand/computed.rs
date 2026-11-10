@@ -196,6 +196,7 @@ impl<V: View, P: ViewProvider<V>> Computed<V, P> {
         let mut epoch = [0; 8];
         epoch.copy_from_slice(&hash[16..24]);
         SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity,
             epoch: u64::from_be_bytes(epoch),
         }
@@ -215,8 +216,15 @@ impl<V: View, P: ViewProvider<V>> Computed<V, P> {
 }
 
 impl<V: View, P: ViewProvider<V>> DemandSource for Computed<V, P> {
-    fn reference(&self) -> SourceReference {
-        self.provider.reference()
+    fn identity(&self) -> [u8; 16] {
+        self.provider.reference().identity
+    }
+    fn reference(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
+        accounting.check()?;
+        Ok(self.provider.reference())
     }
 
     async fn lookup<W: FsWork + Send>(

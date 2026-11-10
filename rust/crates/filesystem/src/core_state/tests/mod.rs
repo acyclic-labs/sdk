@@ -123,7 +123,7 @@ pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorksp
         "parent_workspace_id": null,
         "fork_origin": null,
         "selected_import_roots": null,
-        "source": crate::demand::SourceReference { identity: [1; 16], epoch: 0 },
+        "source": crate::demand::SourceReference { components: acyclic_stream::OwnedBytes::new(),  identity: [1; 16], epoch: 0 },
         "overlay": LazyOverlayId::from_bytes([2; 32]),
         "shadows": shadows,
         "pending_remove": null,

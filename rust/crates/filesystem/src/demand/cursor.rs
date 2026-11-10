@@ -13,6 +13,10 @@ pub struct SourceCursor {
 }
 
 impl SourceCursor {
+    pub(super) fn map_reference(mut self, source: SourceReference) -> Self {
+        self.source = source;
+        self
+    }
     pub(crate) fn detached(source: SourceReference, token: u64) -> Self {
         Self {
             source,

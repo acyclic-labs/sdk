@@ -84,6 +84,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
     };
     let limits = crate::VolumeLimits::default();
     let source = SourceReference {
+        components: acyclic_stream::OwnedBytes::new(),
         identity: [2; 16],
         epoch: 3,
     };

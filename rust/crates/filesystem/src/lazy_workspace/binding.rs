@@ -17,7 +17,7 @@ impl<
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, crate::Generation<A, O>), LazyWorkspaceError> {
-        let original = source.reference();
+        let original = source.reference(ctx)?;
         let generation = accounted!(ctx, |work, cancel| fs
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 name,
@@ -31,7 +31,7 @@ impl<
         lazy.state(ctx)
             .await?
             .validate_root_binding(lazy.workspace.id(), original)?;
-        if lazy.source.reference() != original {
+        if lazy.source.reference(ctx)? != original {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok((lazy, generation))
@@ -44,7 +44,7 @@ impl<
         store: S,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Self, LazyWorkspaceError> {
-        let reference = source.reference();
+        let reference = source.reference(ctx)?;
         if store
             .load_lazy_workspace(workspace.id(), ctx)
             .await?
@@ -102,7 +102,7 @@ impl<
             .ok_or(LazyWorkspaceError::NotFound)?;
         if state.schema_version != LAZY_STATE_SCHEMA
             || state.workspace_id != workspace.id()
-            || state.source.identity != source.reference().identity
+            || state.source.identity != source.identity()
         {
             return Err(LazyWorkspaceError::StaleSource);
         }
@@ -166,9 +166,14 @@ impl<
         accept_receipt(result, ctx)
     }
 
-    pub(crate) fn source_reference(&self) -> SourceReference {
-        self.retained_source
-            .unwrap_or_else(|| self.source.reference())
+    pub(crate) fn source_reference(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, LazyWorkspaceError> {
+        match &self.retained_source {
+            Some(source) => Ok(source.clone()),
+            None => self.source.reference(ctx).map_err(Into::into),
+        }
     }
 
     /// Captures an ordinary complete cut without enumeration.
@@ -179,7 +184,7 @@ impl<
         let state = self.state(ctx).await?;
         let head = self.head(ctx).await?;
         ctx.charge(WorkCounters {
-            bytes_hashed: LazySnapshotRef::hash_bytes(head.id()),
+            bytes_hashed: LazySnapshotRef::hash_bytes(head.id(), &state.source),
             ..WorkCounters::UNCHARGED
         })?;
         Ok(LazySnapshotRef::new(
@@ -220,7 +225,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or_else(missing)?;
-        let source = self.binding_source(&state)?;
+        let source = self.binding_source(&state, ctx)?;
         if state.source == source {
             return Ok(state);
         }
@@ -244,12 +249,13 @@ impl<
     pub(super) fn binding_source(
         &self,
         state: &LazyWorkspaceState,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<SourceReference, LazyWorkspaceError> {
-        let source = self.source_reference();
+        let source = self.source_reference(ctx)?;
         if state.schema_version != LAZY_STATE_SCHEMA
             || state.workspace_id != self.workspace.id()
             || state.source.identity != source.identity
-            || state.source.epoch > source.epoch
+            || !source.follows(&state.source)
         {
             return Err(LazyWorkspaceError::StaleSource);
         }
@@ -272,7 +278,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::NotFound)?;
-        let source = self.binding_source(&state)?;
+        let source = self.binding_source(&state, ctx)?;
         if let Some(pending) = &state.pending_remove {
             if state.source != source {
                 return Err(LazyWorkspaceError::StaleSource);
@@ -307,7 +313,7 @@ impl<
             .ok_or(LazyWorkspaceError::NotFound)?;
         if state.schema_version != LAZY_STATE_SCHEMA
             || state.workspace_id != self.workspace.id()
-            || state.source.identity != self.source.reference().identity
+            || state.source.identity != self.source.identity()
         {
             return Err(LazyWorkspaceError::StaleSource);
         }
@@ -430,11 +436,11 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         ctx.charge(WorkCounters {
-            bytes_hashed: LazySnapshotRef::hash_bytes(cut.authored_generation),
+            bytes_hashed: LazySnapshotRef::hash_bytes(cut.authored_generation, &cut.source),
             ..WorkCounters::UNCHARGED
         })?;
         if cut.workspace_id != self.workspace.id()
-            || cut.source.identity != self.source.reference().identity
+            || cut.source.identity != self.source.identity()
             || cut
                 != LazySnapshotRef::new(
                     cut.workspace_id,

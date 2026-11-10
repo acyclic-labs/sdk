@@ -4,14 +4,14 @@ use super::*;
 /// This value identifies a view; it does not pin its authored objects, source
 /// epoch, overlay, shadows or publication proof. Persisting it alone does not
 /// make that view available after collection or source replacement.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativePublicationSnapshot {
     pub(crate) operation: Option<crate::OperationId>,
     pub(crate) generation: crate::GenerationId,
     pub(crate) context: NativeSnapshotContext,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LazyPublicationCut {
     pub(crate) workspace_id: WorkspaceId,
@@ -20,7 +20,7 @@ pub(crate) struct LazyPublicationCut {
     pub(crate) overlay: LazyOverlayId,
     pub(crate) shadows: LazyShadowId,
 }
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum NativeSnapshotContext {
     Authored {
@@ -89,7 +89,7 @@ impl NativePublicationSnapshot {
             NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } => cut,
         };
         ctx.charge(WorkCounters {
-            bytes_hashed: LazySnapshotRef::hash_bytes(self.generation),
+            bytes_hashed: LazySnapshotRef::hash_bytes(self.generation, &cut.source),
             bytes_copied: std::mem::size_of::<LazySnapshotRef>() as u64,
             ..WorkCounters::UNCHARGED
         })?;
@@ -117,7 +117,7 @@ impl<
         let cut = self.publication_cut(None, ctx).await?;
         let generation = self.head(ctx).await?;
         ctx.check()?;
-        if self.source.reference() != cut.source {
+        if self.source.reference(ctx)? != cut.source {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok(NativePublicationSnapshot {
@@ -152,8 +152,8 @@ impl<
             || cut.config != self.workspace.volume.config
             || state.workspace_id != cut.workspace_id
             || state.source.identity != cut.source.identity
-            || state.source.epoch < cut.source.epoch
-            || cut.source.identity != self.source.reference().identity
+            || !state.source.follows(&cut.source)
+            || cut.source.identity != self.source.identity()
             || state.overlay != cut.overlay
             || state.shadows != cut.shadows
         {
@@ -193,7 +193,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-        if state.source != self.binding_source(&state)? {
+        if state.source != self.binding_source(&state, ctx)? {
             return Err(LazyWorkspaceError::StaleSource);
         }
         match (operation, state.pending_remove.as_ref()) {
@@ -222,7 +222,7 @@ impl<
             bytes_copied: std::mem::size_of::<LazyPublicationCut>() as u64,
             ..WorkCounters::UNCHARGED
         })?;
-        if self.source.reference() != state.source {
+        if self.source.reference(ctx)? != state.source {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok(LazyPublicationCut {

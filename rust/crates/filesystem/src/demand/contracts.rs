@@ -239,8 +239,13 @@ pub trait SourceWatch: Send + Sync {
 
 /// Provider contract for exact lookup, bounded pages, ranges, and metadata.
 pub trait DemandSource: Send + Sync {
+    /// Stable namespace identity. This performs no IO and captures no cut.
+    fn identity(&self) -> [u8; 16];
     /// Current opaque source reference.
-    fn reference(&self) -> SourceReference;
+    fn reference(
+        &self,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError>;
 
     /// Resolve only the requested path. `None` is known absence.
     fn lookup<W: crate::facade::FsWork + Send>(

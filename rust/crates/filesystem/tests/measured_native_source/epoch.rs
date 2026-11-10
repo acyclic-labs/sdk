@@ -11,6 +11,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     )?;
     let observer = Arc::new(DirectoryObserver::default());
     let reference = SourceReference {
+        components: acyclic_stream::OwnedBytes::new(),
         identity: [51; 16],
         epoch: 8,
     };
@@ -153,6 +154,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
             FilesystemProfile::Portable,
             VolumeLimits::default(),
             Some(SourceReference {
+                components: acyclic_stream::OwnedBytes::new(),
                 identity: [52; 16],
                 epoch: advanced.epoch,
             }),

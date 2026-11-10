@@ -140,7 +140,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<SelectedImportEffects, LazyWorkspaceError> {
         self.validate_snapshot(destination, ctx).await?;
-        if plan.source_used && plan.source.source != self.source.reference() {
+        if plan.source_used && plan.source.source != self.source.reference(ctx)? {
             return Err(LazyWorkspaceError::StaleSource);
         }
         if plan.source_config.profile != self.workspace.profile() {
@@ -306,7 +306,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 }
                 crate::Transaction::<A, O>::push_mutation(&mut paths, path, ctx)?;
             }
-            if plan.source_used && plan.source.source != self.source.reference() {
+            if plan.source_used && plan.source.source != self.source.reference(ctx)? {
                 return Err(LazyWorkspaceError::StaleSource);
             }
             Ok::<_, LazyWorkspaceError>(())

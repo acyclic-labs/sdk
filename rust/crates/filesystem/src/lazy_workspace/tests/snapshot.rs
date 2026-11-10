@@ -233,3 +233,85 @@ async fn fork_retains_available_source_and_authored_cuts() {
         Err(LazyWorkspaceError::Demand(DemandError::StaleSource))
     ));
 }
+
+/// Nested routing must retain each historical provider cut, not a sum of
+/// epochs or the references each provider happens to expose at read time.
+#[tokio::test]
+async fn routed_forks_retain_both_layers_after_independent_provider_progress() {
+    use crate::demand::{Empty, Routed};
+    let fs = Fs::memory();
+    let ui = Arc::new(CountingSource::new(Bytes::from_static(b"old ui")));
+    let mut other = CountingSource::new(Bytes::from_static(b"old context"));
+    other.node.file_identity = [10; 32];
+    let context = Arc::new(other);
+    let name =
+        |text: &str| LogicalName::new(NameEncoding::Utf8, text.as_bytes().to_vec(), 255).unwrap();
+    let source = Arc::new(Routed::new(
+        Routed::new(Empty, name("ui"), ui.clone()),
+        name("context"),
+        context.clone(),
+    ));
+    let root = attach(&fs, source, MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    let basis = root.snapshot(accounting!()).await.unwrap();
+    let (child, _) = root
+        .fork(
+            "child",
+            IdempotencyKey::new(),
+            crate::PublicationPermit::Unrestricted,
+            accounting!(),
+        )
+        .await
+        .unwrap();
+    ui.replace(Bytes::from_static(b"new ui"));
+    context.replace(Bytes::from_static(b"new context"));
+    for (path, old, new) in [
+        ("/ui/file.txt", b"old ui".as_slice(), b"new ui".as_slice()),
+        (
+            "/context/file.txt",
+            b"old context".as_slice(),
+            b"new context".as_slice(),
+        ),
+    ] {
+        assert_eq!(
+            root.read(path, 64, accounting!())
+                .await
+                .unwrap()
+                .bytes
+                .as_slice(),
+            new
+        );
+        assert_eq!(
+            child
+                .read(path, 64, accounting!())
+                .await
+                .unwrap()
+                .bytes
+                .as_slice(),
+            old
+        );
+        assert_eq!(
+            root.read_at_snapshot(basis.clone(), path, None, 64, accounting!())
+                .await
+                .unwrap()
+                .0
+                .bytes
+                .as_slice(),
+            old
+        );
+    }
+    let reopened = root
+        .open_related(child.workspace().clone(), accounting!())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .read("/context/file.txt", 64, accounting!())
+            .await
+            .unwrap()
+            .bytes
+            .as_slice(),
+        b"old context"
+    );
+}

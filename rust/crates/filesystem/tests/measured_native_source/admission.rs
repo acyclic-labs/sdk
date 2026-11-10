@@ -5,6 +5,7 @@ async fn native_root_admission_denies_owned_memory_before_native_io() -> TestRes
     acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
     let reference = SourceReference {
+        components: acyclic_stream::OwnedBytes::new(),
         identity: [32; 16],
         epoch: 1,
     };
@@ -69,6 +70,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     let before = work.live_allocation_bytes();
     let (caller_path, caller_guard) = work.path(&root, None)?;
     let reference = SourceReference {
+        components: acyclic_stream::OwnedBytes::new(),
         identity: [92; 16],
         epoch: 18,
     };

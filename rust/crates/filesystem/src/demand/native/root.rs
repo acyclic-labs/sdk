@@ -161,6 +161,7 @@ impl NativeDemandSource {
                                 acyclic_native_runtime::initialize_native_io_services()?;
                             }
                             let reference = reference.unwrap_or_else(|| SourceReference {
+                                components: acyclic_stream::OwnedBytes::new(),
                                 identity: *crate::identity::fresh_uuid().as_bytes(),
                                 epoch: 0,
                             });
@@ -298,6 +299,7 @@ impl NativeDemandSource {
     pub fn invalidate(&self) -> SourceReference {
         let epoch = self.inner.epoch.fetch_add(1, Ordering::AcqRel) + 1;
         SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity: self.inner.identity,
             epoch,
         }

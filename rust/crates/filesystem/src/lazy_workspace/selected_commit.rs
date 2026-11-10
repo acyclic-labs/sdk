@@ -73,12 +73,12 @@ impl<
             };
             if cut.workspace_id != self.workspace.id()
                 || cut.config != self.workspace.volume.config
-                || cut.source.identity != self.source.reference().identity
+                || cut.source.identity != self.source.identity()
             {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
             ctx.charge(WorkCounters {
-                bytes_hashed: LazySnapshotRef::hash_bytes(generation),
+                bytes_hashed: LazySnapshotRef::hash_bytes(generation, &cut.source),
                 ..WorkCounters::UNCHARGED
             })?;
             Ok((

@@ -159,10 +159,14 @@ impl<
                     let mut before = before.clone();
                     let work = work.clone();
                     async move {
-                        if source.reference() != basis.source {
+                        let mut ctx = KernelAccounting::native(&work, work.cancellation());
+                        if source
+                            .reference(&mut ctx)
+                            .map_err(LazyWorkspaceError::from)?
+                            != basis.source
+                        {
                             return Err(E::from(LazyWorkspaceError::StaleSource));
                         }
-                        let mut ctx = KernelAccounting::native(&work, work.cancellation());
                         seal::<_, E>(&mut before, &mut ctx).await
                     }
                 };
@@ -189,7 +193,11 @@ impl<
                         let cancel = cancel.clone();
                         async move {
                             let mut ctx = KernelAccounting::standalone(budget, &cancel);
-                            let result = if source.reference() == basis.source {
+                            let result = if source
+                                .reference(&mut ctx)
+                                .map_err(LazyWorkspaceError::from)?
+                                == basis.source
+                            {
                                 seal::<_, E>(&mut before, &mut ctx).await
                             } else {
                                 Err(E::from(LazyWorkspaceError::StaleSource))

@@ -125,7 +125,7 @@ impl<
             }
         }
         ctx.charge(WorkCounters {
-            bytes_hashed: LazySnapshotRef::hash_bytes(original_generation),
+            bytes_hashed: LazySnapshotRef::hash_bytes(original_generation, &cut.source),
             ..WorkCounters::UNCHARGED
         })?;
         let snapshot = LazySnapshotRef::new(

@@ -89,6 +89,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
     std::fs::create_dir(directory.path().join("unresolved"))?;
     std::fs::write(directory.path().join("unresolved/file"), b"not enumerated")?;
     let reference = SourceReference {
+        components: acyclic_stream::OwnedBytes::new(),
         identity: [41; 16],
         epoch: 3,
     };

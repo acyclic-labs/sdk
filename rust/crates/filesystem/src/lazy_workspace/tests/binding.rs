@@ -187,8 +187,8 @@ async fn attach_open_and_fork_demand_no_source_work() {
     );
     assert_ne!(sealed_cut.id, cut.id);
     assert_eq!(
-        LazySnapshotRef::hash_bytes(sealed_generation),
-        LazySnapshotRef::hash_bytes(cut.authored_generation) + 80
+        LazySnapshotRef::hash_bytes(sealed_generation, &cut.source),
+        LazySnapshotRef::hash_bytes(cut.authored_generation, &cut.source) + 80
     );
     let (child, original) = reopened
         .fork(

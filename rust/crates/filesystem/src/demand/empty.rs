@@ -9,6 +9,10 @@ use crate::{
 pub struct Empty;
 
 impl Empty {
+    /// The immutable empty namespace needs no retained backing.
+    pub const fn reference(&self) -> SourceReference {
+        SourceReference::new(*b"acyclic.fs.empty", 1)
+    }
     pub(super) fn node() -> SourceNode {
         SourceNode {
             kind: SourceNodeKind::Directory,
@@ -35,6 +39,9 @@ impl Empty {
 }
 
 impl DemandSource for Empty {
+    fn identity(&self) -> [u8; 16] {
+        *b"acyclic.fs.empty"
+    }
     fn watch<W: FsWork + Send>(
         &self,
         _sink: std::sync::Arc<dyn SourceChangeSink>,
@@ -51,11 +58,12 @@ impl DemandSource for Empty {
         })();
         work.finish(result, &ctx)
     }
-    fn reference(&self) -> SourceReference {
-        SourceReference {
-            identity: *b"acyclic.fs.empty",
-            epoch: 1,
-        }
+    fn reference(
+        &self,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
+        accounting.check()?;
+        Ok(self.reference())
     }
 
     async fn lookup<W: FsWork + Send>(

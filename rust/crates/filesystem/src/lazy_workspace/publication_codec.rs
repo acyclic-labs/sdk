@@ -1,9 +1,9 @@
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{EncodeWorkStep, Encoder};
-const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v1\0";
+const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v2\0";
 #[cfg(not(target_arch = "wasm32"))]
-const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v1\0";
+const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v2\0";
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn publication_evidence(
@@ -12,23 +12,27 @@ pub(crate) fn publication_evidence(
     permit: crate::PublicationPermit,
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<(crate::Digest, acyclic_stream::OwnedBytes), crate::FsError> {
-    let body = 33
-        + crate::kernel::CONFIG_ENCODED_BYTES
-        + if matches!(context, NativeSnapshotContext::Authored { .. }) {
-            0
-        } else {
-            88
-        }
-        + if matches!(context, NativeSnapshotContext::Selected { .. }) {
-            32
-        } else {
-            0
-        }
-        + match permit {
-            crate::PublicationPermit::Unrestricted => 1,
-            crate::PublicationPermit::Lease { .. } => 57,
-            crate::PublicationPermit::Reservation { .. } => 73,
-        };
+    let body =
+        33 + crate::kernel::CONFIG_ENCODED_BYTES
+            + if matches!(context, NativeSnapshotContext::Authored { .. }) {
+                0
+            } else {
+                64 + match &context {
+                    NativeSnapshotContext::Lazy(cut)
+                    | NativeSnapshotContext::Selected { cut, .. } => cut.source.encoded_len(),
+                    NativeSnapshotContext::Authored { .. } => 0,
+                }
+            }
+            + if matches!(context, NativeSnapshotContext::Selected { .. }) {
+                32
+            } else {
+                0
+            }
+            + match permit {
+                crate::PublicationPermit::Unrestricted => 1,
+                crate::PublicationPermit::Lease { .. } => 57,
+                crate::PublicationPermit::Reservation { .. } => 73,
+            };
     let (bytes, guard) = crate::kernel::codec::encode_owned(ctx, |observe, reserve| {
         let mut encoder = Encoder::with_exact_capacity(
             SNAPSHOT_DOMAIN,
@@ -69,10 +73,9 @@ pub(crate) fn publication_evidence(
         encoder.fixed(&context.workspace_id().into_bytes());
         crate::kernel::encode_config(&mut encoder, context.config());
         if let NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } =
-            context
+            &context
         {
-            encoder.fixed(&cut.source.identity);
-            encoder.u64(cut.source.epoch);
+            cut.source.encode(|part| encoder.fixed(part));
             encoder.fixed(&cut.overlay.into_bytes());
             encoder.fixed(&cut.shadows.into_bytes());
         }
@@ -142,8 +145,7 @@ pub(super) fn decode_publication_context(
     operation: crate::OperationId,
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<NativeSnapshotContext, crate::FsError> {
-    let maximum =
-        SNAPSHOT_DOMAIN.len() + 2 + 33 + crate::kernel::CONFIG_ENCODED_BYTES + 88 + 32 + 73;
+    let maximum = bytes.len();
     crate::kernel::decode_owned(ctx, |mut observe| {
         let mut decoder = crate::kernel::Decoder::new::<crate::FsError>(
             bytes,
@@ -168,10 +170,7 @@ pub(super) fn decode_publication_context(
                 let cut = qualification::LazyPublicationCut {
                     workspace_id,
                     config,
-                    source: SourceReference {
-                        identity: decoder.fixed::<16, crate::FsError>(&mut observe)?,
-                        epoch: decoder.u64(&mut observe)?,
-                    },
+                    source: SourceReference::decode(&mut decoder, &mut observe)?,
                     overlay: LazyOverlayId(decoder.fixed::<32, crate::FsError>(&mut observe)?),
                     shadows: LazyShadowId(decoder.fixed::<32, crate::FsError>(&mut observe)?),
                 };

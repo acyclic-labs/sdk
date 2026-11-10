@@ -1,9 +1,13 @@
 impl DemandSource for NativeDemandSource {
-    fn reference(&self) -> SourceReference {
-        SourceReference {
-            identity: self.inner.identity,
-            epoch: self.inner.epoch.load(Ordering::Acquire),
-        }
+    fn identity(&self) -> [u8; 16] {
+        self.inner.identity
+    }
+    fn reference(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
+        accounting.check()?;
+        Ok(self.reference())
     }
     fn watch<W: FsWork + Send>(
         &self,
@@ -202,6 +206,13 @@ pub(crate) fn callback_work(
 }
 
 impl NativeDemandSource {
+    /// Current native namespace and invalidation epoch; no backing is allocated.
+    pub fn reference(&self) -> SourceReference {
+        SourceReference::new(
+            self.inner.identity,
+            self.inner.epoch.load(Ordering::Acquire),
+        )
+    }
     fn link_bytes(
         &self,
         relative: &DemandPath,

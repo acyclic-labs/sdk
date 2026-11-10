@@ -409,6 +409,7 @@ mod source_bound_lost_ack {
             b"unread source",
         )?;
         let reference = SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity: [61; 16],
             epoch: 4,
         };

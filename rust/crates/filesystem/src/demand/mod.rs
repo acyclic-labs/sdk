@@ -17,6 +17,7 @@ mod page;
 pub use page::*;
 mod contracts;
 pub use contracts::*;
+mod shared;
 
 mod empty;
 pub use empty::Empty;

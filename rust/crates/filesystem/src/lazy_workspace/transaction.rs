@@ -173,7 +173,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::NotFound)?;
-        if state.source != self.binding_source(&state)? {
+        if state.source != self.binding_source(&state, ctx)? {
             return Err(LazyWorkspaceError::StaleSource);
         }
         if let Some(pending) = &state.pending_remove {

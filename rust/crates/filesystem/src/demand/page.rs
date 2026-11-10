@@ -14,6 +14,10 @@ pub struct SourceDirectoryPage {
     pub publication: Option<Box<SourceDirectoryPublication>>,
 }
 impl SourceDirectoryPage {
+    pub(super) fn map_reference(mut self, source: SourceReference) -> Self {
+        self.next = self.next.map(|cursor| cursor.map_reference(source));
+        self
+    }
     /// Constructs a page without a producer transaction.
     pub fn stateless(
         mut entries: crate::kernel::Owned<Vec<SourceDirectoryEntry>>,

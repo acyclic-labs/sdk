@@ -11,95 +11,93 @@ pub struct Routed<Base, Views> {
     base: Base,
     prefix: LogicalName,
     views: Views,
+    identity: [u8; 16],
 }
 
-impl<B, V> Routed<B, V> {
+impl<B: DemandSource, V: DemandSource> Routed<B, V> {
     /// Attach a source at an already validated namespace component.
     pub fn new(base: B, prefix: LogicalName, views: V) -> Self {
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.fs.demand.routed.namespace.v1");
+        hash.update(&base.identity());
+        hash.update(&views.identity());
+        hash.update(&[prefix.encoding() as u8]);
+        hash.update(prefix.as_bytes());
+        let mut identity = [0; 16];
+        identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
         Self {
             base,
             prefix,
             views,
+            identity,
         }
     }
-}
-
-impl<B: DemandSource, V: DemandSource> Routed<B, V> {
-    fn combined(&self, base: SourceReference, view: SourceReference) -> [u8; 32] {
-        let mut hash = blake3::Hasher::new_derive_key("acyclic.fs.demand.routed.v1");
-        hash.update(&base.identity);
-        hash.update(&base.epoch.to_be_bytes());
-        hash.update(&view.identity);
-        hash.update(&view.epoch.to_be_bytes());
+    fn combined(
+        &self,
+        base: &SourceReference,
+        view: &SourceReference,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<[u8; 32], DemandError> {
+        ctx.charge(crate::WorkCounters {
+            bytes_hashed: (base.encoded_len()
+                + view.encoded_len()
+                + 1
+                + self.prefix.as_bytes().len()) as u64,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.fs.demand.routed.v2");
+        base.encode(|bytes| {
+            hash.update(bytes);
+        });
+        view.encode(|bytes| {
+            hash.update(bytes);
+        });
         hash.update(&[self.prefix.encoding() as u8]);
         hash.update(self.prefix.as_bytes());
-        *hash.finalize().as_bytes()
+        Ok(*hash.finalize().as_bytes())
     }
-
     fn sources(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(SourceReference, SourceReference), DemandError> {
         ctx.check()?;
-        let base = self.base.reference();
-        let view = self.views.reference();
-        if source != self.reference_of(base, view) {
+        if source.identity != self.identity {
+            return Err(DemandError::StaleSource);
+        }
+        let (base, view) = source.paired()?;
+        if base.identity != self.base.identity() || view.identity != self.views.identity() {
             return Err(DemandError::StaleSource);
         }
         Ok((base, view))
     }
-
-    fn reference_of(&self, base: SourceReference, view: SourceReference) -> SourceReference {
-        // Epochs only advance. Their sum therefore advances when either source
-        // invalidates, while namespace identity stays stable across refreshes.
-        // Exhausting the epoch representation changes identity and fails closed.
-        let (hash, epoch) = match base.epoch.checked_add(view.epoch) {
-            Some(epoch) => (
-                self.combined(
-                    SourceReference { epoch: 0, ..base },
-                    SourceReference { epoch: 0, ..view },
-                ),
-                epoch,
-            ),
-            None => (self.combined(base, view), u64::MAX),
-        };
-        let mut identity = [0; 16];
-        identity.copy_from_slice(&hash[..16]);
-        SourceReference { identity, epoch }
-    }
-
     fn mounted(&self, path: &NamespacePath) -> bool {
         path.components().first() == Some(&self.prefix)
     }
 
     async fn root(
         &self,
-        base: SourceReference,
-        view: SourceReference,
+        base: &SourceReference,
+        view: &SourceReference,
         path: &NamespacePath,
         ctx: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(SourceNode, Option<SourceNode>), DemandError> {
         let base_node = source_call!(ctx, cancellation, |work| self.base.lookup(
-            base,
+            base.clone(),
             path,
             work,
             cancellation
         ))?;
         let view_node = source_call!(ctx, cancellation, |work| self.views.lookup(
-            view,
+            view.clone(),
             path,
             work,
             cancellation
         ))?;
         let mut node = Empty::node();
-        node.file_identity = self.combined(
-            SourceReference { epoch: 0, ..base },
-            SourceReference { epoch: 0, ..view },
-        );
+        node.file_identity = *blake3::hash(&self.identity).as_bytes();
         let mut hash = blake3::Hasher::new_derive_key("acyclic.fs.demand.routed.directory.v1");
-        hash.update(&self.combined(base, view));
+        hash.update(&self.combined(base, view, ctx)?);
         for root in [base_node, view_node] {
             hash.update(&[u8::from(root.is_some())]);
             if let Some(root) = root {
@@ -141,7 +139,7 @@ macro_rules! route_file {
         ) -> W::Output<$output, DemandError> {
             let mut ctx = work.accounting(cancellation);
             let result = async {
-                let (base, view) = self.sources(source, &mut ctx)?;
+                let (base, view) = self.sources(&source, &mut ctx)?;
                 if path.is_root() { return Err(DemandError::$root_error); }
                 let result = if self.mounted(path) {
                     let (relative, _allocation) = path.suffix_with_accounting(1, &mut ctx, cancellation)?;
@@ -149,7 +147,7 @@ macro_rules! route_file {
                 } else {
                     source_call!(&mut ctx, cancellation, |work| self.base.$method(base, path, expected, $($argument,)* work, cancellation))?
                 };
-                self.sources(source, &mut ctx)?;
+                self.sources(&source, &mut ctx)?;
                 Ok(result)
             }.await;
             work.finish(result, &ctx)
@@ -198,8 +196,13 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
         })();
         work.finish(result, &ctx)
     }
-    fn reference(&self) -> SourceReference {
-        self.reference_of(self.base.reference(), self.views.reference())
+    fn identity(&self) -> [u8; 16] {
+        self.identity
+    }
+    fn reference(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceReference, DemandError> {
+        let base = self.base.reference(ctx)?;
+        let view = self.views.reference(ctx)?;
+        SourceReference::pair(self.identity, &base, &view, ctx)
     }
 
     async fn lookup<W: FsWork + Send>(
@@ -211,7 +214,7 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
     ) -> W::Output<Option<SourceNode>, DemandError> {
         let mut ctx = work.accounting(cancellation);
         let result = async {
-            let (base, view) = self.sources(source, &mut ctx)?;
+            let (base, view) = self.sources(&source, &mut ctx)?;
             let node = if self.mounted(path) {
                 let (relative, _allocation) =
                     path.suffix_with_accounting(1, &mut ctx, cancellation)?;
@@ -222,7 +225,11 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                     cancellation
                 ))?
             } else if path.is_root() {
-                Some(self.root(base, view, path, &mut ctx, cancellation).await?.0)
+                Some(
+                    self.root(&base, &view, path, &mut ctx, cancellation)
+                        .await?
+                        .0,
+                )
             } else {
                 source_call!(&mut ctx, cancellation, |work| self.base.lookup(
                     base,
@@ -231,7 +238,7 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                     cancellation
                 ))?
             };
-            self.sources(source, &mut ctx)?;
+            self.sources(&source, &mut ctx)?;
             Ok(node)
         }
         .await;
@@ -249,11 +256,17 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
     ) -> W::Output<SourceDirectoryPage, DemandError> {
         let mut ctx = work.accounting(cancellation);
         let result = async {
-            let (base, view) = self.sources(source, &mut ctx)?;
+            let (base, view) = self.sources(&source, &mut ctx)?;
             if maximum_entries == 0 {
                 return Err(DemandError::InvalidRequest);
             }
             let first = cursor.is_none();
+            if cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.source != source)
+            {
+                return Err(DemandError::StaleCursor);
+            }
             let next = match cursor {
                 Some(cursor)
                     if directory.is_root() && cursor.source == source && cursor.token == 0 =>
@@ -266,25 +279,27 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                 let (relative, _allocation) =
                     directory.suffix_with_accounting(1, &mut ctx, cancellation)?;
                 source_call!(&mut ctx, cancellation, |work| self.views.list_page(
-                    view,
+                    view.clone(),
                     &relative,
-                    next,
+                    next.map(|cursor| cursor.map_reference(view)),
                     maximum_entries,
                     work,
                     cancellation
                 ))?
+                .map_reference(source.clone())
             } else if !directory.is_root() {
                 source_call!(&mut ctx, cancellation, |work| self.base.list_page(
-                    base,
+                    base.clone(),
                     directory,
-                    next,
+                    next.map(|cursor| cursor.map_reference(base)),
                     maximum_entries,
                     work,
                     cancellation
                 ))?
+                .map_reference(source.clone())
             } else {
                 let (root, prefix_node) = self
-                    .root(base, view, directory, &mut ctx, cancellation)
+                    .root(&base, &view, directory, &mut ctx, cancellation)
                     .await?;
                 let prefix_node = if first { prefix_node } else { None };
                 let reserved = u32::from(prefix_node.is_some());
@@ -297,13 +312,13 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                 if maximum_entries == reserved {
                     // The next request starts the base enumeration. No cursor
                     // registry is needed, even for a one-entry page.
-                    next_page = Some(SourceCursor::detached(source, 0));
+                    next_page = Some(SourceCursor::detached(source.clone(), 0));
                 } else {
                     let base_page =
                         source_call!(&mut ctx, cancellation, |work| self.base.list_page(
-                            base,
+                            base.clone(),
                             directory,
-                            next,
+                            next.map(|cursor| cursor.map_reference(base)),
                             maximum_entries - reserved,
                             work,
                             cancellation
@@ -319,16 +334,18 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                             )?;
                         }
                     }
-                    next_page = base_page.next;
+                    next_page = base_page
+                        .next
+                        .map(|cursor| cursor.map_reference(source.clone()));
                     publication = base_page.publication;
                 }
                 let mut page =
                     SourceDirectoryPage::stateless(entries, next_page, root.version, &mut ctx)?;
                 page.publication = publication;
-                self.sources(source, &mut ctx)?;
+                self.sources(&source, &mut ctx)?;
                 return Ok(page);
             };
-            self.sources(source, &mut ctx)?;
+            self.sources(&source, &mut ctx)?;
             Ok(page)
         }
         .await;

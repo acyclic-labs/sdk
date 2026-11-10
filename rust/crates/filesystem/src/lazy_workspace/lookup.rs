@@ -309,7 +309,7 @@ impl<
         })?;
         let mut hash = blake3::Hasher::new();
         hash.update(domain);
-        hash.update(&self.source.reference().identity);
+        hash.update(&self.source.identity());
         hash.update(identity);
         let mut bytes = [0; 16];
         bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);

@@ -160,11 +160,16 @@ impl DemandFile for PinnedFile {
     }
 }
 impl DemandSource for CountingSource {
-    fn reference(&self) -> SourceReference {
-        SourceReference {
+    fn identity(&self) -> [u8; 16] {
+        [7; 16]
+    }
+    fn reference(&self, ctx: &mut KernelAccounting<'_>) -> Result<SourceReference, DemandError> {
+        ctx.check()?;
+        Ok(SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity: [7; 16],
             epoch: self.epoch.load(Ordering::Relaxed),
-        }
+        })
     }
     async fn lookup<W: crate::facade::FsWork + Send>(
         &self,
