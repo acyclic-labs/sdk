@@ -24,7 +24,8 @@ try {
     const artifacts = compatibilityArtifacts[family];
     if (selected.length > 0) {
       step = `compile ${family} Rust descriptor`;
-      generate(["descriptors", root, temporary, family === "filesystem" ? "filesystem-wire" : family], { stdio: "inherit" });
+      const source = { filesystem: "filesystem-wire", harness: "harness-core" }[family] ?? family;
+      generate(["descriptors", root, temporary, source], { stdio: "inherit" });
     }
     const bytes = readFileSync(join(temporary, artifacts.descriptorDigest.split("/").at(-1)));
     if (family === "actors") {
