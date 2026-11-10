@@ -195,6 +195,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         Ok(Arc::new(ProofDataCustody::default()))
     }
 
+    /// Creates an independent replica funded by the supplied accounting frame.
+    /// Unlike mutation of this checkout, replication may acquire fresh custody.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn private_candidate(
         &self,

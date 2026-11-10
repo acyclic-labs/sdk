@@ -49,6 +49,19 @@ async fn file_batch_candidates_preserve_original_custody() -> Result<(), Box<dyn
                 }
                 let before = transaction.checkout.root().file_table;
                 let original_before = original.receipt();
+                let candidate = transaction.checkout.private_candidate(
+                    &mut crate::kernel::allocation::KernelAccounting::native(
+                        &foreign,
+                        &cancellation,
+                    ),
+                    &cancellation,
+                )?;
+                candidate.validate_native_work(&foreign)?;
+                assert!(candidate.validate_native_work(&original).is_err());
+                assert_eq!(candidate.root().file_table, before);
+                drop(candidate);
+                assert_eq!(transaction.checkout.root().file_table, before);
+                assert_eq!(original.receipt(), original_before);
                 let foreign_before = foreign.receipt();
                 let files = [("/new", acyclic_stream::OwnedBytes::from_static(b"changed"))];
                 let result = if create_only {
