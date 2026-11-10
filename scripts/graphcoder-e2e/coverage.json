@@ -103,7 +103,8 @@
         "session-two-terminals",
         "session-remote-attach",
         "session-explicit-root-latest",
-        "session-list-filter"
+        "session-list-filter",
+        "session-concurrent-same-repo"
       ]
     },
     "A8": {
