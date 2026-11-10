@@ -18,27 +18,15 @@ async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> 
 
 #[tokio::test]
 async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() -> Result<()> {
-    use crate::model::{ModelEvent, ToolCall};
+    use crate::model::{ModelContent, ModelEvent, ToolCall};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
-    use acyclic_harness_client::{EventProjection, MAX_READ_BYTES};
+    use acyclic_harness_client::{AgentCommand, AgentReply, EventProjection, MAX_READ_BYTES};
 
     let arguments = serde_json::json!({
         "path": "approval-request.txt",
         "content": "request".repeat(12_000),
     });
-    let provider = super::scripted([
-        ScriptedTurn::Events(vec![
-            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                "echo-request".into(),
-                "write".into(),
-                arguments.clone(),
-            ))),
-            ScriptedEvent::Event(ModelEvent::Completed {
-                metadata: serde_json::json!({}),
-            }),
-        ]),
-        ScriptedTurn::Text("approved".into()),
-    ]);
+    let provider = super::scripted([ScriptedTurn::Text("ready".into())]);
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let harness = Arc::new(
@@ -49,7 +37,41 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         )
         .await?,
     );
-    let client = conversation(&harness).await?;
+    // The root orchestrator admits delegation, not file writes. Select an
+    // actual worker before observing the original write approval.
+    let connection = harness.connect().await?;
+    let AgentReply::Spawned {
+        agent: worker,
+        delivery: crate::agent::Delivered::Committed { inbox: ready },
+    } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: connection.root().clone(),
+            id: crate::agent::IntentId::try_from("approval-worker").map_err(agent)?,
+            brief: ModelContent::Text("prepare the write".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("approval worker did not open".into()));
+    };
+    let client = Conversation::open(connection.select(worker.clone()).await?);
+    let mut startup = ObservedConversation::observe(Arc::clone(&client), Some(0)).await?;
+    startup.settled(ready).await?;
+    drop(startup);
+    let opened_calls = provider.request_count();
+    provider.extend([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "write-request".into(),
+                "write".into(),
+                arguments.clone(),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ]),
+        ScriptedTurn::Text("approved".into()),
+    ]);
     let mut projection = EventProjection::new("approval-export".into());
     let mut observed = ObservedConversation {
         conversation: Arc::clone(&client),
@@ -151,7 +173,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     );
     assert!(client.approval_request(sequence, length + 1).await.is_err());
     assert!(client.approval_request(0, 0).await.is_err());
-    assert_eq!(provider.request_count(), 1);
+    assert_eq!(provider.request_count(), opened_calls + 1);
     projection.accepted(&delivery.resource, Some(after));
     assert_eq!(projection.cursor(&delivery.resource).next, sequence + 1);
     let binding = crate::interaction::ApprovalBinding {
@@ -166,11 +188,12 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
             .await
             .is_err()
     );
-    assert_eq!(provider.request_count(), 1);
+    assert_eq!(provider.request_count(), opened_calls + 1);
     client
         .decide_with_binding(&id, binding.clone(), true)
         .await?;
-    let (agents, root) = harness.agents().await?;
+    let (agents, _) = harness.agents().await?;
+    let root = &worker;
     observed.settled(inbox).await?;
     assert!(client.pending_approval(&id).await?.is_none());
     assert!(client.approval_prompt(&id).await?.is_none());
