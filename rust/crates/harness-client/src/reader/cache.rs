@@ -977,8 +977,18 @@ impl RecordCache {
         protect: Option<u64>,
     ) -> bool {
         let key = self.resolve(stream, sequence);
-        if self.entries.contains_key(&key) {
-            // Immutable: an existing entry is already this record.
+        if let Some(entry) = self.entries.get(&key) {
+            if let (Value::Record(record), Some(evidence)) = (&entry.value, evidence)
+                && record.evidence().is_none()
+            {
+                // A restored payload is immutable, but its omitted coordinates
+                // can be learned by a fresh read. Re-admit the original backing
+                // with its added metadata through the same budget and protection.
+                let charge = entry.charge + evidence.origin.as_str().len();
+                let value = record.clone().with_evidence(evidence);
+                self.remove(&key);
+                return self.insert(key, Value::Record(value), charge, protect);
+            }
             self.touch(&key);
             return true;
         }
@@ -2309,6 +2319,58 @@ mod tests {
         cache.observe_tail(&StreamPath::new("test/other").unwrap(), 1);
         assert_eq!(cache.record(&child, 0).unwrap().as_ref(), b"a");
         assert_eq!(cache.record(&child, 3).unwrap().as_ref(), b"c");
+    }
+
+    #[test]
+    fn restored_record_refresh_retains_payload_and_charges_original_evidence() {
+        let stream = StreamPath::new("test/history").unwrap();
+        let evidence = RecordEvidence {
+            origin: StreamPath::new("original/append/stream").unwrap(),
+            sequence: 7,
+            commit: CommitId::from_bytes([3; 32]),
+            committed_at_micros: 42,
+        };
+        let mut source = RecordCache::new(4096, 16);
+        source.insert_record(&stream, 7, OwnedBytes::from(vec![7; 64]), None, None);
+        for tight in [false, true] {
+            let mut cache = RecordCache::new(4096, 16);
+            cache.restore(&source.snapshot()).unwrap();
+            let original = cache.record(&stream, 7).unwrap().clone();
+            assert_eq!(original.evidence(), None);
+            let before = cache.bytes();
+            if tight {
+                cache.set_budget(before);
+            }
+            let mark = cache.begin_frame();
+            let cached = cache.insert_record(
+                &stream,
+                7,
+                OwnedBytes::from_static(b"discarded refresh payload"),
+                Some(evidence.clone()),
+                Some(mark),
+            );
+            let refreshed = cache.record(&stream, 7).unwrap();
+            assert_eq!(refreshed.evidence(), Some(&evidence));
+            assert_eq!(refreshed.as_ptr(), original.as_ptr());
+            assert_eq!(refreshed.as_ref(), original.as_ref());
+            assert_eq!(cached, !tight);
+            if tight {
+                assert_eq!(cache.bytes(), 0);
+                assert_eq!(
+                    cache.passed_bytes(),
+                    before + evidence.origin.as_str().len()
+                );
+            } else {
+                let charged = before + evidence.origin.as_str().len();
+                assert_eq!(cache.bytes(), charged);
+                cache.insert_record(&stream, 7, OwnedBytes::from_static(b"ignored"), None, None);
+                assert_eq!(cache.bytes(), charged);
+                assert_eq!(
+                    cache.record(&stream, 7).unwrap().evidence(),
+                    Some(&evidence)
+                );
+            }
+        }
     }
 
     #[test]

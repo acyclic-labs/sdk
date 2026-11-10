@@ -73,6 +73,11 @@ impl RecordBytes {
         self.evidence.as_ref()
     }
 
+    pub(super) fn with_evidence(mut self, evidence: RecordEvidence) -> Self {
+        self.evidence = Some(evidence);
+        self
+    }
+
     pub(crate) fn backing(&self) -> &OwnedBytesBacking {
         &self.charge.backing
     }
