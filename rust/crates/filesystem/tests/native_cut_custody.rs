@@ -50,22 +50,17 @@ async fn decoded_cut_credit_survives_a_cursor_clone_on_another_meter()
             access_policy: None,
         },
         OperationId::new(),
-        &mut KernelAccounting::native(&capture, &cancel),
+        &mut accounting(&capture),
     )
     .await?;
     let (mut page, backing) = view
-        .list_directory(
-            "/ui",
-            None,
-            1,
-            &mut KernelAccounting::native(&capture, &cancel),
-        )
+        .list_directory("/ui", None, 1, &mut accounting(&capture))
         .await?;
     let cursor = page.next.take().ok_or("fixture must have another page")?;
     drop(page);
     drop(backing);
     let (encoded, backing) = cursor.encode(&capture)?;
-    cursor.retire(&mut KernelAccounting::native(&capture, &cancel))?;
+    cursor.retire(&mut accounting(&capture))?;
 
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
         .map_err(|(error, _)| error)?;
@@ -76,14 +71,21 @@ async fn decoded_cut_credit_survives_a_cursor_clone_on_another_meter()
     let decoded = LazyDirectoryCursor::decode(&encoded, config.profile, config.limits, &original)?;
     drop(encoded);
     drop(backing);
-    let clone = decoded.clone(&mut KernelAccounting::native(&receiver, &cancel))?;
-    decoded.retire(&mut KernelAccounting::native(&original, &cancel))?;
+    let clone = decoded.clone(&mut accounting(&receiver))?;
+    decoded.retire(&mut accounting(&original))?;
     assert!(
         original.live_allocation_bytes() > original_baseline,
         "the clone still holds decoded source cuts funded by the original meter"
     );
-    clone.retire(&mut KernelAccounting::native(&receiver, &cancel))?;
+    clone.retire(&mut accounting(&receiver))?;
     assert_eq!(original.live_allocation_bytes(), original_baseline);
     assert_eq!(receiver.live_allocation_bytes(), receiver_baseline);
     Ok(())
+}
+
+fn accounting(work: &NativeMaterializationWork) -> KernelAccounting<'_> {
+    KernelAccounting::NativeOriginal {
+        work,
+        cancellation: work.cancellation(),
+    }
 }
