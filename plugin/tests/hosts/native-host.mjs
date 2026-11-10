@@ -3,6 +3,11 @@ import {readFile,realpath,stat} from 'node:fs/promises';
 import {basename,delimiter,dirname,extname,isAbsolute,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
+// Fresh Windows profiles must select the native sandbox backend as well as
+// workspace-write policy. Other platforms retain their native backend.
+export const codexSandboxConfig=Object.freeze(process.platform==='win32'
+ ?['--config','windows.sandbox="unelevated"']:[]);
+
 const packages=Object.freeze({
  codex:['codex','@openai/codex','keyless-responses'],
  'claude-code':['claude','@anthropic-ai/claude-code','keyless-foundry'],

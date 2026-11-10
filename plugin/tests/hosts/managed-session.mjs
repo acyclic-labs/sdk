@@ -11,7 +11,7 @@ import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {environment,nativeEnvironment,scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {commandCancellation,withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
-import {nativeHost} from './native-host.mjs';
+import {codexSandboxConfig,nativeHost} from './native-host.mjs';
 
 const driver=fileURLToPath(import.meta.url);
 const recovery='node plugin/tests/hosts/managed-session.mjs ACYCLIC GRAPHCODER CODEX lifecycle|recursive|resume';
@@ -86,7 +86,7 @@ async function host(){
  await writeFile('native-launch.json',JSON.stringify({cwd:process.cwd(),args}));
  const events=(await readFile(process.env.FIXTURE_EVENTS,'utf8')).match(/.*\n/g);
  process.stdout.write(events[0]);
- const base=[...JSON.parse(process.env.FIXTURE_CODEX_ARGS),'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"',
+ const base=[...JSON.parse(process.env.FIXTURE_CODEX_ARGS),...codexSandboxConfig,'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"',
   '-c','sandbox_workspace_write.writable_roots='+JSON.stringify([args[args.indexOf('--add-dir')+1]]),'--'];
  if(prompt==='resumed')assert.equal(await readFile('.volumes/home/native-private.txt','utf8'),'first');
  const checked=await scope.run(process.env.FIXTURE_CODEX,[...base,process.execPath,driver,'effects',prompt],options());
@@ -188,7 +188,7 @@ async function scenario(argv,clock,root){
   // Codex's default /tmp and TMPDIR write grants.
   const probe=join(state,'sandbox-probe');
   await writeFile(probe,'parent-writable');await unlink(probe);
-  const capability=await scope.run(native.program,[...native.args,'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','--',
+  const capability=await scope.run(native.program,[...native.args,...codexSandboxConfig,'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','--',
    'sh','-c','set -eu; printf allowed > "$1"; if (printf denied > "$2") 2>/dev/null; then exit 41; fi; test ! -e "$2"',
    'sandbox-capability',join(workspace,'sandbox-probe'),probe],opts);
   assert.equal(capability.code,0,capability.stdout+capability.stderr);
