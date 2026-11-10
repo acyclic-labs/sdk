@@ -409,6 +409,18 @@ pub enum ContentChange<'a> {
 }
 
 impl ContentChange<'_> {
+    /// The filesystem action authorized by this exact publication member.
+    pub fn action(&self) -> acyclic_fs::access::Action {
+        use acyclic_fs::access::Action;
+        match self {
+            Self::CreateAbsent { .. } => Action::Create,
+            Self::UpdateExpected { .. } => Action::Write,
+            Self::DeleteExpected { .. } | Self::DeleteAt { .. } | Self::Delete { .. } => {
+                Action::Delete
+            }
+        }
+    }
+
     /// Exact destination path covered by the publication.
     pub fn path(&self) -> &str {
         match self {
