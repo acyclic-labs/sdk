@@ -109,7 +109,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 paths.retire(accounting)?;
                 return Ok(root.file_table);
             }
-            let limits = DecodeLimits::for_volume(config);
             let mut selected = Owned::<Vec<Owned<NamespacePath>>>::allocate(0, accounting)?;
             for path in &paths.value {
                 let (path, allocation) =

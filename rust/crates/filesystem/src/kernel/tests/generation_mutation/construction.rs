@@ -12,7 +12,6 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
     let second_id = FileId::from_bytes([102; 16]);
     let first = regular(first_id, metadata)?;
     let second = regular(second_id, metadata)?;
-    let limits = config().limits;
 
     let one = MutationPlan::compile(
         vec![Mutation::Create {

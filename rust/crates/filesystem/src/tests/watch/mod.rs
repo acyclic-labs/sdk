@@ -19,6 +19,8 @@ fn native_root_identity_encoding_is_exact_and_round_trips() {
     assert_eq!(NativeRootIdentity::from_bytes(bytes), identity);
 }
 use crate::kernel::NameEncoding;
+#[cfg(target_os = "macos")]
+use notify::event::CreateKind;
 use notify::event::EventAttributes;
 use notify::event::{DataChange, ModifyKind};
 use std::path::PathBuf;

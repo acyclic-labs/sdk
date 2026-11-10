@@ -1,5 +1,4 @@
 //! Focused public whole-file read behavior tests.
-use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, Transaction,
     TransactionCommit, WorkBudget, WorkspaceError,

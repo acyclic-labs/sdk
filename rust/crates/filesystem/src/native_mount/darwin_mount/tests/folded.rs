@@ -51,7 +51,7 @@ proptest! {
 
     #[test]
     fn folded_filtered_pager_preserves_visibility_and_eof(
-        pages in 0..11,
+        pages in 0_usize..11,
         visible in any::<bool>(),
     ) {
         filtered_pages(pages, visible).map_err(|error| TestCaseError::fail(error.to_string()))?;

@@ -95,6 +95,7 @@ fn canonical_name_key(
     Ok(key)
 }
 
+#[cfg(test)]
 pub(super) fn namespace_path_text(path: &NamespacePath) -> Result<String, WorkspaceError> {
     if path.is_root() {
         return Ok("/".to_owned());

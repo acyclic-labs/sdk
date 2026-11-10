@@ -202,7 +202,7 @@ where
         {
             return Err(s3s::s3_error!(InvalidArgument));
         }
-        let mut snapshot = self
+        let snapshot = self
             .multipart_snapshot(&workspace, &request.input.upload_id)
             .await?;
         if snapshot.key != request.input.key || snapshot.terminal.is_some() {

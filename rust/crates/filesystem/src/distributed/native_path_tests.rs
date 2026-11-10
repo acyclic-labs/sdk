@@ -97,7 +97,7 @@ proptest::proptest! {
         }
         let cancellation = CancellationToken::new();
         let mut old = AuthorityWork::new(budget, &cancellation);
-        let old_result = old.admit(writes).and_then(|()| old.path_buffer::<{ 65_535 }>(
+        let old_result = old.admit(writes).and_then(|()| old.path_buffer::<65_535>(
             b"fs/authorities/", authority, &suffix, reference.as_ref().map(|bytes| bytes.as_slice()), length, writes));
         let mut work = AuthorityWork::new(budget, &cancellation);
         let actual = work.path(&AuthorityPlacement::default(), authority, &suffix, generation);

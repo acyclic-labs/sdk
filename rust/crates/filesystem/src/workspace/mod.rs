@@ -105,9 +105,11 @@ pub use join_directory::{
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub use join_directory::{check_captured_merge_resolution, check_merge_directory_resolution};
+#[cfg(test)]
+use join_helpers::namespace_path_text;
 use join_helpers::{
-    binding_conflict_view, conflict_file_id, kernel_conflict, namespace_path_text,
-    record_conflict_view, resolution_matches_conflict, side_resolution,
+    binding_conflict_view, conflict_file_id, kernel_conflict, record_conflict_view,
+    resolution_matches_conflict, side_resolution,
 };
 pub use join_preview::{JoinCleanStep, JoinConflictEntry, JoinContent, JoinPathEntry, JoinPreview};
 pub use metadata::{WorkspaceMetadata, WorkspaceStat};
