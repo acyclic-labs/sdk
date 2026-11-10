@@ -502,8 +502,7 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
         let spawned = spawning(later.state.clone(), "s1");
         let request = lower(&spawned, 3, delivery_key(&spawned.state, "s1")?)?;
         let adopted = request
-            .mutations
-            .iter()
+            .mutations()
             .find_map(|mutation| match mutation {
                 CommitMutation::Fork { records, .. } => records.first(),
                 _ => None,
