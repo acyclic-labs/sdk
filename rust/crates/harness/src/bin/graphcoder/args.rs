@@ -48,7 +48,7 @@ pub struct Args {
     pub signal_ready: bool,
     /// Own workspace files for native coding hosts, without a provider or agent loop.
     /// Emits a `workspace-owner-ready` JSONL event on stdout after request events are installed.
-    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "transcripts", "resume", "agent"])]
+    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "transcripts", "resume", "agent", "continue_session", "new_session"])]
     pub host_workspace: bool,
     /// Explicit durable storage for the local owner or a selected agent.
     #[arg(long, conflicts_with = "endpoint")]
@@ -129,19 +129,19 @@ pub struct Args {
     #[arg(long, global = true)]
     pub operation: Option<String>,
     /// Continue the latest session for this checkout.
-    #[arg(short = 'c', long = "continue", global = true, conflicts_with_all = ["resume", "new_session", "agent", "fork_from", "host_workspace"])]
+    #[arg(short = 'c', long = "continue", global = true, conflicts_with_all = ["resume", "new_session", "agent"])]
     pub continue_session: bool,
     /// Resume a session by id or name, or open the paged picker when omitted.
-    #[arg(short = 'r', long, global = true, num_args = 0..=1, value_name = "SESSION", conflicts_with_all = ["new_session", "agent", "fork_from"])]
+    #[arg(short = 'r', long, global = true, num_args = 0..=1, value_name = "SESSION", conflicts_with_all = ["new_session", "agent"])]
     pub resume: Option<Option<String>>,
     /// Start an independent session for this checkout.
-    #[arg(long, global = true, conflicts_with_all = ["agent", "fork_from", "host_workspace"])]
+    #[arg(long, global = true, conflicts_with = "agent")]
     pub new_session: bool,
     /// Select an existing session by its canonical agent path.
     #[arg(long, global = true)]
     pub agent: Option<String>,
     /// Fork a decider's retained conversation event and workspace generation.
-    #[arg(long, value_name = "AGENT_PATH@EVENT_OFFSET", conflicts_with_all = ["agent", "resume", "host_workspace"])]
+    #[arg(long, value_name = "AGENT_PATH@EVENT_OFFSET", conflicts_with_all = ["agent", "resume", "continue_session", "new_session", "host_workspace"])]
     pub fork_from: Option<String>,
     /// Version-one continuation JSON: {"version":1,"override_item":...}.
     #[arg(long = "override", global = true, value_name = "FILE")]
