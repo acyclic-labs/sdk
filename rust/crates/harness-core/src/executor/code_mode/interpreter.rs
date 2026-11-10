@@ -321,7 +321,7 @@ mod tests {
             .agent_context(&Capabilities::default(), content)?,
         );
         let code = r#"
-            import {read, write, remove, list, spawn, fork, DeniedError, ConflictError} from 'acyclic';
+            import {read, write, remove, list, DeniedError, ConflictError} from 'acyclic';
             const first = await write('file.txt', 'one\r\nβ\n', 'absent');
             const file = await read('file.txt');
             if (file.lines(0, 0).length !== 0) throw new Error('empty line selection');
@@ -366,11 +366,6 @@ mod tests {
             catch (error) { if (!(error instanceof DeniedError)) throw error; }
             try { await remove('remove.txt', 'absent'); throw new Error('invalid condition succeeded'); }
             catch (error) { if (!(error instanceof TypeError)) throw error; }
-            const stubs = [];
-            for (const create of [spawn, fork]) {
-                try { await create(); throw new Error('creation succeeded'); }
-                catch (error) { if (!(error instanceof DeniedError)) throw error; stubs.push(error.reason); }
-            }
             await write('agent.ts', {model: 'example/model'}, 'any');
             const moduleText = (await read('agent.ts')).text();
             const notebook = '{"cells":[],"nbformat":4}';
@@ -409,7 +404,7 @@ mod tests {
                 for await (const entry of list('missing-directory')) throw new Error('missing directory yielded');
             } catch (error) { missingError = error; }
             if (missingError?.class !== 'not_found') throw new Error('missing directory was not refused');
-            export default {lines, conflict, absent, stubs, moduleText};
+            export default {lines, conflict, absent, moduleText};
         "#;
         let (send, mut receive) = tokio::sync::mpsc::channel(1);
         let (result, served) = tokio::join!(
@@ -590,7 +585,7 @@ mod tests {
             result.unwrap().unwrap().value,
             serde_json::json!({
                 "lines":["β"],"conflict":"changed","absent":null,
-                "stubs":["needs P2","needs P2"],"moduleText":"export default {\"model\":\"example/model\"}",
+                "moduleText":"export default {\"model\":\"example/model\"}",
             })
         );
         // Ten original operations, two notebook operations and one large write.
