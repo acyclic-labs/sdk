@@ -851,6 +851,8 @@ mod tests {
                     sequence: 0,
                     value: b"late".as_slice().into(),
                     commit: acyclic_stream::CommitId::from_bytes([7; 32]),
+                    origin: path.clone(),
+                    committed_at_micros: 0,
                 }]),
                 700,
             );
