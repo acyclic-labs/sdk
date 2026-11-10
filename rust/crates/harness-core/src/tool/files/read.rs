@@ -106,14 +106,15 @@ impl FileTool {
                 })
                 .or_else(|| bytes.starts_with(b"%PDF-").then_some(ReadSelection::Pdf));
             if media.is_some() {
-                let selected = match window.source {
-                    FileReadSource::Authored(selected) => selected,
-                    FileReadSource::Content(file) => return self.media_result(file, media, work),
-                };
-                // Native input needs complete bytes. Resolve only this already
-                // selected generation; a concurrent head cannot substitute it.
-                let source =
-                    super::executor::Source::selected(context, &input.path, &selected, io).await?;
+                // Native input needs complete bytes from this same selected generation.
+                let source = super::executor::Source::selected(
+                    context,
+                    &input.path,
+                    window.into_source(),
+                    work,
+                    io,
+                )
+                .await?;
                 return self.media_result(source.file, media, work);
             }
         }
