@@ -283,6 +283,10 @@ mod unix {
                 use std::os::fd::AsRawFd as _;
                 use std::os::unix::process::CommandExt as _;
                 let boundary = command.boundary.take();
+                #[cfg(target_os = "macos")]
+                if let Some(boundary) = &boundary {
+                    boundary.wrap_command(command)?;
+                }
                 let mut native = command.to_std()?;
                 let descriptor = directory.as_raw_fd();
                 let owner = libc::pid_t::try_from(std::process::id())
