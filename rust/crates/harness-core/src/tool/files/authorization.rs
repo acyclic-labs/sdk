@@ -44,6 +44,16 @@ impl FileTool {
             scope.limits().file_bytes,
             &mut None,
         )?;
+        // A source version proves identity, never write permission through an alias.
+        // Classify the original public destination before selecting any version.
+        if !self.is_read()
+            && let Some(path) = invocation.arguments.get("path").and_then(Value::as_str)
+        {
+            self.public_path(path, io)?;
+            if let Some(context) = context {
+                context.tool_write_path_selection(path, io)?;
+            }
+        }
         let (file, custody) = self.decode_source(scope, context, invocation, work, io)?;
         let Some(file) = file else {
             return Ok((None, custody));

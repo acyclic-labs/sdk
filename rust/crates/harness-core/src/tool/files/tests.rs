@@ -233,6 +233,47 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
             } else if mode != "omitted" {
                 arguments["ifVersion"] = json!(mode);
             }
+            if prefix == crate::layers::HOME_PATH
+                && matches!(mode, "content" | "authored" | "namespace")
+            {
+                for alias in [crate::layers::EFFECTIVE_PATH, crate::layers::SEED_PATH] {
+                    let mut aliased = arguments.clone();
+                    aliased["path"] = json!(format!("{alias}{relative}"));
+                    let invocation = ToolInvocation {
+                        operation_id: OperationId::new(),
+                        call_id: format!("read-only-{mode}"),
+                        name: "write".into(),
+                        arguments: aliased,
+                    };
+                    let context = ToolContext::new(
+                        task.clone(),
+                        invocation.operation_id,
+                        &invocation.call_id,
+                    )?;
+                    assert_eq!(
+                        write()?
+                            .executor
+                            .authorize(
+                                Some(context.effective_scope()),
+                                Some(&context),
+                                &invocation,
+                                None
+                            )
+                            .unwrap_err()
+                            .code(),
+                        crate::wire::ErrorCode::Unauthorized
+                    );
+                    assert_eq!(
+                        write()?
+                            .executor
+                            .execute(invocation, Some(context))
+                            .await
+                            .unwrap_err()
+                            .code(),
+                        crate::wire::ErrorCode::Unauthorized
+                    );
+                }
+            }
             let invocation = ToolInvocation {
                 operation_id: OperationId::new(),
                 call_id: format!("write-{mode}"),
