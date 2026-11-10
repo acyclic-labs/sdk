@@ -98,7 +98,8 @@
         "pty-diff-folder-move",
         "pty-diff-folder-replace",
         "pty-diff-large-restoration",
-        "pty-diff-limit"
+        "pty-diff-limit",
+        "session-detach-reattach-running"
       ]
     },
     "A8": {
