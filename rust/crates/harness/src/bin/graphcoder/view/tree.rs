@@ -4,8 +4,9 @@ use acyclic_harness::{
     agent::AgentPath,
     client::{
         explorer::{LiveExplorer, Row},
-        ui::{ReaderCut, UiPath, View as UiView},
+        ui::{AgentRow, ReaderCut, View as UiView},
     },
+    local::agent_conversation::VisibleFiles,
     tui::{
         DecodedKey, InputKeymap, Motion, decode_key,
         key_event::{KeyCode, KeyEventKind, MouseButton, MouseEventKind},
@@ -18,6 +19,7 @@ pub(super) enum Intent {
     Input,
     Attach(AgentPath),
     Parent,
+    History(isize),
     Consumed,
 }
 
@@ -26,23 +28,61 @@ pub(super) struct Sidebar {
     pub focused: bool,
     selected: usize,
     pub failure: Option<String>,
+    pub files: VisibleFiles,
+    history: Vec<AgentPath>,
+    history_at: usize,
 }
 
 impl Sidebar {
-    pub fn new(conversation: &Conversation) -> Result<Self, Failure> {
+    pub fn new(conversation: &Arc<Conversation>) -> Result<Self, Failure> {
         Ok(Self {
             source: conversation.tree()?,
             focused: false,
             selected: 0,
             failure: None,
+            files: VisibleFiles::new(
+                Arc::clone(conversation),
+                AgentRow::PATHS
+                    .into_iter()
+                    .map(|path| format!("ui/{path}"))
+                    .collect(),
+            ),
+            history: vec![conversation.agent().clone()],
+            history_at: 0,
         })
     }
 
-    pub fn frame(&mut self, now: u64, height: u16) {
+    pub fn history_target(&self, direction: isize) -> Option<(AgentPath, Option<usize>)> {
+        let at = self.history_at.checked_add_signed(direction)?;
+        self.history.get(at).cloned().map(|agent| (agent, Some(at)))
+    }
+
+    /// Only a successfully attached node enters the navigation history.
+    pub fn attached(&mut self, agent: &AgentPath, history: Option<usize>) {
+        if let Some(at) = history {
+            self.history_at = at;
+        } else if self.history[self.history_at] != *agent {
+            self.history.truncate(self.history_at + 1);
+            self.history.push(agent.clone());
+            self.history_at += 1;
+        }
+    }
+
+    pub fn frame(&mut self, now: u64, height: u16, visible: bool) {
         self.source
             .view
             .set_viewport(usize::from(height.saturating_sub(3)).max(1), 0, 16);
         self.source.view.frame(now);
+        self.files.retain(
+            self.source
+                .view
+                .rows()
+                .iter()
+                .filter_map(|(_, row)| match row {
+                    Row::Agent { path, .. } if visible => Some(path.clone()),
+                    _ => None,
+                }),
+        );
         self.selected = self
             .selected
             .min(self.source.view.rows().len().saturating_sub(1));
@@ -67,7 +107,6 @@ impl Sidebar {
             return vec![Line::raw(format!("Tree unavailable: {error}"))];
         }
         let projection = UiView::new(1).expect("nonzero UI page size");
-        let status = UiPath::new("status.md").expect("UI status path");
         let mut rows: Vec<_> = self
             .source
             .view
@@ -88,17 +127,34 @@ impl Sidebar {
                             agent: path,
                             file: &|_| None,
                         };
-                        let text = projection
-                            .project(&cut, &status)
-                            .unwrap_or_else(|_| "Loading…".into());
+                        let summary = match self.files.snapshot(path) {
+                            Some(Ok(files)) => projection
+                                .row(&cut, |name| {
+                                    files
+                                        .files
+                                        .get(&format!("ui/{name}"))
+                                        .and_then(Option::as_ref)
+                                        .map(|file| file.text.as_str())
+                                })
+                                .map_err(|error| error.to_string()),
+                            Some(Err(error)) => Err(format!("UI unavailable: {error}")),
+                            None => Err("Loading…".into()),
+                        };
                         let indent = path.depth().saturating_sub(root.depth() + 1).min(8);
                         let branch = if *expanded { '▾' } else { '▸' };
-                        Line::raw(format!(
-                            "{marker}{}{branch} {} · {}",
-                            "  ".repeat(indent),
-                            path.id(),
-                            text.lines().next().unwrap_or_default()
-                        ))
+                        let prefix = format!("{marker}{}{branch}", "  ".repeat(indent));
+                        match summary {
+                            Ok(row) => Line::raw(format!(
+                                "{prefix} {} {} · {} · {} · {} · {}",
+                                first_line(&row.glyph),
+                                first_line(&row.title),
+                                first_line(&row.model),
+                                first_line(&row.cost),
+                                first_line(&row.age),
+                                first_line(&row.state)
+                            )),
+                            Err(error) => Line::raw(format!("{prefix} {} · {error}", path.id())),
+                        }
                     }
                 }
             })
@@ -156,6 +212,17 @@ impl Sidebar {
             })
         ) {
             return Some(Intent::Parent);
+        }
+        match decoded {
+            Some(DecodedKey::Action {
+                action: Action::App(AppAction::NavigationBack),
+                ..
+            }) => return Some(Intent::History(-1)),
+            Some(DecodedKey::Action {
+                action: Action::App(AppAction::NavigationForward),
+                ..
+            }) => return Some(Intent::History(1)),
+            _ => {}
         }
         if !shown || !self.focused {
             return None;
@@ -222,4 +289,13 @@ impl Sidebar {
         }
         Some(Intent::Consumed)
     }
+}
+
+fn first_line(text: &str) -> String {
+    text.lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect()
 }

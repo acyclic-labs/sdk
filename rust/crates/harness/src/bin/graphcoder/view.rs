@@ -721,9 +721,10 @@ pub async fn run(
             } else {
                 4
             },
+            shown && size.width >= 80,
         );
         let tree_shown = ui.tree.unwrap_or_else(|| sidebar.has_children());
-        let tree_rows = sidebar.rows(root.agent(), tree_shown);
+        let tree_rows = sidebar.rows(root.agent(), tree_shown && size.width >= 80);
         let transcript_width = size
             .width
             .saturating_sub(if tree_shown && size.width >= 80 {
@@ -836,6 +837,7 @@ pub async fn run(
         }
         let tree_deadline = sidebar.source.next_deadline();
         tokio::select! {
+            () = futures::future::poll_fn(|cx| sidebar.files.poll_changed(cx)) => {}
             () = futures::future::poll_fn(|cx| sidebar.source.poll_changed(now, cx)), if sidebar.failure.is_none() => {}
             () = async {
                 if let Some(deadline) = tree_deadline {
@@ -970,13 +972,15 @@ pub async fn run(
                                 selection_changed = true;
                                 None
                             }
-                            tree::Intent::Attach(agent) => Some(agent),
+                            tree::Intent::Attach(agent) => Some((agent, None)),
                             tree::Intent::Parent => conversation.agent().parent()
-                                .filter(|agent| root.agent().contains(agent)),
+                                .filter(|agent| root.agent().contains(agent)).map(|agent| (agent, None)),
+                            tree::Intent::History(direction) => sidebar.history_target(direction),
                             tree::Intent::Input | tree::Intent::Consumed => None,
                         };
-                        if let Some(agent) = attach {
-                            let selected = root.select(agent).await?;
+                        if let Some((agent, history)) = attach {
+                            let selected = root.select(agent.clone()).await?;
+                            sidebar.attached(&agent, history);
                             let from = selected.settled().await?.saturating_sub(1);
                             events = selected.observe(Some(from)).await?;
                             conversation = selected;

@@ -836,7 +836,19 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .is_err()
     );
     let paths = vec!["directory-a".to_owned(), "absent-row".to_owned()];
+    let mut visible =
+        crate::local::agent_conversation::VisibleFiles::new(Arc::clone(&client), paths.clone());
+    visible.retain([root.clone()]);
+    futures::future::poll_fn(|cx| visible.poll_changed(cx)).await;
     let snapshot = client.private_files(paths.clone(), None).await?;
+    assert_eq!(
+        visible
+            .snapshot(&root)
+            .ok_or_else(|| Error::NotFound("visible cut".into()))?
+            .map_err(agent)?
+            .generation,
+        snapshot.generation
+    );
     assert!(snapshot.files["absent-row"].is_none());
     assert_eq!(
         snapshot.files["directory-a"]
@@ -851,11 +863,24 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         futures::poll!(waiting.as_mut()).is_pending(),
         "unchanged files must wait on publication"
     );
+    assert!(futures::poll!(futures::future::poll_fn(|cx| visible.poll_changed(cx))).is_pending());
     private
         .write_text("/directory-a", "authored row changed")
         .await
         .map_err(agent)?;
     let updated = waiting.await?;
+    futures::future::poll_fn(|cx| visible.poll_changed(cx)).await;
+    assert_eq!(
+        visible
+            .snapshot(&root)
+            .ok_or_else(|| Error::NotFound("published visible cut".into()))?
+            .map_err(agent)?
+            .generation,
+        updated.generation
+    );
+    visible.retain(std::iter::empty());
+    assert!(visible.snapshot(&root).is_none());
+    assert!(futures::poll!(futures::future::poll_fn(|cx| visible.poll_changed(cx))).is_pending());
     assert_ne!(updated.generation, snapshot.generation);
     assert_eq!(
         updated.files["directory-a"]

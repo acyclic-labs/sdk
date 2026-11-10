@@ -6,7 +6,7 @@ pub use attention::{attention, attention_wants};
 mod project;
 mod reply;
 use acyclic_harness_core::command_request::CommandFileRoot;
-pub use project::{Affected, Cut, Node, Page, ReaderCut, View};
+pub use project::{Affected, AgentRow, Cut, Node, Page, ReaderCut, View};
 pub use reply::{Reply, ReplyPayload, approval_reply};
 
 /// Projection or untrusted document failure.

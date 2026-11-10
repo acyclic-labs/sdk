@@ -7,6 +7,8 @@ use std::ops::Range;
 /// Immutable provider cut. Implementations borrow cached/pinned values and do
 /// no IO; `Computed` can supply a server cut without changing the view.
 pub trait Cut {
+    /// Agent whose stream and volume facts this cut selects.
+    fn agent(&self) -> &AgentPath;
     /// Latest status at this cut.
     fn status(&self) -> Result<StatusRecord>;
     /// Exclusive conversation tail, or unavailable until demanded.
@@ -27,7 +29,33 @@ pub struct ReaderCut<'a> {
     /// Already resident immutable output text; absence asks the caller to read it.
     pub file: &'a dyn Fn(&FileRef) -> Option<String>,
 }
+
+/// A single agent row, projected from its visible UI files. An em dash means
+/// the selected cut has no model, price or age fact; these are never guessed.
+pub struct AgentRow {
+    /// State glyph from the original phase, or an authored replacement.
+    pub glyph: String,
+    /// State text (including authored status.md overrides).
+    pub state: String,
+    /// Authored title, otherwise the canonical agent identity.
+    pub title: String,
+    /// Authored model label, when available at the cut.
+    pub model: String,
+    /// Authored cost with its original currency/unit.
+    pub cost: String,
+    /// Authored age label.
+    pub age: String,
+}
+
+impl AgentRow {
+    /// Explicit UI paths needed for one visible row. Querying these paths does
+    /// not list a directory or evaluate another agent's projection.
+    pub const PATHS: [&str; 6] = ["status.md", "title", "model", "cost", "age", "glyph"];
+}
 impl Cut for ReaderCut<'_> {
+    fn agent(&self) -> &AgentPath {
+        self.agent
+    }
     fn status(&self) -> Result<StatusRecord> {
         let stream = self.agent.status()?;
         let tail = self.reader.cache().tail(&stream).ok_or(Error::Pending)?;
@@ -98,6 +126,26 @@ pub struct View {
     page_size: u32,
 }
 impl View {
+    /// Resolve authored UI files over the default projection, with no IO or
+    /// per-agent cache. Missing model/cost/age data remains explicitly unknown.
+    pub fn row<'a>(
+        &self,
+        cut: &impl Cut,
+        file: impl Fn(&str) -> Option<&'a str>,
+    ) -> Result<AgentRow> {
+        let resolve = |path: &str| -> Result<String> {
+            let path_ref = UiPath::new(path)?;
+            path_ref.resolve(file(path), || self.project(cut, &path_ref))
+        };
+        Ok(AgentRow {
+            glyph: resolve("glyph")?,
+            state: resolve("status.md")?,
+            title: resolve("title")?,
+            model: resolve("model")?,
+            cost: resolve("cost")?,
+            age: resolve("age")?,
+        })
+    }
     /// Select a nonzero chunk size (the reader owns transport page sizing).
     pub fn new(page_size: u32) -> Result<Self> {
         if page_size == 0 {
@@ -177,6 +225,11 @@ impl View {
                     ("status.md", false),
                     ("children", true),
                     ("turns", true),
+                    ("title", false),
+                    ("model", false),
+                    ("cost", false),
+                    ("age", false),
+                    ("glyph", false),
                 ];
                 let nodes = names
                     .into_iter()
@@ -191,7 +244,7 @@ impl View {
                 let end = cursor.saturating_add(nodes.len() as u64);
                 Ok(Page {
                     nodes,
-                    next: (end < 4).then_some(end),
+                    next: (end < names.len() as u64).then_some(end),
                 })
             }
             "children" => {
@@ -256,6 +309,22 @@ impl View {
     /// Pure markdown generation; authored-over-default resolution wraps this.
     pub fn project(&self, cut: &impl Cut, path: &UiPath) -> Result<String> {
         match path.as_str() {
+            "title" => Ok(cut.agent().id().to_string()),
+            "model" | "cost" | "age" => Ok("—".into()),
+            "glyph" => Ok(match cut.status()?.phase {
+                Phase::Idle => "○",
+                Phase::Running => "●",
+                Phase::WaitingApproval { .. } | Phase::WaitingUser { .. } => "?",
+                Phase::WaitingHost { .. } | Phase::Waiting { .. } => "◌",
+                Phase::Done {
+                    outcome: acyclic_harness_core::agent::AgentOutcome::Succeeded { .. },
+                } => "✓",
+                Phase::Done {
+                    outcome: acyclic_harness_core::agent::AgentOutcome::Failed { .. },
+                } => "✗",
+                Phase::Done { .. } => "■",
+            }
+            .into()),
             "status.md" => status(cut),
             "index.md" => {
                 let tail = cut.tail().ok_or(Error::Pending)?;
@@ -318,7 +387,7 @@ impl View {
     pub fn affected(&self, event: Affected) -> &'static [&'static str] {
         match event {
             Affected::Conversation => &["index.md", "turns"],
-            Affected::Status => &["index.md", "status.md"],
+            Affected::Status => &["index.md", "status.md", "glyph"],
             Affected::Children => &["children"],
         }
     }
