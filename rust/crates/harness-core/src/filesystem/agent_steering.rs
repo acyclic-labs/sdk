@@ -114,7 +114,11 @@ where
                 .through
                 .unwrap_or_else(|| self.inbox.saturating_add(1).max(self.agent.steered_through))
         };
-        let mut selection = crate::agent::select_boundary(
+        // Every request boundary, including the first, takes the same ordered
+        // inbox window. A message arriving during context discovery must not
+        // hide a later source-change notice. The prepared cut freezes both
+        // together, and select_boundary preserves follow-up/interrupt barriers.
+        let selection = crate::agent::select_boundary(
             &*self.stream,
             &self.agent,
             self.cursor,
@@ -124,30 +128,6 @@ where
         )
         .await
         .map_err(agent_error)?;
-        // The first request keeps the turn's frozen original input. Of what
-        // arrived since its admission it takes only the leading run of quiet
-        // notices (context changes among them), appended after that input, so
-        // the request sees every source change made before it; anything else
-        // is steering at the next boundary. Its cut is frozen like any other.
-        if step == 0 {
-            let run = selection
-                .inputs
-                .iter()
-                .zip(from..)
-                .take_while(|((inbox, input), expected)| {
-                    inbox == expected
-                        && matches!(
-                            input,
-                            crate::agent::InboxRecord::Notice {
-                                notice: crate::agent::NoticePayload::Quiet(_),
-                                ..
-                            }
-                        )
-                })
-                .count();
-            selection.inputs.truncate(run);
-            selection.through = from + run as u64;
-        }
         let initial_notices = crate::agent::turn_notices(&self.agent).map_err(agent_error)?;
         let inputs = selection.inputs.into_iter().filter(|(inbox, input)| {
             !matches!(input, crate::agent::InboxRecord::Notice {
