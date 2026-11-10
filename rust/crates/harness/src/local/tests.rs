@@ -111,6 +111,13 @@ async fn request_text(
     )?;
     let mut text = String::new();
     for message in &request.messages {
+        if let Some((notices, _)) = message.content.notice_parts() {
+            text.push_str(
+                &serde_json::to_string(notices)
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+            );
+            text.push('\n');
+        }
         if let crate::model::ModelContent::Text(body) = &message.content {
             text.push_str(body);
             text.push('\n');
@@ -122,7 +129,11 @@ async fn request_text(
             }
         }
         for (file, policy) in message.content.file_parts() {
-            if matches!(policy, crate::model::FileProjectionPolicy::BoundedFull) {
+            if matches!(
+                policy,
+                crate::model::FileProjectionPolicy::BoundedFull
+                    | crate::model::FileProjectionPolicy::ProjectInstructions(_)
+            ) {
                 let bytes = reader
                     .read(file, file.descriptor().byte_length(), None, None)?
                     .await?;
