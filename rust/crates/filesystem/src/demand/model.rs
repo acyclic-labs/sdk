@@ -8,8 +8,8 @@ pub struct SourceReference {
     pub identity: [u8; 16],
     /// Incremented when source knowledge is invalidated.
     pub epoch: u64,
-    /// Canonical preorder encoding of the two routed components, or empty for
-    /// a leaf. Each node has a 32-byte header followed by its children.
+    /// Empty for a scalar cut; otherwise a tagged opaque payload (0) or pair
+    /// (1). Pair children have a 32-byte header followed by their tagged body.
     pub components: acyclic_stream::OwnedBytes,
 }
 
@@ -20,6 +20,44 @@ impl SourceReference {
             identity,
             epoch,
             components: acyclic_stream::OwnedBytes::new(),
+        }
+    }
+    /// Captures a provider's complete immutable cut on the original ledger.
+    /// The provider interprets the payload; routing only retains its bytes.
+    pub fn opaque(
+        identity: [u8; 16],
+        epoch: u64,
+        payload: &[u8],
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<Self, DemandError> {
+        if payload.is_empty() {
+            ctx.check()?;
+            return Ok(Self::new(identity, epoch));
+        }
+        let length = payload
+            .len()
+            .checked_add(1)
+            .ok_or(crate::WorkError::Overflow)?;
+        let mut bytes = crate::kernel::Retained::allocate(length, ctx)?;
+        ctx.charge(WorkCounters {
+            bytes_copied: payload.len() as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        bytes.value.push(0);
+        bytes.value.extend_from_slice(payload);
+        Ok(Self {
+            identity,
+            epoch,
+            components: bytes.into_owned_bytes((), ctx)?,
+        })
+    }
+    /// Borrow a provider payload, refusing a composed reference. Scalar cuts
+    /// have an empty payload. The returned bytes share this cut's custody.
+    pub fn payload(&self) -> Result<&[u8], DemandError> {
+        match self.components.as_slice() {
+            [] => Ok(&[]),
+            [0, payload @ ..] if !payload.is_empty() => Ok(payload),
+            _ => Err(DemandError::StaleSource),
         }
     }
     /// Canonical width, including all statically composed sources.
@@ -87,40 +125,29 @@ impl SourceReference {
         Ok(())
     }
     fn valid(&self) -> bool {
-        if self.components.is_empty() {
-            return true;
-        }
-        if self.epoch != 0 || self.components.len() % 32 != 0 {
-            return false;
-        }
         let body = self.components.as_slice();
-        fn subtree(body: &[u8], start: usize) -> Option<usize> {
-            let header = body.get(start..start.checked_add(32)?)?;
-            let length = usize::try_from(u64::from_le_bytes(header[24..].try_into().ok()?)).ok()?;
-            let end = start.checked_add(32)?.checked_add(length)?;
-            (length % 32 == 0 && end <= body.len()).then_some(end)
-        }
-        let Some(second) = subtree(body, 0) else {
-            return false;
-        };
-        if subtree(body, second) != Some(body.len()) {
-            return false;
-        }
-        for start in (0..body.len()).step_by(32) {
-            let Some(end) = subtree(body, start) else {
+        fn pair(body: &[u8], from: usize, end: usize) -> bool {
+            let Some((_, _, _, second)) = reference_node(body, from) else {
                 return false;
             };
-            if end == start + 32 {
-                continue;
-            }
-            if body[start + 16..start + 24] != [0; 8] {
-                return false;
-            }
-            let Some(second) = subtree(body, start + 32) else {
+            reference_node(body, second).is_some_and(|(_, _, _, last)| last == end)
+        }
+        match body {
+            [] => return true,
+            [0, payload @ ..] => return !payload.is_empty(),
+            [1, ..] if self.epoch == 0 && pair(body, 1, body.len()) => {}
+            _ => return false,
+        }
+        let mut from = 1;
+        while from < body.len() {
+            let Some((_, epoch, components, end)) = reference_node(body, from) else {
                 return false;
             };
-            if subtree(body, second) != Some(end) {
-                return false;
+            match components {
+                [] => from = end,
+                [0, payload @ ..] if !payload.is_empty() => from = end,
+                [1, ..] if epoch == 0 && pair(body, from + 33, end) => from += 33,
+                _ => return false,
             }
         }
         true
@@ -128,25 +155,47 @@ impl SourceReference {
     /// Whether this reference belongs to the same namespace and follows every
     /// retained leaf. Comparing preorder records needs no recursion or scratch.
     pub(crate) fn follows(&self, previous: &Self) -> bool {
-        if !self.valid()
-            || !previous.valid()
-            || self.identity != previous.identity
-            || self.epoch < previous.epoch
-            || self.components.len() != previous.components.len()
-            || self.components.len() % 32 != 0
-        {
+        if !self.valid() || !previous.valid() {
             return false;
         }
-        self.components
-            .as_slice()
-            .chunks_exact(32)
-            .zip(previous.components.as_slice().chunks_exact(32))
-            .all(|(now, old)| {
-                now[..16] == old[..16]
-                    && now[24..] == old[24..]
-                    && u64::from_le_bytes(now[16..24].try_into().unwrap())
-                        >= u64::from_le_bytes(old[16..24].try_into().unwrap())
-            })
+        let mut now = self.nodes();
+        let mut old = previous.nodes();
+        loop {
+            match (now.next(), old.next()) {
+                (None, None) => return true,
+                (Some((id, epoch, body)), Some((prior_id, prior_epoch, prior)))
+                    if id == prior_id && epoch >= prior_epoch =>
+                {
+                    match (body.first(), prior.first()) {
+                        (Some(1), Some(1)) => {}
+                        (Some(1), _) | (_, Some(1)) => return false,
+                        _ if epoch == prior_epoch && body != prior => return false,
+                        _ => {}
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+    fn nodes(&self) -> impl Iterator<Item = ([u8; 16], u64, &[u8])> {
+        let body = self.components.as_slice();
+        let mut from = if body.first() == Some(&1) {
+            1
+        } else {
+            body.len()
+        };
+        std::iter::once((self.identity, self.epoch, body)).chain(std::iter::from_fn(move || {
+            if from == body.len() {
+                return None;
+            }
+            let (identity, epoch, components, end) = reference_node(body, from)?;
+            from = if components.first() == Some(&1) {
+                from + 33
+            } else {
+                end
+            };
+            Some((identity, epoch, components))
+        }))
     }
     pub(crate) fn pair(
         identity: [u8; 16],
@@ -157,12 +206,14 @@ impl SourceReference {
         let length = base
             .encoded_len()
             .checked_add(view.encoded_len())
+            .and_then(|length| length.checked_add(1))
             .ok_or(crate::WorkError::Overflow)?;
         let mut bytes = crate::kernel::Retained::allocate(length, ctx)?;
         ctx.charge(WorkCounters {
-            bytes_copied: length as u64,
+            bytes_copied: (length - 1) as u64,
             ..WorkCounters::UNCHARGED
         })?;
+        bytes.value.push(1);
         base.encode(|part| bytes.value.extend_from_slice(part));
         view.encode(|part| bytes.value.extend_from_slice(part));
         let components = bytes.into_owned_bytes((), ctx)?;
@@ -174,23 +225,20 @@ impl SourceReference {
     }
     /// Split a held pair using slices of its original backing; no allocation.
     pub(crate) fn paired(&self) -> Result<(Self, Self), DemandError> {
-        if !self.valid() {
+        if !self.valid() || self.components.as_slice().first() != Some(&1) {
             return Err(DemandError::StaleSource);
         }
         fn node(
             bytes: &acyclic_stream::OwnedBytes,
             from: usize,
         ) -> Option<(SourceReference, usize)> {
-            let head = bytes.as_slice().get(from..from.checked_add(32)?)?;
-            let length = usize::try_from(u64::from_le_bytes(head[24..32].try_into().ok()?)).ok()?;
-            let start = from.checked_add(32)?;
-            let end = start.checked_add(length)?;
-            bytes.as_slice().get(start..end)?;
+            let (identity, epoch, body, end) = reference_node(bytes.as_slice(), from)?;
+            let start = end - body.len();
             Some((
                 SourceReference {
-                    identity: head[..16].try_into().ok()?,
-                    epoch: u64::from_le_bytes(head[16..24].try_into().ok()?),
-                    components: if length == 0 {
+                    identity,
+                    epoch,
+                    components: if body.is_empty() {
                         acyclic_stream::OwnedBytes::new()
                     } else {
                         bytes.slice(start..end)
@@ -199,12 +247,78 @@ impl SourceReference {
                 end,
             ))
         }
-        let (base, next) = node(&self.components, 0).ok_or(DemandError::StaleSource)?;
+        let (base, next) = node(&self.components, 1).ok_or(DemandError::StaleSource)?;
         let (view, end) = node(&self.components, next).ok_or(DemandError::StaleSource)?;
         if end != self.components.len() || self.epoch != 0 {
             return Err(DemandError::StaleSource);
         }
         Ok((base, view))
+    }
+}
+
+fn reference_node(body: &[u8], from: usize) -> Option<([u8; 16], u64, &[u8], usize)> {
+    let head = body.get(from..from.checked_add(32)?)?;
+    let length = usize::try_from(u64::from_le_bytes(head[24..32].try_into().ok()?)).ok()?;
+    let start = from.checked_add(32)?;
+    let end = start.checked_add(length)?;
+    Some((
+        head[..16].try_into().ok()?,
+        u64::from_le_bytes(head[16..24].try_into().ok()?),
+        body.get(start..end)?,
+        end,
+    ))
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn opaque_source_cuts_survive_nested_routing_and_canonical_round_trips(
+            payload in prop::collection::vec(any::<u8>(), 0..256),
+            changed in prop::collection::vec(any::<u8>(), 0..256),
+            depth in 1u8..24,
+        ) {
+            let cancellation = CancellationToken::new();
+            let mut ctx = crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+            let leaf = SourceReference::opaque([7; 16], 5, &payload, &mut ctx).unwrap();
+            let mut old = leaf.clone();
+            let mut now = SourceReference::opaque([7; 16], 6, &changed, &mut ctx).unwrap();
+            for level in 0..depth {
+                let side = SourceReference::new([100 + level; 16], 8);
+                old = SourceReference::pair([30 + level; 16], &old, &side, &mut ctx).unwrap();
+                now = SourceReference::pair([30 + level; 16], &now, &side, &mut ctx).unwrap();
+            }
+            prop_assert!(now.follows(&old));
+            prop_assert!(!old.follows(&now));
+            let mut encoder = crate::kernel::Encoder::new(b"source-cut-property", 1);
+            old.encode(|bytes| encoder.fixed(bytes));
+            let bytes = encoder.finish();
+            let (mut decoded, mut allocation) = crate::kernel::decode_owned(&mut ctx, |mut observe| {
+                let mut decoder = crate::kernel::Decoder::new(&bytes, b"source-cut-property", 1, bytes.len() as u64, &mut observe)?;
+                let cut = SourceReference::decode(&mut decoder, &mut observe)?;
+                decoder.finish()?;
+                Ok(cut)
+            }).unwrap();
+            decoded.retain_decoded(&mut allocation, &mut ctx).unwrap();
+            prop_assert_eq!(&decoded, &old);
+            for _ in 0..depth {
+                decoded = decoded.paired().unwrap().0;
+            }
+            prop_assert_eq!(decoded.payload().unwrap(), payload.as_slice());
+            prop_assert_eq!(decoded, leaf);
+            let truncated = SourceReference {
+                components: old.components.slice(..old.components.len() - 1),
+                ..old.clone()
+            };
+            prop_assert!(!truncated.valid());
+            if payload != changed {
+                let changed_at_same_epoch = SourceReference::opaque([7; 16], 5, &changed, &mut ctx).unwrap();
+                prop_assert!(!changed_at_same_epoch.follows(&leaf));
+            }
+        }
     }
 }
 
