@@ -1,6 +1,7 @@
 """Credential-free benchmark inputs, content identity and shell argument framing."""
 
 import hashlib
+import json
 import re
 import shlex
 from dataclasses import dataclass
@@ -50,7 +51,8 @@ class Artifact:
                 f"chmod 755 {path}")
 
 
-def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: int):
+def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: int,
+            *, adapter: str | None = None):
     """One explicit endpoint; no key, auth-file, or host-login option exists."""
     if not isinstance(model_name, str) or "/" not in model_name:
         raise ValueError("model_name must be provider/model")
@@ -66,14 +68,26 @@ def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: 
     if (type(context_tokens) is not int or type(output_tokens) is not int
             or not 0 < output_tokens <= context_tokens):
         raise ValueError("explicit positive model capacities required")
+    if adapter is None:
+        families = {"anthropic": "anthropic", "google": "gemini", "gemini": "gemini",
+                    "deepseek": "chat", "fireworks": "chat", "openrouter": "chat",
+                    "ollama": "chat", "lmstudio": "chat", "vllm": "chat",
+                    "openai": "responses", "responses": "responses", "chat": "chat"}
+        # Proxy routing is more specific than the model's provider alias.
+        adapter = next((families[part] for part in reversed(url.path.split("/"))
+                        if part in families), families.get(provider, "responses"))
+    # The Rust stock catalog consumes these same definitions; no Python copy.
+    counters = json.loads((Path(__file__).resolve().parents[2] /
+                          "rust/crates/harness-providers/src/token_counters.json").read_text())
+    if adapter not in counters:
+        raise ValueError(f"unknown adapter: {adapter}")
     return {"benchmark": {
-        "adapter": "responses", "authentication": "optional", "base_url": base_url,
+        "adapter": adapter, "authentication": "optional", "base_url": base_url,
         "models": {model: {"capacity": {"context_tokens": context_tokens,
                                       "output_tokens": output_tokens},
                            "features": {"tools": True, "images": False}}},
         "max_event_bytes": 1048576,
-        "token_counter": {"path": "responses/input_tokens", "adapter": "responses",
-                          "response_field": "input_tokens", "framing_tokens": 0},
+        "token_counter": counters[adapter],
     }}
 
 

@@ -22,7 +22,7 @@ class GraphCoder(BaseInstalledAgent):
 
     def __init__(self, *args, graphcoder_binary: str, graphcoder_sha256: str,
                  source_sha: str, base_url: str, context_tokens: int,
-                 output_tokens: int, **kwargs):
+                 output_tokens: int, adapter: str | None = None, **kwargs):
         self.artifact = Artifact.read(graphcoder_binary, graphcoder_sha256, source_sha)
         if kwargs.get("version") not in (None, source_sha):
             raise ValueError("GraphCoder version must be the artifact source SHA")
@@ -32,7 +32,8 @@ class GraphCoder(BaseInstalledAgent):
             raise ValueError("GraphCoder benchmark execution accepts no inherited agent env")
         if self.mcp_servers:
             raise ValueError("this benchmark adapter does not project task MCP servers")
-        self.provider_catalog = catalog(self.model_name, base_url, context_tokens, output_tokens)
+        self.provider_catalog = catalog(self.model_name, base_url, context_tokens, output_tokens,
+                                        adapter=adapter)
         self.state = "/installed-agent/graphcoder-" + uuid.uuid4().hex
         self.binary = self.state + "/graphcoder"
         self._installed_environment = None

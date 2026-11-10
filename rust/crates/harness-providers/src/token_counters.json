@@ -1,0 +1,6 @@
+{
+  "responses": {"path": "responses/input_tokens", "adapter": "responses", "response_field": "input_tokens", "framing_tokens": 0},
+  "anthropic": {"path": "messages/count_tokens", "adapter": "anthropic", "response_field": "input_tokens", "framing_tokens": 0},
+  "gemini": {"path": "models/{model}:countTokens", "adapter": "gemini", "response_field": "totalTokens", "framing_tokens": 0},
+  "chat": null
+}

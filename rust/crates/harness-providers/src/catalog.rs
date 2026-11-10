@@ -1,6 +1,4 @@
-use crate::{
-    Adapter, Authentication, ModelFeatures, ProviderSpec, TokenCountField, TokenCounterSpec,
-};
+use crate::{Adapter, Authentication, ModelFeatures, ProviderSpec, TokenCounterSpec};
 use acyclic_harness_core::context::ModelContextCapacity;
 use std::collections::BTreeMap;
 
@@ -48,27 +46,6 @@ const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
         Adapter::Gemini,
         Authentication::ApiKey,
         "https://generativelanguage.googleapis.com/v1beta",
-    ),
-];
-
-const COUNTERS: &[(&str, &str, Adapter, TokenCountField)] = &[
-    (
-        "openai",
-        "responses/input_tokens",
-        Adapter::Responses,
-        TokenCountField::InputTokens,
-    ),
-    (
-        "anthropic",
-        "messages/count_tokens",
-        Adapter::Anthropic,
-        TokenCountField::InputTokens,
-    ),
-    (
-        "gemini",
-        "models/{model}:countTokens",
-        Adapter::Gemini,
-        TokenCountField::TotalTokens,
     ),
 ];
 
@@ -267,6 +244,9 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
 
 /// Standard endpoint policies, model capacities and capabilities as ordinary data.
 pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
+    let counters: BTreeMap<Adapter, Option<TokenCounterSpec>> =
+        serde_json::from_str(include_str!("token_counters.json"))
+            .expect("embedded native token counters");
     ENDPOINTS
         .iter()
         .map(|(id, adapter, authentication, base_url)| {
@@ -312,14 +292,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     base_url: base_url.into(),
                     headers: BTreeMap::new(),
                     models,
-                    token_counter: COUNTERS.iter().find(|(provider, ..)| *provider == id).map(
-                        |&(_, path, adapter, response_field)| TokenCounterSpec {
-                            path: path.into(),
-                            adapter,
-                            response_field,
-                            framing_tokens: 0,
-                        },
-                    ),
+                    token_counter: counters.get(&adapter).cloned().flatten(),
                     max_event_bytes: None,
                     retry: crate::RetrySpec::DEFAULT,
                     timeouts: crate::TimeoutSpec::DEFAULT,
