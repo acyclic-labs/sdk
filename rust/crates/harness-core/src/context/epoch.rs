@@ -166,19 +166,20 @@ impl ContextEpoch {
             });
         };
         for instruction in &live.discovery.instructions {
-            let key = instruction_key(instruction);
+            let key = instruction_key(instruction)?;
             if told.get(&key) == now.get(&key) {
                 continue;
             }
-            let path = key.trim_start_matches("instructions:");
+            let source = instruction.source();
+            let (volume, path) = (source.volume(), source.path());
             let length = instruction.descriptor().byte_length();
             let body = if length <= INLINE_TEXT_BYTES {
                 let bytes = reader.read(instruction, length, None, None)?.await?;
                 let text = std::str::from_utf8(&bytes)
                     .map_err(|_| Error::Invalid("project instructions are not UTF-8".into()))?;
-                serde_json::json!({"version": 1, "instructions": path, "text": text})
+                serde_json::json!({"version": 1, "volume": volume, "instructions": path, "text": text})
             } else {
-                serde_json::json!({"version": 1, "instructions": path, "bytes": length, "inline": false})
+                serde_json::json!({"version": 1, "volume": volume, "instructions": path, "bytes": length, "inline": false})
             };
             change(&key, now.get(&key).copied(), body);
         }
@@ -204,8 +205,11 @@ impl ContextEpoch {
                 Some(("skill", name)) => {
                     serde_json::json!({"version": 1, "skill": {"name": name}, "removed": true})
                 }
-                Some(("instructions", path)) => {
-                    serde_json::json!({"version": 1, "instructions": path, "removed": true})
+                Some(("instructions", identity)) => {
+                    let (volume, path): (crate::conversation::VolumeRef, String) =
+                        serde_json::from_str(identity)
+                            .map_err(|error| Error::Invalid(error.to_string()))?;
+                    serde_json::json!({"version": 1, "volume": volume, "instructions": path, "removed": true})
                 }
                 _ => serde_json::json!({"version": 1, "source": key, "removed": true}),
             };
@@ -233,20 +237,24 @@ pub struct ContextChange {
     pub notice: crate::conversation::wire::Notice,
 }
 
-fn instruction_key(instruction: &crate::model::ProjectInstruction) -> String {
+fn instruction_key(instruction: &crate::model::ProjectInstruction) -> Result<String> {
     let source = instruction.source();
-    format!("instructions:{}/{}", source.directory(), source.filename())
+    // Original source identity, never the retained body's storage location.
+    // JSON framing keeps arbitrary volume labels and paths unambiguous.
+    let identity = serde_json::to_string(&(source.volume(), source.path()))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    Ok(format!("instructions:{identity}"))
 }
 
 impl ContextManifest {
     /// The digest of each model-visible source, keyed by source: each
-    /// instruction file by its project path, each skill by name, and the
+    /// instruction file by its original volume and path, each skill by name, and the
     /// conventions. A changed digest is a change the model must be told.
     pub fn digests(&self) -> Result<BTreeMap<String, [u8; 32]>> {
         let mut digests = BTreeMap::new();
         for instruction in &self.discovery.instructions {
             digests.insert(
-                instruction_key(instruction),
+                instruction_key(instruction)?,
                 *instruction.descriptor().sha256(),
             );
         }

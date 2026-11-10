@@ -2,7 +2,7 @@ use super::*;
 use acyclic_harness::{
     OperationId,
     context::{CompactionPolicy, ContextEpoch, ContextManifest},
-    conversation::ContentPublisher,
+    conversation::{ContentPublisher, FileRef},
     executor::{StockExecutor, TurnInput},
     filesystem::FilesystemContentPublisher,
     model::{Model, ModelRole},
@@ -144,6 +144,96 @@ async fn assert_request(
             expected.as_bytes()
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn instruction_deltas_distinguish_original_volumes_at_the_same_path() -> Result<()> {
+    use acyclic_harness::model::{InstructionIdentity, ProjectInstruction};
+
+    let fixture = Fixture::new().await?;
+    fixture.put("AGENTS.md", b"FIRST", "first").await?;
+    let (publisher, reader, private, _) = storage(&fixture).await?;
+    async fn stage(publisher: &dyn ContentPublisher, path: &str, bytes: &[u8]) -> Result<FileRef> {
+        Ok(publisher
+            .stage(
+                OperationId::new(),
+                path,
+                bytes,
+                "text/plain",
+                "AGENTS.md",
+                Default::default(),
+            )?
+            .await?
+            .0)
+    }
+    let retained = stage(publisher.as_ref(), "inputs/first.md", b"FIRST").await?;
+    let other = stage(publisher.as_ref(), "AGENTS.md", b"SECOND").await?;
+    let frozen = ContextManifest {
+        discovery: acyclic_harness::context::DiscoveredContext {
+            instructions: vec![
+                ProjectInstruction::Captured {
+                    file: retained,
+                    source: InstructionIdentity::new(fixture.volume.clone(), "AGENTS.md".into())?,
+                },
+                other.into(),
+            ],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut told = frozen.digests()?;
+    fixture.put("AGENTS.md", b"EDITED", "edited").await?;
+    let mut live = frozen.clone();
+    let mut declaration = fixture.declaration();
+    declaration.instructions[0].active_directory.clear();
+    declaration.skills.clear();
+    live.discovery.instructions[0] = declaration
+        .capture(fixture.reader.as_ref())
+        .await?
+        .instructions
+        .remove(0);
+    let changes = ContextEpoch::changes(&told, &live, reader.as_ref()).await?;
+    assert_eq!(changes.len(), 1, "the earlier volume's edit must survive");
+    let first = &changes[0];
+    assert_eq!(
+        first.notice.body["volume"],
+        serde_json::to_value(&fixture.volume).map_err(|e| Error::Invalid(e.to_string()))?
+    );
+    assert_eq!(first.notice.body["instructions"], "AGENTS.md");
+    assert_eq!(first.notice.body["text"], "EDITED");
+    told.insert(first.source.clone(), first.digest.expect("edited digest"));
+    assert!(
+        ContextEpoch::changes(&told, &live, reader.as_ref())
+            .await?
+            .is_empty()
+    );
+
+    live.discovery.instructions.remove(0);
+    let removed = ContextEpoch::changes(&told, &live, reader.as_ref()).await?;
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].source, first.source);
+    assert_eq!(removed[0].notice.coalesce_key, first.notice.coalesce_key);
+    assert_eq!(
+        removed[0].notice.body["volume"],
+        first.notice.body["volume"]
+    );
+    assert_eq!(removed[0].notice.body["instructions"], "AGENTS.md");
+    assert_eq!(removed[0].notice.body["removed"], true);
+    told.remove(&first.source);
+
+    live.discovery.instructions[0] = stage(publisher.as_ref(), "AGENTS.md", b"OTHER EDIT")
+        .await?
+        .into();
+    let changes = ContextEpoch::changes(&told, &live, reader.as_ref()).await?;
+    assert_eq!(changes.len(), 1);
+    assert_ne!(changes[0].source, first.source);
+    assert_ne!(changes[0].notice.coalesce_key, first.notice.coalesce_key);
+    assert_eq!(
+        changes[0].notice.body["volume"],
+        serde_json::to_value(&private).map_err(|e| Error::Invalid(e.to_string()))?
+    );
+    assert_eq!(changes[0].notice.body["text"], "OTHER EDIT");
     Ok(())
 }
 
