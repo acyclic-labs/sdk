@@ -267,7 +267,7 @@ impl LocalHarness {
     /// a resumed turn binds the hooks it started with. Hooks are behaviour,
     /// not prefix, so they change at the next turn, never waiting for an
     /// epoch.
-    #[cfg(any(test, feature = "hooks"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) async fn turn_hooks(
         &self,
         turn: OperationId,
@@ -339,12 +339,12 @@ impl LocalHarness {
             _ => "policy-controlled approvals",
         };
         // A physical workspace projects no home volume.
-        #[cfg(any(test, feature = "native-execution"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         let home = binding
             .workspace
             .as_ref()
             .is_none_or(|workspace| workspace.mounting == super::WorkspaceMounting::Native);
-        #[cfg(not(any(test, feature = "native-execution")))]
+        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
         let home = true;
         let home = if home {
             " .volumes/home is your private retained home volume and is never merged into the project."
@@ -359,7 +359,7 @@ impl LocalHarness {
         manifest.conventions.push(format!(
             "Approval mode: {mode}. {sandbox} A refusal returns a tool failure; adapt or report the block, never assume the action ran.{home}"
         ));
-        #[cfg(any(test, feature = "native-execution"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         if let Some(workspace) = &binding.workspace {
             manifest
                 .conventions
