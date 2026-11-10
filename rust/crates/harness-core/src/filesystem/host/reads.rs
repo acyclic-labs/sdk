@@ -53,7 +53,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace = self.open(&workspace_ref, Some(io)).await?;
         let generation = io.sdk(workspace.head(io, io.cancellation()).await)?;
-        let (file, reservation) = read_content_metadata(&generation, volume, path, None, io)
+        let (file, reservation) = read_content_metadata(&generation, volume, path, io)
             .await?
             .ok_or_else(|| io.invalid("internal publication is absent"))?;
         if file.volume() != volume || file.path() != path {
@@ -164,9 +164,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     /// Resolves a private file and verifies its bytes with optional original IO.
-    /// Bytes and publication metadata come from one immutable generation. Only
-    /// metadata addressed by this volume and content version supplies custody;
-    /// inherited files without a local publication use that generation directly.
     pub async fn read_private_path(
         &self,
         volume: &VolumeRef,
@@ -300,43 +297,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let selected = if let Some(bytes) = bytes {
             let bytes_hold = io.guard_bytes(&bytes)?;
             let bytes = (bytes, bytes_hold);
-            let descriptor = FileDescriptor::from_bytes(
-                &bytes.0,
-                crate::model::image_media_type(&bytes.0)
-                    .unwrap_or_else(|| media_type::classify(&bytes.0)),
-                &mut Some(&mut io.history_io()),
-            )?;
-            let descriptor_hold = io.guard_owned(descriptor.logical_owned_bytes())?;
-            let staged =
-                read_content_metadata(&generation, volume, path, Some(descriptor.sha256()), io)
-                    .await?;
+            let staged = read_content_metadata(&generation, volume, path, io).await?;
             let publication = staged
                 .as_ref()
                 .map(|file| file_publication(&file.0, Some(io)))
                 .transpose()?;
-            let reference = selected_reference(
-                volume,
-                path,
-                generation.id(),
-                descriptor,
-                descriptor_hold,
-                staged,
-                io,
-            )?;
+            let reference =
+                selected_reference(volume, path, generation.id(), &bytes.0, staged, io)?;
             grant.require_file_read(&reference.0, Some(io))?;
-            if publication.is_some() {
-                Self::read_selected_range(
-                    &generation.workspace(),
-                    &generation,
-                    &reference.0,
-                    acyclic_fs::ByteRange {
-                        offset: 0,
-                        length: 0,
-                    },
-                    io,
-                )
-                .await?;
-            }
             Some((reference, bytes, publication))
         } else {
             None
@@ -775,8 +743,7 @@ fn selected_reference<'a>(
     volume: &VolumeRef,
     path: &str,
     generation: acyclic_fs::GenerationId,
-    descriptor: FileDescriptor,
-    descriptor_hold: DecodeReservation<'a>,
+    bytes: &acyclic_stream::OwnedBytes,
     staged: Option<(FileRef, DecodeReservation<'a>)>,
     io: &'a PreparationIo,
 ) -> Result<(FileRef, DecodeReservation<'a>)> {
@@ -788,18 +755,12 @@ fn selected_reference<'a>(
                 "private file metadata does not match the file",
             ));
         }
-        if staged.0.descriptor().sha256() != descriptor.sha256()
-            || staged.0.descriptor().byte_length() != descriptor.byte_length()
-        {
-            return Err(stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Storage,
-                "private file metadata does not match its content version",
-            ));
-        }
+        staged
+            .0
+            .descriptor()
+            .verify(bytes, &mut Some(&mut io.history_io()))?;
         pin_reference(staged, generation, io)?
     } else {
-        descriptor_hold.into_retained()?;
         let version = bounded_io::hex_key(&generation.to_bytes(), Some(io))?;
         let version_hold = io.guard_owned(version.capacity() as u64)?;
         let reference = crate::executor::with_history_io(Some(io), |work| {
@@ -807,7 +768,12 @@ fn selected_reference<'a>(
                 volume.copy(work)?,
                 stock_string_copy(path, Some(io))?,
                 version,
-                descriptor,
+                FileDescriptor::from_bytes(
+                    bytes,
+                    crate::model::image_media_type(bytes)
+                        .unwrap_or_else(|| media_type::classify(bytes)),
+                    work,
+                )?,
                 stock_string_copy(path.rsplit('/').next().unwrap_or(path), Some(io))?,
                 work,
             )
@@ -842,10 +808,9 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>,
     volume: &VolumeRef,
     path: &str,
-    digest: Option<&[u8; 32]>,
     io: &'a PreparationIo,
 ) -> Result<Option<(FileRef, DecodeReservation<'a>)>> {
-    let metadata_path = content_metadata_path_io(volume, path, digest, true, Some(io))?;
+    let metadata_path = content_metadata_path_io(volume, path, true, Some(io))?;
     let metadata_path_hold = io.guard_owned(metadata_path.capacity() as u64)?;
     let metadata_path = (metadata_path, metadata_path_hold);
     let metadata = read_generation_if_present(
@@ -861,7 +826,31 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Some(metadata) => {
             let metadata_hold = io.guard_bytes(&metadata)?;
             let metadata = (metadata, metadata_hold);
-            Some(decode_content_metadata(&metadata.0, io)?)
+            let staged = decode_content_metadata(&metadata.0, io)?;
+            if staged.0.volume() != volume || staged.0.path() != path {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Storage,
+                    "private file metadata does not match the file",
+                ));
+            }
+            let original = super::ranges::matching_publication(
+                &generation.workspace(),
+                generation,
+                &staged.0,
+                &metadata_path.0,
+                &metadata.0,
+                io,
+            )
+            .await?;
+            // A join can replace the payload while retaining the destination's
+            // index. Only an authenticated original publication may be treated
+            // as stale; malformed or substituted records still fail above.
+            if original.is_some() {
+                Some(staged)
+            } else {
+                None
+            }
         }
         None => None,
     };

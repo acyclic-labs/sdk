@@ -311,13 +311,8 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             "original upload receipt is not canonical",
         ));
     }
-    let metadata_path = content_metadata_path_io(
-        recorded.0.volume(),
-        recorded.0.path(),
-        Some(recorded.0.descriptor().sha256()),
-        true,
-        Some(io),
-    )?;
+    let metadata_path =
+        content_metadata_path_io(recorded.0.volume(), recorded.0.path(), true, Some(io))?;
     let hold = io.guard_owned(metadata_path.capacity() as u64)?;
     let metadata_path = (metadata_path, hold);
     let metadata =

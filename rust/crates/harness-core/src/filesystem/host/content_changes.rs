@@ -342,13 +342,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 format_args!("/{}", source.path()),
                                 &mut Some(&mut io.history_io()),
                             )?;
-                            let metadata = content_metadata_path_io(
-                                volume,
-                                source.path(),
-                                Some(source.descriptor().sha256()),
-                                true,
-                                Some(io),
-                            )?;
+                            let metadata =
+                                content_metadata_path_io(volume, source.path(), true, Some(io))?;
                             self.require_unchanged_content(
                                 &opened,
                                 &source_generation,
@@ -454,14 +449,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             io.sdk(transaction.remove(&absolute, io, io.cancellation()).await)?;
                         }
                     }
+                    let metadata_path =
+                        content_metadata_path_io(volume, change.path(), true, Some(io))?;
                     if let Some(file) = &record.file {
-                        let metadata_path = content_metadata_path_io(
-                            volume,
-                            change.path(),
-                            Some(file.descriptor().sha256()),
-                            true,
-                            Some(io),
-                        )?;
                         let bytes = io.encode(
                             &(file, Option::<&GenerationRef>::None),
                             io.remaining()?.bytes_encoded,
@@ -485,14 +475,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 .await,
                         )?;
                     } else {
-                        let namespace = volume.storage_name(&mut Some(&mut io.history_io()))?;
-                        let _hold = io.guard_owned(namespace.capacity() as u64)?;
-                        let metadata_path = super::keys::content_metadata_path_in_namespace_io(
-                            &namespace,
-                            change.path(),
-                            true,
-                            Some(io),
-                        )?;
                         io.sdk_if_present(
                             transaction
                                 .remove(&metadata_path, io, io.cancellation())

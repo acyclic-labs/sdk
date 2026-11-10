@@ -64,10 +64,14 @@ fn grants(volume: &VolumeRef) -> Result<Grants> {
 fn forked_metadata_stays_in_custody_during_concurrent_publication() -> Result<()> {
     acyclic_native_runtime::testing::seeded_runtime(0x5052_4956)
         .map_err(|error| Error::Storage(error.to_string()))?
-        .block_on(concurrent_publication())
+        .block_on(async {
+            concurrent_publication(b"child replacement").await?;
+            // Equal bytes still have a distinct imported file/publication identity.
+            concurrent_publication(b"original").await
+        })
 }
 
-async fn concurrent_publication() -> Result<()> {
+async fn concurrent_publication(replacement: &[u8]) -> Result<()> {
     let provider = ProviderRef::new("custody".into(), "filesystem".into(), "1".into(), &mut None)?;
     let mut host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let volume = |id: &str, byte| {
@@ -155,12 +159,26 @@ async fn concurrent_publication() -> Result<()> {
             let (file, bytes) = inherited?;
             assert_eq!(file.volume(), &child);
             assert_eq!(bytes.as_ref(), b"original");
+            if replacement == b"original" {
+                // Recreate equal bytes under a different filesystem identity;
+                // digest-only custody would incorrectly reuse the parent's index.
+                let workspace = bounded_io::content_workspace(&provider, &child, None)?;
+                host.apply(
+                    &workspace,
+                    None,
+                    &[WorkspaceMutation::Remove {
+                        path: "/GOAL.md".into(),
+                    }],
+                    &IdempotencyKey::new("child-remove")?,
+                )
+                .await?;
+            }
             let own = host
                 .put_content(
                     &child,
                     &child_grants.write,
                     "GOAL.md",
-                    b"child replacement",
+                    replacement,
                     "text/markdown",
                     "GOAL.md",
                     64,
@@ -173,7 +191,7 @@ async fn concurrent_publication() -> Result<()> {
                 host.read_content(&own, &child_grants.whole, 64, None)
                     .await?
                     .as_ref(),
-                b"child replacement"
+                replacement
             );
             // Import while the destination still has its original publication
             // metadata. The joined payload must not select that stale descriptor
@@ -210,7 +228,27 @@ async fn concurrent_publication() -> Result<()> {
                 )
                 .await?;
             assert_eq!(imported.volume(), &parent);
-            assert_eq!(bytes.as_ref(), b"child replacement");
+            assert_eq!(bytes.as_ref(), replacement);
+            assert_eq!(
+                host.read_content_range(
+                    &imported,
+                    &parent_grants.whole,
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: replacement.len() as u64,
+                    },
+                    None,
+                )
+                .await?
+                .as_ref(),
+                replacement
+            );
+            assert_eq!(
+                host.read_content(&original, &parent_grants.whole, 64, None)
+                    .await?
+                    .as_ref(),
+                b"original"
+            );
             // A later publication must not change the original fork's unit.
             assert_eq!(
                 host.read_private_path(
@@ -242,7 +280,7 @@ async fn concurrent_publication() -> Result<()> {
         host.read(&parent_workspace, None, "/GOAL.md", 64, None)
             .await?
             .as_ref(),
-        b"child replacement"
+        replacement
     );
     Ok(())
 }

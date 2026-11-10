@@ -428,13 +428,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 false,
                 io,
             )?;
-            let metadata_path = content_metadata_path_io(
-                volume,
-                provisional.path(),
-                Some(provisional.descriptor().sha256()),
-                true,
-                io,
-            )?;
+            let metadata_path = content_metadata_path_io(volume, provisional.path(), true, io)?;
             let receipt_bytes = match io {
                 Some(io) => io.encode(
                     &(&provisional, expected_generation),
