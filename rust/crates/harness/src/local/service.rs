@@ -378,6 +378,96 @@ mod tests {
                 }
             }
             assert_eq!(listed, roots);
+            let agent = roots
+                .iter()
+                .find(|agent| *agent != connection.root())
+                .unwrap()
+                .clone();
+            let read = AgentCommand::AgentFiles {
+                agent: agent.clone(),
+                paths: vec!["ui/title".into()],
+                after: None,
+            };
+            let AgentReply::ClientFiles { snapshot } = connection.execute(&read).await? else {
+                return Err(Error::Invalid("missing title snapshot".into()));
+            };
+            assert!(snapshot.files["ui/title"].is_none());
+            let create_title = AgentCommand::PublishAgentFiles {
+                agent: agent.clone(),
+                operation: crate::OperationId::new(),
+                changes: vec![crate::client_files::ClientFileChange {
+                    path: "ui/title".into(),
+                    expected: None,
+                    text: "Independent session".into(),
+                }],
+            };
+            connection.execute(&create_title).await?;
+            let selected = connection.select(agent.clone()).await?;
+            let AgentReply::ClientFiles { snapshot } = selected.execute(&read).await? else {
+                return Err(Error::Invalid("missing shared title".into()));
+            };
+            assert_eq!(
+                snapshot.files["ui/title"].as_ref().unwrap().text,
+                "Independent session"
+            );
+            let waiting = AgentCommand::AgentFiles {
+                agent: agent.clone(),
+                paths: vec!["ui/title".into()],
+                after: Some(snapshot.generation),
+            };
+            let rename = AgentCommand::PublishAgentFiles {
+                agent: agent.clone(),
+                operation: crate::OperationId::new(),
+                changes: vec![crate::client_files::ClientFileChange {
+                    path: "ui/title".into(),
+                    expected: snapshot.files["ui/title"]
+                        .as_ref()
+                        .map(|file| file.file.clone()),
+                    text: "Renamed session".into(),
+                }],
+            };
+            let (changed, renamed) =
+                futures::join!(selected.execute(&waiting), connection.execute(&rename));
+            renamed?;
+            let AgentReply::ClientFiles { snapshot } = changed? else {
+                return Err(Error::Invalid("missing rename event".into()));
+            };
+            assert_eq!(
+                snapshot.files["ui/title"].as_ref().unwrap().text,
+                "Renamed session"
+            );
+            let stale = AgentCommand::PublishAgentFiles {
+                agent: agent.clone(),
+                operation: crate::OperationId::new(),
+                changes: vec![crate::client_files::ClientFileChange {
+                    path: "ui/title".into(),
+                    expected: None,
+                    text: "stale create".into(),
+                }],
+            };
+            assert!(
+                connection.execute(&stale).await.is_err(),
+                "rename cannot overwrite a concurrent edit"
+            );
+            let id = crate::agent::IntentId::try_from("archive-session").map_err(storage)?;
+            connection
+                .execute(&AgentCommand::Archive {
+                    agent: agent.clone(),
+                    id: id.clone(),
+                })
+                .await?;
+            assert!(matches!(
+                connection
+                    .execute(&AgentCommand::Prompt {
+                        agent,
+                        id,
+                        body: crate::model::ModelContent::Text("closed".into())
+                    })
+                    .await?,
+                AgentReply::Delivered {
+                    delivery: crate::agent::Delivered::Closed
+                }
+            ));
             assert_eq!(
                 provider.request_count(),
                 0,

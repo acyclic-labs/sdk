@@ -412,7 +412,10 @@ fn validate_reply(
     bytes: usize,
 ) -> Result<(), CommandError> {
     let page = match (reply, command) {
-        (AgentReply::ClientFilesPublished { .. }, AgentCommand::PublishClientFiles { .. }) => {
+        (
+            AgentReply::ClientFilesPublished { .. },
+            AgentCommand::PublishClientFiles { .. } | AgentCommand::PublishAgentFiles { .. },
+        ) => {
             return Ok(());
         }
         (
@@ -444,6 +447,41 @@ fn validate_reply(
                 Err(CommandError::Invalid)
             };
         }
+        (
+            AgentReply::ClientFiles { snapshot },
+            AgentCommand::AgentFiles {
+                agent,
+                paths,
+                after,
+            },
+        ) => {
+            return if after.as_ref() != Some(&snapshot.generation)
+                && snapshot.files.len() == paths.len()
+                && paths.iter().all(|path| {
+                    snapshot.files.get(path).is_some_and(|file| {
+                        file.as_ref().is_none_or(|file| {
+                            file.file.path() == path
+                                && file.file.volume().class()
+                                    == acyclic_harness_core::conversation::VolumeClass::AgentPrivate
+                                && file.file.volume().owner()
+                                    == &acyclic_harness_core::conversation::VolumeOwner::Agent(
+                                        acyclic_harness_core::AgentId::from_bytes(agent.id_bytes()),
+                                    )
+                        })
+                    })
+                }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (AgentReply::Root { agent }, AgentCommand::NewSession { .. }) => {
+            return if agent.parent().is_none() {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
         (AgentReply::Root { .. }, AgentCommand::Root {})
         | (AgentReply::Bound { .. }, AgentCommand::Bind { .. })
         | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })
@@ -451,6 +489,7 @@ fn validate_reply(
         | (
             AgentReply::Delivered { .. },
             AgentCommand::Prompt { .. }
+            | AgentCommand::Archive { .. }
             | AgentCommand::Cancel { .. }
             | AgentCommand::Decide { .. }
             | AgentCommand::Compact { .. }
@@ -670,6 +709,16 @@ fn validate_reply(
             if items
                 .iter()
                 .any(|item| !item.agent.is_child_of(agent) || !seen.insert(&item.agent))
+            {
+                return Err(CommandError::Invalid);
+            }
+            (items.len(), next, page)
+        }
+        (AgentReply::Children { items, next }, AgentCommand::Sessions { page }) => {
+            let mut seen = std::collections::BTreeSet::new();
+            if items
+                .iter()
+                .any(|item| item.agent.parent().is_some() || !seen.insert(&item.agent))
             {
                 return Err(CommandError::Invalid);
             }

@@ -13,12 +13,23 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     async fn client_volume(
         &self,
         agent: &AgentPath,
-        session: OperationId,
+        session: Option<OperationId>,
     ) -> Result<(VolumeRef, Scope, crate::core::AuthorityVerifier), Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        let volume = crate::client_files::volume(self.volumes.provider.clone(), agent, session)
-            .map_err(turn)?;
+        let volume = match session {
+            Some(session) => {
+                crate::client_files::volume(self.volumes.provider.clone(), agent, session)
+                    .map_err(turn)?
+            }
+            None => state
+                .volumes
+                .iter()
+                .find(|binding| binding.name == super::super::PRIVATE_VOLUME)
+                .ok_or(Error::Record("agent has no private volume"))?
+                .volume
+                .clone(),
+        };
         let admitted = super::super::agent_turns::AdmittedAgent::verify(
             &self.issuer,
             &self.admission,
@@ -63,6 +74,27 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         &self,
         agent: &AgentPath,
         session: OperationId,
+        paths: &[String],
+        after: Option<&GenerationRef>,
+    ) -> Result<ClientFiles, Error> {
+        self.files(agent, Some(session), paths, after).await
+    }
+
+    /// Files owned by the agent, including its authored UI, through the same
+    /// conditional publisher and publication follow as client layout files.
+    pub async fn agent_files(
+        &self,
+        agent: &AgentPath,
+        paths: &[String],
+        after: Option<&GenerationRef>,
+    ) -> Result<ClientFiles, Error> {
+        self.files(agent, None, paths, after).await
+    }
+
+    async fn files(
+        &self,
+        agent: &AgentPath,
+        session: Option<OperationId>,
         paths: &[String],
         after: Option<&GenerationRef>,
     ) -> Result<ClientFiles, Error> {
@@ -178,6 +210,28 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         &self,
         agent: &AgentPath,
         session: OperationId,
+        operation: OperationId,
+        changes: &[ClientFileChange],
+    ) -> Result<GenerationRef, Error> {
+        self.publish_files(agent, Some(session), operation, changes)
+            .await
+    }
+
+    /// Conditionally publish the agent's own files. Source descriptors and
+    /// operation identity have exactly the client-file publication semantics.
+    pub async fn publish_agent_files(
+        &self,
+        agent: &AgentPath,
+        operation: OperationId,
+        changes: &[ClientFileChange],
+    ) -> Result<GenerationRef, Error> {
+        self.publish_files(agent, None, operation, changes).await
+    }
+
+    async fn publish_files(
+        &self,
+        agent: &AgentPath,
+        session: Option<OperationId>,
         operation: OperationId,
         changes: &[ClientFileChange],
     ) -> Result<GenerationRef, Error> {
