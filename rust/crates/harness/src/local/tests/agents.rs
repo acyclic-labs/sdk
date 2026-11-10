@@ -47,6 +47,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         )
         .await?,
     );
+    let (agents, root) = harness.agents().await?;
     let client = conversation(&harness).await?;
     let mut projection = EventProjection::new("approval-export".into());
     let mut observed = ObservedConversation {
@@ -56,12 +57,13 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let inbox = client.send("approval-input", "echo the request").await?;
     let (id, published_binding, delivery) = loop {
         let (event, delivery) = observed.observer.next_projected().await?;
-        if let Some(crate::local::Event::Status(StatusRecord {
-            phase: crate::agent::Phase::WaitingApproval { id, binding },
-            ..
-        })) = event?
-        {
-            break (id, binding, delivery);
+        if let Some(crate::local::Event::Status(status)) = event? {
+            if let Some(reason) = crate::local::agent_conversation::ended(&status) {
+                return Err(Error::Conflict(reason));
+            }
+            if let crate::agent::Phase::WaitingApproval { id, binding } = status.phase {
+                break (id, binding, delivery);
+            }
         }
         let after = projection.event(&delivery).after;
         projection.accepted(&delivery.resource, after);
@@ -155,7 +157,6 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     client
         .decide_with_binding(&id, binding.clone(), true)
         .await?;
-    let (agents, root) = harness.agents().await?;
     observed.settled(inbox).await?;
     assert!(client.pending_approval(&id).await?.is_none());
     assert!(client.approval_prompt(&id).await?.is_none());
