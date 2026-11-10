@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { assertByteSnapshotBoundary } from "./wasm-source-policy.mjs";
+
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const forbiddenContent = [
   /acyclic(?:[-_.:/]|\\)(?:internal|private)(?:[-_.:/\\]|$)/i,
@@ -37,6 +39,10 @@ function hasCredentialLiteral(content) {
 
 function inspect(path, content) {
   const relativePath = relative(root, path).replaceAll("\\", "/");
+  if (relativePath.startsWith("rust/crates/harness/src/wasm/") && relativePath.endsWith(".rs")) {
+    try { assertByteSnapshotBoundary(relativePath, content.replaceAll("\r\n", "\n")); }
+    catch (error) { failures.push(error.message); }
+  }
   if (relativePath.endsWith(".rs") && /\b(?:option_)?env\s*!\s*\(\s*"CARGO_BIN_EXE_/.test(content)) {
     failures.push(`${relativePath}: executable lookup: use acyclic_test_support::cargo_binary!; verify with node scripts/check-boundaries.mjs`);
   }

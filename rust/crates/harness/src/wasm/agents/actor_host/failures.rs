@@ -2,6 +2,7 @@
 use super::{WasmActorHost, failed};
 use acyclic_actors::local::{FailureDisposition, FailureEntry, FailureResolution};
 use acyclic_stream::{IdempotencyKey, Record, StreamPath, wire, wire_codec};
+use js_sys::Uint8Array;
 use prost::Message as _;
 use wasm_bindgen::prelude::*;
 
@@ -14,8 +15,9 @@ pub enum ActorFailureResolution {
     Purge,
 }
 
-fn record(bytes: &[u8], path: &StreamPath) -> Result<Record, JsValue> {
-    let record = wire::Record::decode(bytes).map_err(failed)?;
+fn record(bytes: &Uint8Array, path: &StreamPath) -> Result<Record, JsValue> {
+    let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(bytes, |_| Ok(()))?;
+    let record = wire::Record::decode(bytes.as_slice()).map_err(failed)?;
     // Reads/follows elide their selected path; child-tail projections spell it.
     let followed = record.origin.is_empty().then_some(path);
     wire_codec::record(record, followed).map_err(failed)
@@ -33,7 +35,7 @@ pub struct WasmActorFailure {
 impl WasmActorFailure {
     /// `path` is the selected child, and `record` is its projected `status`
     /// tail encoded with the canonical Streams Record protobuf.
-    pub fn decode(path: &str, record_bytes: &[u8]) -> Result<Self, JsValue> {
+    pub fn decode(path: &str, record_bytes: &Uint8Array) -> Result<Self, JsValue> {
         let path = StreamPath::new(path).map_err(failed)?;
         let status = StreamPath::new(format!("{path}/status")).map_err(failed)?;
         Ok(Self {
@@ -96,8 +98,8 @@ impl WasmActorHost {
         &self,
         failure: &WasmActorFailure,
         resolution: ActorFailureResolution,
-        captured: Option<Vec<u8>>,
-        key: &[u8],
+        captured: Option<Uint8Array>,
+        key: &Uint8Array,
     ) -> Result<Vec<u8>, JsValue> {
         let FailureEntry::Failed(input) = &failure.entry else {
             return Err(failed("failure already has a terminal disposition"));
@@ -106,7 +108,7 @@ impl WasmActorHost {
             return Err(failed("only replay requires the original captured input"));
         }
         let captured = captured
-            .as_deref()
+            .as_ref()
             .map(|bytes| record(bytes, &input.input_path().map_err(failed)?))
             .transpose()?;
         let disposition = match (resolution, captured.as_ref()) {
@@ -116,12 +118,13 @@ impl WasmActorHost {
             (ActorFailureResolution::Purge, None) => FailureDisposition::Purge,
             _ => return Err(failed("only replay requires the original captured input")),
         };
+        let (key, ()) = acyclic_stream::javascript_bytes::snapshot(key, |_| Ok(()))?;
         let request = self
             .host
             .prepare_disposition(
                 input,
                 disposition,
-                IdempotencyKey::new(key.to_vec()).map_err(failed)?,
+                IdempotencyKey::new(key).map_err(failed)?,
             )
             .and_then(|prepared| prepared.into_request())
             .map_err(failed)?;
