@@ -973,7 +973,7 @@ async fn run_current(
         let tree_deadline = sidebar.source.next_deadline();
         tokio::select! {
             () = futures::future::poll_fn(|cx| sidebar.files.poll_changed(cx)) => {}
-            () = futures::future::poll_fn(|cx| sidebar.source.poll_changed(now, cx)), if sidebar.failure.is_none() => {}
+            () = futures::future::poll_fn(|cx| sidebar.source.poll_changed(now, cx)) => {}
             () = async {
                 if let Some(deadline) = tree_deadline {
                     tokio::time::sleep_until(tokio::time::Instant::from_std(
@@ -982,7 +982,7 @@ async fn run_current(
                 } else {
                     std::future::pending().await
                 }
-            }, if sidebar.failure.is_none() => {}
+            } => {}
             title = &mut title_future => {
                 let title = title?;
                 view.title = session::title(&title);

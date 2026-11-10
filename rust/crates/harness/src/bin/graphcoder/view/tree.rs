@@ -174,9 +174,13 @@ impl Sidebar {
             }
         }
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
-        if let Some((stream, issue)) = self.source.view.reader_ref().issues().next() {
-            self.failure = Some(format!("{stream}: {issue:?}"));
-        }
+        self.failure = self
+            .source
+            .view
+            .reader_ref()
+            .issues()
+            .next()
+            .map(|(stream, issue)| format!("{stream}: {issue:?}"));
     }
 
     fn retain_files(&mut self, visible: bool, bytes: u64) {
@@ -243,6 +247,9 @@ impl Sidebar {
     }
 
     pub fn has_children(&self) -> bool {
+        if self.failure.is_some() {
+            return true;
+        }
         if let Some(listing) = self
             .source
             .view
@@ -265,9 +272,6 @@ impl Sidebar {
     pub fn rows(&self, root: &AgentPath, shown: bool, columns: u16) -> Vec<Line<'static>> {
         if !shown {
             return Vec::new();
-        }
-        if let Some(error) = &self.failure {
-            return vec![Line::raw(format!("Tree unavailable: {error}"))];
         }
         let projection = UiView::new(1).expect("nonzero UI page size");
         let mut rows: Vec<_> = self
@@ -329,6 +333,9 @@ impl Sidebar {
             } else {
                 "No children"
             }));
+        }
+        if let Some(error) = &self.failure {
+            rows.push(Line::raw(format!("Tree update: {error}")));
         }
         if let Some(search) = &self.search {
             let state = search.error.as_deref().unwrap_or(if search.seeking {
