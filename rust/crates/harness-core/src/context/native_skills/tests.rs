@@ -219,8 +219,10 @@ async fn watch_admission_stays_within_the_discovery_budget() -> Result<()> {
     bounds.limits.directories = 3;
     assert!(watch.arm(&[root.path().to_path_buf()], &bounds).is_some());
     assert_eq!(watch.watches.lock().unwrap().len(), 3);
+    let previous = watch.current();
     bounds.limits.directories = 2;
     assert!(watch.arm(&[root.path().to_path_buf()], &bounds).is_none());
     assert!(watch.watches.lock().unwrap().is_empty());
+    assert_ne!(watch.current(), previous);
     Ok(())
 }

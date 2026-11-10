@@ -203,10 +203,9 @@ impl ContextEpoch {
         for key in told.keys().filter(|key| !now.contains_key(*key)) {
             let body = match key.split_once(':') {
                 Some(("skill", identity)) => {
-                    let (name, root, path): (String, ContextRoot, String) =
-                        serde_json::from_str(identity)
-                            .map_err(|error| Error::Invalid(error.to_string()))?;
-                    serde_json::json!({"version": 1, "skill": {"name": name, "root": root, "path": path}, "removed": true})
+                    let (name, identity): (String, String) = serde_json::from_str(identity)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    serde_json::json!({"version": 1, "skill": {"name": name, "identity": identity}, "removed": true})
                 }
                 Some(("instructions", identity)) => {
                     let (volume, path): (crate::conversation::VolumeRef, String) =
@@ -241,7 +240,7 @@ pub struct ContextChange {
 }
 
 fn skill_key(skill: &SkillMetadata) -> Result<String> {
-    let identity = serde_json::to_string(&(&skill.name, &skill.source.root, &skill.source.path))
+    let identity = serde_json::to_string(&(&skill.name, &skill.identity))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     Ok(format!("skill:{identity}"))
 }
