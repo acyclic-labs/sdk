@@ -86,6 +86,36 @@ impl<B: DemandSource, V: DemandSource> Routed<B, V> {
     }
 }
 
+// File operations share the same route, original accounting, source checks and
+// relative-path custody. Only the leaf operation and its range arguments vary.
+macro_rules! route_file {
+    ($method:ident, $output:ty, $root_error:ident, $($argument:ident: $ty:ty),*) => {
+        async fn $method<W: FsWork + Send>(
+            &self,
+            source: SourceReference,
+            path: &NamespacePath,
+            expected: SourceVersion,
+            $($argument: $ty,)*
+            work: W,
+            cancellation: &CancellationToken,
+        ) -> W::Output<$output, DemandError> {
+            let mut ctx = work.accounting(cancellation);
+            let result = async {
+                let (base, view) = self.sources(source, &mut ctx)?;
+                if path.is_root() { return Err(DemandError::$root_error); }
+                let result = if self.mounted(path) {
+                    let (relative, _allocation) = path.suffix_with_accounting(1, &mut ctx, cancellation)?;
+                    source_call!(&mut ctx, cancellation, |work| self.views.$method(view, &relative, expected, $($argument,)* work, cancellation))?
+                } else {
+                    source_call!(&mut ctx, cancellation, |work| self.base.$method(base, path, expected, $($argument,)* work, cancellation))?
+                };
+                self.sources(source, &mut ctx)?;
+                Ok(result)
+            }.await;
+            work.finish(result, &ctx)
+        }
+    };
+}
 impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
     fn watch<W: FsWork + Send>(
         &self,
@@ -275,128 +305,9 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
         work.finish(result, &ctx)
     }
 
-    async fn read_range<W: FsWork + Send>(
-        &self,
-        source: SourceReference,
-        path: &NamespacePath,
-        expected: SourceVersion,
-        offset: u64,
-        length: u64,
-        work: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<OwnedSourceChunk, DemandError> {
-        let mut ctx = work.accounting(cancellation);
-        let result = async {
-            let (base, view) = self.sources(source, &mut ctx)?;
-            if path.is_root() {
-                return Err(DemandError::NotRegularFile);
-            }
-            if self.mounted(path) {
-                let (relative, _allocation) =
-                    path.suffix_with_accounting(1, &mut ctx, cancellation)?;
-                source_call!(&mut ctx, cancellation, |work| self.views.read_range(
-                    view,
-                    &relative,
-                    expected,
-                    offset,
-                    length,
-                    work,
-                    cancellation
-                ))
-            } else {
-                source_call!(&mut ctx, cancellation, |work| self.base.read_range(
-                    base,
-                    path,
-                    expected,
-                    offset,
-                    length,
-                    work,
-                    cancellation
-                ))
-            }
-        }
-        .await;
-        work.finish(result, &ctx)
-    }
-
-    async fn open_file<W: FsWork + Send>(
-        &self,
-        source: SourceReference,
-        path: &NamespacePath,
-        expected: SourceVersion,
-        work: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<Box<dyn DemandFile>, DemandError> {
-        let mut ctx = work.accounting(cancellation);
-        let result = async {
-            let (base, view) = self.sources(source, &mut ctx)?;
-            if path.is_root() {
-                return Err(DemandError::NotRegularFile);
-            }
-            if self.mounted(path) {
-                let (relative, _allocation) =
-                    path.suffix_with_accounting(1, &mut ctx, cancellation)?;
-                source_call!(&mut ctx, cancellation, |work| self.views.open_file(
-                    view,
-                    &relative,
-                    expected,
-                    work,
-                    cancellation
-                ))
-            } else {
-                source_call!(&mut ctx, cancellation, |work| self.base.open_file(
-                    base,
-                    path,
-                    expected,
-                    work,
-                    cancellation
-                ))
-            }
-        }
-        .await;
-        work.finish(result, &ctx)
-    }
-
-    async fn read_link<W: FsWork + Send>(
-        &self,
-        source: SourceReference,
-        path: &NamespacePath,
-        expected: SourceVersion,
-        maximum_bytes: u64,
-        work: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<OwnedSourceChunk, DemandError> {
-        let mut ctx = work.accounting(cancellation);
-        let result = async {
-            let (base, view) = self.sources(source, &mut ctx)?;
-            if path.is_root() {
-                return Err(DemandError::InvalidRequest);
-            }
-            if self.mounted(path) {
-                let (relative, _allocation) =
-                    path.suffix_with_accounting(1, &mut ctx, cancellation)?;
-                source_call!(&mut ctx, cancellation, |work| self.views.read_link(
-                    view,
-                    &relative,
-                    expected,
-                    maximum_bytes,
-                    work,
-                    cancellation
-                ))
-            } else {
-                source_call!(&mut ctx, cancellation, |work| self.base.read_link(
-                    base,
-                    path,
-                    expected,
-                    maximum_bytes,
-                    work,
-                    cancellation
-                ))
-            }
-        }
-        .await;
-        work.finish(result, &ctx)
-    }
+    route_file!(read_range, OwnedSourceChunk, NotRegularFile, offset: u64, length: u64);
+    route_file!(open_file, Box<dyn DemandFile>, NotRegularFile,);
+    route_file!(read_link, OwnedSourceChunk, InvalidRequest, maximum_bytes: u64);
 }
 
 struct PrefixSink {

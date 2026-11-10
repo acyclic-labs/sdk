@@ -1388,7 +1388,7 @@ async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Resul
         )
         .await?
         .value;
-    assert_eq!(read(file.as_ref(), 7, 3, &cancellation)?, b"789");
+    assert_eq!(read(file.as_ref(), 7, 3, &cancellation)?.as_slice(), b"789");
     let mut stale = node.version;
     stale.0[0] ^= 1;
     assert!(matches!(
