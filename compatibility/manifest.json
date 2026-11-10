@@ -31,9 +31,9 @@
     "stream": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:9a1be5b90df18240834c62d2b1b5c87f3d92475440743cbb3680ad7a1c8155c6",
-      "descriptorDigest": "sha256:915d61853b61ee2a32caf09544fa78ca11577fb0a5c94bd3afc8771e3d759a39",
-      "conformanceDigest": "sha256:5a4743ac5153ebfdf9a08897615bb55e770c03c654725ecb1988f52cfed8acef"
+      "schemaDigest": "sha256:2bf3fd48f82227220ee2b909bf59bd1fd45ce8da8617846c74fd92dfc9f16bdb",
+      "descriptorDigest": "sha256:0ea6091cd4e6665e5d3ea5a5336688e079d749faa6f405e110c7b00db11c1e20",
+      "conformanceDigest": "sha256:8e13946dc6beaa3fcbc777e19c02d03f8b81d9a86bd4ce7577c9a67950794b5d"
     },
     "objects": {
       "version": "0.2.0",

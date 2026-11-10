@@ -2,9 +2,9 @@
 use super::{Failure, History, Invariant};
 use crate::StreamProviderExt as _;
 use crate::{
-    AppendOutcome, AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
-    ForkRequest, IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest, StreamError,
-    StreamPath, StreamProvider,
+    AppendOutcome, AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitOutcome,
+    CommitRequest, ForkRequest, IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest,
+    StreamError, StreamPath, StreamProvider,
 };
 use futures::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};
@@ -317,36 +317,38 @@ pub(super) async fn composed<P: StreamProvider + ?Sized>(
     let branch = path(history, "/branch")?;
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![
-            CommitCondition::Tail {
-                path: history.path.clone(),
-                expected: 1,
-            },
-            CommitCondition::Tail {
-                path: branch.clone(),
-                expected: 1,
-            },
-            CommitCondition::Absent {
-                path: destination.clone(),
-            },
-        ],
-        mutations: vec![
-            CommitMutation::Append {
-                path: history.path.clone(),
-                records: vec![OwnedBytes::from_static(b"root-after").into()],
-            },
-            CommitMutation::Append {
-                path: branch.clone(),
-                records: vec![OwnedBytes::from_static(b"branch-after").into()],
-            },
-            CommitMutation::Fork {
-                exclude: Vec::new(),
-                source: history.path.clone(),
-                destination: destination.clone(),
-                at_tail: 1,
-                records: vec![],
-            },
-        ],
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Tail {
+                    path: history.path.clone(),
+                    expected: 1,
+                },
+                CommitCondition::Tail {
+                    path: branch.clone(),
+                    expected: 1,
+                },
+                CommitCondition::Absent {
+                    path: destination.clone(),
+                },
+            ],
+            vec![
+                CommitMutation::Append {
+                    path: history.path.clone(),
+                    records: vec![OwnedBytes::from_static(b"root-after").into()],
+                },
+                CommitMutation::Append {
+                    path: branch.clone(),
+                    records: vec![OwnedBytes::from_static(b"branch-after").into()],
+                },
+                CommitMutation::Fork {
+                    exclude: Vec::new(),
+                    source: history.path.clone(),
+                    destination: destination.clone(),
+                    at_tail: 1,
+                    records: vec![],
+                },
+            ],
+        )],
         idempotency_key: history.key.clone(),
     };
     let outcome = history.result(

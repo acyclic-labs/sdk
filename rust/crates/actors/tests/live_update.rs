@@ -14,8 +14,8 @@ use acyclic_actors::{
     local::{PreparedPublish, Store, SystemClock},
 };
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, FollowRequest, IdempotencyKey,
-    LocalStream, MemoryStream, StreamPath, StreamProvider, StreamProviderExt as _,
+    CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest,
+    IdempotencyKey, LocalStream, MemoryStream, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -239,22 +239,22 @@ impl Handler for Package {
             let marker =
                 StreamPath::new(format!("proof/effects/{}", request.operation())).map_err(guest)?;
             let mut effects = vec![
-                Effect {
-                    conditions: vec![CommitCondition::Absent {
+                acyclic_stream::CommitEffect::hard(
+                    vec![CommitCondition::Absent {
                         path: marker.clone(),
                     }],
-                    mutation: CommitMutation::Append {
+                    vec![CommitMutation::Append {
                         path: marker,
                         records: vec![bytes.clone().into()],
-                    },
-                },
-                Effect {
-                    conditions: Vec::new(),
-                    mutation: CommitMutation::Append {
+                    }],
+                ),
+                acyclic_stream::CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
                         path: self.audit.clone(),
                         records: vec![bytes.clone().into()],
-                    },
-                },
+                    }],
+                ),
             ];
             if let Some(next) = next {
                 let route = self
@@ -277,13 +277,13 @@ impl Handler for Package {
                     self.envelope.message(payload.into()).map_err(guest)?
                 };
                 effects.extend([
-                    Effect {
-                        conditions: Vec::new(),
-                        mutation: CommitMutation::Append {
+                    acyclic_stream::CommitEffect::hard(
+                        Vec::new(),
+                        vec![CommitMutation::Append {
                             path: route.inbox.clone(),
                             records: vec![record],
-                        },
-                    },
+                        }],
+                    ),
                     route.activation.clone(),
                 ]);
             }
@@ -389,22 +389,24 @@ async fn select<P: StreamProvider>(
     };
     let request = CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![previous.map_or_else(
-            || CommitCondition::Absent {
-                path: stream.clone(),
-            },
-            SelectionFence::condition,
+        effects: vec![CommitEffect::hard(
+            vec![previous.map_or_else(
+                || CommitCondition::Absent {
+                    path: stream.clone(),
+                },
+                SelectionFence::condition,
+            )],
+            vec![
+                CommitMutation::Append {
+                    path: stream.clone(),
+                    records: vec![encode(selection)?.into()],
+                },
+                CommitMutation::Append {
+                    path: path("proof/deployment/rollout.json")?,
+                    records: vec![encode(&status)?.into()],
+                },
+            ],
         )],
-        mutations: vec![
-            CommitMutation::Append {
-                path: stream.clone(),
-                records: vec![encode(selection)?.into()],
-            },
-            CommitMutation::Append {
-                path: path("proof/deployment/rollout.json")?,
-                records: vec![encode(&status)?.into()],
-            },
-        ],
         idempotency_key: key(format!("selection-{}", selection.epoch))?,
     };
     let CommitOutcome::Committed(receipt) = provider.commit(request).await? else {

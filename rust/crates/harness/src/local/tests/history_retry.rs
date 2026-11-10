@@ -53,8 +53,7 @@ fn storage(error: impl std::fmt::Display) -> Error {
 fn retained(request: &CommitRequest, root: &AgentPath) -> Result<HistoryCheckpoint> {
     let history = root.history().map_err(storage)?;
     let record = request
-        .mutations
-        .iter()
+        .mutations()
         .find_map(|mutation| match mutation {
             CommitMutation::Append { path, records } if path == &history => records.last(),
             _ => None,
@@ -136,11 +135,13 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
         idempotency_key: acyclic_stream::IdempotencyKey::new(b"history-retry".to_vec())
             .map_err(storage)?,
         deadline_unix_millis: None,
-        conditions: vec![],
-        mutations: vec![CommitMutation::Append {
-            path: root.conversation().map_err(storage)?,
-            records: vec![entry.clone().into()],
-        }],
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![],
+            vec![CommitMutation::Append {
+                path: root.conversation().map_err(storage)?,
+                records: vec![entry.clone().into()],
+            }],
+        )],
     };
     // These are the original production checkpoints and encoded output, not
     // a parallel transition model. Reopening probes preparation only: the
@@ -187,7 +188,7 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
         source_condition @ CommitCondition::Tail {
             path: source_path, ..
         },
-    ] = guard.request().conditions.as_slice()
+    ] = guard.request().effects[0].conditions.as_slice()
     else {
         return Err(Error::Invalid(
             "source head has no exact lineage condition".into(),
@@ -198,7 +199,11 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
         .map_err(storage)?;
     let original = first.seal(request.clone()).await.map_err(storage)?;
     let original_cut = retained(&original, root)?;
-    assert!(original.conditions.contains(source_condition));
+    assert!(
+        original
+            .conditions()
+            .any(|condition| condition == source_condition)
+    );
     workspace
         .write_text("/changed.md", "new generation")
         .await

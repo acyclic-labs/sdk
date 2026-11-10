@@ -23,7 +23,7 @@ pub fn create<P: acyclic_stream::StreamProvider + ?Sized>(
     actor: &crate::addressing::ActorReference,
     inbox: acyclic_stream::StreamPath,
     capacity: u64,
-) -> Result<[crate::guest::Effect; 3], crate::local::Error> {
+) -> Result<[acyclic_stream::CommitEffect; 3], crate::local::Error> {
     use acyclic_stream::{CommitCondition, CommitMutation};
     let [state, activation] = store.create(
         actor,
@@ -39,15 +39,15 @@ pub fn create<P: acyclic_stream::StreamProvider + ?Sized>(
     Ok([
         state,
         activation,
-        crate::guest::Effect {
-            conditions: vec![CommitCondition::Absent {
+        acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent {
                 path: inbox.clone(),
             }],
-            mutation: CommitMutation::Append {
+            vec![CommitMutation::Append {
                 path: inbox,
                 records: vec![Bytes::new().into()],
-            },
-        },
+            }],
+        ),
     ])
 }
 

@@ -1,8 +1,9 @@
 //! The actor's original state cut owns metadata, journal and alarm publication.
 use super::{Alarm, Error, Publication, Snapshot, State, Store, change_alarm, owned};
-use crate::guest::{AlarmChange, Effect};
+use crate::guest::AlarmChange;
 use acyclic_stream::{
-    CommitCondition, CommitMutation, IdempotencyKey, ReadRequest, StreamPath, StreamProvider,
+    CommitCondition, CommitEffect, CommitMutation, IdempotencyKey, ReadRequest, StreamPath,
+    StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -366,7 +367,8 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         if transition
             .effects
             .iter()
-            .any(|effect| super::mutation_targets(&effect.mutation, &journal))
+            .flat_map(|effect| &effect.mutations)
+            .any(|mutation| super::mutation_targets(mutation, &journal))
         {
             return Err(Error::Invalid(
                 "guest effect targets the host's actor journal",
@@ -395,7 +397,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         &mut self,
         alarm: AlarmChange,
         journal: Option<&StreamPath>,
-    ) -> Result<Vec<Effect>, Error> {
+    ) -> Result<Vec<CommitEffect>, Error> {
         let mut effects = if self.journal.is_empty() {
             Vec::new()
         } else {
@@ -403,19 +405,19 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 Some(path) => path.clone(),
                 None => self.journal_path()?,
             };
-            vec![Effect {
-                conditions: vec![CommitCondition::Tail {
+            vec![CommitEffect::hard(
+                vec![CommitCondition::Tail {
                     path: path.clone(),
                     expected: self.committed_journal_tail,
                 }],
-                mutation: CommitMutation::Append {
+                vec![CommitMutation::Append {
                     path,
                     records: std::mem::take(&mut self.journal)
                         .into_iter()
                         .map(Into::into)
                         .collect(),
-                },
-            }]
+                }],
+            )]
         };
         if alarm != AlarmChange::Keep
             || owned(&self.snapshot, self.epoch)?.alarm != self.committed_alarm

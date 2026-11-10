@@ -3,14 +3,14 @@ use acyclic_stream::{
     AppendRecord, AppendRequest, ChildrenPageRequest, RevisionCut, testing::Counted,
 };
 
-struct FailureWriter(CommitMutation);
+struct FailureWriter(CommitEffect);
 
 impl crate::guest::Composition for FailureWriter {
     fn seal<'a>(
         &'a mut self,
         mut request: CommitRequest,
     ) -> crate::guest::GuestFuture<'a, CommitRequest> {
-        request.mutations.push(self.0.clone());
+        request.effects.push(self.0.clone());
         Box::pin(async move { Ok(request) })
     }
 
@@ -132,7 +132,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         "preparation must not reread storage"
     );
     assert_eq!(
-        original_request.mutations.len(),
+        original_request.mutations().count(),
         3,
         "state, failure metadata and shared original input"
     );
@@ -214,10 +214,9 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             path: entry.origin.clone(),
             records: vec![entry.value.clone().into()],
         },
-        CommitMutation::SoftAppend {
+        CommitMutation::Append {
             path: failed.input_path()?,
             records: vec![Bytes::from_static(b"corrupt").into()],
-            closed: None,
         },
     ];
     for destination in [
@@ -236,48 +235,57 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     }
     let before = provider.requests();
     for mutation in mutations {
-        let effect = Effect {
-            conditions: vec![CommitCondition::Present {
-                path: source.clone(),
-            }],
-            mutation: mutation.clone(),
-        };
-        let mut result = transition(2, AlarmChange::Keep);
-        result.effects.push(effect.clone());
-        assert!(matches!(
-            store.prepare_publish(
+        for soft in [false, true] {
+            let effect = CommitEffect {
+                soft,
+                conditions: vec![CommitCondition::Present {
+                    path: source.clone(),
+                }],
+                mutations: vec![
+                    CommitMutation::Append {
+                        path: source.clone(),
+                        records: vec![Bytes::from_static(b"allowed-before-refusal").into()],
+                    },
+                    mutation.clone(),
+                ],
+            };
+            let mut result = transition(2, AlarmChange::Keep);
+            result.effects.push(effect.clone());
+            assert!(matches!(
+                store.prepare_publish(
+                    &snapshot,
+                    epoch,
+                    &record(0),
+                    Some(&input),
+                    result,
+                    key("failure/guest-write")?
+                ),
+                Err(Error::Invalid("effect changes the host's failures"))
+            ));
+            let mut publication = store.prepare_failed_input(
                 &snapshot,
                 epoch,
                 &record(0),
-                Some(&input),
-                result,
-                key("failure/guest-write")?
-            ),
-            Err(Error::Invalid("effect changes the host's failures"))
-        ));
-        let mut publication = store.prepare_failed_input(
-            &snapshot,
-            epoch,
-            &record(0),
-            &input,
-            &cause,
-            key("failure/join-write")?,
-        )?;
-        let original = publication.request().clone();
-        assert!(matches!(
-            publication.join(effect),
-            Err(Error::Invalid("effect changes the host's failures"))
-        ));
-        assert_eq!(
-            publication.request(),
-            &original,
-            "refusal cannot add conditions"
-        );
-        publication.composition = Some(Box::new(FailureWriter(mutation)));
-        assert!(matches!(
-            store.submit(publication).await,
-            Err(Error::Invalid("composition changed the actor publication"))
-        ));
+                &input,
+                &cause,
+                key("failure/join-write")?,
+            )?;
+            let original = publication.request().clone();
+            assert!(matches!(
+                publication.join(effect.clone()),
+                Err(Error::Invalid("effect changes the host's failures"))
+            ));
+            assert_eq!(
+                publication.request(),
+                &original,
+                "refusal cannot add conditions"
+            );
+            publication.composition = Some(Box::new(FailureWriter(effect)));
+            assert!(matches!(
+                store.submit(publication).await,
+                Err(Error::Invalid("composition changed the actor publication"))
+            ));
+        }
     }
     let mut publication = store.prepare_publish(
         &snapshot,
@@ -287,13 +295,13 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         transition(2, AlarmChange::Keep),
         key("failure/sibling")?,
     )?;
-    publication.join(Effect {
-        conditions: Vec::new(),
-        mutation: CommitMutation::Append {
+    publication.join(acyclic_stream::CommitEffect::hard(
+        Vec::new(),
+        vec![CommitMutation::Append {
             path: StreamPath::new(format!("{}/.failures-other/status", snapshot.path))?,
             records: vec![Bytes::from_static(b"allowed").into()],
-        },
-    })?;
+        }],
+    ))?;
     let work = provider.requests().since(before);
     assert_eq!(
         (work.data(), work.control()),
@@ -343,7 +351,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     let work = provider.requests().since(before);
     assert_eq!((work.data(), work.control()), (0, 0));
     assert_eq!(
-        replay.request().mutations.len(),
+        replay.request().mutations().count(),
         3,
         "terminal, exact input and original owner wake"
     );
@@ -427,7 +435,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         0,
         "purge does not fetch input bytes"
     );
-    assert_eq!(purge.request().mutations.len(), 1);
+    assert_eq!(purge.request().mutations().count(), 1);
     store.submit(purge).await?;
     assert_eq!(
         FailureEntry::decode(
@@ -515,7 +523,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     // Finite negative: restoring the old public preparation fails here before
     // waiting for a terminal that the mutation would never publish.
     for path in [call.log(), call.settled()] {
-        assert!(publication.request().mutations.iter().any(|mutation| {
+        assert!(publication.request().mutations().any(|mutation| {
             matches!(mutation, CommitMutation::Append { path: selected, .. } if selected == path)
         }), "missing original invocation terminal/settlement");
     }

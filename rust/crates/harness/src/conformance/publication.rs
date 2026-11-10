@@ -46,7 +46,9 @@ impl Composition for ParticipantCounts {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
         {
-            request.conditions.push(CommitCondition::Absent { path });
+            request.effects[0]
+                .conditions
+                .push(CommitCondition::Absent { path });
         }
         Box::pin(async { Ok(request) })
     }

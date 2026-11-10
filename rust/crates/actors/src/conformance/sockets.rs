@@ -8,9 +8,9 @@
 use super::{BUDGET_MS, Failure};
 use crate::addressing::ActorReference;
 use crate::guest::{
-    AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestEventResult,
-    GuestFuture, GuestSocketEvent, Handler, Manifest, SocketCloseInitiator, SocketHost,
-    SocketPayload, Transition, WebSocketAutoResponse, WebSocketId,
+    AlarmChange, Checkpoint, CodecIdentity, Delivery, GuestError, GuestEventResult, GuestFuture,
+    GuestSocketEvent, Handler, Manifest, SocketCloseInitiator, SocketHost, SocketPayload,
+    Transition, WebSocketAutoResponse, WebSocketId,
 };
 use crate::local::{Clock, Error, PreparedPublish, Store, Subscription};
 use crate::sockets::{SocketFrame, SocketOpen, socket_reply};
@@ -196,16 +196,16 @@ impl Handler for SocketPackage {
                     None => return Err(guest("alarm without a socket event")),
                 },
             };
-            let effect = Effect {
-                conditions: vec![CommitCondition::Tail {
+            let effect = acyclic_stream::CommitEffect::hard(
+                vec![CommitCondition::Tail {
                     path: journal.outbox.clone(),
                     expected: journal.published,
                 }],
-                mutation: CommitMutation::Append {
+                vec![CommitMutation::Append {
                     path: journal.outbox.clone(),
                     records: vec![AppendRecord::from(Bytes::from(line))],
-                },
-            };
+                }],
+            );
             journal.published += 1;
             Ok(Transition {
                 response,
@@ -261,15 +261,15 @@ impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
         )? {
             prepared.join(effect)?;
         }
-        prepared.join(Effect {
-            conditions: vec![CommitCondition::Absent {
+        prepared.join(acyclic_stream::CommitEffect::hard(
+            vec![CommitCondition::Absent {
                 path: outbox.clone(),
             }],
-            mutation: CommitMutation::Append {
+            vec![CommitMutation::Append {
                 path: outbox.clone(),
                 records: vec![AppendRecord::from(Bytes::from_static(b"created"))],
-            },
-        })?;
+            }],
+        ))?;
         PreparedPublish::settle(
             &store
                 .provider()
@@ -310,13 +310,13 @@ impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
         let store = self.target.store();
         let mut prepared = PreparedPublish::foreign(key(&format!("{}/{mark}", self.inbox))?);
         prepared.join(store.activation(&self.actor))?;
-        prepared.join(Effect {
-            conditions: Vec::new(),
-            mutation: CommitMutation::Append {
+        prepared.join(acyclic_stream::CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
                 path: self.inbox.clone(),
                 records: vec![AppendRecord::from(Bytes::from(mark.clone()))],
-            },
-        })?;
+            }],
+        ))?;
         PreparedPublish::settle(
             &store
                 .provider()

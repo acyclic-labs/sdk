@@ -104,23 +104,9 @@ fn request_json_fork(input: &[u8]) -> Result<Value> {
     Ok(Value::Object(value))
 }
 
-fn request_json_commit(input: &[u8]) -> Result<Value> {
-    let request = wire::CommitRequest::decode(input).map_err(|_| "invalid_argument")?;
-    if request.include_envelope {
-        return Err("unsupported");
-    }
-    let deadline = request.deadline_unix_millis;
-    let mut request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
-    crate::request::normalize_commit(&mut request).map_err(|error| error.code())?;
-    crate::request::validate_commit_shape(&request).map_err(|error| error.code())?;
-    if request
-        .conditions
-        .iter()
-        .any(|condition| matches!(condition, crate::CommitCondition::Head { .. }))
-    {
-        return Err("unsupported");
-    }
-    let conditions: Vec<_> = request
+/// One effect, `{conditions, mutations, soft}`; Head conditions were refused.
+fn effect_json(effect: &crate::CommitEffect) -> Value {
+    let conditions: Vec<_> = effect
         .conditions
         .iter()
         .map(|condition| match condition {
@@ -141,7 +127,7 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
             }),
         })
         .collect();
-    let mutations: Vec<_> = request
+    let mutations: Vec<_> = effect
         .mutations
         .iter()
         .map(|mutation| match mutation {
@@ -149,17 +135,6 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
                 "append": {
                     "path": path.to_string(),
                     "records": records.iter().map(append_record_json).collect::<Vec<_>>(),
-                },
-            }),
-            crate::CommitMutation::SoftAppend {
-                path,
-                records,
-                closed,
-            } => json!({
-                "softAppend": {
-                    "path": path.to_string(),
-                    "records": records.iter().map(append_record_json).collect::<Vec<_>>(),
-                    "closed": closed.as_ref().map(ToString::to_string).unwrap_or_default(),
                 },
             }),
             crate::CommitMutation::Fork {
@@ -179,6 +154,25 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
             }),
         })
         .collect();
+    json!({ "conditions": conditions, "mutations": mutations, "soft": effect.soft })
+}
+
+fn request_json_commit(input: &[u8]) -> Result<Value> {
+    let request = wire::CommitRequest::decode(input).map_err(|_| "invalid_argument")?;
+    if request.include_envelope {
+        return Err("unsupported");
+    }
+    let deadline = request.deadline_unix_millis;
+    let mut request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
+    crate::request::normalize_commit(&mut request).map_err(|error| error.code())?;
+    crate::request::validate_commit_shape(&request).map_err(|error| error.code())?;
+    if request
+        .conditions()
+        .any(|condition| matches!(condition, crate::CommitCondition::Head { .. }))
+    {
+        return Err("unsupported");
+    }
+    let effects: Vec<_> = request.effects.iter().map(effect_json).collect();
     let mut commit_options = serde_json::Map::from_iter([(
         "idempotencyKey".into(),
         json!(STANDARD.encode(request.idempotency_key.as_bytes())),
@@ -187,10 +181,7 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
         commit_options.insert("deadlineUnixMillis".into(), json!(deadline.to_string()));
     }
     let value = json!({
-        "request": {
-            "conditions": conditions,
-            "mutations": mutations,
-        },
+        "request": { "effects": effects },
         "options": commit_options,
     });
     Ok(value)
@@ -340,13 +331,15 @@ mod tests {
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let request = crate::CommitRequest {
             deadline_unix_millis: Some(9_007_199_254_740_993),
-            conditions: vec![crate::CommitCondition::Absent {
-                path: crate::StreamPath::new("deadline/events")?,
-            }],
-            mutations: vec![crate::CommitMutation::Append {
-                path: crate::StreamPath::new("deadline/events")?,
-                records: vec![(crate::OwnedBytes::from_static(b"record")).into()],
-            }],
+            effects: vec![crate::CommitEffect::hard(
+                vec![crate::CommitCondition::Absent {
+                    path: crate::StreamPath::new("deadline/events")?,
+                }],
+                vec![crate::CommitMutation::Append {
+                    path: crate::StreamPath::new("deadline/events")?,
+                    records: vec![(crate::OwnedBytes::from_static(b"record")).into()],
+                }],
+            )],
             idempotency_key: crate::IdempotencyKey::new(bytes::Bytes::from_static(b"identity"))?,
         };
         let mut wire = wire_codec::commit_to_wire(&request);

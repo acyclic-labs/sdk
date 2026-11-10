@@ -504,7 +504,7 @@ fn extend_transaction(
 // merge. The caller's original key is retained; a group's key is folded above.
 pub(in crate::distributed) fn merge_transaction(
     prefix: &mut CommitRequest,
-    next: CommitRequest,
+    mut next: CommitRequest,
     work: &mut AuthorityWork<'_>,
 ) -> Result<(), AuthorityStoreError> {
     let view = AppendView {
@@ -512,9 +512,10 @@ pub(in crate::distributed) fn merge_transaction(
         projection: None,
         transaction: Some(prefix),
     };
-    let mut conditions = work.vec(prefix.conditions.len() + next.conditions.len())?;
-    for condition in next.conditions {
-        let path = super::super::policy::condition_path(&condition);
+    let mut conditions =
+        work.vec(prefix.effects[0].conditions.len() + next.effects[0].conditions.len())?;
+    for condition in std::mem::take(&mut next.effects[0].conditions) {
+        let path = acyclic_stream::CommitCondition::path(&condition);
         if let Some((anchor, records)) = view.staged(path, work)? {
             let tail = anchor
                 .checked_add(crate::foundation::usize_to_u64(records.len()))
@@ -528,18 +529,19 @@ pub(in crate::distributed) fn merge_transaction(
             conditions.push(condition);
         }
     }
-    let mut merged = work.vec(prefix.conditions.len() + conditions.len())?;
-    merged.append(&mut prefix.conditions);
+    let mut merged = work.vec(prefix.effects[0].conditions.len() + conditions.len())?;
+    merged.append(&mut prefix.effects[0].conditions);
     for condition in conditions {
         super::super::policy::merge_condition(&mut merged, condition, work)?;
     }
-    prefix.conditions = merged;
-    let mut mutations = work.vec(prefix.mutations.len() + next.mutations.len())?;
-    mutations.append(&mut prefix.mutations);
-    for mutation in next.mutations {
+    prefix.effects[0].conditions = merged;
+    let mut mutations =
+        work.vec(prefix.effects[0].mutations.len() + next.effects[0].mutations.len())?;
+    mutations.append(&mut prefix.effects[0].mutations);
+    for mutation in std::mem::take(&mut next.effects[0].mutations) {
         merge_append(&mut mutations, mutation, work)?;
     }
-    prefix.mutations = mutations;
+    prefix.effects[0].mutations = mutations;
     prefix.deadline_unix_millis = match (prefix.deadline_unix_millis, next.deadline_unix_millis) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),

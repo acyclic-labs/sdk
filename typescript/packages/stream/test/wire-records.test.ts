@@ -9,11 +9,10 @@ test("append and atomic commit encode record messages without losing opaque byte
   const payload = new Uint8Array([0, 1, 127, 255]);
   const request = fromBinary(AppendRequestSchema, wireAppendRequest("source", [payload]));
   expect(request.records[0]?.value).toEqual(payload);
-  const commit = { conditions: [{ path: "destination", ifAbsent: true as const }],
-    mutations: [{ fork: { source: "source", destination: "destination", atTail: 1n, exclude: [], values: [payload] } }] };
+  const commit = { effects: [{ conditions: [{ path: "destination", ifAbsent: true as const }], mutations: [{ fork: { source: "source", destination: "destination", atTail: 1n, exclude: [], values: [payload] } }], soft: false }] };
   const options = { idempotencyKey: idempotencyKey(new Uint8Array([4])) };
   const normalized = fromBinary(CommitRequestSchema, await normalizeWireCommitBytes(commit, options));
-  const mutation = normalized.mutations[0]!.mutation;
+  const mutation = normalized.effects[0]!.mutations[0]!.mutation;
   expect(mutation.case === "fork" && mutation.value.records[0]?.value).toEqual(payload);
   expect(await normalizeWireCommit(commit, options)).toEqual(commit);
   const provider = new MemoryStreamProvider();

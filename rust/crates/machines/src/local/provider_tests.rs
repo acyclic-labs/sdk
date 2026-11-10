@@ -331,16 +331,18 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
             streams
                 .commit(acyclic_stream::CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![acyclic_stream::CommitCondition::Absent {
-                        path: copied.log().clone(),
-                    }],
-                    mutations: vec![acyclic_stream::CommitMutation::Fork {
-                        source: source.log().clone(),
-                        destination: copied.log().clone(),
-                        at_tail: original_head.tail,
-                        exclude: Vec::new(),
-                        records: Vec::new(),
-                    }],
+                    effects: vec![acyclic_stream::CommitEffect::hard(
+                        vec![acyclic_stream::CommitCondition::Absent {
+                            path: copied.log().clone(),
+                        }],
+                        vec![acyclic_stream::CommitMutation::Fork {
+                            source: source.log().clone(),
+                            destination: copied.log().clone(),
+                            at_tail: original_head.tail,
+                            exclude: Vec::new(),
+                            records: Vec::new(),
+                        }]
+                    )],
                     idempotency_key: acyclic_stream::IdempotencyKey::new(
                         branch_root.as_str().as_bytes().to_vec(),
                     )?,

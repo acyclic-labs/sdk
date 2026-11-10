@@ -73,10 +73,10 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
         // The actual same append lands if its original close condition is removed.
         step.state.status_tail += 1;
         let mut unguarded = lower(&step, 1, intent_key("unguarded", &[])?)?;
-        for mutation in &mut unguarded.mutations {
-            if let CommitMutation::SoftAppend { closed, .. } = mutation {
-                *closed = None;
-            }
+        for effect in unguarded.effects.iter_mut().filter(|effect| effect.soft) {
+            effect
+                .conditions
+                .retain(|condition| !matches!(condition, CommitCondition::Absent { .. }));
         }
         assert!(matches!(
             stream.commit(unguarded).await?,

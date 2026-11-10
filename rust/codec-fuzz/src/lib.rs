@@ -582,7 +582,7 @@ pub fn actor_seeds()
     );
     let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
     let effects = store.create(&actor, BTreeMap::new(), Some(checkpoint.clone()))?;
-    let CommitMutation::Append { records, .. } = &effects[0].mutation else {
+    let CommitMutation::Append { records, .. } = &effects[0].mutations[0] else {
         return Err("actor creation did not append state".into());
     };
     let bytes = records
@@ -1046,7 +1046,7 @@ fn actor_socket_seeds()
 async fn actor_alarm_seeds()
 -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
     use acyclic_actors::{
-        guest::{AlarmChange, Effect, Transition, Trigger},
+        guest::{AlarmChange, Transition, Trigger},
         local::{PreparedPublish, State, Store, Subscription},
     };
     use acyclic_auth::addressing::ActorReference;
@@ -1077,18 +1077,18 @@ async fn actor_alarm_seeds()
     )? {
         create.join(effect)?;
     }
-    create.join(Effect {
-        conditions: vec![CommitCondition::Absent {
+    create.join(acyclic_stream::CommitEffect::hard(
+        vec![CommitCondition::Absent {
             path: input.clone(),
         }],
-        mutation: CommitMutation::Append {
+        vec![CommitMutation::Append {
             path: input.clone(),
             records: vec![
                 Bytes::from_static(b"set").into(),
                 Bytes::from_static(b"clear").into(),
             ],
-        },
-    })?;
+        }],
+    ))?;
     PreparedPublish::settle(&provider.commit(create.into_request()?).await?)?;
     let inputs: Vec<_> = provider
         .read(ReadRequest {

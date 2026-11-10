@@ -279,18 +279,20 @@ fn keyed_commit(path: &str, tail: u64) -> Result<CommitRequest, StreamError> {
     let path = StreamPath::new(path)?;
     Ok(CommitRequest {
         deadline_unix_millis: None,
-        conditions: vec![if tail == 0 {
-            crate::CommitCondition::Absent { path: path.clone() }
-        } else {
-            crate::CommitCondition::Tail {
+        effects: vec![crate::CommitEffect::hard(
+            vec![if tail == 0 {
+                crate::CommitCondition::Absent { path: path.clone() }
+            } else {
+                crate::CommitCondition::Tail {
+                    path: path.clone(),
+                    expected: tail,
+                }
+            }],
+            vec![crate::CommitMutation::Append {
                 path: path.clone(),
-                expected: tail,
-            }
-        }],
-        mutations: vec![crate::CommitMutation::Append {
-            path: path.clone(),
-            records: vec![(Bytes::from(format!("{path}-{tail}"))).into()],
-        }],
+                records: vec![(Bytes::from(format!("{path}-{tail}"))).into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::new(Bytes::from(format!("{path}@{tail}")))?,
     })
 }
@@ -430,14 +432,18 @@ async fn concurrent_commits_on_distinct_paths_replay_after_reopen()
                 let outcome = provider
                     .commit(CommitRequest {
                         deadline_unix_millis: None,
-                        conditions: vec![condition(&left), condition(&right)],
-                        mutations: [&left, &right]
-                            .into_iter()
-                            .map(|path| crate::CommitMutation::Append {
-                                path: path.clone(),
-                                records: vec![(Bytes::from(tail.to_le_bytes().to_vec())).into()],
-                            })
-                            .collect(),
+                        effects: vec![crate::CommitEffect::hard(
+                            vec![condition(&left), condition(&right)],
+                            [&left, &right]
+                                .into_iter()
+                                .map(|path| crate::CommitMutation::Append {
+                                    path: path.clone(),
+                                    records: vec![
+                                        (Bytes::from(tail.to_le_bytes().to_vec())).into(),
+                                    ],
+                                })
+                                .collect(),
+                        )],
                         idempotency_key: IdempotencyKey::new(Bytes::from(format!("joint@{tail}")))?,
                     })
                     .await?;
@@ -582,28 +588,30 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
         }),
         WriteRequest::Commit(CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![
-                crate::CommitCondition::Tail {
-                    path: paths[2].clone(),
-                    expected: 2,
-                },
-                crate::CommitCondition::Absent {
-                    path: paths[3].clone(),
-                },
-            ],
-            mutations: vec![
-                crate::CommitMutation::Append {
-                    path: paths[2].clone(),
-                    records: vec![body(b"b", b"bob")?, body(b"a", b"alice")?],
-                },
-                crate::CommitMutation::Fork {
-                    source: paths[2].clone(),
-                    destination: paths[3].clone(),
-                    at_tail: 2,
-                    exclude: Vec::new(),
-                    records: vec![body(b"c", b"alice")?],
-                },
-            ],
+            effects: vec![crate::CommitEffect::hard(
+                vec![
+                    crate::CommitCondition::Tail {
+                        path: paths[2].clone(),
+                        expected: 2,
+                    },
+                    crate::CommitCondition::Absent {
+                        path: paths[3].clone(),
+                    },
+                ],
+                vec![
+                    crate::CommitMutation::Append {
+                        path: paths[2].clone(),
+                        records: vec![body(b"b", b"bob")?, body(b"a", b"alice")?],
+                    },
+                    crate::CommitMutation::Fork {
+                        source: paths[2].clone(),
+                        destination: paths[3].clone(),
+                        at_tail: 2,
+                        exclude: Vec::new(),
+                        records: vec![body(b"c", b"alice")?],
+                    },
+                ],
+            )],
             idempotency_key: IdempotencyKey::new("partial-commit")?,
         }),
     ];

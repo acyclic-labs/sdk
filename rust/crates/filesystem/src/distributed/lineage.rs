@@ -16,12 +16,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let records = work.path(&self.placement, authority, "/records", None)?;
         let epochs = work.path(&self.placement, authority, "/epochs", None)?;
         let gate = work.path(&self.placement, authority, "/publication-gate", None)?;
-        request.conditions.extend(
+        request.effects[0].conditions.extend(
             [&root, &records, &epochs, &gate]
                 .map(|path| CommitCondition::Absent { path: path.clone() }),
         );
         work.append_record(
-            &mut request.mutations,
+            &mut request.effects[0].mutations,
             root,
             [acyclic_stream::OwnedBytes::from_static(AUTHORITY_MARKER)],
         )?;
@@ -45,13 +45,17 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             let generation =
                 generation_from_payload(authority, record.sequence, record.payload, work)?;
             let encoded = work.publication_record(&record, generation)?;
-            work.append_record(&mut request.mutations, records, [genesis.into(), encoded])?;
+            work.append_record(
+                &mut request.effects[0].mutations,
+                records,
+                [genesis.into(), encoded],
+            )?;
             // Sequence one is intrinsically addressable. Its authenticated
             // record carries the operation identity and atomic commit identity,
             // so it needs no separate operation-locator record.
             generation
         } else {
-            work.append_record(&mut request.mutations, records, [genesis])?;
+            work.append_record(&mut request.effects[0].mutations, records, [genesis])?;
             None
         };
         let changes = self.creation_changes(
@@ -80,9 +84,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             work,
         )?;
         let epoch = work.stream_bytes(EPOCH_DOMAIN, &[&epoch.get().to_le_bytes()])?;
-        work.append_record(&mut request.mutations, epochs, [epoch])?;
+        work.append_record(&mut request.effects[0].mutations, epochs, [epoch])?;
         work.append_record(
-            &mut request.mutations,
+            &mut request.effects[0].mutations,
             gate,
             [acyclic_stream::OwnedBytes::from_static(
                 PUBLICATION_GATE_FREE,
@@ -115,7 +119,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
         let lineage = work.path(&self.placement, authority, "/lineage", None)?;
-        request.conditions.push(CommitCondition::Absent {
+        request.effects[0].conditions.push(CommitCondition::Absent {
             path: lineage.clone(),
         });
         let mut records = work.vec(usize::from(generation.is_some()))?;
@@ -137,10 +141,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     "/generations/",
                     Some(generation),
                 )?;
-                request.conditions.push(CommitCondition::Absent {
+                request.effects[0].conditions.push(CommitCondition::Absent {
                     path: locator.clone(),
                 });
-                request.mutations.push(CommitMutation::Fork {
+                request.effects[0].mutations.push(CommitMutation::Fork {
                     exclude: Vec::new(),
                     source,
                     destination: lineage,
@@ -154,9 +158,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     changes: if inherited { at.changes } else { 0 },
                 }
                 .encode(work)?;
-                work.append_record(&mut request.mutations, locator, [value])?;
+                work.append_record(&mut request.effects[0].mutations, locator, [value])?;
             }
-            None => request.mutations.push(CommitMutation::Append {
+            None => request.effects[0].mutations.push(CommitMutation::Append {
                 path: lineage,
                 records,
             }),
@@ -173,11 +177,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 "/generations/",
                 Some(generation),
             )?;
-            request.conditions.push(CommitCondition::Absent {
+            request.effects[0].conditions.push(CommitCondition::Absent {
                 path: locator.clone(),
             });
             let value = located.encode(work)?;
-            work.append_record(&mut request.mutations, locator, [value])?;
+            work.append_record(&mut request.effects[0].mutations, locator, [value])?;
         }
         Ok(())
     }
@@ -208,7 +212,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 ))?
                 .volume();
             let mut tail = crate::foundation::usize_to_u64(records.len());
-            request
+            request.effects[0]
                 .conditions
                 .push(CommitCondition::Absent { path: path.clone() });
             let inherited = proposed
@@ -216,7 +220,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 .as_ref()
                 .and_then(crate::PublicationChanges::inherited);
             match (inherited, source) {
-                (None, _) => request
+                (None, _) => request.effects[0]
                     .mutations
                     .push(CommitMutation::Append { path, records }),
                 // An unfiltered fork shares its source's changes up to the
@@ -237,7 +241,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                         .changes
                         .checked_add(tail)
                         .ok_or(crate::WorkError::Overflow)?;
-                    request.mutations.push(CommitMutation::Fork {
+                    request.effects[0].mutations.push(CommitMutation::Fork {
                         exclude: Vec::new(),
                         source: super::changes::changes_path(&self.placement, origin, work)?,
                         destination: path,
@@ -277,8 +281,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         let mut request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: work.vec(4)?,
-            mutations: work.vec(4)?,
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                work.vec(4)?,
+                work.vec(4)?,
+            )],
             idempotency_key: work.key(
                 self.placement.key_scope(),
                 b"create\0",
@@ -322,9 +328,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         work.check()?;
         let mut request = CommitRequest {
             deadline_unix_millis: None,
-            // Initial namespace changes add one stream to the creation CAS.
-            conditions: work.vec(9)?,
-            mutations: work.vec(9)?,
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                work.vec(9)?,
+                work.vec(9)?,
+            )],
             idempotency_key: work.key(
                 self.placement.key_scope(),
                 b"operation\0",
@@ -409,8 +416,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         let mut request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: work.vec(6)?,
-            mutations: work.vec(6)?,
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                work.vec(6)?,
+                work.vec(6)?,
+            )],
             idempotency_key: work.key(
                 self.placement.key_scope(),
                 b"fork-authority\0",
@@ -510,7 +519,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let (mut request, retention_projection, destination_projection) =
             self.prepare_fork_records(&fork, lineage, lease_path.as_ref(), work)?;
         if let Some(path) = lease_path {
-            request
+            request.effects[0]
                 .conditions
                 .push(CommitCondition::Tail { path, expected: 1 });
         }
@@ -571,8 +580,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     > {
         let mut request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: work.vec(18)?,
-            mutations: work.vec(17)?,
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                work.vec(18)?,
+                work.vec(17)?,
+            )],
             idempotency_key: work.key(
                 self.placement.key_scope(),
                 b"workspace-fork-attempt\0",

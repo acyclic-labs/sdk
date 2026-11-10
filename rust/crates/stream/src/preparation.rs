@@ -3,18 +3,19 @@
 //! Native providers use these same preparation rules as the built-in backends.
 //! Preparation neither authorizes a request nor publishes a commit. The provider
 //! validates the canonical request, admits its retained inputs and output capacity,
-//! resolves retry identity, and observes conditions, source cuts and soft-append
-//! markers at one pre-commit state. It then publishes all resulting facts and the
+//! resolves retry identity, and observes effect conditions and source cuts
+//! at one pre-commit state. It then publishes all resulting facts and the
 //! retry receipt atomically at that authority.
 //!
-//! After checking hard conditions with [`condition_conflict`] and source cuts with
-//! [`authority`], use [`settle`] and [`applied`] to select mutations, then [`facts`]
+//! Use [`settle`] with [`condition_conflict`] and [`applied`] to select mutations,
+//! check their source cuts with [`authority`], then use [`facts`]
 //! to build their committed form. All callbacks must read that same pre-commit
 //! state; `None` means observed absence, never a failed read. An exact retry uses
 //! [`skipped`] with its original request and accepted envelope, without re-reading
-//! current soft-append markers. Caller-supplied vectors must be empty and admitted
+//! current effect conditions. Caller-supplied vectors must be empty and admitted
 //! for every possible output slot; their capacity is not a product limit.
 use crate::AppendRecord;
+use crate::request::fact_path;
 use crate::{
     CommitCondition, CommitConflict, CommitId, CommitMutation, CommitRequest, CommittedAppend,
     CommittedFork, CommittedMutation, ForkRequest, Record, RelativePath, StreamError, StreamPath,
@@ -42,7 +43,7 @@ pub fn condition_conflict(
     actual: Option<u64>,
     preceding: impl FnOnce() -> Result<CommitId, StreamError>,
 ) -> Result<Option<CommitConflict>, StreamError> {
-    let path = crate::request::condition_path(condition);
+    let path = crate::CommitCondition::path(condition);
     Ok(match condition {
         CommitCondition::Present { .. } if actual.is_none() => {
             Some(CommitConflict::Missing { path: path.clone() })
@@ -84,88 +85,140 @@ pub fn condition_conflict(
     })
 }
 
-/// Settles every soft append against the authoritative pre-commit state, after
-/// the request's conditions passed: it applies when its path exists and its
-/// closing marker does not, and is skipped otherwise. The skipped paths are
-/// pushed, in canonical order, into `skipped`, which the caller admitted with
-/// capacity for every soft append; nothing else is copied, and [`applied`]
-/// then views the request without them.
+/// Settles every effect against the authoritative pre-commit state. Every
+/// failed condition of a hard effect is pushed into `conflicts`; when there is
+/// none, each soft effect is skipped at its first failed condition and its
+/// index pushed into `skipped`. The caller admitted `conflicts` with capacity
+/// for [`hard_conditions`] and `skipped` for [`soft`]; neither grows, and no
+/// soft condition is evaluated for a commit that conflicts.
 pub fn settle(
     request: &CommitRequest,
-    mut tail: impl FnMut(&StreamPath) -> Result<Option<u64>, StreamError>,
-    mut skipped: Vec<StreamPath>,
-) -> Result<Vec<StreamPath>, StreamError> {
-    if !skipped.is_empty() || skipped.capacity() < soft(request) {
+    mut conflict: impl FnMut(&CommitCondition) -> Result<Option<CommitConflict>, StreamError>,
+    mut conflicts: Vec<CommitConflict>,
+    mut skipped: Vec<u32>,
+) -> Result<(Vec<CommitConflict>, Vec<u32>), StreamError> {
+    if !conflicts.is_empty()
+        || conflicts.capacity() < hard_conditions(request)
+        || !skipped.is_empty()
+        || skipped.capacity() < soft(request)
+    {
         return Err(StreamError::InvalidArgument);
     }
-    for mutation in &request.mutations {
-        if let CommitMutation::SoftAppend { path, closed, .. } = mutation {
-            let open = tail(path)?.is_some()
-                && match closed {
-                    Some(closed) => tail(closed)?.is_none(),
-                    None => true,
-                };
-            if !open {
-                skipped.push(path.clone());
+    for effect in request.effects.iter().filter(|effect| !effect.soft) {
+        for condition in &effect.conditions {
+            if let Some(failed) = conflict(condition)? {
+                conflicts.push(failed);
             }
         }
     }
-    Ok(skipped)
+    if !conflicts.is_empty() {
+        return Ok((conflicts, skipped));
+    }
+    for (index, effect) in request.effects.iter().enumerate() {
+        if !effect.soft {
+            continue;
+        }
+        for condition in &effect.conditions {
+            if conflict(condition)?.is_some() {
+                skipped.push(u32::try_from(index).map_err(|_| StreamError::LimitExceeded)?);
+                break;
+            }
+        }
+    }
+    Ok((conflicts, skipped))
 }
 
-/// The number of soft appends in `request`: the capacity [`settle`] and
-/// [`skipped`] need.
-pub fn soft(request: &CommitRequest) -> usize {
+/// Whether `request` has a shape a commit may take: at least one mutation,
+/// and only [admissible](crate::CommitEffect::admissible) effects.
+pub fn shaped(request: &CommitRequest) -> bool {
+    request.mutations().next().is_some()
+        && request.effects.iter().all(crate::CommitEffect::admissible)
+}
+
+/// The number of conditions on hard effects: the conflicts [`settle`] can report.
+pub fn hard_conditions(request: &CommitRequest) -> usize {
     request
-        .mutations
+        .effects
         .iter()
-        .filter(|mutation| matches!(mutation, CommitMutation::SoftAppend { .. }))
-        .count()
+        .filter(|effect| !effect.soft)
+        .map(|effect| effect.conditions.len())
+        .sum()
 }
 
-/// The mutations a settled commit applies: all but the `skipped` soft appends.
-/// `skipped` must be the canonical-order subsequence produced by [`settle`] or
-/// [`skipped`] for this same validated request.
+/// The number of soft effects: the capacity [`settle`] and [`skipped`] need.
+pub fn soft(request: &CommitRequest) -> usize {
+    request.effects.iter().filter(|effect| effect.soft).count()
+}
+
+/// The number of mutations a commit that skipped `skipped` applies: the
+/// capacity [`applied`] needs.
+pub fn applied_len(request: &CommitRequest, skipped: &[u32]) -> usize {
+    effects_applied(request, skipped)
+        .map(|effect| effect.mutations.len())
+        .sum()
+}
+
+fn effects_applied<'r: 's, 's>(
+    request: &'r CommitRequest,
+    skipped: &'s [u32],
+) -> impl Iterator<Item = &'r crate::CommitEffect> + 's {
+    request
+        .effects
+        .iter()
+        .enumerate()
+        .filter(move |(index, _)| {
+            u32::try_from(*index).map_or(true, |index| skipped.binary_search(&index).is_err())
+        })
+        .map(|(_, effect)| effect)
+}
+
+/// The mutations a settled commit applies: those of every effect it did not
+/// skip, in canonical path order, as references into the request. `applied`
+/// was admitted by the caller with capacity for [`applied_len`]; it is filled
+/// and sorted in place, and nothing else is copied.
 pub fn applied<'a>(
     request: &'a CommitRequest,
-    skipped: &'a [StreamPath],
-) -> impl Iterator<Item = &'a CommitMutation> + Clone + 'a {
-    request.mutations.iter().filter(move |mutation| {
-        !matches!(mutation, CommitMutation::SoftAppend { path, .. } if skipped.binary_search(path).is_ok())
-    })
+    skipped: &[u32],
+    mut applied: Vec<&'a CommitMutation>,
+) -> Result<Vec<&'a CommitMutation>, StreamError> {
+    if !applied.is_empty() || applied.capacity() < applied_len(request, skipped) {
+        return Err(StreamError::InvalidArgument);
+    }
+    for effect in effects_applied(request, skipped) {
+        applied.extend(effect.mutations.iter());
+    }
+    applied.sort_unstable_by(|left, right| {
+        crate::CommitMutation::path(left).cmp(crate::CommitMutation::path(right))
+    });
+    Ok(applied)
 }
 
-/// The soft appends of `request` that its committed `envelope` skipped: those
-/// without an append fact. Both are in canonical path order, so this is one
-/// merge walk; a replayed commit reports exactly what the original reported.
-/// `skipped` is admitted by the caller as in [`settle`].
+/// The soft effects of `request` that its committed `envelope` skipped: an
+/// effect applied iff its mutations have facts, and all or none of them do,
+/// so its first path decides. A replayed commit reports exactly what the
+/// original reported. `skipped` is admitted by the caller as in [`settle`].
 pub fn skipped(
     request: &CommitRequest,
     envelope: &crate::CommittedEnvelope,
-    mut skipped: Vec<StreamPath>,
-) -> Result<Vec<StreamPath>, StreamError> {
+    mut skipped: Vec<u32>,
+) -> Result<Vec<u32>, StreamError> {
     if !skipped.is_empty() || skipped.capacity() < soft(request) {
         return Err(StreamError::InvalidArgument);
     }
-    let mut facts = envelope.mutations.iter().peekable();
-    for mutation in &request.mutations {
-        let CommitMutation::SoftAppend { path, .. } = mutation else {
+    for (index, effect) in request.effects.iter().enumerate() {
+        if !effect.soft {
             continue;
-        };
-        while facts
-            .next_if(|fact| match fact {
-                CommittedMutation::Append(append) => append.path < *path,
-                CommittedMutation::Fork(fork) => fork.destination < *path,
-            })
-            .is_some()
-        {}
-        let applied = facts
-            .next_if(
-                |fact| matches!(fact, CommittedMutation::Append(append) if append.path == *path),
-            )
-            .is_some();
-        if !applied {
-            skipped.push(path.clone());
+        }
+        let first = effect
+            .mutations
+            .first()
+            .ok_or(StreamError::InvalidArgument)?;
+        if envelope
+            .mutations
+            .binary_search_by(|fact| fact_path(fact).cmp(crate::CommitMutation::path(first)))
+            .is_err()
+        {
+            skipped.push(u32::try_from(index).map_err(|_| StreamError::LimitExceeded)?);
         }
     }
     Ok(skipped)
@@ -208,13 +261,12 @@ pub fn append_fact(
     })
 }
 
-/// Validate fork source cuts against the same pre-commit state as conditions.
-/// This checks retained prefixes; the provider still owns request authorization.
+/// Checks every applied fork's source cut against the pre-commit state.
 pub fn authority(
-    request: &CommitRequest,
+    applied: &[&CommitMutation],
     mut tail: impl FnMut(&StreamPath) -> Result<Option<u64>, StreamError>,
 ) -> Result<(), StreamError> {
-    for mutation in &request.mutations {
+    for mutation in applied {
         if let CommitMutation::Fork {
             source, at_tail, ..
         } = mutation
@@ -231,8 +283,8 @@ pub fn authority(
 /// Preserve pre-commit source cuts and mutation order independently of the
 /// backend's record storage. All output containers are admitted by the caller;
 /// the semantic planner never allocates a second unaccounted vector.
-pub fn facts<'a>(
-    source: impl IntoIterator<Item = &'a CommitMutation>,
+pub fn facts(
+    source: &[&CommitMutation],
     mut tail: impl FnMut(&StreamPath) -> Result<Option<u64>, StreamError>,
     mut build: impl FnMut(
         &StreamPath,
@@ -242,19 +294,13 @@ pub fn facts<'a>(
     ) -> Result<(Vec<Record>, Vec<RelativePath>), StreamError>,
     mut output: Vec<CommittedMutation>,
 ) -> Result<Vec<CommittedMutation>, StreamError> {
-    if !output.is_empty() {
+    if !output.is_empty() || output.capacity() < source.len() {
         return Err(StreamError::InvalidArgument);
     }
-    for mutation in source {
-        // The caller admitted every output slot; never grow unaccounted.
-        if output.len() == output.capacity() {
-            return Err(StreamError::InvalidArgument);
-        }
-        // A fork's own records belong to its destination. A soft append here
-        // was settled open; see [`applied`].
+    for mutation in source.iter().copied() {
+        // A fork's own records belong to its destination.
         let (origin, start, bodies, exclusions) = match mutation {
-            CommitMutation::Append { path, records }
-            | CommitMutation::SoftAppend { path, records, .. } => {
+            CommitMutation::Append { path, records } => {
                 (path, tail(path)?.unwrap_or(0), records, &[][..])
             }
             CommitMutation::Fork {
@@ -267,7 +313,7 @@ pub fn facts<'a>(
         };
         let (records, exclude) = build(origin, start, bodies, exclusions)?;
         output.push(match mutation {
-            CommitMutation::Append { path, .. } | CommitMutation::SoftAppend { path, .. } => {
+            CommitMutation::Append { path, .. } => {
                 CommittedMutation::Append(append_fact(path.clone(), start, records)?)
             }
             CommitMutation::Fork {

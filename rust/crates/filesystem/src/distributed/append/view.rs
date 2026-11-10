@@ -112,7 +112,7 @@ impl AppendView<'_> {
         let Some(transaction) = self.transaction else {
             return Ok(None);
         };
-        for mutation in &transaction.mutations {
+        for mutation in &transaction.effects[0].mutations {
             visit(work)?;
             if let CommitMutation::Append {
                 path: destination,
@@ -120,7 +120,7 @@ impl AppendView<'_> {
             } = mutation
                 && destination == path
             {
-                for condition in &transaction.conditions {
+                for condition in &transaction.effects[0].conditions {
                     visit(work)?;
                     match condition {
                         CommitCondition::Absent { path: participant } if participant == path => {
@@ -240,19 +240,21 @@ mod cursor_tests {
                 for rows in 0..=5 {
                     let transaction = CommitRequest {
                         deadline_unix_millis: None,
-                        conditions: vec![CommitCondition::Head {
-                            path: records.clone(),
-                            expected: start,
-                            commit_id: anchor.record_commit_id,
-                        }],
-                        mutations: vec![CommitMutation::Append {
-                            path: records.clone(),
-                            records: (0..rows)
-                                .map(|_| {
-                                    acyclic_stream::OwnedBytes::from_static(b"prepared").into()
-                                })
-                                .collect(),
-                        }],
+                        effects: vec![CommitEffect::hard(
+                            vec![CommitCondition::Head {
+                                path: records.clone(),
+                                expected: start,
+                                commit_id: anchor.record_commit_id,
+                            }],
+                            vec![CommitMutation::Append {
+                                path: records.clone(),
+                                records: (0..rows)
+                                    .map(|_| {
+                                        acyclic_stream::OwnedBytes::from_static(b"prepared").into()
+                                    })
+                                    .collect(),
+                            }],
+                        )],
                         idempotency_key: acyclic_stream::IdempotencyKey::new(Bytes::from_static(
                             b"cursor-proof",
                         ))?,
