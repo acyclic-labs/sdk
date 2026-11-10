@@ -1,6 +1,7 @@
 //! Generated plugin inputs reach the production loader and existing evaluator.
 use super::*;
 use crate::plugins::{self, Enabled};
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicUsize;
 
 const MANIFEST: &str = "plugins/p/plugin.ts";

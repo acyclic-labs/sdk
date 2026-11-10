@@ -46,7 +46,7 @@ pub fn check_version(input: &[u8]) {
 
 /// A version pins a namespace selection, without inventing file metadata.
 /// Only the original read producer supplies the length in FileReadSource.
-pub(super) enum SelectedVersion {
+pub(crate) enum SelectedVersion {
     Content(FileRef),
     Authored(crate::conversation::PathSelection),
 }

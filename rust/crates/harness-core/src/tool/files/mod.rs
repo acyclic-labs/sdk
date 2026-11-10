@@ -64,6 +64,7 @@ pub use source::FileReadSource;
 mod executor;
 mod version;
 pub(crate) use executor::FileTool;
+pub(crate) use version::SelectedVersion;
 #[cfg(all(
     feature = "test-support",
     feature = "filesystem",

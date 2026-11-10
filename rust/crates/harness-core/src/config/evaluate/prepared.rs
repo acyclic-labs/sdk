@@ -1,5 +1,6 @@
 //! One retained loader cut, including semantic refusals and absent imports.
 use super::*;
+use std::collections::BTreeMap;
 
 /// One original module observation, including a missing static import.
 #[derive(Clone, Debug, PartialEq, Eq)]

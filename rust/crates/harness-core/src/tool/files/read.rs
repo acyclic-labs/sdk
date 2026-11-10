@@ -41,7 +41,13 @@ impl FileTool {
             input.0.path = layer.into_owned();
             if let Some((selected, custody)) = selected {
                 source = super::source::ReadSource {
-                    source: Some(FileReadSource::Authored(selected).into()),
+                    source: Some(super::version::SelectedVersion::Authored(
+                        crate::conversation::PathSelection {
+                            volume: selected.volume,
+                            path: selected.path,
+                            generation: selected.generation,
+                        },
+                    )),
                     custody,
                 };
             }

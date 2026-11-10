@@ -3,6 +3,21 @@ use serde_json::json;
 
 struct Missing;
 
+struct Files(&'static [(&'static str, &'static str)]);
+
+impl Tree for Files {
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+        Box::pin(std::future::ready(Ok(self.0.iter().find_map(
+            |(name, source)| {
+                (*name == path).then(|| acyclic_stream::OwnedBytes::from_static(source.as_bytes()))
+            },
+        ))))
+    }
+}
+
 impl Tree for Missing {
     fn read<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
         Box::pin(std::future::ready(Ok(None)))

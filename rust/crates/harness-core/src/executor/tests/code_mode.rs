@@ -847,7 +847,8 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
                 65536,
                 crate::conversation::ContentAccess::default(),
             )?
-            .await?;
+            .await?
+            .ok_or_else(|| Error::Invalid("original file disappeared".into()))?;
         assert_eq!(&*bytes, b"original");
         assert!(model.requests().is_empty());
         assert_eq!(unused_tool.0.load(Ordering::SeqCst), 0);
