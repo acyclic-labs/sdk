@@ -60,7 +60,7 @@ enum Ownership {
     /// Each transaction is admitted by a shared `owner.lock`.
     Shared,
     /// Sole owner; clones share its lock and record cache.
-    Owned(owners::OwnerRef),
+    Owned(Arc<owners::OwnerRef>),
 }
 
 /// Lifetime-long exclusive ownership of one namespace.
@@ -194,7 +194,7 @@ enum Admission {
     Shared {
         _lock: OwnerLock,
     },
-    Owned(owners::OwnerRef),
+    Owned(Arc<owners::OwnerRef>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -223,7 +223,7 @@ impl LocalCoreStateStore {
         let owner = owners::create(&root, None)?;
         Ok(Self {
             root: Arc::new(root),
-            ownership: Ownership::Owned(owners::OwnerRef::new(owner)),
+            ownership: Ownership::Owned(Arc::new(owners::OwnerRef::new(owner))),
             deferral: None,
             inspection: false,
             journal_work: None,

@@ -11,6 +11,7 @@ The checkout is restored on exit.
 | be-host-parser-validation | Derive invalid typed writer inputs from admitted captures; omit leaf ordering. |
 | co-green-2 | Share the real operation cache under source cursor locks; lower its lock rank. The same test runs under Loom when compiled with `cfg(loom)`. |
 | co-green | Reopen while physical ownership is retiring; omit native claim handles. The test waits for the claim's actual waiter-registration event. |
+| shared-owner join | Retain the registered owner and its native handle in one weak upgrade before retiring the previous handle. The bare-owner negative control detects a closing wait through the actual claim registration event. |
 | co-quality-fs | Exhaust a narrow index domain against a wide minimum oracle; truncate allowances to that domain. This reproduces the conversion error on a 64-bit test host. Real metered writes are also checked. |
 | comp | Register and recover stored Unicode identities; accept normalized replacements. |
 | fs-scale-control-original-work-20261108 | Activate a real source with foreign work; omit original-invocation admission. |

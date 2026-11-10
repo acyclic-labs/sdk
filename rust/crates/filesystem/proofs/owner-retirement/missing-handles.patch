@@ -1,8 +1,8 @@
 --- a/rust/crates/filesystem/src/core_state/owners.rs
 +++ b/rust/crates/filesystem/src/core_state/owners.rs
 @@ -8,14 +8,14 @@
- /// that sees an expired Weak then waits on the claim's physical release event.
- #[derive(Clone, Debug)]
+ /// handle. Retire the handle before the owner's Arc and physical teardown.
+ #[derive(Debug)]
  pub(super) struct OwnerRef {
 -    _handle: acyclic_native_runtime::StoreHandle,
 +    _handle: (),
