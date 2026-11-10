@@ -7,9 +7,12 @@
 <script type="module">
 import { agentsFixture, untilRecords, turnText } from "./browser-agents-fixture.mjs";
 const result = document.querySelector("#result");
+let phase = "initialize";
+const step = text => { phase = text; result.dataset.waiting = text; };
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 try {
   for (const mode of ["solo", "direct", "guest"]) {
+    step(`${mode}: initialize providers`);
     let fixture, providers, guest, agents;
     try {
       fixture = await agentsFixture(crypto.randomUUID(), async function* ({ dispatch, texts }) {
@@ -31,18 +34,24 @@ try {
         guest = fixture.guest(providers);
         return fixture.hosting(providers, guest);
       };
+      step(`${mode}: open host`);
       agents = await open();
+      step(`${mode}: create root`);
       const root = await agents.create(`models-${mode}`, "delegate");
+      step(`${mode}: read root adoption`);
       const rootInbox = await untilRecords(fixture, agents, root, "inbox",
         records => records.some(record => record.value.fork_adopted?.parent === null));
       const adopted = rootInbox.find(record => record.value.fork_adopted?.parent === null).value.fork_adopted;
       assert(adopted.profile.model === "browser-test/scripted", `${mode}: root did not retain its configured model`);
+      step(`${mode}: settle root`);
       await untilRecords(fixture, agents, root, "conversation", records => records.length >= 1);
+      step(`${mode}: list children`);
       const children = await agents.list(root, null, null, 8);
       assert(children.agents.length === (mode === "solo" ? 0 : 1), `${mode}: child admission changed`);
       let child;
       if (mode !== "solo") {
         child = children.agents[0];
+        step(`${mode}: settle child`);
         const childInbox = await untilRecords(fixture, agents, child, "inbox",
           records => records.some(record => record.value.fork_adopted?.parent === root));
         const childAdopted = childInbox.find(record => record.value.fork_adopted?.parent === root).value.fork_adopted;
@@ -50,17 +59,21 @@ try {
         const entries = await untilRecords(fixture, agents, child, "conversation", records => records.length >= 1);
         assert(await turnText(agents, child, entries.at(-1)) === "worker:child", `${mode}: alternate JavaScript provider did not run`);
       }
+      step(`${mode}: close host`);
       await fixture.close(agents);
       agents = undefined;
       guest?.free(); guest = undefined;
       // Replacing the default cannot replace either retained stream selection.
       fixture.configure({ provider: "replacement", name: "default", revision: "1" },
         async function* () { throw new Error("replacement default ran a retained agent"); });
+      step(`${mode}: open host`);
       agents = await open();
+      step(`${mode}: resume root`);
       await agents.send(root, "root-again", "again");
       let entries = await untilRecords(fixture, agents, root, "conversation", records => records.length >= 2);
       assert(await turnText(agents, root, entries.at(-1)) === "root:again", `${mode}: reopened root changed model`);
       if (child !== undefined) {
+        step(`${mode}: resume child`);
         await agents.send(child, "child-again", "again");
         entries = await untilRecords(fixture, agents, child, "conversation", records => records.length >= 2);
         assert(await turnText(agents, child, entries.at(-1)) === "worker:again", `${mode}: reopened child changed model`);
@@ -75,7 +88,7 @@ try {
   result.textContent = "solo, direct and guest browser roots retain their model; JavaScript alternate providers execute and survive changed defaults";
 } catch (error) {
   result.dataset.status = "failed";
-  result.textContent = String(error.stack ?? error);
+  result.textContent = `${phase}: ${error.stack ?? error}`;
 }
 </script>
 </html>
