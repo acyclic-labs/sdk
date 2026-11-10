@@ -234,6 +234,35 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     const NOW: u64 = 5_000;
     const TIMEOUT: u64 = 200_000;
 
+    // Grow the population through bounded ordinary admissions: one transition's
+    // checkpoint/receipt frame is bounded independently of the live population.
+    const SPAWN_CHUNK: usize = 32;
+    fn spawn_chunk(from: usize) -> TurnStep {
+        let through = (from + SPAWN_CHUNK).min(CHILDREN);
+        let checkpoint = (through as u32).to_le_bytes();
+        let done = through == CHILDREN;
+        step(
+            if done { b"spawned" } else { &checkpoint },
+            (from..through)
+                .map(|n| Out::Spawn {
+                    profile: None,
+                    history: None,
+                    intent: intent(&format!("child-{n}")),
+                    brief: None,
+                    volumes: Vec::new(),
+                })
+                .collect(),
+            Wait::Approval {
+                id: if done {
+                    intent("begin-wait")
+                } else {
+                    intent(&format!("spawn-through-{through}"))
+                },
+                binding: None,
+            },
+        )
+    }
+
     struct Burst(Arc<Mutex<Vec<u64>>>);
     impl TurnDriver for Burst {
         fn step<'a>(
@@ -263,22 +292,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
                     });
                 }
                 Ok(match checkpoint {
-                    None => step(
-                        b"spawned",
-                        (0..CHILDREN)
-                            .map(|n| Out::Spawn {
-                                profile: None,
-                                history: None,
-                                intent: intent(&format!("child-{n}")),
-                                brief: None,
-                                volumes: Vec::new(),
-                            })
-                            .collect(),
-                        Wait::Approval {
-                            id: intent("begin-wait"),
-                            binding: None,
-                        },
-                    ),
+                    None => spawn_chunk(0),
                     Some(b"spawned") => step(
                         b"waiting",
                         Vec::new(),
@@ -295,13 +309,18 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
                             .within(Some(TIMEOUT)),
                         ),
                     ),
-                    Some(_) => {
+                    Some(b"waiting") => {
                         self.0
                             .lock()
                             .map_err(|_| Error::Record("resumes"))?
                             .push(cursor);
                         step(b"", Vec::new(), Wait::Input)
                     }
+                    Some(checkpoint) => spawn_chunk(u32::from_le_bytes(
+                        checkpoint
+                            .try_into()
+                            .map_err(|_| Error::Record("spawn cursor"))?,
+                    ) as usize),
                 })
             })
         }
@@ -334,6 +353,17 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     });
     host.send(&root, &user(), &start).await?;
     host.drain_event(&root).await?;
+    for through in (SPAWN_CHUNK..CHILDREN).step_by(SPAWN_CHUNK) {
+        host.send(
+            &root,
+            &user(),
+            &InboxRecord::Approval(Approval {
+                id: intent(&format!("spawn-through-{through}")),
+            }),
+        )
+        .await?;
+        host.drain_event(&root).await?;
+    }
     let membership = host.state(&root).await?.open_children;
     assert_eq!(membership.len(), CHILDREN);
     let children = membership
