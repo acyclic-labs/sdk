@@ -366,6 +366,51 @@ impl RetainedAllocation {
         }
     }
 
+    /// Borrows retained backing into its original synchronous grow operation.
+    /// The bytes stay live; only their retirement custody changes. Refusal
+    /// leaves both the retained lease and the receiving frame untouched.
+    fn take_owned(
+        &mut self,
+        bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<KernelOwnedAllocation, crate::FsError> {
+        accounting.check()?;
+        match &mut self.inner {
+            RetainedAllocationInner::Standalone { _lease } => {
+                let (ledger, _, _, _) = accounting
+                    .standalone_parts()
+                    .ok_or(crate::FsError::AccountingHandoffActive)?;
+                if !ledger.shares_retained_ledger(Arc::as_ptr(&_lease.ledger)) {
+                    return Err(crate::FsError::AccountingHandoffActive);
+                }
+                let remaining = _lease.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
+                let mut state = _lease
+                    .ledger
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let retained = state
+                    .retained_bytes
+                    .checked_sub(bytes)
+                    .ok_or(WorkError::Overflow)?;
+                state.retained_bytes = retained;
+                _lease.bytes = remaining;
+                Ok(KernelOwnedAllocation::Standalone)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            RetainedAllocationInner::Native { _allocation } => {
+                if !accounting
+                    .native_work()
+                    .is_some_and(|work| _allocation.work().shares_allocation_context(work))
+                {
+                    return Err(crate::FsError::AccountingHandoffActive);
+                }
+                Ok(KernelOwnedAllocation::NativeOriginal(
+                    _allocation.split_off(bytes)?,
+                ))
+            }
+        }
+    }
+
     pub(super) fn standalone(ledger: Arc<Mutex<SharedAllocationBytes>>, bytes: u64) -> Self {
         Self {
             inner: RetainedAllocationInner::Standalone {
@@ -511,11 +556,18 @@ impl<T> Retained<Vec<T>> {
         if self.value.len() < self.value.capacity() && self.value.len() < maximum {
             return Ok(());
         }
-        // The existing lease keeps the old capacity funded while the canonical
-        // grow leaf admits only its additional backing. Move Vec's header, not
-        // its elements, and join the new credit before restoring the value.
-        let allocation = accounting.claim_owned(0, 0)?;
-        let mut owned = crate::kernel::Owned::new(std::mem::take(&mut self.value), allocation, 0);
+        // Give the canonical grow leaf the original backing and its retirement
+        // custody. It admits the replacement beside that backing, then retires
+        // only the destroyed buffer. Other payload credit stays on this lease.
+        let bytes = usize_to_u64(
+            self.value
+                .capacity()
+                .checked_mul(size_of::<T>())
+                .ok_or(WorkError::Overflow)?,
+        );
+        let allocation = self.allocation.take_owned(bytes, accounting)?;
+        let mut owned =
+            crate::kernel::Owned::new(std::mem::take(&mut self.value), allocation, bytes);
         let result = owned.ensure_for_push(maximum, accounting);
         let mut grown = Self::from_owned(owned, accounting)?;
         self.allocation.absorb(&mut grown.allocation)?;
@@ -551,6 +603,74 @@ impl<T> std::ops::Deref for Retained<T> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn retained_buffer_growth_preserves_original_credit_on_success_and_refusal()
+    -> Result<(), crate::FsError> {
+        fn live(accounting: &KernelAccounting<'_>) -> u64 {
+            match accounting {
+                KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
+                KernelAccounting::BorrowedStandalone { allocations, .. } => {
+                    allocations.live_bytes()
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
+            }
+        }
+        let cancel = crate::CancellationToken::new();
+        for native in [false, true] {
+            #[cfg(target_arch = "wasm32")]
+            if native {
+                continue;
+            }
+            for refused in [false, true] {
+                let budget = WorkBudget {
+                    bytes_copied: if refused { 0 } else { u64::MAX },
+                    ..WorkBudget::UNBOUNDED
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                let original = crate::NativeMaterializationWork::new(budget, &cancel)
+                    .map_err(|(error, _)| crate::FsError::from(error))?;
+                let mut accounting = KernelAccounting::standalone(budget, &cancel);
+                #[cfg(not(target_arch = "wasm32"))]
+                if native {
+                    accounting = KernelAccounting::native(&original, &cancel);
+                }
+                let baseline = live(&accounting);
+                let mut buffer = Retained::<Vec<u64>>::allocate(1, &mut accounting)?;
+                buffer.value.push(42);
+                let before = live(&accounting);
+                let receipt = accounting.spent();
+                let mut foreign = KernelAccounting::standalone(budget, &cancel);
+                assert!(matches!(
+                    buffer.ensure_for_push(4, &mut foreign),
+                    Err(crate::FsError::AccountingHandoffActive)
+                ));
+                assert_eq!(buffer.value, [42]);
+                assert_eq!(buffer.value.capacity(), 1);
+                assert_eq!(live(&accounting), before);
+                assert_eq!(accounting.spent(), receipt);
+                let result = buffer.ensure_for_push(4, &mut accounting);
+                assert_eq!(result.is_err(), refused);
+                assert_eq!(buffer.value, [42]);
+                assert_eq!(buffer.value.capacity(), if refused { 1 } else { 2 });
+                let added = if refused { 0 } else { size_of::<u64>() as u64 };
+                assert_eq!(live(&accounting), before + added);
+                assert_eq!(
+                    accounting.spent().bytes_copied,
+                    receipt.bytes_copied + added
+                );
+                drop(buffer);
+                // Standalone promotion retains its own shared control; the
+                // native ledger was already included in the initial baseline.
+                assert_eq!(live(&accounting), before - size_of::<u64>() as u64);
+                if native {
+                    assert_eq!(live(&accounting), baseline);
+                }
+            }
+        }
+        Ok(())
+    }
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
