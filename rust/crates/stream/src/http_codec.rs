@@ -165,7 +165,6 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
     let deadline = request.deadline_unix_millis;
     let mut request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
     crate::request::normalize_commit(&mut request).map_err(|error| error.code())?;
-    crate::request::validate_commit_shape(&request).map_err(|error| error.code())?;
     if request
         .conditions()
         .any(|condition| matches!(condition, crate::CommitCondition::Head { .. }))

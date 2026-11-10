@@ -656,7 +656,6 @@ fn prepared_tail(request: &mut CommitRequest, maximum: usize) -> Result<u64, Str
         return Err(StreamError::LimitExceeded);
     }
     normalize_commit(request)?;
-    validate_commit_shape(request)?;
     let [
         CommitEffect {
             conditions,
