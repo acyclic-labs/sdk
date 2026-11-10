@@ -1,9 +1,212 @@
 use super::*;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::{ProcessCommand as Command, ProcessStdio as Stdio, ProcessTree};
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+#[allow(
+    unsafe_code,
+    reason = "FFI negative control creates a genuinely inheritable descriptor"
+)]
+fn sandbox_denies_outside_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace \"quoted\"");
+    let volume = temp.path().join("volume");
+    let outside = temp.path().join("outside");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&volume).unwrap();
+    std::fs::write(&outside, "original").unwrap();
+    std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+    #[cfg(target_os = "macos")]
+    let fifo = {
+        use std::os::unix::ffi::OsStrExt;
+        let path = workspace.join("fifo");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a terminated fixture pathname; no reader or writer is opened.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        path.canonicalize().unwrap()
+    };
+    let inherited = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&outside)
+        .unwrap();
+    use std::os::fd::AsRawFd;
+    // SAFETY: this exclusively owned fixture descriptor remains open for the
+    // test. Clearing CLOEXEC makes the negative control a real ambient leak.
+    assert_ne!(
+        unsafe { libc::fcntl(inherited.as_raw_fd(), libc::F_SETFD, 0) },
+        -1
+    );
+    for (access, primary_write, volume_write) in [
+        (ExecutionAccess::WorkspaceWrite, true, true),
+        (ExecutionAccess::ReadOnly, false, true),
+        (ExecutionAccess::ReadOnly, false, false),
+    ] {
+        let grant = ExecutionGrant::composed(
+            &workspace,
+            access,
+            [volume.clone()],
+            [PathBuf::from("/")],
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+        let grant = if volume_write {
+            grant
+        } else {
+            grant.into_read_only()
+        }
+        .compile_native()
+        .unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            // A real FIFO with no writer must refuse as cwd without waiting;
+            // final regular files must still work in read-root attenuation.
+            assert!(grant.prepare_launch(Some(&fifo), None).is_err());
+            let narrower = grant
+                .attenuate(
+                    grant.workspace(),
+                    ExecutionAccess::ReadOnly,
+                    [outside.clone()],
+                    ExecutionNetwork::Off,
+                )
+                .unwrap();
+            grant.check_attenuation(&narrower).unwrap();
+            let fifo_read = grant
+                .attenuate(
+                    grant.workspace(),
+                    ExecutionAccess::ReadOnly,
+                    [fifo.clone()],
+                    ExecutionNetwork::Off,
+                )
+                .unwrap();
+            grant.check_attenuation(&fifo_read).unwrap();
+        }
+        let expanded = ExecutionGrant::new(
+            &workspace,
+            ExecutionAccess::WorkspaceWrite,
+            [],
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+        assert_eq!(grant.check_attenuation(&expanded).is_ok(), primary_write);
+        let mut bypass = Command::new("/bin/sh");
+        bypass
+            .args(["-c", "printf leaked"])
+            .env_clear()
+            .current_dir(grant.workspace())
+            .stdin(Stdio::null())
+            .stdout(inherited.try_clone().unwrap())
+            .stderr(Stdio::null());
+        let refusal = ProcessTree::spawn_granted(bypass, &grant, None)
+            .err()
+            .expect("file-backed standard streams must refuse");
+        assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                r#"
+            (printf changed > escape) 2>/dev/null && exit 10
+            /bin/sh -c 'printf changed > "$1"' sh "$OUTSIDE" 2>/dev/null && exit 11
+            (eval "printf leaked >&$EXTRA_FD") 2>/dev/null && exit 12
+            (printf inside > inside) 2>/dev/null
+            (printf volume > "$VOLUME/written") 2>/dev/null
+            printf confined
+        "#,
+            ])
+            .env_clear()
+            .env("OUTSIDE", &outside)
+            .env("VOLUME", &volume)
+            .env("EXTRA_FD", inherited.as_raw_fd().to_string())
+            .current_dir(grant.workspace())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut tree = ProcessTree::spawn_granted(command, &grant, None).unwrap();
+        let mut output = String::new();
+        use std::io::Read;
+        tree.take_stdout()
+            .unwrap()
+            .read_to_string(&mut output)
+            .unwrap();
+        assert!(
+            tree.wait(crate::CaptureSchedule::Unbounded)
+                .unwrap()
+                .success(),
+            "{output}"
+        );
+        assert_eq!(output, "confined");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "original");
+        assert_eq!(workspace.join("inside").exists(), primary_write);
+        assert_eq!(volume.join("written").exists(), volume_write);
+        if primary_write {
+            std::fs::remove_file(workspace.join("inside")).unwrap();
+        }
+        if volume_write {
+            std::fs::remove_file(volume.join("written")).unwrap();
+        }
+    }
+}
 
 #[cfg(target_os = "linux")]
 mod ipc;
+
+#[cfg(target_os = "linux")]
+#[test]
+fn composed_grants_attenuate_all_write_roots_and_fence_replacement() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    let volume = temp.path().join("volume");
+    let foreign = temp.path().join("foreign");
+    for path in [&workspace, &volume, &foreign] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let grant = ExecutionGrant::composed(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [volume.clone()],
+        system_read_roots(),
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    let child = grant
+        .attenuate(
+            &volume,
+            ExecutionAccess::WorkspaceWrite,
+            [],
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+    grant.check_attenuation(&child).unwrap();
+    assert!(
+        grant
+            .clone()
+            .into_read_only()
+            .check_attenuation(&child)
+            .is_err()
+    );
+    let escape = ExecutionGrant::composed(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [foreign],
+        [],
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    assert!(grant.check_attenuation(&escape).is_err());
+    // A retained ruleset pins the original inode. Replacing its path must
+    // refuse launch, rather than refresh the policy around the new directory.
+    let grant = grant.compile_native().unwrap();
+    std::fs::rename(&volume, temp.path().join("retired-volume")).unwrap();
+    std::fs::create_dir(&volume).unwrap();
+    assert!(
+        grant
+            .prepare()
+            .unwrap_err()
+            .to_string()
+            .contains("root was replaced")
+    );
+}
 
 #[cfg(target_os = "linux")]
 pub(crate) fn system_read_roots() -> Vec<PathBuf> {
