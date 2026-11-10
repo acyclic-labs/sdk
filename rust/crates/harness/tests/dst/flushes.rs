@@ -75,6 +75,15 @@ fn turns(
             .state_directory(directory.join("state")))
         };
         let mut cuts = [0; 10];
+        // Volume setup can return while its accepted native owner is retiring.
+        // Its durability calls belong to setup, before the harness-open window.
+        let setup = schedule.durable_write_count();
+        let pending_setup = schedule.pending_native_work();
+        schedule.drained().await;
+        eprintln!(
+            "original setup owners: {pending_setup}; durable calls: {setup}..{}",
+            schedule.durable_write_count()
+        );
         cuts[0] = schedule.durable_write_count();
         let harness = Arc::new(entry(LocalHarness::open(config()?)).await?);
         cuts[1] = schedule.durable_write_count();
