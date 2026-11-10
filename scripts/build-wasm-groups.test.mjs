@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { assertByteSnapshotBoundary as check, checkByteSnapshotBoundary } from "./wasm-source-policy.mjs";
 import { packageClosure, workspaceManifests } from "./package-closure.mjs";
 
 const source = readFileSync("scripts/build-wasm-groups.mjs", "utf8").replace(/^import .*;\r?\n/, "");
@@ -204,13 +205,7 @@ test("Windows retains all check commands after grouped WASM builds with the wrap
 });
 
 test("WASM builds reject manual JS byte copies outside the snapshot boundary", () => {
-  const start = build.indexOf("const assertByteSnapshotBoundary =");
-  const end = build.indexOf("const checkByteSnapshotBoundary =", start);
-  const check = runInNewContext(`${build.slice(start, end)}; assertByteSnapshotBoundary`);
-  const directory = "rust/crates/harness/src/wasm";
-  for (const file of readdirSync(directory, { recursive: true }).filter(file => file.endsWith(".rs"))) {
-    check(file, readFileSync(`${directory}/${file}`, "utf8").replaceAll("\r\n", "\n"));
-  }
+  checkByteSnapshotBoundary("rust/crates/harness/src/wasm");
   for (const expression of ["caller.to_vec()", "caller.copy_to(&mut bytes)", "Uint8Array::new(&caller)"]) {
     assert.throws(() => check("file_worker.rs", expression), /copy caller arrays through/);
   }
