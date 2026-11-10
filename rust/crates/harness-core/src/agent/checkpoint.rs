@@ -41,8 +41,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            // V2 retains terminal archive refusals and their pending children.
-            version: "2".into(),
+            // V3 retains whether an actor wait also accepts inbox input.
+            version: "3".into(),
         });
     &IDENTITY
 }
@@ -849,7 +849,7 @@ mod tests {
                     }),
                 },
                 Phase::WaitingHost { host: widest(MAX_INTENT_BYTES) },
-                Phase::Waiting { deadline_unix_ms: Some(u64::MAX) }];
+                Phase::Waiting { deadline_unix_ms: Some(u64::MAX), input: true }];
             let record_outcomes = outcomes().into_iter().chain([AgentOutcome::Failed {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);

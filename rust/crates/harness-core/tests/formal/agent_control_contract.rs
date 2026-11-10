@@ -9,7 +9,9 @@ pub fn runnable(control: Control, queued: bool, approval_queued: bool, pending: 
             Mode::Done => false,
             Mode::Approval => control.turn && approval_queued,
             Mode::Running => control.turn,
-            Mode::Await(deadline) => control.turn && deadline.is_some(),
+            Mode::Await(deadline) => {
+                control.turn && (deadline.is_some() || (control.input && queued))
+            }
             Mode::Idle => queued,
         }
     }

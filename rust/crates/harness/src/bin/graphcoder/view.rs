@@ -1217,6 +1217,7 @@ mod tests {
         let mut view = View::default();
         view.phase = Some(Phase::Waiting {
             deadline_unix_ms: None,
+            input: false,
         });
         assert!(view.busy());
         assert_eq!(view.status(), "working · Esc or Ctrl+C interrupts");
@@ -1231,6 +1232,7 @@ mod tests {
             },
             Phase::Waiting {
                 deadline_unix_ms: Some(1),
+                input: false,
             },
         ] {
             view.phase = Some(phase);

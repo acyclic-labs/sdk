@@ -607,6 +607,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
     state.reserved_children = 3;
     state.phase = Phase::Waiting {
         deadline_unix_ms: Some(1_700_000_000_000),
+        input: false,
     };
     for (names, archived) in [
         (

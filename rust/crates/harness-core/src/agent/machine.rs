@@ -474,8 +474,7 @@ pub enum Wait {
     /// hook is taken ahead of the input queued behind the turn.
     Host(String),
     /// Wait, holding no delivery, until a monotone condition holds or its
-    /// timeout passes (see [`Until`]). Arrivals meanwhile queue without a
-    /// turn step.
+    /// timeout passes (see [`Until`]). Input can also resume it when selected.
     Until(Until),
     /// The turn finished; wait for more input.
     Input,
@@ -503,6 +502,8 @@ pub struct Until {
     /// Milliseconds after the committing step at which the turn resumes
     /// regardless; `None` waits for the condition alone.
     pub timeout_ms: Option<u64>,
+    /// Also resume on inbox input; used by reply-or-alarm waits.
+    pub input: bool,
 }
 
 impl Until {
@@ -526,6 +527,7 @@ impl Until {
             awaited,
             need,
             timeout_ms: None,
+            input: false,
         }
     }
 
@@ -536,6 +538,18 @@ impl Until {
             awaited: BTreeSet::new(),
             need: 1,
             timeout_ms: Some(timeout_ms),
+            input: false,
+        }
+    }
+
+    /// Wait for inbox input, with an optional actor alarm.
+    #[must_use]
+    pub fn input(timeout_ms: Option<u64>) -> Self {
+        Self {
+            awaited: BTreeSet::new(),
+            need: 1,
+            timeout_ms,
+            input: true,
         }
     }
 
@@ -967,9 +981,12 @@ fn control(state: &AgentState) -> Control {
             Phase::Idle | Phase::WaitingUser { .. } => Mode::Idle,
             Phase::Running => Mode::Running,
             Phase::WaitingApproval { .. } | Phase::WaitingHost { .. } => Mode::Approval,
-            Phase::Waiting { deadline_unix_ms } => Mode::Await(*deadline_unix_ms),
+            Phase::Waiting {
+                deadline_unix_ms, ..
+            } => Mode::Await(*deadline_unix_ms),
             Phase::Done { .. } => Mode::Done,
         },
+        input: matches!(state.phase, Phase::Waiting { input: true, .. }),
         closed: state.closed,
         archive_refused: state.archive_refused,
         reported: state.reported,
@@ -1236,13 +1253,13 @@ async fn run<T: TurnDriver + ?Sized>(
                 .map(|timeout| now_unix_ms.saturating_add(timeout));
             let sleep = until.awaited.is_empty();
             let reachable = open.len();
-            let wait = kernel::until(need, reachable, sleep, deadline);
+            let wait = kernel::until(need, reachable, sleep, deadline, until.input);
             #[cfg(feature = "test-support")]
             control_trace::record(
                 state,
-                Decision::Until(need, reachable, sleep, deadline, wait),
+                Decision::Until(need, reachable, sleep, deadline, until.input, wait),
             );
-            if matches!(wait, kernel::Wait::Await(_)) {
+            if matches!(wait, kernel::Wait::Await { .. }) {
                 outs.extend(open.iter().map(|child| Out::Send {
                     to: child.clone(),
                     record: InboxRecord::Awaited,
@@ -1276,7 +1293,10 @@ async fn run<T: TurnDriver + ?Sized>(
     state.phase = match (next.mode, approval, outcome) {
         (Mode::Running, ..) => Phase::Running,
         (Mode::Approval, Some(waiting), _) => waiting,
-        (Mode::Await(deadline_unix_ms), ..) => Phase::Waiting { deadline_unix_ms },
+        (Mode::Await(deadline_unix_ms), ..) => Phase::Waiting {
+            deadline_unix_ms,
+            input: next.input,
+        },
         (Mode::Idle, Some(waiting @ Phase::WaitingUser { .. }), _) => waiting,
         (Mode::Done, _, Some(outcome)) => {
             state.drop_queue();
