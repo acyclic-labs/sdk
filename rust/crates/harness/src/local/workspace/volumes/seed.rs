@@ -169,7 +169,7 @@ mod tests {
         drop(harness);
         std::fs::write(
             project.path().join(SOURCE).join("agent.ts"),
-            "export default { sampling: { temperature: 0.9 } };",
+            "export default (base) => ({ ...base, sampling: { temperature: 0.9 } });",
         )
         .map_err(storage)?;
         let harness = LocalHarness::open(config()?).await?;
@@ -244,14 +244,14 @@ mod tests {
         crate::local::tests::settings::write(
             &harness,
             "agent.ts",
-            "export default { sampling: { temperature: 0.75 } };",
+            "export default (base) => ({ ...base, sampling: { temperature: 0.75 } });",
         )
         .await?;
         drop(harness);
         // Changing the retained original cannot overwrite admitted home edits.
         std::fs::write(
             project.path().join(SOURCE).join("agent.ts"),
-            "export default { sampling: { temperature: 0.9 } };",
+            "export default (base) => ({ ...base, sampling: { temperature: 0.9 } });",
         )
         .map_err(storage)?;
         let harness = LocalHarness::open(config()?).await?;
