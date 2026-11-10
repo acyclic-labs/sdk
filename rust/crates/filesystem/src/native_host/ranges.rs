@@ -65,7 +65,7 @@ pub(super) fn source_control<W: SourceDemandReadWork>(
     kind: acyclic_native_runtime::NativeOperationKind,
     work: &mut W,
 ) -> Result<usize, DemandError> {
-    work.native_metered(|meter| {
+    work.with_native_read_meter(|meter| {
         acyclic_native_runtime::device_control_in_place(
             file,
             code,
@@ -73,7 +73,10 @@ pub(super) fn source_control<W: SourceDemandReadWork>(
             output,
             Some((meter, kind)),
         )
-        .map_err(crate::demand::native_demand_error)
+    })
+    .map_err(|error| {
+        work.with_original_leaf(|original| original.take_native_io_failure())
+            .unwrap_or_else(|| crate::demand::native_demand_error(error))
     })
 }
 

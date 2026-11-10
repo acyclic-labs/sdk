@@ -6,7 +6,7 @@ use super::{
     authorize_pre_operation, local_workspace, manual_mount_options, mount_source,
     open_notifications, setup_work, windows_checkout_source, windows_path,
 };
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn created_and_renamed_files_stay_observed_after_capture()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -208,7 +208,7 @@ async fn native_access_projfs_preoperations_use_the_shared_decision()
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn native_access_projfs_vetoes_host_rename_delete_and_hardlink()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::access::Action;

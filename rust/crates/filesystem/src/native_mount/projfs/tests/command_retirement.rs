@@ -34,7 +34,7 @@ where
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn running_async_controls_keep_original_work_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::session::NativeSessionControl;
@@ -81,7 +81,7 @@ async fn running_async_controls_keep_original_work_after_caller_cancellation()
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn async_controls_retain_original_work_until_completion_or_drop()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::session::NativeSessionControl;
@@ -218,7 +218,7 @@ async fn accepted_command_cleanup_finishes_on_original_credit_after_cancellation
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn failed_projection_cleanup_refunds_no_work_and_retries_on_original_budget()
 -> Result<(), Box<dyn std::error::Error>> {
     use super::super::cleanup::{finish_projection_cleanup, prepare_projection_cleanup};

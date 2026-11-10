@@ -233,7 +233,7 @@ async fn mounted_replay(noop: bool, bypass: bool) -> Result<[bool; 3], Box<dyn s
     Ok(observed)
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn mounted_nested_fallback_negative_control_replays_self_notifications()
 -> Result<(), Box<dyn std::error::Error>> {
     let expected = [false, true, false];

@@ -75,23 +75,6 @@ impl Projector {
 }
 
 impl ProjFsSession {
-    /// A customer retirement owns its namespace cleanup, including a mount
-    /// dropped without an explicit preparation. A refusal keeps its cause, so
-    /// physical retirement preserves data instead of deleting it.
-    fn retain_projection_cleanup(&mut self) {
-        let customer = self
-            .runtime
-            .as_ref()
-            .is_some_and(|runtime| matches!(runtime.source.native_original_work(), Ok(Some(_))));
-        if !customer || self.shared.is_some() || self.projection_cleanup.is_some() {
-            return;
-        }
-        if let Err(error) = self.prepare_projection_cleanup() {
-            self.capture_failure.get_or_insert(error);
-            self.capture_attempted = true;
-        }
-    }
-
     pub(in crate::native_mount) fn has_retirement_owner(&self) -> bool {
         self.controller.is_some()
     }
@@ -102,7 +85,6 @@ impl ProjFsSession {
             .as_ref()
             .cloned()
             .ok_or(NativeMountError::ControlPending)?;
-        self.retain_projection_cleanup();
         if let Some(runtime) = self.runtime.as_ref() {
             runtime.callbacks.close_admission();
             lock_recover(&projector.state).stopping = true;
@@ -149,7 +131,6 @@ impl ProjFsSession {
             {
                 return Err(NativeMountError::ControlPending);
             }
-            self.retain_projection_cleanup();
             self.stop_physical()?;
             return Ok(crate::native_mount::retirement::TerminalFailures {
                 source: self.take_source_failure(),

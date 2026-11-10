@@ -4,7 +4,7 @@ use super::{
     reject_stale_projection, setup_work, windows_checkout_source, windows_name, windows_path,
 };
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn detach_removes_projection_and_preserves_non_provider_content()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;

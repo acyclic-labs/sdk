@@ -371,20 +371,14 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
                 );
                 assert!(!state.pending.contains_key(&name));
             }
-            let observed = || -> std::io::Result<()> {
-                match replacement {
-                    Replacement::Removed => assert!(sorted_names(&destination)?.is_empty()),
-                    Replacement::File => assert_eq!(std::fs::read(&projected)?, b"newer"),
-                    Replacement::Directory => {
-                        assert!(std::fs::symlink_metadata(&projected)?.is_dir());
-                        assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
-                    }
+            match replacement {
+                Replacement::Removed => assert!(sorted_names(&destination)?.is_empty()),
+                Replacement::File => assert_eq!(std::fs::read(&projected)?, b"newer"),
+                Replacement::Directory => {
+                    assert!(std::fs::symlink_metadata(&projected)?.is_dir());
+                    assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
                 }
-                Ok(())
-            };
-            observed().map_err(|error| {
-                format!("observe settled entry, link={link}, {replacement:?}: {error}")
-            })?;
+            }
             session.stop().map_err(|error| {
                 format!("stop settled entry, link={link}, {replacement:?}: {error}")
             })?;

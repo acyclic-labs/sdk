@@ -6,7 +6,7 @@ use super::{
     windows_path,
 };
 use crate::kernel::KernelAccounting;
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn stopped_projection_cannot_publish_a_late_open_writer()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -62,7 +62,7 @@ async fn stopped_projection_cannot_publish_a_late_open_writer()
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn write_through_a_handle_opened_before_a_rename_lands_at_the_new_name()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -92,7 +92,7 @@ async fn write_through_a_handle_opened_before_a_rename_lands_at_the_new_name()
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -114,7 +114,7 @@ async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -138,7 +138,7 @@ async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
