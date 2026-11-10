@@ -119,6 +119,7 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
         }
     }
     if let Some((sequence, entry)) = admitted
+        && entry.inbox < inbox
         && entry
             .steering
             .as_ref()

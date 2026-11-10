@@ -58,6 +58,30 @@ async fn append(provider: &MemoryStream, path: &AgentPath, records: Vec<Vec<u8>>
 async fn committed_reply_search_respects_identity_and_fork_base() -> Result {
     let provider = MemoryStream::default();
     let root = create(&provider, id(1)).await?;
+    for name in ["m1", "m2", "m3"] {
+        submit(
+            &provider,
+            send(
+                &root,
+                &user(),
+                &InboxRecord::Message(Message {
+                    from: user(),
+                    id: intent(name),
+                    body: Box::new(file(name)?),
+                    attachments: None,
+                }),
+            )?,
+        )
+        .await?;
+    }
+    // A later turn's steering receipt cannot claim an input cancelled before
+    // that turn began, even when the observed-prefix search lands on it.
+    let mut third = ConversationEntry::decode(&entry(3, message("m3")?)?)?;
+    third.steering = Some(SteeringTranscript {
+        through: 4,
+        file: file("later-transcript")?,
+    });
+    let third = third.with_observed_prefix(0);
     let approval = TurnInput::ApprovalRequested {
         child: root.child(&id(7))?,
         id: intent("q"),
@@ -69,7 +93,7 @@ async fn committed_reply_search_respects_identity_and_fork_base() -> Result {
         &root,
         vec![
             entry(1, message("m1")?)?,
-            entry(3, message("m3")?)?,
+            third.encode()?,
             entry(4, approval)?,
             entry(6, message("m6")?)?,
         ],
