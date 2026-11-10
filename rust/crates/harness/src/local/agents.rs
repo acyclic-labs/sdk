@@ -179,7 +179,7 @@ impl TurnContext for LocalContext {
                     .ok_or_else(|| Error::Invalid("agent turn has no model boundary".into()))?
                     .include_prepared_sources(turn, through)?;
             }
-            #[cfg(any(test, feature = "hooks"))]
+            #[cfg(any(test, not(target_arch = "wasm32")))]
             let hooks = local.turn_hooks(turn, &**writer).await?;
             let (executor, context) =
                 Tasks::bind(&bindings.harness, executor, agent, turn, authority)?;

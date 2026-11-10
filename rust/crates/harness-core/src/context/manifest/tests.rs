@@ -308,7 +308,7 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> Result<()> {
     let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
