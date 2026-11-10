@@ -134,7 +134,7 @@ impl UserWatch {
     }
 }
 
-type Catalog = Option<(acyclic_fs::LazySnapshotId, SkillCatalog)>;
+type Catalog = Option<(acyclic_fs::LazySnapshotId, u64, SkillCatalog)>;
 
 #[derive(Clone)]
 struct SkillWorkspace {
@@ -478,13 +478,14 @@ impl NativeSkills {
             };
             let cut = view.snapshot(&mut accounting).await?;
             let mut cached = crate::sync::owned::lock_owned(self.cache.clone()).await;
-            if let Some((id, catalog)) = &*cached
+            if let Some((id, generation, catalog)) = &*cached
                 && id == &cut.id
+                && *generation == self.user_watch.current()
                 && let Some(skills) = catalog.reuse(bounds)?
             {
                 return Ok(skills);
             }
-            let mut skills = self.user_catalog(bounds)?.await?;
+            let (generation, mut skills) = self.owned_user_catalog(bounds)?.await?;
             let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
             let native = NativeDemandSource::open(
                 std::borrow::Cow::Borrowed(root),
@@ -525,7 +526,8 @@ impl NativeSkills {
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
             drop(scan);
             records.publish(self.directory.clone()).await?;
-            *cached = Some((cut.id, catalog));
+            // An unwatchable user source must not enter either catalog cache.
+            *cached = generation.map(|generation| (cut.id, generation, catalog));
             Ok(skills)
         })
     }
@@ -536,6 +538,16 @@ impl NativeSkills {
         bounds: &'a mut DiscoveryWork,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
+            Ok(self.owned_user_catalog(bounds)?.await?.1)
+        })
+    }
+
+    fn owned_user_catalog<'a>(
+        &'a self,
+        bounds: &'a mut DiscoveryWork,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (Option<u64>, Vec<SkillMetadata>)>>
+    {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
             bounds.limits.validate()?;
             let before = *bounds;
             let mut cached = crate::sync::owned::lock_owned(self.users.clone()).await;
@@ -543,7 +555,7 @@ impl NativeSkills {
                 && *generation == self.user_watch.current()
                 && let Some(skills) = catalog.reuse(bounds)?
             {
-                return Ok(skills);
+                return Ok((Some(*generation), skills));
             }
             let (generation, mut skills) = self.source_user_catalog(bounds)?.await?;
             let mut records = RetainedBatch::default();
@@ -577,7 +589,7 @@ impl NativeSkills {
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
             records.publish(self.directory.clone()).await?;
             *cached = generation.map(|generation| (generation, catalog));
-            Ok(skills)
+            Ok((generation, skills))
         })
     }
 
@@ -920,6 +932,45 @@ mod binding_tests {
             None,
             vec![home.path().join("skills")],
         )?;
+        // Keep a real checkout cut unchanged while the independent user source
+        // changes. Both the combined cache and its user cache must invalidate.
+        let checkout = home.path().join("checkout");
+        std::fs::create_dir(&checkout).map_err(storage)?;
+        let filesystem = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
+            home.path().join("filesystem"),
+        ))
+        .await
+        .map_err(storage)?;
+        let store = acyclic_fs::LocalCoreStateStore::open_owned(home.path().join("core"))
+            .map_err(storage)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = native_work(&cancellation)?;
+        let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+        let native = NativeDemandSource::open(
+            std::borrow::Cow::Borrowed(&checkout),
+            config.profile,
+            config.limits,
+            None,
+            None,
+            &work,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?;
+        let (view, _) = acyclic_fs::LazyWorkspace::attach(
+            &filesystem,
+            "skills",
+            Arc::new(native),
+            store,
+            acyclic_fs::VolumeInitialization::new(config, Some(acyclic_fs::access::INITIAL_POLICY)),
+            acyclic_fs::OperationId::new(),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &cancellation,
+            },
+        )
+        .await
+        .map_err(storage)?;
         let names = |skills: Vec<SkillMetadata>| {
             skills
                 .into_iter()
@@ -928,6 +979,14 @@ mod binding_tests {
         };
         let listed = names(sources.user_catalog(&mut DiscoveryWork::default())?.await?);
         assert_eq!(listed, ["first"]);
+        assert_eq!(
+            names(
+                sources
+                    .catalog(&checkout, &view, &mut DiscoveryWork::default())?
+                    .await?
+            ),
+            ["first"]
+        );
         // Scale: every agent bound to these roots shares the one watch set
         // and the one scan; binding more agents adds neither.
         let watches = || {
@@ -965,6 +1024,13 @@ mod binding_tests {
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let mut listed = names(sources.user_catalog(&mut DiscoveryWork::default())?.await?);
+        listed.sort();
+        assert_eq!(listed, ["first", "second"]);
+        let mut listed = names(
+            sources
+                .catalog(&checkout, &view, &mut DiscoveryWork::default())?
+                .await?,
+        );
         listed.sort();
         assert_eq!(listed, ["first", "second"]);
         Ok(())
