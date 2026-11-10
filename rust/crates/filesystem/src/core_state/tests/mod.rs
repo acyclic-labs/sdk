@@ -117,7 +117,7 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
 pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorkspaceState {
     let shadows = [3_u8; 32];
     serde_json::from_value(serde_json::json!({
-        "schema_version": 11,
+        "schema_version": crate::lazy_workspace::LAZY_STATE_SCHEMA,
         "revision": revision,
         "workspace_id": workspace_id,
         "parent_workspace_id": null,
