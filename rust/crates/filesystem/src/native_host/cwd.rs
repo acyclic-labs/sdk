@@ -298,7 +298,10 @@ fn linux_directory_path_held<W: NativeHostWork>(
             return Err(io::Error::last_os_error());
         }
         // SAFETY: fstatfs initialized stat on success.
-        Ok(unsafe { stat.assume_init() }.f_type == libc::PROC_SUPER_MAGIC)
+        let kind = unsafe { stat.assume_init() }.f_type;
+        // libc uses signed magic constants, but musl's f_type is unsigned.
+        // Widen both losslessly so the comparison is independent of the ABI.
+        Ok(i128::from(kind) == i128::from(libc::PROC_SUPER_MAGIC))
     })?;
     if !procfs {
         return Ok(None);
