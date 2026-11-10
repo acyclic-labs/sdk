@@ -7,11 +7,12 @@ use crate::{
     runtime::{RuntimeScope, ToolPolicyDecision},
     test_support::{FixedToolPolicy, ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
 };
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 struct Remote {
     changed: AtomicU64,
     lists: AtomicUsize,
+    fail: AtomicBool,
 }
 impl McpToolTransport for Remote {
     fn tools_generation(&self) -> u64 {
@@ -22,7 +23,10 @@ impl McpToolTransport for Remote {
         _: Option<String>,
     ) -> BoxProviderFuture<'_, Result<rmcp::model::ListToolsResult>> {
         self.lists.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async {
+        Box::pin(async move {
+            if self.fail.load(Ordering::Acquire) {
+                return Err(Error::Storage("transient list failure".into()));
+            }
             serde_json::from_value(
                 json!({"tools":[{"name":"new","inputSchema":{"type":"object"}}]}),
             )
@@ -58,8 +62,9 @@ async fn live_mcp_tools_append_deltas_preserve_prefix_and_refuse_removed_calls()
     let remote = Arc::new(Remote {
         changed: AtomicU64::new(0),
         lists: AtomicUsize::new(0),
+        fail: AtomicBool::new(false),
     });
-    let (tools, grants) = live::LiveCatalog::new(
+    let (mut tools, mut grants) = live::LiveCatalog::new(
         "watched".into(),
         server(
             json!({"command":"fake"}),
@@ -73,6 +78,53 @@ async fn live_mcp_tools_append_deltas_preserve_prefix_and_refuse_removed_calls()
         },
         McpClientLimits::default(),
     )?;
+    let direct_model = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Text("direct".into())]).with_token_counter(
+            |request| {
+                Ok(ModelTokenCount::from_upper_bounds(
+                    request.request_digest(),
+                    request.bytes().len() as u32,
+                    vec![0; request.request().messages.len()],
+                ))
+            },
+        ),
+    );
+    let direct = StockExecutor::new(
+        Model::new("test".into(), "model".into(), "1".into())?,
+        direct_model.clone(),
+        ContextPipeline::default(),
+        tools.clone(),
+    )
+    .with_compaction_policy(CompactionPolicy::Disabled)
+    .with_tool_authority(
+        RuntimeScope::new(grants.clone(), Default::default())?,
+        Arc::new(FixedToolPolicy::new(ToolPolicyDecision::Allow)?),
+    )?;
+    direct
+        .execute(
+            TurnInput {
+                max_steps: None,
+                operation_id: crate::OperationId::new(),
+                input: ModelContent::Text("direct".into()),
+                selected_context: None,
+            },
+            &crate::executor::tests::Journal::default(),
+        )
+        .await?;
+    let direct_requests = direct_model.requests();
+    assert!(!direct_requests[0].compose_tools);
+    assert!(
+        direct_requests[0]
+            .model_tools()
+            .any(|tool| tool.name == "mcp.watched.old")
+    );
+    let watched = tools.clone();
+    let code = crate::tools::catalog()
+        .find(|spec| spec.name == "code")
+        .expect("code tool")
+        .bind()?;
+    tools.register((code, None), &mut None, None)?;
+    grants.0.insert("tool:call:code".into());
     let call = |id: &str| {
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
@@ -184,5 +236,21 @@ async fn live_mcp_tools_append_deltas_preserve_prefix_and_refuse_removed_calls()
     let mut old_next = requests[1].clone();
     old_next.compose_tools = false;
     assert_ne!(prefix(&old_first), prefix(&old_next));
+    let admitted = watched.definitions(None)?;
+    remote.changed.fetch_add(1, Ordering::Release);
+    remote.fail.store(true, Ordering::Release);
+    watched.refresh().await?;
+    assert_eq!(
+        watched.definitions(None)?,
+        admitted,
+        "an optional refresh failure retains its admitted catalog"
+    );
+    remote.fail.store(false, Ordering::Release);
+    watched.refresh().await?;
+    assert_eq!(
+        remote.lists.load(Ordering::SeqCst),
+        3,
+        "the failed generation remains pending until discovery succeeds"
+    );
     Ok(())
 }

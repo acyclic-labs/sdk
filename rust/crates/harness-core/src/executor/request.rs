@@ -271,22 +271,9 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn request_tools(&self) -> Result<Vec<crate::tool::ToolDefinition>> {
-        let mut tools = stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?;
-        if let Some(epoch) = &self.stock.epoch_tools {
-            tools.retain(|tool| !crate::tools::catalog::is_native_declaration(&tool.name));
-            for tool in epoch
-                .iter()
-                .filter(|tool| crate::tools::catalog::is_native_declaration(&tool.name))
-            {
-                stock_vec_push(
-                    &mut tools,
-                    crate::model::clone_tool_definition(tool, self.io)?,
-                    self.io,
-                )?;
-            }
-            tools.sort_by(|a, b| a.name.cmp(&b.name));
-        }
-        Ok(tools)
+        // Native adapters bind after the epoch's canonical selection. Their
+        // declarations and executors are one pair; never replace just a schema.
+        stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)
     }
 
     fn request_from_parts(
@@ -309,15 +296,13 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn code_composition(&self, tools: &[crate::tool::ToolDefinition]) -> Result<bool> {
-        Ok(self.stock.epoch_tools.is_some()
-            || self.stock.tools.has_sources()
-            || (!cfg!(target_arch = "wasm32")
-                && tools.iter().any(|tool| tool.name == "code")
-                && self
-                    .stock
-                    .tools
-                    .get("code", None, self.io)?
-                    .is_some_and(|tool| tool.executor.is_code_mode())))
+        Ok(!cfg!(target_arch = "wasm32")
+            && tools.iter().any(|tool| tool.name == "code")
+            && self
+                .stock
+                .tools
+                .get("code", None, self.io)?
+                .is_some_and(|tool| tool.executor.is_code_mode()))
     }
 
     pub(super) fn validate_response_request(
