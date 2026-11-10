@@ -1,9 +1,5 @@
 //! Production log barriers under concurrent independent workspace publications.
-#![cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "local",
-    feature = "test-support"
-))]
+#![cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 
 use acyclic_fs::facade::FsWork as _;
 use acyclic_fs::{

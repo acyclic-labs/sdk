@@ -12,7 +12,7 @@ pub(crate) async fn selected_step_records<'a>(
     Option<crate::conversation::ContentHold<'a>>,
 )> {
     validate_journal(journal, io)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let before = io
         .filter(|io| io.original_native_work().is_some())
         .map(PreparationIo::owned_bytes)
@@ -29,7 +29,7 @@ pub(crate) async fn selected_step_records<'a>(
         None => None,
     };
     if let Some((tail, records)) = indexed {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let hold = io
             .filter(|io| io.original_native_work().is_some())
             .map(|io| {
@@ -39,7 +39,7 @@ pub(crate) async fn selected_step_records<'a>(
                 io.guard_owned(retained)
             })
             .transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let hold = None;
         Ok((tail, records, hold))
     } else {

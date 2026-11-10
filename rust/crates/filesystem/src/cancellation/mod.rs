@@ -143,7 +143,7 @@ impl CancellationToken {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn new_with_native_work(
         original: &crate::NativeMaterializationWork,
     ) -> Result<Self, crate::NativeTreeMaterializationError> {
@@ -250,7 +250,7 @@ impl CancellationToken {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn prepare_cancel_cleanup(
         &self,
         wait: Option<&Self>,
@@ -294,7 +294,7 @@ impl CancellationToken {
         Ok(self.detach())
     }
 
-    #[cfg(any(feature = "native-mount", feature = "native-watch"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn commit_if_live<T>(
         &self,
         commit: impl FnOnce() -> T,
@@ -302,7 +302,7 @@ impl CancellationToken {
         self.commit_with_parents(None, None, commit)
     }
 
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn commit_if_both_live<T>(
         &self,
         other: &Self,
@@ -311,7 +311,7 @@ impl CancellationToken {
         self.commit_with_parents(Some(other), None, commit)
     }
 
-    #[cfg(any(feature = "native-mount", feature = "native-watch"))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn commit_with_parents<T>(
         &self,
         other: Option<&Self>,
@@ -413,7 +413,7 @@ impl CancellationToken {
 #[error("filesystem operation was cancelled")]
 pub struct CancellationError;
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod custody;
 mod wait;
 pub(crate) use wait::CancellationWaitError;

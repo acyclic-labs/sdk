@@ -385,7 +385,7 @@ mod model {
 mod properties {
     use super::*;
     use proptest::prelude::*;
-    #[cfg(all(feature = "memory", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn unknown_authorities_cannot_claim_a_process_policy_owner() {
         struct Unknown(crate::OperationClaims);

@@ -654,10 +654,7 @@ impl SkillReader for VolumeDiscovery<'_> {
         revision: &'a GenerationRef,
         maximum: u32,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, SkillPrefix>> {
-        #[cfg(feature = "filesystem")]
         let content_io = self.io;
-        #[cfg(not(feature = "filesystem"))]
-        let content_io = None;
         crate::conversation::BoundedContentFuture::new(content_io, || async move {
             let pinned = crate::executor::with_history_io(self.io, |work| {
                 PinnedContextPath::capture(self.root, revision, path, work)

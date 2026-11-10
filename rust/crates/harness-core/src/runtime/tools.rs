@@ -62,7 +62,9 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
         invocation: &'a ToolInvocation,
         scope: &'a RuntimeScope,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>;
+    ) -> Result<
+        crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
+    >;
 
     /// Selects physical authority after this exact invocation's policy and
     /// approval have allowed it, before its first dispatch. The host must
@@ -82,7 +84,7 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
     }
 
     /// Returns the owned identity with custody for its inline Self and strings.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn identity_with_native_work(
         &self,
         _work: &acyclic_fs::NativeMaterializationWork,
@@ -156,14 +158,14 @@ pub fn tool_approval_request(
     policy: &ComponentIdentity,
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
-    paid: (String, NativeCustody),
-    work: Option<&NativeWork>,
+    paid: (String, acyclic_fs::NativeCustody),
+    work: acyclic_fs::acyclic_fs::NativeWork<'_>,
     (route, target): (
         crate::interaction::ApprovalRoute,
         Option<&crate::agent::TargetRecord>,
     ),
-) -> Result<((OperationId, Interaction), NativeCustody)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+) -> Result<((OperationId, Interaction), acyclic_fs::NativeCustody)> {
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         if !paid.1.as_ref().is_some_and(|custody| {
             custody.work().shares_ledger(work) && custody.bytes() >= paid.0.capacity() as u64
@@ -183,7 +185,7 @@ pub fn tool_approval_request(
     }
     let (operation, digest) = tool_approval_binding(task, policy, definition, invocation, work)?;
     if digest == [0; 32] {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -194,12 +196,12 @@ pub fn tool_approval_request(
     }
 
     let (prompt, custody) = paid;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let mut custody = custody;
     let subject = copy_approval_subject(invocation, work, route, target)?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let mut subject = subject;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(copied) = subject.1.as_mut() {
         custody
             .as_mut()
@@ -220,11 +222,11 @@ pub fn tool_approval_request(
 
 fn copy_approval_subject(
     invocation: &ToolInvocation,
-    work: Option<&NativeWork>,
+    work: acyclic_fs::acyclic_fs::NativeWork<'_>,
     route: crate::interaction::ApprovalRoute,
     target: Option<&crate::agent::TargetRecord>,
-) -> Result<(ApprovalSubject, NativeCustody)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+) -> Result<(ApprovalSubject, acyclic_fs::NativeCustody)> {
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         use crate::store::history::HistoryIo as _;
         let remaining = work.remaining()?;
@@ -277,15 +279,9 @@ fn copy_approval_subject(
     ))
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "tools/approval_tests.rs"]
 mod approval_tests;
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) type NativeWork = acyclic_fs::NativeMaterializationWork;
-
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-pub(super) type NativeWork = ();
 
 // Negative-control seam for `hooks::mcp_identity_tests`: substitutes the
 // approval subject. It lives beside its only use so it exists in every build
@@ -301,15 +297,15 @@ pub(crate) fn tool_approval_binding(
     policy: &ComponentIdentity,
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
-    work: Option<&NativeWork>,
+    work: acyclic_fs::acyclic_fs::NativeWork<'_>,
 ) -> Result<(OperationId, [u8; 32])> {
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let _ = work;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let io = work
         .map(crate::filesystem::PreparationIo::from_native_work)
         .transpose()?;
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let io = None;
     validate_policy_identity(policy, io.as_ref())?;
     crate::executor::with_history_io(io.as_ref(), |observed| {
@@ -328,7 +324,7 @@ pub(crate) fn tool_approval_binding(
     let digest =
         crate::executor::preparation_digest(&(task, policy, definition, invocation), io.as_ref())?;
     let prefix = b"harness:tool-approval:v2";
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
             bytes_hashed: (prefix.len() + digest.len()) as u64,
@@ -440,7 +436,7 @@ impl std::ops::Deref for ToolContext {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl ToolContext {
     /// Checks effective READ and the selected byte credit before content IO.
     /// `None` admits the complete body; an empty range admits metadata only.
@@ -682,11 +678,7 @@ impl ToolContext {
                 .verify_publication(file, file.descriptor().byte_length(), io)?
                 .await?;
         }
-        #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(not(feature = "filesystem"))]
-        let retained = 0;
-        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
@@ -707,13 +699,10 @@ impl ToolContext {
             .ok_or_else(|| Error::Unsupported("conditional content writer is not bound".into()))?;
         let writer = super::content_write::content_writer(Some(content), io)?;
         super::content_write::authorize_volume_write(volume, self.effective_scope(), io)?;
-        #[cfg(feature = "filesystem")]
         let maximum = io
             .map(|io| io.remaining().map(|work| work.bytes_encoded))
             .transpose()?
             .unwrap_or(u64::MAX);
-        #[cfg(not(feature = "filesystem"))]
-        let maximum = u64::MAX;
         let (files, hold) = writer
             .observe_changes(
                 volume,
@@ -741,11 +730,7 @@ impl ToolContext {
                     .await?;
             }
         }
-        #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(not(feature = "filesystem"))]
-        let retained = 0;
-        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
@@ -874,9 +859,9 @@ impl ToolContext {
         ) {
             return Ok((&system.volume, std::borrow::Cow::Borrowed(relative)));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let work = io.and_then(crate::executor::PreparationIo::original_native_work);
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let work = None;
         if let Some(targets) = self.task().harness.targets.as_ref() {
             return targets.read_path(path, work).map_err(Error::tool_input);
@@ -1173,17 +1158,10 @@ impl ToolContext {
             }
             Ok(())
         })?;
-        #[cfg(feature = "filesystem")]
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(feature = "filesystem")]
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
-        #[cfg(not(feature = "filesystem"))]
-        let retained = {
-            let _ = hold;
-            0
-        };
         Ok((selected, bytes, retained))
     }
 

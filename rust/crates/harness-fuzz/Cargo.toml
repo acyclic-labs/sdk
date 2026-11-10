@@ -118,20 +118,20 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 default = ["runtime"]
 mcp-stdio-codec = ["dep:acyclic-mcp", "dep:bytes", "dep:rmcp", "dep:tokio-util"]
 reader = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
-core = ["dep:acyclic-harness-core", "acyclic-harness-core/filesystem", "dep:futures"]
+core = ["dep:acyclic-harness-core", "dep:futures"]
 bounded-json = ["core", "dep:acyclic-native-runtime"]
-oidc = ["core", "acyclic-harness-core/oidc", "dep:bytes", "dep:acyclic-stream", "dep:p256", "dep:ed25519-dalek"]
+oidc = ["core", "dep:bytes", "dep:acyclic-stream", "dep:p256", "dep:ed25519-dalek"]
 native-answer = ["native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime"]
 command-result = ["core", "dep:acyclic-harness"]
 graphcoder = ["dep:graphcoder", "graphcoder/test-support"]
 code-mode = ["core", "dep:tokio"]
 native-arguments = ["core"]
-native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
-native-settings = ["core", "dep:tempfile", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
+native-skill-records = ["core"]
+native-settings = ["core", "dep:tempfile"]
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
-native-input = ["dep:acyclic-plugin", "dep:acyclic-harness", "dep:tempfile", "acyclic-harness/filesystem-local", "acyclic-harness/native-execution"]
-runtime = ["bounded-json", "native-settings", "graphcoder", "command-result", "native-input", "acyclic-harness/terminal", "acyclic-harness/tui", "acyclic-harness/grpc", "acyclic-harness/test-support", "acyclic-harness/search-http", "acyclic-harness/objects", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
-filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
+native-input = ["dep:acyclic-plugin", "dep:acyclic-harness", "dep:tempfile"]
+runtime = ["bounded-json", "native-settings", "graphcoder", "command-result", "native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+filesystem-access = ["runtime", "acyclic-harness/test-support"]
 
 [dependencies]
 acyclic-plugin = { path = "../../../plugin", optional = true }
@@ -139,19 +139,19 @@ graphcoder = { path = "../harness/src/bin/graphcoder", optional = true }
 acyclic-mcp = { path = "../mcp", features = ["stdio"], optional = true }
 ed25519-dalek = { version = "3.0.0", optional = true }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"], optional = true }
-acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["hooks", "test-support"], optional = true }
+acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["test-support"], optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
 blake3.workspace = true
 base64 = "=0.22.1"
 clap.workspace = true
-acyclic-harness-client = { path = "../harness-client", features = ["agents"], optional = true }
+acyclic-harness-client = { path = "../harness-client", optional = true }
 acyclic-harness = { path = "../harness", default-features = false, optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=2.0.0", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
 prost = { workspace = true, optional = true }
-acyclic-fs = { path = "../filesystem", default-features = false, features = ["local"], optional = true }
+acyclic-fs = { path = "../filesystem", default-features = false, optional = true }
 acyclic-stream = { path = "../stream", default-features = false, optional = true }
 futures = { workspace = true, optional = true }
 serde_json.workspace = true

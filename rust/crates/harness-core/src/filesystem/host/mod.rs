@@ -10,11 +10,7 @@ pub struct FilesystemHost<A: 'static, O: 'static> {
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
     #[cfg(test)]
     publication_pause: Option<Arc<PublicationPause>>,
-    #[cfg(all(
-        feature = "filesystem-local",
-        feature = "native-execution",
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(not(target_arch = "wasm32"))]
     native_skills: Arc<
         crate::sync::SyncMutex<
             std::collections::HashMap<String, Arc<crate::context::native_skills::NativeSkills>>,
@@ -58,11 +54,7 @@ impl<A, O> FilesystemHost<A, O> {
                 workspace_binding: None,
                 #[cfg(test)]
                 publication_pause: None,
-                #[cfg(all(
-                    feature = "filesystem-local",
-                    feature = "native-execution",
-                    not(target_arch = "wasm32")
-                ))]
+                #[cfg(not(target_arch = "wasm32"))]
                 native_skills: Arc::new(crate::sync::SyncMutex::new(
                     std::collections::HashMap::new(),
                 )),
@@ -76,7 +68,6 @@ impl<A, O> FilesystemHost<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Copies a non-attached Machine's exact admitted volume at bind time.
-    #[cfg(feature = "machines")]
     pub async fn bind_machine_workspace(
         &self,
         workspace: crate::machines::MachinesWorkspace,
@@ -116,7 +107,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )),
             #[cfg(test)]
             publication_pause: self.publication_pause.clone(),
-            #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+            #[cfg(not(target_arch = "wasm32"))]
             native_skills: self.native_skills.clone(),
             project_family: self.project_family.clone(),
             _native_custody: None,
@@ -124,9 +115,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl<A, O> FilesystemHost<A, O> {
-    #[cfg(feature = "native-execution")]
+    #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn with_native_skills(
         self: Arc<Self>,
@@ -147,7 +138,7 @@ impl<A, O> FilesystemHost<A, O> {
         Ok(self)
     }
 
-    #[cfg(feature = "native-execution")]
+    #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn skill_sources(
         &self,

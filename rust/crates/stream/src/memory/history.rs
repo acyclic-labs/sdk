@@ -68,7 +68,7 @@ enum History {
     Prefix {
         source: Option<Arc<Self>>,
         keys: KeyTree,
-        #[cfg(any(test, feature = "local"))]
+        #[cfg(any(test, not(target_arch = "wasm32")))]
         tail: u64,
         _allocation: Allocation,
     },

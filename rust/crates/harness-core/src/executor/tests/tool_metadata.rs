@@ -17,18 +17,18 @@ proptest! {
                     .with_metadata(json!({"signature":format!("{i}:{signature}")}))
             ))});
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(100_000, 4*1024*1024),
             &acyclic_fs::CancellationToken::new(),
         ).unwrap();
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = PreparationIo::from_native_work(&work).unwrap();
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let observed = Some(&io);
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let observed = None;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let before = work.receipt().items_examined;
         for i in 0..count {
             let metadata = metadata_for_call(&messages, prefix + i, "reused", observed).unwrap();
@@ -36,7 +36,7 @@ proptest! {
             prop_assert!(std::ptr::eq(metadata, &expected.metadata));
             prop_assert_eq!(&metadata["signature"], &json!(format!("{i}:{signature}")));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         prop_assert_eq!(work.receipt().items_examined - before, count as u64);
         prop_assert!(metadata_for_call(&messages, messages.len(), "reused", observed).is_err());
         prop_assert!(metadata_for_call(&messages, prefix, "different", observed).is_err());

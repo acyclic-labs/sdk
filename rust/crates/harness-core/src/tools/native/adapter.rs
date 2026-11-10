@@ -24,15 +24,15 @@ impl Adapter {
     fn adapt(
         &self,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<CanonicalInvocation> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = work
             .map(crate::executor::PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let observer = io.as_ref();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let observer = None;
         let (arguments, arguments_custody) = self.arguments.adapt(invocation, work)?;
         let mut adapted = CanonicalInvocation::new(
@@ -49,7 +49,7 @@ impl Adapter {
             crate::executor::stock_string_copy(&invocation.call_id, observer)?;
         adapted.invocation.name =
             crate::executor::stock_string_copy(&self.original.definition.name, observer)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let metadata_custody = io
             .map(|io| {
                 io.into_native_custody(crate::core::owned_sum([
@@ -58,7 +58,7 @@ impl Adapter {
                 ])?)
             })
             .transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let metadata_custody = None;
         adapted.custody[1] = metadata_custody;
         Ok(adapted)
@@ -73,7 +73,7 @@ impl ToolExecutor for Adapter {
     fn canonical(
         &self,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<CanonicalInvocation>> {
         self.adapt(invocation, work).map(Some)
     }
@@ -81,7 +81,7 @@ impl ToolExecutor for Adapter {
     fn read_path<'a>(
         &'a self,
         path: &'a str,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
@@ -89,7 +89,7 @@ impl ToolExecutor for Adapter {
         self.original.executor.read_path(path, work)
     }
 
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn run_hooks<'a>(
         &'a self,
         configuration: (&'a crate::hooks::Hooks, [u8; 32]),
@@ -114,7 +114,7 @@ impl ToolExecutor for Adapter {
         scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
         let adapted = self.adapt(invocation, work)?;
         self.original
@@ -128,7 +128,7 @@ impl ToolExecutor for Adapter {
         invocation: &'a ToolInvocation,
         context: &'a ToolContext,
         grant: &'a acyclic_native_runtime::execution::ExecutionGrant,
-        work: crate::NativeWork<'a>,
+        work: acyclic_fs::NativeWork<'a>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let adapted = self.adapt(invocation, work)?;
@@ -143,7 +143,7 @@ impl ToolExecutor for Adapter {
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
-        work: crate::NativeWork<'a>,
+        work: acyclic_fs::NativeWork<'a>,
     ) -> Option<BoxFuture<'a, Result<()>>> {
         Some(Box::pin(async move {
             let adapted = self.adapt(invocation, work)?;
@@ -162,7 +162,7 @@ impl ToolExecutor for Adapter {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<crate::tool::Dispatch>> {
         self.original
             .executor
@@ -177,7 +177,7 @@ impl ToolExecutor for Adapter {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<BoxFuture<'static, Result<()>>>> {
         self.original.executor.cancellation(
             &self.adapt(invocation, work)?.invocation,
@@ -214,7 +214,7 @@ impl ToolExecutor for Adapter {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -222,14 +222,20 @@ impl ToolExecutor for Adapter {
         self.original.executor.supports_native_execution(work)
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_context<'a>(
         &'a self,
         context: &'a ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (ToolResult, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let adapted = self.adapt(invocation, Some(work))?;
             self.original
                 .executor
@@ -238,15 +244,20 @@ impl ToolExecutor for Adapter {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_context<'a>(
         &'a self,
         context: &'a ToolContext,
         invocation: &'a ToolInvocation,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
-    {
-        crate::NativeFutureBundle::new(work, || async move {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (Option<ToolResult>, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
             let adapted = self.adapt(invocation, Some(work))?;
             self.original
                 .executor
@@ -261,15 +272,15 @@ impl ToolProjection for Adapter {
         &self,
         invocation: &ToolInvocation,
         result: &ToolResult,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(Value, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         let adapted = self.adapt(invocation, work)?;
         self.original
             .projection
             .project(&adapted.invocation, result, work)
     }
 
-    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+    fn supports_native_projection(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
         self.original.projection.supports_native_projection(work)
     }
 }

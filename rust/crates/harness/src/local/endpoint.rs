@@ -142,7 +142,6 @@ impl Connection {
     /// # Errors
     /// The policy's refusal by its stable code, such as
     /// `client_invalid_endpoint`, or as [`Self::connect`].
-    #[cfg(feature = "grpc")]
     pub async fn connect_endpoint(endpoint: Option<&str>) -> Result<Self> {
         let options = acyclic_harness_client::ConnectionOptions::from_env(endpoint, None)
             .map_err(|error| Error::Invalid(error.code().into()))?;
@@ -155,7 +154,6 @@ impl Connection {
     /// # Errors
     /// When the endpoint cannot be reached, the credential is not one, or the
     /// endpoint binds it to no tree.
-    #[cfg(feature = "grpc")]
     pub async fn connect(options: &acyclic_harness_client::ConnectionOptions) -> Result<Self> {
         use acyclic_harness_client::EndpointTransport;
         let credential = options

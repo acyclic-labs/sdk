@@ -235,7 +235,7 @@ impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P>
     fn read_path<'a>(
         &'a self,
         path: &'a str,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
@@ -600,7 +600,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<BoxProviderFuture<'static, Result<()>>>> {
         self.authorize(None, context, invocation, work)?;
         let (agent, _) = self.agent(context)?;
@@ -617,9 +617,8 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         _scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
@@ -658,12 +657,11 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<Dispatch>> {
         let Some(context) = context else {
             return Ok(None);
         };
-        #[cfg(feature = "filesystem")]
         if work.is_some() {
             self.authorize(None, Some(context), invocation, work)?;
         }

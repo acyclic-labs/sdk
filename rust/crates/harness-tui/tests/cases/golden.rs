@@ -6,7 +6,7 @@
 //!
 //! A mismatch prints the whole rendered snapshot. Set `UPDATE_GOLDEN=1` to
 //! write it to `tests/golden/` instead, then review the diff.
-#![cfg(feature = "tui")]
+#![cfg(not(target_arch = "wasm32"))]
 use acyclic_harness_tui::{
     BlockKind, TranscriptRows,
     config::{ConfigView, ThemeStyles, Token},

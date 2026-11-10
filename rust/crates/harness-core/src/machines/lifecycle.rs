@@ -177,7 +177,7 @@ pub struct AgentMachines<P: ?Sized> {
     stream: Arc<P>,
     targets: acyclic_collections::CompiledPrefixIndex<
         ProvisionedTarget,
-        crate::NativeCustody,
+        acyclic_fs::NativeCustody,
         fn(&ProvisionedTarget) -> &[u8],
     >,
 }
@@ -767,14 +767,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> ToolExecutor for OnFir
         scope: Option<&crate::runtime::RuntimeScope>,
         context: Option<&crate::runtime::ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
         if let Some(bound) = self.bound.get() {
             return bound.authorize(scope, context, invocation, work);
         }
         // Before its first use the Machine's executor authorizes inside
         // `execute`, ahead of any command; a Machine runs no native work.
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,

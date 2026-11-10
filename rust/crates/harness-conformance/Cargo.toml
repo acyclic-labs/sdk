@@ -23,9 +23,9 @@ test = false
 
 [dependencies]
 acyclic-test-support = { path = "../test-support" }
-acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["test-support", "filesystem-local"] }
-acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["memory"] }
-acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
+acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["test-support"] }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
+acyclic-stream = { version = "=0.2.0", path = "../stream" }
 futures.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }

@@ -14,8 +14,9 @@ impl ToolPolicy for InnerApproval {
         invocation: &'a ToolInvocation,
         _: &'a RuntimeScope,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
-    {
+    ) -> Result<
+        crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
+    > {
         let decision = if invocation.name == "code" {
             ToolPolicyDecision::Allow
         } else {
@@ -328,7 +329,6 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         ["code"]
     );
     assert!(tool_notice_table(&before[0]).as_array().unwrap().is_empty());
-    #[cfg(feature = "filesystem")]
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);

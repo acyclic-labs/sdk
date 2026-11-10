@@ -36,27 +36,27 @@ pub enum FsError {
     #[error(transparent)]
     Config(#[from] VolumeConfigError),
     /// Durable local Stream initialization or recovery failed.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     #[error(transparent)]
     LocalStream(#[from] acyclic_stream::LocalStreamError),
     /// Durable local Objects initialization or recovery failed.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     #[error(transparent)]
     LocalObjects(#[from] acyclic_objects::local::LocalOpenError),
     /// Local provider root setup failed before either canonical provider opened.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     #[error("local filesystem root setup failed: {0}")]
     LocalRoot(std::io::Error),
     /// A live process-local engine already owns this root with different limits.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     #[error("local filesystem root is already open with different options")]
     LocalOptionsConflict,
     /// The bounded local root initialization worker could not complete.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     #[error("local filesystem initialization worker is unavailable")]
     LocalInitializationWorker,
     /// Immutable-object accelerator bounds are invalid.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+    #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
     #[error(transparent)]
     ObjectCacheConfig(#[from] crate::cache::ObjectCacheConfigError),
     /// Checkout behavior is contradictory.

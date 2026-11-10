@@ -592,11 +592,11 @@ pub enum MountSourceError {
     #[error("filesystem engine failure: source demand failed: {0}")]
     Metadata(#[source] crate::native_host::NativeMetadataError),
     /// Original finite watcher I/O cause, with no replacement error box.
-    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("filesystem engine failure: source demand failed: native watcher I/O failed: {0}")]
     NativeWatchOriginalIo(#[source] std::io::Error),
     /// Original finite watcher backend cause, moved without formatting.
-    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("filesystem engine failure: source demand failed: native watcher backend failed: {0}")]
     NativeWatchOriginalBackend(#[source] notify::Error),
     /// An actual mutation failed and its original completion accounting also failed.

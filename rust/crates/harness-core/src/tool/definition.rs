@@ -1,5 +1,4 @@
 use super::*;
-#[cfg(feature = "filesystem")]
 mod projection;
 
 /// Model-visible tool definition with immutable schemas.
@@ -56,7 +55,7 @@ impl ToolDefinition {
     }
 
     /// Constructs a definition from borrowed schema literals on the original ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(
         clippy::too_many_arguments,
         reason = "the complete pinned tool definition"
@@ -246,19 +245,7 @@ impl ToolDefinition {
         limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Result<crate::model::ToolResultContent>> {
-        #[cfg(feature = "filesystem")]
         return self.check_scoped_projection(value, limits, io);
-        #[cfg(not(feature = "filesystem"))]
-        {
-            if let Err(violation) = self.check_projection_schema(value, io)? {
-                return Ok(Err(violation));
-            }
-            let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
-                Error::Invalid(format!("tool projection envelope is invalid: {error}"))
-            })?;
-            crate::executor::with_history_io(io, |work| content.validate_limits(limits, work))?;
-            Ok(Ok(content))
-        }
     }
 
     pub(super) fn check_projection_schema(
@@ -308,7 +295,7 @@ pub fn json_projection_schema(value_schema: Value) -> Value {
     ]))
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl crate::filesystem::UploadRecord for ToolDefinition {
     fn diagnostic_label_bytes() -> u64 {
         TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES

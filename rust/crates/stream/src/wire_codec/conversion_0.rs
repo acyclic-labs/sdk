@@ -239,16 +239,6 @@ pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceip
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    feature = "postgres",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(
-        any(feature = "wasm", feature = "wasm-journal"),
-        target_arch = "wasm32"
-    )
-))]
 /// Decodes an append request from its generated wire representation.
 pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendRequest, StreamError> {
     Ok(crate::AppendRequest {
@@ -263,16 +253,6 @@ pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendReque
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    feature = "postgres",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(
-        any(feature = "wasm", feature = "wasm-journal"),
-        target_arch = "wasm32"
-    )
-))]
 /// Decodes a fork request from its generated wire representation.
 pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, StreamError> {
     Ok(crate::ForkRequest {
@@ -288,11 +268,6 @@ pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, St
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 /// Decodes a read request from its generated wire representation.
 pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {

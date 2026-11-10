@@ -14,7 +14,7 @@ pub(crate) trait SourceDemandReadWork:
         self.with_demand_work(operation)
     }
     /// Borrows the original context; only an escaping owner needs a clone.
-    #[cfg(any(test, windows, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn native_source_work(&self) -> Option<&NativeMaterializationWork> {
         None
     }
@@ -43,15 +43,15 @@ pub(crate) trait SourceDemandReadWork:
                 .map_err(|error| DemandError::from(error.into_native()))
         })
     }
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn with_ordinary_work<T>(&mut self, _: impl FnOnce(&mut DemandWork) -> T) -> Option<T> {
         None
     }
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn is_native_original(&self) -> bool {
         self.native_source_work().is_some()
     }
-    #[cfg(all(feature = "native-watch", target_os = "macos"))]
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
     fn reserve_source_copy(
         &mut self,
         bytes: u64,
@@ -78,18 +78,18 @@ pub(crate) trait SourceDemandReadWork:
     ) -> Result<(), DemandError> {
         self.with_original_leaf(|work| work.claim_allocation(bytes, operations, delta))
     }
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn remaining(&mut self) -> Result<WorkBudget, DemandError> {
         self.with_original_leaf(|work| work.remaining())
     }
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn merge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         self.with_original_leaf(|work| work.merge(delta, work.live_allocation_bytes()))
     }
 }
 
 impl SourceDemandReadWork for DemandWork {
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn with_ordinary_work<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> Option<T> {
         Some(operation(self))
     }
@@ -110,7 +110,7 @@ impl SourceDemandReadWork for DemandWork {
 }
 
 impl SourceDemandReadWork for NativeMaterializationWork {
-    #[cfg(any(test, windows, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn native_source_work(&self) -> Option<&NativeMaterializationWork> {
         Some(self)
     }

@@ -1,5 +1,4 @@
 //! Separate skills forks and pinned destination-owned imports.
-#![cfg(feature = "filesystem")]
 
 use acyclic_fs::{Fs, JoinOutcome};
 use acyclic_harness::{

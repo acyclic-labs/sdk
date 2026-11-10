@@ -15,7 +15,7 @@ pub(crate) struct Work {
     pub(crate) meter: Arc<dyn NativeReadMeter>,
     error: Mutex<Option<Failure>>,
     write: Mutex<Option<WriteReservation>>,
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     durability: Mutex<Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>>,
     _allocation: ReadAllocation,
 }
@@ -26,7 +26,7 @@ enum Failure {
 }
 
 impl Work {
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn failure(&self, operation: &'static str) -> Option<crate::LocalStreamFailure> {
         self.error
             .lock()
@@ -94,7 +94,7 @@ impl Work {
             meter,
             error: Mutex::new(None),
             write: Mutex::new(None),
-            #[cfg(feature = "local")]
+            #[cfg(not(target_arch = "wasm32"))]
             durability: Mutex::new(None),
             _allocation: allocation,
         }
@@ -112,7 +112,7 @@ impl Work {
 
     // Remains true after finish moves the original error into its worker's
     // output, before the task handle publishes that output to its observer.
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn has_failed(&self) -> bool {
         self.error
             .lock()
@@ -169,11 +169,11 @@ impl Work {
         result
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reserve_durability(&self, count: u64) -> Result<(), StreamError> {
         self.record(self.prepare_durability(count))
     }
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn prepare_durability(&self, count: u64) -> std::io::Result<()> {
         let ticket = NativeOperationReservation::new(
             Arc::clone(&self.meter),
@@ -186,7 +186,7 @@ impl Work {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket);
         Ok(())
     }
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn sync<T>(
         &self,
         operation: impl FnOnce() -> std::io::Result<T>,

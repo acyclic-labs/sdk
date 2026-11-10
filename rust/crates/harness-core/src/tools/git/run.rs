@@ -47,11 +47,7 @@ pub struct Output<P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultObj
 }
 
 /// Runs one git-facade command against the task-selected workspace.
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run<'a>(
     workspace: Workspace<'a>,
     args: &'a [String],
@@ -63,11 +59,7 @@ pub fn run<'a>(
 /// engine is erased here, so a consumer holds a pointer instead of every
 /// filesystem preparation and action nested in the command.
 #[doc(hidden)]
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_with_guard<'a, F, Fut>(
     workspace: Workspace<'a>,
     args: &'a [String],
@@ -80,11 +72,7 @@ where
     acyclic_stream::erase_provider_future(move || run_inner(workspace, args, before_effect))
 }
 
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn run_inner<F, Fut>(
     workspace: Workspace<'_>,
     args: &[String],

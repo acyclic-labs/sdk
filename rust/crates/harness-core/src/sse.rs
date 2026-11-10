@@ -7,7 +7,7 @@ use futures::{Stream, StreamExt as _};
 /// One complete data event and the original funding for its buffer.
 pub struct Frame {
     data: String,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -29,7 +29,7 @@ pub struct Decoder {
     bytes: usize,
     cr: bool,
     started: bool,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -49,7 +49,7 @@ impl Default for Line {
 
 impl Decoder {
     fn failure(&self, reason: &'static str) -> Error {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if self.custody.is_some() {
             return Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -60,9 +60,9 @@ impl Decoder {
     }
     /// The body ended inside an event: the connection was cut off, not the stream malformed.
     fn truncated(&self) -> Error {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let native = self.custody.is_some();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let native = false;
         Error::ModelUnavailable {
             failure: ModelTransportFailure::Interrupted,
@@ -73,7 +73,7 @@ impl Decoder {
             },
         }
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     /// Retains the supplied original work and admits capacity before allocation.
     pub fn native(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         Ok(Self {
@@ -91,7 +91,7 @@ impl Decoder {
         let old = self.buffer.capacity();
         if target > old {
             let capacity = target.max(old.saturating_mul(2)).max(8);
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             let mut allocation = self
                 .custody
                 .as_ref()
@@ -110,14 +110,14 @@ impl Decoder {
             self.buffer
                 .try_reserve_exact(capacity - self.buffer.len())
                 .map_err(|_| self.failure("SSE buffer allocation failed"))?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let (Some(owner), Some(allocation)) = (&mut self.custody, &mut allocation) {
                 allocation.reconcile_capacity(self.buffer.capacity() as u64)?;
                 owner.release(old as u64)?;
                 owner.absorb(allocation)?;
             }
         } else if copy && !bytes.is_empty() {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(owner) = &self.custody {
                 owner.work().charge(acyclic_fs::WorkCounters {
                     bytes_copied: bytes.len() as u64,
@@ -237,7 +237,7 @@ where
                     };
                     chunk = next?;
                 }
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(owner) = &decoder.custody {
                     owner.work().remaining()?;
                 }
@@ -279,7 +279,7 @@ where
                             decoder.buffer.pop();
                             let data = String::from_utf8(std::mem::take(&mut decoder.buffer))
                                 .map_err(|_| decoder.failure("SSE is not UTF-8"))?;
-                            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                            #[cfg(not(target_arch = "wasm32"))]
                             let custody = decoder
                                 .custody
                                 .as_mut()
@@ -287,7 +287,7 @@ where
                                 .transpose()?;
                             let frame = Frame {
                                 data,
-                                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                                #[cfg(not(target_arch = "wasm32"))]
                                 _custody: custody,
                             };
                             return Ok(Some((frame, (body, chunk, decoder))));
@@ -309,7 +309,7 @@ pub fn decode<'a>(
     Box::pin(frames(body, maximum, Decoder::default()).map(|frame| frame.map(|frame| frame.data)))
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};

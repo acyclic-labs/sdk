@@ -1,7 +1,6 @@
 use super::*;
 
 impl ToolDefinition {
-    #[cfg(feature = "filesystem")]
     pub(super) fn check_scoped_projection(
         &self,
         value: &Value,
@@ -23,7 +22,6 @@ impl ToolDefinition {
     }
 }
 
-#[cfg(feature = "filesystem")]
 fn decode_projection(
     value: &Value,
     io: Option<&crate::executor::PreparationIo>,
@@ -47,5 +45,5 @@ fn decode_projection(
     )?)
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

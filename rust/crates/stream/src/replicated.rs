@@ -45,7 +45,7 @@ pub(crate) struct JournalFrame<'a> {
     /// Trusted proposal clock. A journal that owns the acceptance clock may
     /// replace it; installation binds that returned stamp to the original plan.
     #[cfg(any(
-        all(feature = "local", not(target_arch = "wasm32")),
+        not(target_arch = "wasm32"),
         all(
             any(feature = "wasm", feature = "wasm-journal"),
             target_arch = "wasm32"
@@ -66,7 +66,7 @@ pub(crate) enum AppendIf {
         head: u64,
     },
     /// Proven refusal before any durable edit.
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Refused(StreamError),
 }
 
@@ -121,7 +121,7 @@ impl<'a> Attempt<'a> {
                     Ok(Some(*at_millis))
                 }
                 AppendIf::Stale { .. } => Err(StreamError::Unavailable),
-                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 AppendIf::Refused(error) => Err(error.clone()),
             };
             self.result.appended = Some(result);
@@ -157,7 +157,7 @@ pub(crate) trait CommandJournal: ProviderPlatform {
 }
 
 /// Journal notifications for replicas refreshed by an independent writer.
-#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) trait JournalNotifications: CommandJournal {
     /// Registers atomically against `after`; an already advanced head is ready.
     fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>>;
@@ -225,25 +225,17 @@ impl<J: CommandJournal> Replicated<J> {
 
     /// The port samples and persists its own clock under the append CAS. Its
     /// accepted stamp can bind an original plan without a preceding clock read.
-    #[cfg(any(
-        feature = "postgres",
-        all(test, feature = "local", not(target_arch = "wasm32"))
-    ))]
     pub(crate) fn with_acceptance_clock(mut self) -> Self {
         self.acceptance_clock = true;
         self
     }
 
-    #[cfg(any(feature = "local", all(test, feature = "postgres")))]
+    #[cfg(any(not(target_arch = "wasm32"), test))]
     pub(crate) fn is_failed(&self) -> bool {
         self.failed
     }
 
-    #[cfg(all(
-        test,
-        any(feature = "local", feature = "postgres"),
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) fn set_proposal_clock(&self, millis: u64) {
         self.clock.set(millis);
     }
@@ -275,7 +267,7 @@ impl<J: CommandJournal> Replicated<J> {
                 self.cursor = sequence;
                 self.clock.set(at_millis);
             }
-            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Some(AppendIf::Refused(_)) => {}
             Some(_) => self.fail(),
             None if attempt.started
@@ -293,7 +285,7 @@ impl<J: CommandJournal> Replicated<J> {
         true
     }
 
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn execute_prepared(
         &mut self,
         command: &WriteRequest,
@@ -398,7 +390,7 @@ impl<J: CommandJournal> Replicated<J> {
         result
     }
 
-    #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn changed(
         &mut self,
     ) -> Result<BoxProviderFuture<'static, Result<(), StreamError>>, StreamError>
@@ -467,7 +459,7 @@ impl<J: CommandJournal> Replicated<J> {
             let frame = JournalFrame {
                 command,
                 #[cfg(any(
-                    all(feature = "local", not(target_arch = "wasm32")),
+                    not(target_arch = "wasm32"),
                     all(
                         any(feature = "wasm", feature = "wasm-journal"),
                         target_arch = "wasm32"

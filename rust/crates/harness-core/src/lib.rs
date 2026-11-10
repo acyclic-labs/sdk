@@ -43,9 +43,8 @@ pub mod context;
 pub mod contract;
 pub mod conversation;
 pub mod core;
-#[cfg(all(feature = "machines", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod devices;
-#[cfg(feature = "filesystem")]
 pub mod distributed;
 mod effects;
 pub mod executor;
@@ -53,10 +52,9 @@ pub mod experiments;
 #[cfg(feature = "metrics-export")]
 pub use executor::metrics;
 pub mod extension;
-#[cfg(feature = "filesystem")]
 pub mod filesystem;
 pub mod goal;
-#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod hooks;
 #[doc(hidden)]
 pub mod identity;
@@ -64,44 +62,22 @@ pub mod interaction;
 mod json_literal;
 pub mod layers;
 pub mod live;
-#[cfg(feature = "machines")]
 pub mod machines;
 pub mod mcp;
 pub mod model;
-#[cfg(any(
-    test,
-    feature = "test-support",
-    all(
-        not(target_arch = "wasm32"),
-        any(
-            feature = "filesystem-local",
-            feature = "hooks",
-            feature = "mcp-stdio",
-            feature = "mcp-http",
-            feature = "search-http"
-        )
-    )
-))]
+#[cfg(any(test, feature = "test-support", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod native_environment;
 #[cfg(not(target_arch = "wasm32"))]
-mod native_future;
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
-))]
 pub mod native_settings;
-#[cfg(feature = "objects")]
 pub mod objects;
 mod obs;
 /// Cached OIDC verification and admission through the existing workload authority.
-#[cfg(feature = "oidc")]
 pub mod oidc;
-#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod plugins;
 pub mod preset;
 /// Pure resolution of versioned model and role files at epoch admission.
-#[cfg(feature = "filesystem")]
 pub mod profile;
 pub mod projection;
 pub mod registry;
@@ -131,39 +107,25 @@ mod test_stream;
 pub mod wire_validation;
 pub mod wire_values;
 
-/// Optional original native work; `None` selects unbounded work.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub type NativeWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWork>;
-/// Optional original native work; `None` selects unbounded work.
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-pub type NativeWork<'a> = Option<&'a ()>;
-
-/// Optional custody retained for an original native allocation.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub type NativeCustody = Option<acyclic_fs::NativeAllocation>;
-/// Optional custody retained for an original native allocation.
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-pub type NativeCustody = Option<()>;
-
 /// Funds fixed-width indices from the original invocation's optional native
 /// work. `None` remains unbounded, with no private allocation ledger.
-pub(crate) struct NativeIndexWork<'a>(pub(crate) NativeWork<'a>);
+pub(crate) struct NativeIndexWork<'a>(pub(crate) acyclic_fs::NativeWork<'a>);
 
 impl NativeIndexWork<'_> {
     fn preparation(&self) -> Result<Option<crate::executor::PreparationIo>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         return self
             .0
             .map(crate::executor::PreparationIo::from_native_work)
             .transpose();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         Ok(None)
     }
 }
 
 impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
     type Error = Error;
-    type Allocation = NativeCustody;
+    type Allocation = acyclic_fs::NativeCustody;
 
     fn check(&mut self) -> Result<()> {
         self.charge_items(0)
@@ -171,7 +133,7 @@ impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
 
     fn charge_items(&mut self, items: u64) -> Result<()> {
         let _ = (self.0, items);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.0 {
             original.charge(acyclic_fs::WorkCounters {
                 items_examined: items,
@@ -183,7 +145,7 @@ impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
 
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation> {
         let _ = (self.0, bytes);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.0 {
             return original
                 .claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
@@ -200,7 +162,6 @@ use build_metadata::generated;
 pub mod wire {
     pub use super::generated::acyclic::harness::v2::*;
     pub use super::generated::acyclic::protocol::v1::*;
-    #[cfg(feature = "machines")]
     pub use acyclic_machines::wire::selection::{
         ProviderRef, VolumeClass, VolumeOwner, VolumeRef, volume_owner,
     };
@@ -209,7 +170,7 @@ pub mod wire {
 /// Canonical harness descriptor set used for transport compatibility.
 pub const FILE_DESCRIPTOR_SET: &[u8] = build_metadata::FILE_DESCRIPTOR_SET;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::executor::json::json_from_value_bounded;
 pub use crate::executor::json::{
     JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, canonical_json_bytes_bounded,
@@ -230,8 +191,6 @@ pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
 };
 pub use json_literal::deserialize as deserialize_json_value;
-#[cfg(not(target_arch = "wasm32"))]
-pub use native_future::NativeFutureBundle;
 mod process_error;
 pub use process_error::ProcessError;
 

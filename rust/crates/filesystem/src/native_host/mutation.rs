@@ -1,7 +1,7 @@
 use super::*;
 
 impl HostRoot {
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn create_file<W: SourceDemandReadWork>(
         &self,
         path: &NativePath,
@@ -33,7 +33,7 @@ impl HostRoot {
             )
         })
     }
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn create_dir<W: SourceDemandReadWork>(
         &self,
         path: &NativePath,
@@ -64,7 +64,7 @@ impl HostRoot {
         Ok(Self::from_parts(directory, identity))
     }
     #[cfg(unix)]
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn symlink<W: SourceDemandReadWork>(
         &self,
         target: &OsStr,
@@ -85,7 +85,7 @@ impl HostRoot {
             },
         )
     }
-    #[cfg(all(unix, any(feature = "native-mount", test)))]
+    #[cfg(all(unix, any(not(target_arch = "wasm32"), test)))]
     pub(crate) fn create_fifo_held<W: SourceDemandReadWork>(
         &self,
         path: &Path,
@@ -103,7 +103,7 @@ impl HostRoot {
             })
         })
     }
-    #[cfg(all(unix, any(feature = "native-mount", all(test, target_os = "macos"))))]
+    #[cfg(all(unix, any(not(target_arch = "wasm32"), all(test, target_os = "macos"))))]
     pub(crate) fn create_device_held<W: SourceDemandReadWork>(
         &self,
         path: &Path,
@@ -125,7 +125,7 @@ impl HostRoot {
         })
     }
     #[cfg(unix)]
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn bind_unix_socket<W: SourceDemandReadWork>(
         &self,
         path: &Path,
@@ -134,7 +134,7 @@ impl HostRoot {
         with_parent_leaf(&self.directory(), path, work, bind_unix_socket_in)
     }
 
-    #[cfg(all(unix, feature = "native-mount"))]
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
     pub(crate) fn hard_link(
         &self,
         source: &Path,
@@ -239,7 +239,7 @@ impl HostRoot {
 }
 
 #[cfg(unix)]
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn bind_unix_socket_in<W: SourceDemandReadWork>(
     parent: &Dir,
     leaf: &std::ffi::CStr,

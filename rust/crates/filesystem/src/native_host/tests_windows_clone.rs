@@ -454,7 +454,7 @@ fn block_clone_preserves_sparse_data_and_cow_across_aligned_unaligned_and_large_
     let megabyte = 1024_u64 * 1024;
     let second_chunk = 1024_u64 * megabyte;
     for (length, patches) in [
-        #[cfg(feature = "native-mount")]
+        #[cfg(not(target_arch = "wasm32"))]
         (
             megabyte,
             &[(0, 0xA5, 4096), (megabyte - 4096, 0xA5, 4096)][..],
@@ -494,7 +494,7 @@ fn block_clone_preserves_sparse_data_and_cow_across_aligned_unaligned_and_large_
         })
         .map_err(ordinary_error)?;
         let mut required = parent.is_some();
-        #[cfg(feature = "native-mount")]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             required |= crate::probe_native_storage_capabilities(directory.path())
                 .map_err(std::io::Error::other)?

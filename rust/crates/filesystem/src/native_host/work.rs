@@ -93,7 +93,7 @@ pub(crate) trait NativeHostWork {
     #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error>;
     #[cfg(any(target_os = "linux", all(test, unix)))]
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite);
     #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn attempt_cleanup_write<T>(
@@ -195,7 +195,7 @@ impl<W: DemandWorkContext> NativeHostWork for W {
         })
     }
     #[cfg(any(target_os = "linux", all(test, unix)))]
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn cancel_cleanup_write(&mut self, reservation: u64) {
         self.with_demand_work(|work| {
             if let Err(error) = work.refund(
@@ -223,7 +223,7 @@ impl<W: DemandWorkContext> NativeHostWork for W {
     }
 }
 
-#[cfg(all(test, not(loom), feature = "native-watch"))]
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod tests;
 
 impl NativeHostWork for &NativeMaterializationWork {
@@ -290,7 +290,7 @@ impl NativeHostWork for &NativeMaterializationWork {
         NativeMaterializationWork::reserve_cleanup_write(self)
     }
     #[cfg(any(target_os = "linux", all(test, unix)))]
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         drop(reservation);
     }
@@ -304,12 +304,7 @@ impl NativeHostWork for &NativeMaterializationWork {
     }
 }
 
-#[cfg(any(
-    test,
-    feature = "local",
-    feature = "native-watch",
-    feature = "conformance"
-))]
+#[cfg(any(test, not(target_arch = "wasm32"), feature = "conformance"))]
 pub(crate) fn clone_path<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
@@ -336,7 +331,7 @@ pub(crate) fn clone_path<W: NativeHostWork>(
 }
 
 /// Creates unbounded native work.
-#[cfg(any(test, feature = "local", feature = "native-watch"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) fn ordinary_work() -> DemandWork {
     // Each work owns its never-cancelled token: a process-global token would
     // outlive every model execution whose primitives it holds.
@@ -344,7 +339,7 @@ pub(crate) fn ordinary_work() -> DemandWork {
 }
 
 /// Maps native demand failures to I/O errors.
-#[cfg(any(test, all(windows, feature = "native-watch")))]
+#[cfg(any(test, all(windows, not(target_arch = "wasm32"))))]
 pub(crate) fn ordinary_error(error: DemandError) -> io::Error {
     match error {
         DemandError::Io(error) => error,

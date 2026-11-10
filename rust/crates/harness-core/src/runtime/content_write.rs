@@ -440,11 +440,7 @@ async fn finish_publication<'io>(
             "content publisher returned another file identity".into(),
         ));
     }
-    #[cfg(feature = "filesystem")]
     let retained = output.1.as_ref().map_or(0, |hold| hold.bytes());
-    #[cfg(not(feature = "filesystem"))]
-    let retained = 0;
-    #[cfg(feature = "filesystem")]
     if output.1.is_none()
         && let Some(io) = io
     {
@@ -462,17 +458,14 @@ async fn finish_publication<'io>(
         .verify_publication(file, file.descriptor().byte_length(), io)?
         .await?;
     let (file, hold) = output;
-    #[cfg(feature = "filesystem")]
     if let Some(hold) = hold {
         hold.into_retained()?;
     }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = hold;
     Ok((file, retained))
 }
 
 #[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
 

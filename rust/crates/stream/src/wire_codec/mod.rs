@@ -40,7 +40,7 @@ pub use receipt::{fork_receipt_from_wire, receipt_from_wire, receipt_to_wire};
 pub use record_frames::record_frames;
 pub(crate) use revision::revision_from;
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub(crate) use revision::selection_for_follow;
@@ -49,10 +49,8 @@ pub use revision::{
     revision_from_wire, revision_to_wire, selection_from_opened, selection_to_wire, tail_response,
 };
 
-#[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) mod status;
-#[cfg(all(feature = "grpc", any(test, feature = "test-support")))]
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod status_contract;
-#[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
 pub use status::status;

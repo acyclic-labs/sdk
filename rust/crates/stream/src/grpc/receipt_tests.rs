@@ -36,7 +36,7 @@ async fn remote_memory_receipts_preserve_the_retained_prefix() -> TestResult {
     Ok(())
 }
 
-#[cfg(feature = "local")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn remote_local_receipts_flush_only_at_the_explicit_barrier() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -144,7 +144,7 @@ async fn accepted_projection(provider: &impl StreamProvider) -> TestResult<Commi
 async fn accepted_commit_replays_original_fact_across_projection_and_restore() -> TestResult {
     accepted_projection(&crate::MemoryStream::default()).await?;
     accepted_projection(&client(crate::MemoryStream::default())?).await?;
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let directory = tempfile::tempdir()?;
         let local = crate::LocalStream::open(directory.path(), Default::default()).await?;

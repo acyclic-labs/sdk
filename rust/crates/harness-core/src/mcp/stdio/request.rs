@@ -24,8 +24,8 @@ impl McpStdioRequest {
     /// Creates transient protocol state and its first write, with no I/O.
     pub fn exchange(
         &self,
-        work: NativeWork<'_>,
-    ) -> Result<(McpStdioExchange, Vec<u8>, NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(McpStdioExchange, Vec<u8>, acyclic_fs::NativeCustody)> {
         super::services::validate_params(&self.method, &self.params, work)?;
         if self.initialization == self.operation || self.maximum_bytes == 0 {
             return Err(error(
@@ -87,7 +87,7 @@ impl McpStdioRequest {
         charge(work, 0, 0, request.0.len() as u64)?;
         combined.0.extend_from_slice(&request.0);
         drop(request);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let custody = if let Some(work) = work {
             // The fixed exchange header plus the u32 transcript bound fit u64.
             Some(work.claim(
@@ -98,7 +98,7 @@ impl McpStdioRequest {
         } else {
             None
         };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let custody = None;
         // Cumulative stdout fits the reserved buffer.
         let line = if work.is_some() {

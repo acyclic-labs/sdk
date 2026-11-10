@@ -78,10 +78,7 @@ impl SkillMetadata {
                 "invalid skill byte bound",
             ));
         }
-        #[cfg(feature = "filesystem")]
         let content_io = io;
-        #[cfg(not(feature = "filesystem"))]
-        let content_io = None;
         let source = &self.source;
         let (file, bytes, hold) = reader
             .read_private_path(
@@ -129,10 +126,7 @@ impl SkillMetadata {
             String::from_utf8(bytes)
                 .map_err(|_| stock_boundary(io, ErrorCode::Invalid, "skill body is invalid text"))?
         };
-        #[cfg(feature = "filesystem")]
         drop(hold);
-        #[cfg(not(feature = "filesystem"))]
-        let _ = hold;
         Ok(ModelMessage {
             role: ModelRole::System,
             content: ModelContent::Text(text),
@@ -300,7 +294,7 @@ pub async fn discover_skills_at(
     Ok(result)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn skill_text_native(
     skills: &[SkillMetadata],
     size: u64,

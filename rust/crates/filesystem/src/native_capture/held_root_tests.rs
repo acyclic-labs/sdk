@@ -440,7 +440,7 @@ fn held_directory_traversal_borrows_parents_without_duplicating_handles() {
     }
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn held_recovery_rejects_every_normalized_directory_alias_before_open() {
     let directory = tempfile::tempdir().unwrap();

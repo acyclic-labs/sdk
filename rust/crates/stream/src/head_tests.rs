@@ -1,5 +1,5 @@
 use crate::*;
-#[cfg(feature = "local")]
+#[cfg(not(target_arch = "wasm32"))]
 use futures::StreamExt as _;
 
 pub(crate) async fn large_retained_view<P: StreamProvider>(
@@ -180,7 +180,7 @@ async fn check_child_selection<P: StreamProvider>(provider: &P) -> Result<(), St
 async fn trusted_heads_use_the_result_budget_and_wire_heads_enforce_the_byte_bound()
 -> Result<(), Box<dyn std::error::Error>> {
     check_trusted_view(&MemoryStream::default()).await?;
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
@@ -345,7 +345,7 @@ proptest::proptest! {
     }
 }
 
-#[cfg(feature = "local")]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn head_conditions_and_conflicts_survive_local_recovery_and_wire_encoding()
 -> Result<(), Box<dyn std::error::Error>> {

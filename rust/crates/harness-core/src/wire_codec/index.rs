@@ -3,10 +3,7 @@ use super::*;
 use acyclic_collections::IndexWork;
 use std::cell::RefCell;
 
-#[cfg(feature = "filesystem")]
 pub(crate) type OwnedIndexAllocation = Option<crate::filesystem::PreparationCustody>;
-#[cfg(not(feature = "filesystem"))]
-pub(crate) type OwnedIndexAllocation = ();
 
 /// Long-lived nodes transfer custody from the original preparation owner.
 pub(crate) struct OwnedIndexWork<'a>(pub(crate) Option<&'a crate::executor::PreparationIo>);
@@ -16,7 +13,6 @@ impl IndexWork for OwnedIndexWork<'_> {
     type Allocation = OwnedIndexAllocation;
 
     fn check(&mut self) -> Result<()> {
-        #[cfg(feature = "filesystem")]
         if let Some(mut io) = self.0 {
             return io.check();
         }
@@ -24,25 +20,14 @@ impl IndexWork for OwnedIndexWork<'_> {
     }
 
     fn charge_items(&mut self, items: u64) -> Result<()> {
-        #[cfg(feature = "filesystem")]
         if let Some(mut io) = self.0 {
             return io.charge_items(items);
         }
-        #[cfg(not(feature = "filesystem"))]
-        let _ = (self.0, items);
         Ok(())
     }
 
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation> {
-        #[cfg(feature = "filesystem")]
-        {
-            self.0.map(|mut io| io.claim(bytes)).transpose()
-        }
-        #[cfg(not(feature = "filesystem"))]
-        {
-            let _ = (self.0, bytes);
-            Ok(())
-        }
+        { self.0.map(|mut io| io.claim(bytes)).transpose() }
     }
 }
 

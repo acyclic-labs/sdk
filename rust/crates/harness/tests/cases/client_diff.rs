@@ -29,14 +29,12 @@ type MemoryHost =
     FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
 struct Fixture {
-    #[cfg(feature = "hosting")]
     filesystem: Fs<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
     _issuer: AuthorityRoot,
     host: Arc<MemoryHost>,
     root: ContextRoot,
     writer: ContentGrant,
     reader: Arc<dyn ContentResidencyVerifier>,
-    #[cfg(feature = "hosting")]
     files: Arc<
         FilesystemContentVerifier<
             acyclic_fs::MemoryAuthorityBackend,
@@ -276,10 +274,7 @@ impl Fixture {
         )?;
         let files = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 1 << 20, None)?;
         let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
-        #[cfg(not(feature = "hosting"))]
-        let _ = files;
         Ok(Self {
-            #[cfg(feature = "hosting")]
             filesystem,
             _issuer: issuer,
             host,
@@ -289,7 +284,6 @@ impl Fixture {
             },
             writer,
             reader,
-            #[cfg(feature = "hosting")]
             files,
         })
     }
@@ -327,7 +321,7 @@ impl Fixture {
 /// The shared platform producer: one exact projection of the volume's changes
 /// since its fork base, paged without loss from its retained projection and
 /// disclosed only under the requesting reader's list authority.
-#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> {
     use acyclic_harness::client::{AgentPageRequest, AgentReply, DiffKind};
@@ -670,7 +664,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
 
 /// A page's continuation discloses its following filename even when that file
 /// has no fragment in the returned page.
-#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn retained_diff_cursors_recheck_the_next_files_disclosure()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -767,7 +761,7 @@ async fn retained_diff_cursors_recheck_the_next_files_disclosure()
 /// Range writes can restore identical bytes with a different chunk layout.
 /// Equality must spend the same input allowance as a changed file; otherwise
 /// a small page silently compares arbitrarily large restored files first.
-#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn workspace_diff_admits_range_restoration_before_reading_content() -> Result<()> {
     use acyclic_fs::{CancellationToken, PublicationPermit, WorkBudget, WorkspaceError};

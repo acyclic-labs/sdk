@@ -2,7 +2,7 @@ use super::*;
 use crate::cancellation::CancellationToken;
 use crate::source_watch::HostChangeSink;
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 const ORIGINAL_BUDGET: WorkBudget = WorkBudget {
     backend_read_operations: 128,
     backend_write_operations: 128,
@@ -264,7 +264,7 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -404,7 +404,7 @@ fn stop_closes_descriptors_without_closing_reused_numbers() -> Result<(), Box<dy
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -575,7 +575,7 @@ fn removal_admits_the_native_write_before_forgetting_the_live_registration()
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -675,7 +675,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -749,7 +749,7 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -917,7 +917,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiescence()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1010,13 +1010,13 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
 /// Holds the sink's destruction between Shared's weak-pointer expiry and
 /// Delivery's later release of the original keeper. Disconnecting `release`
 /// also releases this pause when the test unwinds.
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 struct DropPause {
     entered: std::sync::mpsc::Sender<()>,
     release: std::sync::mpsc::Receiver<()>,
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for DropPause {
     fn drop(&mut self) {
         if self.entered.send(()).is_ok() {
@@ -1025,7 +1025,7 @@ impl Drop for DropPause {
     }
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_last_controller_drop_in_callback_retires_the_actual_reader()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1323,7 +1323,7 @@ pub(super) fn before_unsubscribe_record() {
 // retires between the controller's unsubscribe credit check and its record,
 // unless the controller excludes it there. Both withdraw the same registration,
 // so exactly one may spend that write.
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn original_stop_and_a_failed_service_retirement_spend_the_unsubscribe_write_once()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -302,7 +302,7 @@ impl WhenAbsent {
         }
     }
     #[cfg(any(
-        all(feature = "session", not(target_arch = "wasm32")),
+        not(target_arch = "wasm32"),
         all(feature = "wasm", target_arch = "wasm32")
     ))]
     pub(crate) fn to_wire(self) -> i32 {
@@ -396,7 +396,7 @@ impl DurableReceipt {
         self.through
     }
 
-    #[cfg(any(loom, all(test, feature = "local", not(target_arch = "wasm32"))))]
+    #[cfg(any(loom, all(test, not(target_arch = "wasm32"))))]
     pub(crate) fn covering(
         path: StreamPath,
         watermarks: &StreamWatermarks,

@@ -98,11 +98,9 @@ pub struct NativeTools(Vec<Mapped>);
 
 /// One immutable selection's declarations. The fallible initializer owns the
 /// reservation before it reads the profile or decodes any declarations.
-#[cfg(any(feature = "filesystem", test))]
 #[derive(Default)]
 pub(crate) struct Cache(once_cell::sync::OnceCell<Option<Arc<NativeTools>>>);
 
-#[cfg(any(feature = "filesystem", test))]
 impl Cache {
     pub(crate) fn get(
         &self,

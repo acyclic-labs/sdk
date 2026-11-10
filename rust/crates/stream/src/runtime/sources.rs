@@ -101,12 +101,12 @@ mod tests;
 pub(crate) const OPENING: usize = 0;
 pub(crate) const ALL: usize = 1;
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub(crate) const LATEST: usize = 2;
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub(crate) const EITHER: usize = 3;
@@ -227,7 +227,7 @@ impl<S: Stream + Unpin> ReadySources<S> {
     }
 
     #[cfg(any(
-        all(feature = "session", not(target_arch = "wasm32")),
+        not(target_arch = "wasm32"),
         all(feature = "wasm", target_arch = "wasm32")
     ))]
     pub(crate) fn insert(
@@ -271,7 +271,7 @@ impl<S: Stream + Unpin> ReadySources<S> {
     }
     #[cfg(any(
         test,
-        all(feature = "session", not(target_arch = "wasm32")),
+        not(target_arch = "wasm32"),
         all(feature = "wasm", target_arch = "wasm32")
     ))]
     pub(crate) fn mode(&mut self, id: u64, mode: Option<usize>) {
@@ -379,7 +379,7 @@ impl<S: Stream + Unpin> ReadySources<S> {
         None
     }
     #[cfg(any(
-        all(feature = "session", not(target_arch = "wasm32")),
+        not(target_arch = "wasm32"),
         all(feature = "wasm", target_arch = "wasm32")
     ))]
     pub(crate) fn next_with_control(

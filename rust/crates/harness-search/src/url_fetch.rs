@@ -5,17 +5,13 @@ use acyclic_stream::BoxProviderFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[cfg(all(feature = "search-http", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod http;
-#[cfg(all(feature = "search-http", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use http::HttpFetch;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
-#[cfg(all(
-    feature = "filesystem",
-    feature = "search-http",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::response_bytes;
 
 pub(crate) const MAXIMUM_URL_BYTES: usize = 16_384;
@@ -35,14 +31,14 @@ impl FetchRequest {
         self.validate_with_work(None)
     }
 
-    pub(crate) fn validate_with_work(&self, work: crate::NativeWork<'_>) -> Result<()> {
-        #[cfg(all(feature = "search-http", not(target_arch = "wasm32")))]
+    pub(crate) fn validate_with_work(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
         {
             http::validate_url(&self.url, work)
         }
-        #[cfg(not(all(feature = "search-http", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = work {
                 work.charge(acyclic_fs::WorkCounters {
                     items_examined: self.url.len() as u64,
@@ -54,7 +50,7 @@ impl FetchRequest {
     }
 }
 
-pub(crate) fn validate_url_text(url: &str, work: crate::NativeWork<'_>) -> Result<()> {
+pub(crate) fn validate_url_text(url: &str, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
     if url.is_empty()
         || url.len() > MAXIMUM_URL_BYTES
         || url.chars().any(|c| c.is_whitespace() || c.is_control())
@@ -104,19 +100,25 @@ pub trait FetchProvider: acyclic_stream::ProviderPlatform {
     ) -> BoxProviderFuture<'a, Result<FetchResponse>>;
 
     /// Checks for an original-ledger implementation before admitting native dispatch.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_fetch(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;
         Ok(false)
     }
 
     /// Executes without falling back to ordinary, unaccounted execution.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn fetch_with_native_work<'a>(
         &'a self,
         _: &'a FetchRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (FetchResponse, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (FetchResponse, acyclic_fs::NativeAllocation),
+            crate::Error,
+        >,
+    > {
         work.remaining()?;
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
@@ -125,7 +127,7 @@ pub trait FetchProvider: acyclic_stream::ProviderPlatform {
     }
 }
 
-pub(crate) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
+pub(crate) fn rejection(work: acyclic_fs::NativeWork<'_>, reason: &'static str) -> Error {
     let _ = work;
     Error::ToolRejected {
         code: crate::wire::ErrorCode::Invalid,
