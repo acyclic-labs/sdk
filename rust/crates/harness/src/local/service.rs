@@ -279,21 +279,22 @@ mod tests {
         .state_directory(state.path())
         .without_default_tools();
         let local = Arc::new(super::super::LocalHarness::open(config).await?);
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let project = local
-            .volume_filesystem
-            .open_workspace(
-                local.project.storage_name(&mut None)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
+        let project = crate::filesystem::workspace_ref(
+            local.project.provider().clone(),
+            &local.project.storage_name(&mut None)?,
+        )?;
+        local
+            .files
+            .apply(
+                &project,
+                None,
+                &[crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/shared.txt".into(),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"checkout base"),
+                }],
+                &crate::IdempotencyKey::new("session-isolation-base")?,
             )
-            .await
-            .map_err(|failure| storage(failure.error))?
-            .value;
-        project
-            .write_text("/shared.txt", "checkout base")
-            .await
-            .map_err(storage)?;
+            .await?;
         let tree = local
             .connect()
             .await
@@ -446,43 +447,35 @@ mod tests {
                     .find(|binding| binding.name == "project")
                     .ok_or_else(|| Error::Invalid("missing project binding".into()))?;
                 assert_ne!(binding.volume, local.project);
-                projects.push(
-                    local
-                        .volume_filesystem
-                        .open_workspace(
-                            binding.volume.storage_name(&mut None)?,
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &cancellation,
-                        )
-                        .await
-                        .map_err(|failure| storage(failure.error))?
-                        .value,
-                );
+                projects.push(crate::filesystem::workspace_ref(
+                    binding.volume.provider().clone(),
+                    &binding.volume.storage_name(&mut None)?,
+                )?);
             }
-            projects[0]
-                .write_text("/shared.txt", "first session")
-                .await
-                .map_err(storage)?;
-            projects[1]
-                .write_text("/shared.txt", "second session")
-                .await
-                .map_err(storage)?;
+            for (index, text) in [(0, "first session"), (1, "second session")] {
+                local
+                    .files
+                    .apply(
+                        &projects[index],
+                        None,
+                        &[crate::filesystem::WorkspaceMutation::PutFile {
+                            path: "/shared.txt".into(),
+                            bytes: acyclic_stream::OwnedBytes::copy_from_slice(text.as_bytes()),
+                        }],
+                        &crate::IdempotencyKey::new(format!("session-isolation-{index}"))?,
+                    )
+                    .await?;
+            }
             for (workspace, expected) in [
                 (&projects[0], "first session"),
                 (&projects[1], "second session"),
                 (&projects[2], "checkout base"),
                 (&project, "checkout base"),
             ] {
-                let bytes = workspace
-                    .read(
-                        "/shared.txt",
-                        1024,
-                        acyclic_fs::WorkBudget::UNBOUNDED,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(|failure| storage(failure.error))?
-                    .value;
+                let bytes = local
+                    .files
+                    .read(workspace, None, "/shared.txt", 1024, None)
+                    .await?;
                 assert_eq!(
                     bytes.as_ref(),
                     expected.as_bytes(),
