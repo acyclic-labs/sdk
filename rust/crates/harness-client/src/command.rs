@@ -133,6 +133,15 @@ pub enum AgentCommand {
     Root {},
     /// Read the last committed root-directory membership in constant work.
     LatestSession {},
+    /// Mark an explicit attach as latest for this checkout.
+    SelectSession {
+        /// Independent session in the admitted directory.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable identity of this selection.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+    },
     /// Page the explicitly admitted root-session directory.
     Sessions {
         /// Bounded directory credit and its opaque continuation.
@@ -735,6 +744,7 @@ impl AgentCommand {
             | Self::Usage { agent, .. }
             | Self::Events { agent, .. }
             | Self::AgentFilePreviews { agent, .. }
+            | Self::SelectSession { agent, .. }
             | Self::AgentFiles { agent, .. }
             | Self::PublishAgentFiles { agent, .. }
             | Self::Archive { agent, .. }
@@ -759,6 +769,7 @@ impl AgentCommand {
             Self::Pause { .. } => "pause",
             Self::MergeSession { .. } => "merge_session",
             Self::AgentFilePreviews { .. } => "agent_file_previews",
+            Self::SelectSession { .. } => "select_session",
             Self::AgentFiles { .. } => "agent_files",
             Self::PublishAgentFiles { .. } => "publish_agent_files",
             Self::Archive { .. } => "archive",

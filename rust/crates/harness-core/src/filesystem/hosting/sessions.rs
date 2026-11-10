@@ -253,4 +253,51 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             )),
         }
     }
+
+    /// Record an explicit attach in the directory's original feed. Read-only
+    /// selection and preview queries do not change the user's latest session.
+    pub async fn select_session(&self, agent: &AgentPath, id: &IntentId) -> Result<(), Error> {
+        self.admit_sessions()?;
+        if agent.parent().is_some() {
+            return Err(Error::Record(
+                "session selection requires an independent root",
+            ));
+        }
+        let directory = self.session_directory()?;
+        let member = acyclic_stream::StreamPath::new(format!(
+            "{}/{}",
+            self.session_roots()?.as_str(),
+            agent.id()
+        ))
+        .map_err(Error::Stream)?;
+        let value = serde_json::to_vec(&Entry::Root {
+            version: 1,
+            agent: agent.clone(),
+        })
+        .map_err(|_| Error::Record("session selection cannot encode"))?;
+        let request = acyclic_stream::CommitRequest {
+            deadline_unix_millis: None,
+            conditions: vec![acyclic_stream::CommitCondition::Present { path: member }],
+            mutations: vec![acyclic_stream::CommitMutation::Append {
+                path: directory.clone(),
+                records: vec![value.into()],
+            }],
+            idempotency_key: crate::agent::intent_key(
+                "select-session",
+                &[directory.as_str(), id.as_str()],
+            )?,
+        };
+        match self
+            .agents
+            .provider()
+            .commit(request)
+            .await
+            .map_err(Error::Stream)?
+        {
+            acyclic_stream::CommitOutcome::Committed(_) => Ok(()),
+            acyclic_stream::CommitOutcome::Conflict(_) => {
+                Err(Error::Record("session is outside the admitted directory"))
+            }
+        }
+    }
 }

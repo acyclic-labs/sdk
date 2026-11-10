@@ -521,6 +521,22 @@ mod tests {
             };
             connection.execute(&create_title).await?;
             let selected = connection.select(agent.clone()).await?;
+            let selection = AgentCommand::SelectSession {
+                agent: agent.clone(),
+                id: crate::agent::IntentId::try_from("explicit-reattach").map_err(storage)?,
+            };
+            connection.execute(&selection).await?;
+            connection.execute(&selection).await?;
+            assert!(
+                matches!(connection.execute(&AgentCommand::LatestSession {}).await?,
+                AgentReply::LatestSession { agent: Some(latest) } if latest == agent)
+            );
+            let not_a_session = AgentCommand::SelectSession {
+                agent: tree.root().clone(),
+                id: crate::agent::IntentId::try_from("select-owner-is-not-session")
+                    .map_err(storage)?,
+            };
+            assert!(connection.execute(&not_a_session).await.is_err());
             let AgentReply::ClientFiles { snapshot } = selected.execute(&read).await? else {
                 return Err(Error::Invalid("missing shared title".into()));
             };
