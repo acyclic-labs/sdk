@@ -12,6 +12,7 @@ fn check_manifest_diagnostics(manifest: &RequestManifest) -> Result<()> {
     // These fields reach each transitive decoder: fixed arrays, primitives,
     // FileRef, ProviderRefWire, the adjacent-tagged owner and its buffered id.
     for (pointer, is_string) in [
+        ("/$version", false),
         ("/request_digest/0", false),
         ("/messages/count", false),
         ("/proof/0/31", false),
@@ -250,6 +251,7 @@ async fn ref_only_metadata_admission_covers_physical_storage_without_workflow_sl
         )
         .await?;
     let manifest = RequestManifest {
+        version: 1,
         header: reference.clone(),
         header_digest: [255; 32],
         messages: MessagePrefix {

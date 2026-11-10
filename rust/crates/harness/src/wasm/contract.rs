@@ -49,11 +49,19 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
                 ("path_bytes", value.path_bytes as u64),
                 ("attachments", value.attachments as u64),
                 ("render_bytes", value.render_bytes),
-                ("model_events_per_step", value.model_events_per_step as u64),
-                ("tool_calls_per_step", value.tool_calls_per_step as u64),
                 ("context_messages", value.context_messages as u64),
             ] {
                 set_js_field(&js, key, &exact_js_number(bound)?)?;
+            }
+            for (key, bound) in [
+                ("model_events_per_step", value.model_events_per_step),
+                ("tool_calls_per_step", value.tool_calls_per_step),
+            ] {
+                let bound = bound
+                    .map(|bound| exact_js_number(bound.get() as u64))
+                    .transpose()?
+                    .unwrap_or(JsValue::NULL);
+                set_js_field(&js, key, &bound)?;
             }
             Ok(js)
         }

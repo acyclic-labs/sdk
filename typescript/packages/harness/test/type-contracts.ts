@@ -19,8 +19,14 @@ type _AgentRecordsExposeAbsence = Assert<Equal<ReturnType<AgentClient["agentReco
 type _ApprovalStatusesUseTheRustContract = Assert<Equal<ReturnType<AgentClient["agentStatus"]>, StatusRecord | null>>;
 
 type _SummaryLimitsUseExistingNativeWire = Assert<Equal<RustSummaryForkSelection["limits"], WasmNativeLimitsWire>>;
-type _SummaryLimitsPreserveEveryBigint = Assert<Equal<
-  RustSummaryForkSelection["limits"][keyof RustSummaryForkSelection["limits"]], bigint
+type OptionalLimit = "model_events_per_step" | "tool_calls_per_step";
+type RequiredLimits = Omit<RustSummaryForkSelection["limits"], OptionalLimit>;
+type _SummaryRequiredLimitsPreserveEveryBigint = Assert<Equal<
+  RequiredLimits[keyof RequiredLimits], bigint
+>>;
+type _SummaryOptionalLimitsPreserveAbsence = Assert<Equal<
+  Pick<RustSummaryForkSelection["limits"], OptionalLimit>,
+  { readonly model_events_per_step: bigint | null; readonly tool_calls_per_step: bigint | null }
 >>;
 
 const generatedModelContent: ModelContentWire = {

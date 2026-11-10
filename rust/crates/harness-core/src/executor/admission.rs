@@ -7,8 +7,12 @@ impl ModelEventAdmission {
     #[doc(hidden)]
     pub fn from_state(mut state: Self, limits: Limits) -> Result<Self> {
         if state.text_bytes > limits.file_bytes
-            || state.count > limits.model_events_per_step
-            || state.calls.len() > limits.tool_calls_per_step
+            || limits
+                .model_events_per_step
+                .is_some_and(|maximum| state.count > maximum.get())
+            || limits
+                .tool_calls_per_step
+                .is_some_and(|maximum| state.calls.len() > maximum.get())
         {
             return Err(Error::Invalid(
                 "model event admission state exceeds its limit".into(),
@@ -40,7 +44,10 @@ impl ModelEventAdmission {
             }
             Ok::<_, Error>(())
         })?;
-        if self.count >= limits.model_events_per_step {
+        if limits
+            .model_events_per_step
+            .is_some_and(|maximum| self.count >= maximum.get())
+        {
             return Err(stock_boundary(io, Invalid, "model event limit exceeded"));
         }
         if self.completed {
@@ -88,7 +95,10 @@ impl ModelEventAdmission {
             with_history_io(io, |work| native.validate_limits(limits, work))?;
         }
         let call_id = &call.call_id;
-        if self.calls.len() >= limits.tool_calls_per_step {
+        if limits
+            .tool_calls_per_step
+            .is_some_and(|maximum| self.calls.len() >= maximum.get())
+        {
             return Err(stock_boundary(
                 io,
                 Invalid,
@@ -164,6 +174,10 @@ impl ModelEventAdmission {
     ) -> Result<()> {
         let position = self.validate_next(event, limits, io)?;
         let text_bytes = self.next_text_bytes(event)?;
+        let count = self
+            .count
+            .checked_add(1)
+            .ok_or_else(|| stock_boundary(io, Invalid, "model event count overflow"))?;
         match event {
             ModelEvent::ToolCall(crate::model::ToolCall { call_id, .. }) => {
                 let position = position.ok_or_else(|| {
@@ -196,7 +210,7 @@ impl ModelEventAdmission {
             | ModelEvent::Reasoning { .. }
             | ModelEvent::ReasoningBlock { .. } => {}
         }
-        self.count += 1;
+        self.count = count;
         self.text_bytes = text_bytes;
         Ok(())
     }

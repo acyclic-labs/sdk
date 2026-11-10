@@ -102,7 +102,7 @@ impl ExecutionReplay {
 pub(crate) async fn replay_execution<'a>(
     journal: &dyn ExecutionJournal,
     operation_id: OperationId,
-    maximum_selected: usize,
+    maximum_selected: Option<usize>,
     select: impl Fn(&ExecutionEvent) -> bool,
     io: Option<&'a PreparationIo>,
 ) -> Result<(
@@ -137,7 +137,7 @@ pub(crate) async fn replay_execution<'a>(
         let page_bytes = page.capacity() as u64 * std::mem::size_of::<ExecutionRecord>() as u64;
         for record in page {
             if select(&record.event) {
-                if selected.len() >= maximum_selected {
+                if maximum_selected.is_some_and(|maximum| selected.len() >= maximum) {
                     return Err(Error::Invalid(
                         "selected execution records exceed bound".into(),
                     ));

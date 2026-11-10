@@ -48,7 +48,113 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
     )
     .await?;
     assert_eq!(file.descriptor().media_type(), REQUEST_MEDIA);
+    let manifest_bytes = journal.load(&file, None)?.await?;
+    let manifest_text = std::str::from_utf8(&manifest_bytes).unwrap();
+    assert!(manifest_text.starts_with("{\"$version\":1,"));
+    for (index, bytes) in [
+        manifest_text.replacen("{\"$version\":1,", "{", 1),
+        manifest_text.replacen("{\"$version\":1,", "{\"$version\":0,", 1),
+        manifest_text.replacen("{\"$version\":1,", "{\"$version\":2,", 1),
+        "{\"$version\":2,malformed body".into(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let reference = journal
+            .stage(
+                OperationId::new(),
+                &format!("unsupported-manifest-{index}"),
+                bytes.as_bytes(),
+                REQUEST_MEDIA,
+                None,
+            )?
+            .await?;
+        for native in [false, true] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let io = native
+                .then(|| PreparationIo::from_native_work(&work))
+                .transpose()?;
+            let baseline = work.live_allocation_bytes();
+            assert_eq!(
+                load_request(journal, &reference, Limits::default(), io.as_ref())
+                    .await
+                    .err()
+                    .unwrap()
+                    .code(),
+                crate::wire::ErrorCode::Unsupported
+            );
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            if let Some(io) = &io {
+                assert_eq!(io.owned_bytes()?, 0);
+            }
+            drop(io);
+            // The original ledger remains alive through `work`; only its
+            // accounting state may remain after decoder custody is dropped.
+            assert_eq!(
+                work.live_allocation_bytes(),
+                acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+            );
+        }
+    }
     for native in [false, true] {
+        // Exercise both funded encoders, as well as the ordinary writer above.
+        // The actual persisted bytes must admit their version before payload
+        // decoding and reopen under the same custody that funded the write.
+        let funded_storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        let funded_journal = funded_storage.journal();
+        let funded_seed = initial_request(funded_journal.as_ref(), &prepared).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = if native {
+            PreparationIo::from_native_work(&work)?
+        } else {
+            PreparationIo::from_budget(budget, &cancellation)?
+        };
+        let funded = stage_request(
+            funded_journal.as_ref(),
+            OperationId::new(),
+            "funded-request",
+            &prepared,
+            Some(&funded_seed),
+            Some(&io),
+        )
+        .await?;
+        assert!(
+            funded_journal
+                .load(&funded, None)?
+                .await?
+                .starts_with(b"{\"$version\":1,")
+        );
+        assert_eq!(
+            load_request(
+                funded_journal.as_ref(),
+                &funded,
+                Limits::default(),
+                Some(&io)
+            )
+            .await?
+            .bytes(),
+            prepared.bytes()
+        );
+        drop(funded);
+        drop(funded_seed);
+        // Immutable object pages retain custody in the storage adapter. Retire
+        // their owners as well as the publication before checking full release.
+        drop(funded_journal);
+        drop(funded_storage);
+        drop(io);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+        );
         for scoped in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
@@ -224,6 +330,7 @@ fn assert_component_proofs(
     let header = serde_json::to_value(&manifest.header)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     for (path, replacement) in [
+        ("/$version", 2.into()),
         ("/header", reference),
         ("/header_digest/0", (manifest.header_digest[0] ^ 1).into()),
         ("/messages/reference", header),

@@ -54,6 +54,10 @@ mod metadata_tests;
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RequestManifest {
+    // Canonical JSON sorts object keys. Reserve a key that sorts before every
+    // payload field so the version can be admitted before decoding the body.
+    #[serde(rename = "$version")]
+    version: u32,
     header: FileRef,
     header_digest: [u8; 32],
     messages: MessagePrefix,
@@ -78,6 +82,7 @@ impl RequestManifest {
     fn payload_digest(&self, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
         preparation_digest(
             &(
+                self.version,
                 &self.header,
                 self.header_digest,
                 &self.messages,
@@ -206,7 +211,7 @@ impl PreparationRecord for RequestManifest {
         // Fund all labels in its own DTO graph instead of those unrelated
         // schemas; caller-controlled unexpected data is funded separately.
         concat!(
-            "RequestManifest header header_digest messages request_digest admitted_limits proof ",
+            "RequestManifest $version header header_digest messages request_digest admitted_limits proof ",
             "MessagePrefix reference count content_digest chain_digest ",
             "FileRef volume path version descriptor display_name ",
             "VolumeRef provider id class owner VolumeOwner kind id project agent session ",
@@ -300,7 +305,22 @@ pub(crate) async fn load_manifest(
     #[cfg(feature = "filesystem")]
     let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
     with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
+    acyclic_auth::format::header(
+        &bytes,
+        b"{\"$version\":",
+        b"1,",
+        || unsupported_manifest(io),
+        || unsupported_manifest(io),
+    )?;
     retain_preparation(super::payload::decode_json::<RequestManifest>(&bytes, io)?)
+}
+
+fn unsupported_manifest(io: Option<&PreparationIo>) -> Error {
+    stock_boundary(
+        io,
+        crate::wire::ErrorCode::Unsupported,
+        "unsupported segmented model request format",
+    )
 }
 
 async fn stage_manifest(
@@ -424,6 +444,7 @@ async fn stage_request_inner(
     )
     .await?;
     let manifest = RequestManifest {
+        version: 1,
         header,
         header_digest,
         messages,
