@@ -1368,6 +1368,23 @@ async fn concurrent_spawns_from_a_child_both_start() -> Result<()> {
             .await?;
         assert_eq!(turn["task"], json!(child));
         assert_eq!(turn["prompt"], reference);
+        // A retained shared binding must grant the real native filesystem path,
+        // including after the owner reconstructs this descendant's view.
+        for reopen in [false, true] {
+            if reopen {
+                fixture.restart(&child).await?;
+            }
+            fixture
+                .owner
+                .dispatch(
+                    OperationId::new(),
+                    HostAction::Fs {
+                        task: child.clone(),
+                        command: "status --volume shared".into(),
+                    },
+                )
+                .await?;
+        }
         views.push(cwd(&turn)?);
     }
     assert_ne!(views[0], views[1], "each child runs in its own view");
