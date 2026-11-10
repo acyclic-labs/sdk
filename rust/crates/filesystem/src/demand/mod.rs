@@ -22,6 +22,10 @@ mod empty;
 pub use empty::Empty;
 mod routed;
 pub use routed::Routed;
+mod computed;
+pub use computed::{
+    Computed, PinnedView, View, ViewPage, ViewProvider, ViewRecordSink, ViewRequest,
+};
 
 // Keep delegation on the caller's original native ledger. Standalone callers
 // receive and merge the same receipt, including work completed on failure.

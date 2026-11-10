@@ -120,10 +120,27 @@ impl RecordedChanges {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Box<dyn Error>> {
-    let root = tempfile::tempdir()?;
-    std::fs::create_dir(root.path().join("d"))?;
-    std::fs::write(root.path().join("f"), b"one")?;
-    let source = native_source(root.path()).await?;
+    for routed in [false, true] {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("d"))?;
+        std::fs::write(root.path().join("f"), b"one")?;
+        let source = native_source(root.path()).await?;
+        if routed {
+            let ui = path("/ui")?.components()[0].clone();
+            let source = Routed::new(Empty, ui, source);
+            assert_source_changes(&source, root.path(), "/ui").await?;
+        } else {
+            assert_source_changes(&source, root.path(), "").await?;
+        }
+    }
+    Ok(())
+}
+
+async fn assert_source_changes<D: DemandSource>(
+    source: &D,
+    root: &std::path::Path,
+    prefix: &str,
+) -> Result<(), Box<dyn Error>> {
     let recorded = Arc::new(RecordedChanges::default());
     let watch = source
         .watch(
@@ -134,13 +151,19 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
         .value
         .ok_or("a local root is watched")?;
     let cancellation = CancellationToken::new();
-    let node = lookup_node(&source, source.reference(), &path("/f")?, &cancellation).await?;
+    let node = lookup_node(
+        source,
+        source.reference(),
+        &path(&format!("{prefix}/f"))?,
+        &cancellation,
+    )
+    .await?;
     // Reading beneath a directory watches it where the host needs that.
     assert!(
         source
             .lookup(
                 source.reference(),
-                &path("/d/x")?,
+                &path(&format!("{prefix}/d/x"))?,
                 WorkBudget::UNBOUNDED,
                 &cancellation
             )
@@ -149,9 +172,12 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
             .is_none()
     );
 
-    std::fs::write(root.path().join("f"), b"changed")?;
-    std::fs::write(root.path().join("d").join("x"), b"x")?;
-    let (f, x) = (path("/f")?, path("/d/x")?);
+    std::fs::write(root.join("f"), b"changed")?;
+    std::fs::write(root.join("d").join("x"), b"x")?;
+    let (f, x) = (
+        path(&format!("{prefix}/f"))?,
+        path(&format!("{prefix}/d/x"))?,
+    );
     let changes = recorded.until(watch.as_ref(), |changes| {
         changes.contains(&SourceChange::Node(node.file_identity))
             && changes.contains(&SourceChange::Name(x.clone()))
@@ -161,8 +187,9 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
     // `FSEvents` may coalesce the file's recent creation into its write,
     // which reports the name rebound rather than its entry altered.
     assert!(
-        changes.contains(&SourceChange::Entry(path("/f")?))
-            || cfg!(target_os = "macos") && changes.contains(&SourceChange::Name(path("/f")?)),
+        changes.contains(&SourceChange::Entry(path(&format!("{prefix}/f"))?))
+            || cfg!(target_os = "macos")
+                && changes.contains(&SourceChange::Name(path(&format!("{prefix}/f"))?)),
         "{changes:?}"
     );
     assert!(
@@ -170,7 +197,7 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
         "{changes:?}"
     );
     assert!(
-        changes.contains(&SourceChange::Name(path("/d/x")?)),
+        changes.contains(&SourceChange::Name(path(&format!("{prefix}/d/x"))?)),
         "{changes:?}"
     );
     // Nothing was lost; a macOS fence reports everything by design.
@@ -1290,11 +1317,9 @@ async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Resul
     std::fs::write(base.path().join("base"), b"base")?;
     std::fs::write(view.path().join("index.md"), b"0123456789")?;
     let ui = path("/ui")?.components()[0].clone();
-    let source = Routed::new(
-        native_source(base.path()).await?,
-        ui,
-        native_source(view.path()).await?,
-    );
+    let base_source = native_source(base.path()).await?;
+    let view_source = native_source(view.path()).await?;
+    let source = Routed::new(base_source.clone(), ui, view_source.clone());
     let reference = source.reference();
     let cancellation = CancellationToken::new();
     let root = path("/")?;
@@ -1407,5 +1432,25 @@ async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Resul
             .error,
         DemandError::StaleVersion
     ));
+    let root_before = lookup_node(&source, reference, &root, &cancellation).await?;
+    view_source.invalidate();
+    let refreshed = source.reference();
+    assert_eq!(refreshed.identity, reference.identity);
+    assert!(refreshed.epoch > reference.epoch);
+    let root_after = lookup_node(&source, refreshed, &root, &cancellation).await?;
+    assert_eq!(root_after.file_identity, root_before.file_identity);
+    assert_ne!(root_after.version, root_before.version);
+    assert!(matches!(
+        source
+            .lookup(reference, &root, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap_err()
+            .error,
+        DemandError::StaleSource
+    ));
+    base_source.invalidate();
+    let both_refreshed = source.reference();
+    assert_eq!(both_refreshed.identity, refreshed.identity);
+    assert!(both_refreshed.epoch > refreshed.epoch);
     Ok(())
 }

@@ -44,30 +44,70 @@ impl<B: DemandSource, V: DemandSource> Routed<B, V> {
         ctx.check()?;
         let base = self.base.reference();
         let view = self.views.reference();
-        if source != Self::reference_of(self.combined(base, view)) {
+        if source != self.reference_of(base, view) {
             return Err(DemandError::StaleSource);
         }
         Ok((base, view))
     }
 
-    fn reference_of(hash: [u8; 32]) -> SourceReference {
+    fn reference_of(&self, base: SourceReference, view: SourceReference) -> SourceReference {
+        // Epochs only advance. Their sum therefore advances when either source
+        // invalidates, while namespace identity stays stable across refreshes.
+        // Exhausting the epoch representation changes identity and fails closed.
+        let (hash, epoch) = match base.epoch.checked_add(view.epoch) {
+            Some(epoch) => (
+                self.combined(
+                    SourceReference { epoch: 0, ..base },
+                    SourceReference { epoch: 0, ..view },
+                ),
+                epoch,
+            ),
+            None => (self.combined(base, view), u64::MAX),
+        };
         let mut identity = [0; 16];
         identity.copy_from_slice(&hash[..16]);
-        SourceReference { identity, epoch: 0 }
+        SourceReference { identity, epoch }
     }
 
     fn mounted(&self, path: &NamespacePath) -> bool {
         path.components().first() == Some(&self.prefix)
     }
 
-    fn root(&self, base: SourceReference, view: SourceReference) -> SourceNode {
+    async fn root(
+        &self,
+        base: SourceReference,
+        view: SourceReference,
+        path: &NamespacePath,
+        ctx: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(SourceNode, Option<SourceNode>), DemandError> {
+        let base_node = source_call!(ctx, cancellation, |work| self.base.lookup(
+            base,
+            path,
+            work,
+            cancellation
+        ))?;
+        let view_node = source_call!(ctx, cancellation, |work| self.views.lookup(
+            view,
+            path,
+            work,
+            cancellation
+        ))?;
         let mut node = Empty::node();
         node.file_identity = self.combined(
             SourceReference { epoch: 0, ..base },
             SourceReference { epoch: 0, ..view },
         );
-        node.version = SourceVersion(self.combined(base, view));
-        node
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.fs.demand.routed.directory.v1");
+        hash.update(&self.combined(base, view));
+        for root in [base_node, view_node] {
+            hash.update(&[u8::from(root.is_some())]);
+            if let Some(root) = root {
+                hash.update(&root.version.0);
+            }
+        }
+        node.version = SourceVersion(*hash.finalize().as_bytes());
+        Ok((node, view_node))
     }
 
     fn push(
@@ -159,7 +199,7 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
         work.finish(result, &ctx)
     }
     fn reference(&self) -> SourceReference {
-        Self::reference_of(self.combined(self.base.reference(), self.views.reference()))
+        self.reference_of(self.base.reference(), self.views.reference())
     }
 
     async fn lookup<W: FsWork + Send>(
@@ -182,7 +222,7 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                     cancellation
                 ))?
             } else if path.is_root() {
-                Some(self.root(base, view))
+                Some(self.root(base, view, path, &mut ctx, cancellation).await?.0)
             } else {
                 source_call!(&mut ctx, cancellation, |work| self.base.lookup(
                     base,
@@ -243,16 +283,10 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                     cancellation
                 ))?
             } else {
-                let prefix_node = if first {
-                    source_call!(&mut ctx, cancellation, |work| self.views.lookup(
-                        view,
-                        directory,
-                        work,
-                        cancellation
-                    ))?
-                } else {
-                    None
-                };
+                let (root, prefix_node) = self
+                    .root(base, view, directory, &mut ctx, cancellation)
+                    .await?;
+                let prefix_node = if first { prefix_node } else { None };
                 let reserved = u32::from(prefix_node.is_some());
                 let mut entries = Owned::allocate(reserved as usize, &mut ctx)?;
                 if let Some(node) = prefix_node {
@@ -288,12 +322,8 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                     next_page = base_page.next;
                     publication = base_page.publication;
                 }
-                let mut page = SourceDirectoryPage::stateless(
-                    entries,
-                    next_page,
-                    self.root(base, view).version,
-                    &mut ctx,
-                )?;
+                let mut page =
+                    SourceDirectoryPage::stateless(entries, next_page, root.version, &mut ctx)?;
                 page.publication = publication;
                 self.sources(source, &mut ctx)?;
                 return Ok(page);
