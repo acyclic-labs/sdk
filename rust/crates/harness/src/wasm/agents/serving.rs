@@ -104,20 +104,8 @@ impl WasmAgentServer {
         let on_record = field("onRecord")?.dyn_into::<Function>()?;
         let policy = field("policy")?.dyn_into::<Function>()?;
         let admitted = field("admitted")?.dyn_into::<Function>()?;
-        let recipient = &owner.caller.audience;
-        let namespace = String::from_utf8(recipient.ns.clone())
-            .map_err(|_| js_error(Error::Invalid("recipient namespace must be UTF-8".into())))?;
         let within = owner.within()?;
-        let binding = wire::InvokeActorRequest {
-            deployment_envelope: Vec::new(),
-            actor_id: "root".into(),
-            method: "POST".into(),
-            url: "https://agents.invalid/command".into(),
-            namespace: Some(namespace),
-            account_id: recipient.account.clone(),
-            ..Default::default()
-        }
-        .encode_to_vec();
+        let binding = hosting::binding(&within).encode_to_vec();
         let bound = Bound::platform_admitted(
             owner.issuer.clone(),
             Placement {

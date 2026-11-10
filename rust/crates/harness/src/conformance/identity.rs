@@ -15,16 +15,21 @@ use std::sync::atomic::Ordering;
 use tokens::*;
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
+    // Refusals cannot change this original nonempty history: every check below
+    // requires its cumulative turn I/O to remain zero. Accepted turns stay fresh.
+    let refusal = Fixture::new(backend).await?;
+    let refusal = &refusal;
     let now = acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000;
     let source = Source::keys(&[(7, "one")]);
     let mut verifier = oidc::Verifier::new(config()?);
     verifier.refresh(&source, now).await?;
     let original = claims(now);
     let valid = token(7, "one", &original)?;
-    admit(backend, &verifier, &source, &valid, now, true).await?;
+    admit(backend, refusal, &verifier, &source, &valid, now, true).await?;
     external(backend, &verifier, &valid, SUBJECT, now).await?;
     admit(
         backend,
+        refusal,
         &verifier,
         &source,
         &token(8, "one", &original)?,
@@ -44,6 +49,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         changed[field] = value;
         admit(
             backend,
+            refusal,
             &verifier,
             &source,
             &token(7, "one", &changed)?,
@@ -64,6 +70,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     ] {
         admit(
             backend,
+            refusal,
             &verifier,
             &source,
             &header_mutation(&valid, field, value)?,
@@ -74,6 +81,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     }
     admit(
         backend,
+        refusal,
         &verifier,
         &source,
         &token(7, "unknown", &original)?,
@@ -85,6 +93,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     multi["aud"] = json!([AUDIENCE, "another-client"]);
     admit(
         backend,
+        refusal,
         &verifier,
         &source,
         &token(7, "one", &multi)?,
@@ -95,6 +104,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     multi["azp"] = json!("another-client");
     admit(
         backend,
+        refusal,
         &verifier,
         &source,
         &token(7, "one", &multi)?,
@@ -105,6 +115,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     multi["azp"] = json!(AUDIENCE);
     admit(
         backend,
+        refusal,
         &verifier,
         &source,
         &token(7, "one", &multi)?,
@@ -116,6 +127,7 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     short["exp"] = json!(now + 20);
     admit(
         backend,
+        refusal,
         &verifier,
         &source,
         &token(7, "one", &short)?,
@@ -123,14 +135,15 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         true,
     )
     .await?;
-    rotation(backend, now).await?;
+    rotation(backend, refusal, now).await?;
     refresh_bounds(now).await?;
-    key_sets::verify(backend, now).await?;
+    key_sets::verify(backend, refusal, now).await?;
     Ok(())
 }
 
 async fn admit(
     backend: &dyn Backend,
+    refusal: &Fixture,
     verifier: &oidc::Verifier,
     source: &Source,
     token: &str,
@@ -138,8 +151,14 @@ async fn admit(
     allowed: bool,
 ) -> Result {
     let key_reads = source.reads.load(Ordering::SeqCst);
+    let fresh = if allowed {
+        Some(Fixture::new(backend).await?)
+    } else {
+        None
+    };
     let result = check(
         backend,
+        fresh.as_ref().unwrap_or(refusal),
         verifier,
         token,
         now,
@@ -172,8 +191,10 @@ pub(crate) async fn external(
     now: u64,
 ) -> Result {
     let expires_at = verifier.verify(token, now)?.expires_at();
+    let fixture = Fixture::new(backend).await?;
     check(
         backend,
+        &fixture,
         verifier,
         token,
         now,
@@ -189,12 +210,12 @@ pub(crate) async fn external(
 
 async fn check(
     backend: &dyn Backend,
+    fixture: &Fixture,
     verifier: &oidc::Verifier,
     token: &str,
     now: u64,
     expected: Expected<'_>,
 ) -> Result {
-    let fixture = Fixture::new(backend).await?;
     let audience = Authority {
         kind: AggregateKind::Conversation,
         id: "workload".into(),
@@ -277,7 +298,7 @@ async fn check(
     }
 }
 
-async fn rotation(backend: &dyn Backend, now: u64) -> Result {
+async fn rotation(backend: &dyn Backend, refusal: &Fixture, now: u64) -> Result {
     let now = now.max(acyclic_stream::SystemUnixMillisClock.now_unix_millis() / 1000);
     let mut source = Source::keys(&[(7, "one")]);
     let limits = oidc::Limits {
@@ -289,15 +310,15 @@ async fn rotation(backend: &dyn Backend, now: u64) -> Result {
     verifier.refresh(&source, now).await?;
     let one = token(7, "one", &claims(now))?;
     let two = token(8, "two", &claims(now))?;
-    admit(backend, &verifier, &source, &two, now, false).await?;
+    admit(backend, refusal, &verifier, &source, &two, now, false).await?;
     source.bytes = Source::keys(&[(7, "one"), (8, "two")]).bytes;
     verifier.refresh(&source, now + 1).await?;
     verifier.verify(&one, now + 1)?;
     verifier.verify(&two, now + 1)?;
     source.bytes = Source::keys(&[(8, "two")]).bytes;
     verifier.refresh(&source, now + 2).await?;
-    admit(backend, &verifier, &source, &one, now + 2, false).await?;
-    admit(backend, &verifier, &source, &two, now + 2, true).await?;
+    admit(backend, refusal, &verifier, &source, &one, now + 2, false).await?;
+    admit(backend, refusal, &verifier, &source, &two, now + 2, true).await?;
     source.fail = true;
     if verifier.refresh(&source, now + 3).await.is_ok() {
         return Err("failed refresh was accepted".into());
@@ -309,7 +330,7 @@ async fn rotation(backend: &dyn Backend, now: u64) -> Result {
         return Err("failed JWKS refresh bypassed rate bounds".into());
     }
     verifier.verify(&two, now + 6)?;
-    admit(backend, &verifier, &source, &two, now + 7, false).await?;
+    admit(backend, refusal, &verifier, &source, &two, now + 7, false).await?;
     Ok(())
 }
 
