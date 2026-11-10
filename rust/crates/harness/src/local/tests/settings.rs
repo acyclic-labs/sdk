@@ -794,7 +794,10 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
     use crate::profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve};
     use std::sync::Arc;
 
-    struct Bound(ModelProfileBinding);
+    struct Bound(
+        ModelProfileBinding,
+        Arc<crate::test_support::ScriptedModelProvider>,
+    );
     impl ModelProvider for Bound {
         fn model_profile(&self, _: &Model) -> Result<Option<ModelProfileBinding>> {
             Ok(Some(self.0))
@@ -804,10 +807,10 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
         }
         fn generate<'a>(
             &'a self,
-            _: &'a PreparedModelRequest,
-            _: ModelDispatch,
+            request: &'a PreparedModelRequest,
+            dispatch: ModelDispatch,
         ) -> crate::model::ModelStream<'a> {
-            panic!("settings admission must not dispatch a model")
+            self.1.generate(request, dispatch)
         }
     }
 
@@ -826,14 +829,14 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
     let agent = AgentOverride::parse("---\nversion: 1\n---\n", &approvals)?;
     let binding =
         resolve(&model, &role, &project, &agent)?.bind_model(&super::model()?, capacity)?;
-    let provider = Arc::new(Bound(binding));
+    let provider = Arc::new(Bound(binding, super::text()));
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let volume = volume(directory.path()).await?;
     let config = || {
         volume_config(directory.path(), volume.clone(), provider.clone())
             .map(|config| config.compaction(crate::context::CompactionPolicy::Disabled))
     };
-    let mut harness = LocalHarness::open(config()?).await?;
+    let mut harness = Arc::new(LocalHarness::open(config()?).await?);
     for (sampling, expected) in [
         ("{maxOutputTokens: 256}", AdmissionStatus::Applied),
         ("{temperature: 0.25}", AdmissionStatus::Applied),
@@ -846,7 +849,7 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
         )
         .await?;
         drop(harness);
-        harness = match LocalHarness::open(config()?).await {
+        harness = Arc::new(match LocalHarness::open(config()?).await {
             Ok(harness) if expected == AdmissionStatus::Applied => harness,
             Ok(_) => panic!("conflicting sampling cannot open a profile-bound session"),
             Err(error) if expected == AdmissionStatus::Rejected => {
@@ -854,7 +857,7 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
                 return Ok(());
             }
             Err(error) => return Err(error),
-        };
+        });
         let record = admission(&harness, "agent.ts", &version).await?;
         assert_eq!(record.status, expected);
         if sampling == "{maxOutputTokens: 256}" {
@@ -867,6 +870,14 @@ async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts()
                 )?,
                 binding.sampling(),
             );
+            let mut observed = super::ObservedConversation::open(&harness).await?;
+            observed.send("profile-output", "reply").await?;
+            let requests = provider.1.requests();
+            let request = requests
+                .last()
+                .expect("the accepted settings reach the model");
+            assert_eq!(request.sampling, binding.sampling());
+            assert_eq!(request.max_output_tokens, Some(256));
         }
         if expected == AdmissionStatus::Rejected {
             assert_eq!(harness.sampling, None);
