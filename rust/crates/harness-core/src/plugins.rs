@@ -277,7 +277,7 @@ async fn load_enabled(
                     matcher: manifest.matcher.get(&event).cloned(),
                 },
                 // A hook holds only its own request; it has no deadline.
-                timeout_ms: u64::MAX,
+                timeout_ms: None,
                 failure: HookFailure::Block,
             };
             loaded

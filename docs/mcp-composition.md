@@ -26,13 +26,16 @@ projection. D owns generic variant and projection changes.
 `HttpMcpTransport` binds the `rmcp` JSON-RPC contracts and `sse-stream` parser
 to Harness operation identity, session headers and finite byte allowances.
 `McpHttpProvider` supplies platform I/O. Its contract
-requires a finite whole-exchange deadline, cancellation on stream drop, no
+preserves an optional whole-exchange deadline, cancellation on stream drop, no
 automatic POST retry and no cross-authority redirect. The optional `mcp-http`
 feature supplies `NativeMcpHttpProvider` using the workspace's existing reqwest
 dependency. Native construction disables redirects/retries and performs no I/O.
 The generated WASM bridge uses the same trait and Rust decoder. The TypeScript
 browser provider supplies Fetch, byte reads and cancellation only; it shares the
-ordinary task AbortSignal and enforces the finite whole-exchange deadline.
+ordinary task AbortSignal and enforces an explicitly selected whole-exchange deadline.
+Absent startup and tool deadlines remain unbounded through connection, off-thread
+registration and live catalog refresh. Host timers split long durations at their
+representation boundary while retaining one absolute monotonic deadline.
 `WasmMcpHttpTransport` also exposes the same explicit initialization/discovery
 primitives. `initializationRequest` stages without I/O. `acceptInitialization`
 validates retained bytes and returns `WasmMcpHttpInitialization`, containing the

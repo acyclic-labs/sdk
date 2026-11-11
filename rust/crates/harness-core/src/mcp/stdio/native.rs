@@ -29,7 +29,7 @@ pub use acyclic_mcp::{
 /// One initialized, bounded MCP connection and its owned native process tree.
 pub struct StdioMcpTransport {
     service: RunningService<RoleClient, ClientConfig>,
-    timeout: Duration,
+    timeout: Option<Duration>,
     maximum_bytes: Arc<AtomicU32>,
     tools_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     _process: Option<ProcessOwner>,
@@ -37,10 +37,15 @@ pub struct StdioMcpTransport {
 
 impl StdioMcpTransport {
     /// Selects the independent tool-exchange bounds after catalog discovery.
-    pub fn with_tool_limits(mut self, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {
+    pub fn with_tool_limits(
+        mut self,
+        maximum_bytes: u32,
+        timeout_ms: impl Into<Option<u64>>,
+    ) -> Result<Self> {
+        let timeout_ms = timeout_ms.into();
         validate_bounds(maximum_bytes, timeout_ms)?;
         self.maximum_bytes.store(maximum_bytes, Ordering::Release);
-        self.timeout = Duration::from_millis(u64::from(timeout_ms));
+        self.timeout = timeout_ms.map(Duration::from_millis);
         Ok(self)
     }
 
@@ -81,8 +86,9 @@ impl StdioMcpTransport {
         mut command: ProcessCommand,
         grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
         maximum_bytes: u32,
-        timeout_ms: u32,
+        timeout_ms: impl Into<Option<u64>>,
     ) -> Result<Self> {
+        let timeout_ms = timeout_ms.into();
         validate_bounds(maximum_bytes, timeout_ms)?;
         if command.get_stderr().is_some_and(ProcessStdio::is_piped) {
             return Err(Error::Invalid(
@@ -90,9 +96,9 @@ impl StdioMcpTransport {
             ));
         }
         acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
-        let timeout = Duration::from_millis(u64::from(timeout_ms));
+        let timeout = timeout_ms.map(Duration::from_millis);
         let runtime = tokio::runtime::Handle::current();
-        tokio::time::timeout(timeout, async move {
+        super::super::deadline::until(super::super::deadline::after(timeout)?, async move {
             let mut process = run_blocking_io(
                 move || {
                     command
@@ -152,7 +158,7 @@ impl StdioMcpTransport {
         read: R,
         write: W,
         maximum_bytes: u32,
-        timeout: Duration,
+        timeout: Option<Duration>,
         process: Option<ProcessOwner>,
     ) -> Result<Self>
     where
@@ -224,29 +230,39 @@ impl StdioMcpTransport {
         method: &str,
         request: ClientRequest,
     ) -> Result<ServerResult> {
-        let deadline = tokio::time::Instant::now() + self.timeout;
+        let deadline = super::super::deadline::after(self.timeout)?;
         let mut cancellation = CancelOnDrop {
             service: Some(self.service.cancellation_token()),
             process: self._process.as_ref(),
         };
-        let mut handle = tokio::time::timeout_at(
+        let options = self.timeout.map_or_else(
+            PeerRequestOptions::no_options,
+            PeerRequestOptions::with_timeout,
+        );
+        let mut handle = super::super::deadline::until(
             deadline,
-            self.service
-                .send_request_with_option(request, PeerRequestOptions::with_timeout(self.timeout)),
+            self.service.send_request_with_option(request, options),
         )
         .await
         .map_err(|_| Error::Indeterminate(operation))?
         .map_err(|_| Error::Indeterminate(operation))?;
-        handle.options.timeout =
-            Some(deadline.saturating_duration_since(tokio::time::Instant::now()));
+        handle.options.timeout = deadline
+            .map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()));
         // rmcp sends notifications/cancelled and retires its pending responder.
         // If notification delivery stalls, close the connection within a bounded grace period.
-        let result = tokio::time::timeout_at(
-            deadline + self.timeout.min(Duration::from_millis(100)),
-            handle.await_response(),
-        )
-        .await
-        .map_err(|_| Error::Indeterminate(operation))?;
+        let cleanup_deadline = deadline
+            .zip(self.timeout)
+            .map(|(deadline, timeout)| {
+                deadline
+                    .checked_add(timeout.min(Duration::from_millis(100)))
+                    .ok_or_else(|| {
+                        Error::Invalid("MCP cleanup deadline exceeds the platform clock".into())
+                    })
+            })
+            .transpose()?;
+        let result = super::super::deadline::until(cleanup_deadline, handle.await_response())
+            .await
+            .map_err(|_| Error::Indeterminate(operation))?;
         if result.is_ok()
             || matches!(
                 &result,
@@ -369,9 +385,9 @@ fn drop_on_worker<T: Send + 'static>(runtime: &tokio::runtime::Handle, value: T)
 
 mod requests;
 
-fn validate_bounds(maximum_bytes: u32, timeout_ms: u32) -> Result<()> {
+fn validate_bounds(maximum_bytes: u32, timeout_ms: Option<u64>) -> Result<()> {
     if maximum_bytes == 0
-        || timeout_ms == 0
+        || timeout_ms == Some(0)
         || usize::try_from(maximum_bytes)
             .ok()
             .and_then(|bytes| bytes.checked_add(1))

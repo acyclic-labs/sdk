@@ -248,7 +248,7 @@ mod tests {
                     command: None,
                 }),
             },
-            timeout_ms: 5_000,
+            timeout_ms: Some(5_000),
             failure: HookFailure::Block,
         };
         let mut registry = crate::tools::defaults()?;
@@ -358,7 +358,7 @@ mod tests {
                     config: "{}".into(),
                     matcher: None,
                 },
-                timeout_ms: 5_000,
+                timeout_ms: Some(5_000),
                 failure: HookFailure::Block,
             }
         };

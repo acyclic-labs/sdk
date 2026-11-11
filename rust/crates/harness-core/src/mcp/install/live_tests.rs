@@ -505,7 +505,7 @@ async fn live_refresh_deadline_retains_optional_catalog_and_releases_the_refresh
             json!({"command":"fake","required":required}),
             super::super::config::Dialect::Codex,
         )?;
-        config.startup_timeout_ms = 1;
+        config.startup_timeout_ms = Some(1);
         let (tools, _) = live::LiveCatalog::new(
             "deadline".into(),
             config,

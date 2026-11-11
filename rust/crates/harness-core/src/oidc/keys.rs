@@ -26,12 +26,12 @@ impl SigningAlgorithm {
 /// Shared refresh and token bounds, validated before use.
 #[derive(Clone, Copy)]
 pub struct Limits {
-    /// Maximum serialized key-set size, at most 1 MiB.
-    pub maximum_jwks_bytes: usize,
-    /// Maximum key count, at most 64.
-    pub maximum_keys: usize,
-    /// Maximum compact JWT size, at most 64 KiB.
-    pub maximum_token_bytes: usize,
+    /// Optional host-selected serialized key-set allowance.
+    pub maximum_jwks_bytes: Option<usize>,
+    /// Optional host-selected key-count allowance.
+    pub maximum_keys: Option<usize>,
+    /// Optional host-selected compact JWT allowance.
+    pub maximum_token_bytes: Option<usize>,
     /// Minimum interval between attempts, including failed ones.
     pub refresh_interval_seconds: u64,
     /// Last-good set lifetime; failures never extend it.
@@ -42,9 +42,9 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            maximum_jwks_bytes: 65_536,
-            maximum_keys: 16,
-            maximum_token_bytes: 16_384,
+            maximum_jwks_bytes: None,
+            maximum_keys: None,
+            maximum_token_bytes: None,
             refresh_interval_seconds: 30,
             maximum_age_seconds: 3600,
             clock_skew_seconds: 0,
@@ -103,12 +103,8 @@ impl Config {
                 ));
             }
         }
-        if audience.is_empty()
-            || audience.len() > 1024
-            || issuer.len() > 2048
-            || jwks_uri.len() > 2048
-        {
-            return Err(refused("invalid OIDC configuration size"));
+        if audience.is_empty() {
+            return Err(refused("OIDC audience is empty"));
         }
         Ok(Self {
             issuer,
@@ -118,11 +114,11 @@ impl Config {
             limits: Limits::default(),
         })
     }
-    /// Set bounded host policy before creating the verifier.
+    /// Select host allowances before creating the verifier; `None` is unbounded.
     pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
-        if !(1..=1_048_576).contains(&limits.maximum_jwks_bytes)
-            || !(1..=64).contains(&limits.maximum_keys)
-            || !(1..=65_536).contains(&limits.maximum_token_bytes)
+        if limits.maximum_jwks_bytes == Some(0)
+            || limits.maximum_keys == Some(0)
+            || limits.maximum_token_bytes == Some(0)
             || !(1..=3600).contains(&limits.refresh_interval_seconds)
             || limits.maximum_age_seconds < limits.refresh_interval_seconds
             || limits.maximum_age_seconds > 86_400
@@ -189,21 +185,29 @@ pub(super) async fn fetch(
     use futures::StreamExt as _;
     let mut body = source.fetch(&config.jwks_uri).await?;
     let mut bytes = Vec::new();
-    let mut chunks = 0usize;
     while let Some(chunk) = body.next().await {
         let chunk = chunk?;
-        chunks += 1;
-        if chunks > config.limits.maximum_jwks_bytes.saturating_add(1)
-            || chunk.len() > config.limits.maximum_jwks_bytes.saturating_sub(bytes.len())
+        if config
+            .limits
+            .maximum_jwks_bytes
+            .is_some_and(|maximum| chunk.len() > maximum.saturating_sub(bytes.len()))
         {
             return Err(refused(
-                "OIDC key response exceeds bounded size or chunk count",
+                "OIDC key response exceeds configured byte allowance",
             ));
         }
+        bytes
+            .try_reserve(chunk.len())
+            .map_err(|_| refused("OIDC key response allocation refused"))?;
         bytes.extend_from_slice(&chunk);
     }
     let set: Set = serde_json::from_slice(&bytes).map_err(|_| refused("invalid OIDC key set"))?;
-    if set.keys.is_empty() || set.keys.len() > config.limits.maximum_keys {
+    if set.keys.is_empty()
+        || config
+            .limits
+            .maximum_keys
+            .is_some_and(|maximum| set.keys.len() > maximum)
+    {
         return Err(refused("OIDC key count is outside policy"));
     }
     let mut keys = BTreeMap::new();
@@ -237,8 +241,8 @@ pub(super) async fn fetch(
         }
         let kid = raw
             .kid
-            .filter(|kid| !kid.is_empty() && kid.len() <= 256)
-            .ok_or_else(|| refused("OIDC verification key requires a bounded identifier"))?;
+            .filter(|kid| !kid.is_empty())
+            .ok_or_else(|| refused("OIDC verification key requires a nonempty identifier"))?;
         if keys.contains_key(&kid) || raw.key_ops.as_ref().is_some_and(|ops| ops.len() != 1) {
             return Err(refused("ambiguous or disallowed OIDC verification key"));
         }
