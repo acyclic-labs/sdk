@@ -848,3 +848,22 @@ yet remotely compiled or executed. The earlier c278 ten-negative run remains
 live, waiting for the shared native target lock; its restoration must finish
 before a newer source is checked out there. Production writes still enforce the
 original public limits; no atomic-apply or backend conformance result is claimed.
+
+At exact 4ac6bd0196c5f1938cd01c1d472f18d1207b4814, Linux scoped
+all-target Stream/collections checking passed in 25.78s. Both collections search
+controls passed in 0.01s. The four targeted Stream controls (unordered sorting,
+its cancellation, large-key/backing retention, and destination-directory
+reopen/order/rebinding/duplicates) passed in 0.03s. All three selected mutations
+failed with their intended assertions (0 passed, 3 failed, 0.03s), reversed, and
+git diff verified clean. Terminal marker:
+DIRECTORY_CONTROLS_PASS_THREE_MUTANTS_REJECTED_SOURCE_RESTORED.
+Evidence: Q:/scratch/stream-unbounded/directory-4ac6-linux.log. The command ran
+through the shared runner's newer installed generation; no infrastructure files
+were modified. No public-write atomicity or all-backend result is inferred.
+
+The superseded c278 native negative Cargo21412 was cancelled after the current
+source's Linux controls passed. Its log establishes it was still waiting on the
+target lock and had executed no negative tests. Its earlier 20 Stream and two
+collections positive results remain valid for that exact source. Cleanup and a
+new exact-source native run are tracked in the operational handoff; cancellation
+is not counted as a negative-control success.
