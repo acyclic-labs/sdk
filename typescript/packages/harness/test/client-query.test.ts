@@ -36,7 +36,7 @@ test("actor deliveries and live getters read the same already-folded record", as
       const phase = f.client.currentStatus()?.phase;
       return typeof phase === "object" && "waiting_approval" in phase;
     });
-    expect(f.client.agentStatus(root)).toEqual({ phase: { waiting_approval: { id: approval } }, cursor: 1n });
+    expect(f.client.agentStatus(root)).toEqual({ phase: { waiting_approval: { id: approval, binding: null } }, cursor: 1n, conversation: 0n });
   } finally { f.free(); }
 });
 
@@ -80,7 +80,7 @@ for (const inbox of [1n, 9007199254740993n, 18446744073709551615n]) {
     const f = await fixture(inbox);
     try {
       await f.read();
-      expect(message(record(f.client, root, 0)).inbox).toBe(inbox);
+      expect(record(f.client, root, 0).entry.inbox).toBe(inbox);
       expect(record(f.client, root, 0).entry.output.descriptor.byte_length).toBe(0n);
     } finally { f.free(); }
   });

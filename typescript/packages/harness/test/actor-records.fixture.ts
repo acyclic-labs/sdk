@@ -1,6 +1,6 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { AppendRequestSchema, AppendResponseSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
-import type { AgentClient, AgentEvent, WasmStream } from "../src/client.js";
+import { AppendRecordSchema, AppendRequestSchema, AppendResponseSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
+import { encodeAgentAppend, type AgentClient, type AgentEvent, type WasmStream } from "../src/client.js";
 
 const encode = new TextEncoder();
 let appendId = 0n;
@@ -17,15 +17,18 @@ const file = {
 // Adapter fixtures only: these are canonical settled records, not an AgentHost
 // submission, authorization, tool execution or durable outbox qualification.
 export function conversation(id: string, inbox: bigint): string {
-  return `{"input":{"message":{"from":{"user":{"principal":"fixture"}},"id":${JSON.stringify(id)},"body":${JSON.stringify(file)},"inbox":${inbox}}},"output":${JSON.stringify(file)}}`;
+  return `{"observed_through":${inbox + 1n},"inbox":${inbox},"input":{"message":{"from":{"user":{"principal":"fixture"}},"id":${JSON.stringify(id)},"body":${JSON.stringify(file)}}},"output":${JSON.stringify(file)}}`;
 }
 
-// Every agent record carries the shared format version header.
+// The production Rust writer supplies current record bytes and indexed status headers.
 export async function appendRecord(stream: WasmStream, path: string, value: string): Promise<bigint> {
+  const kind = path.endsWith("/conversation") ? "conversation" : path.startsWith("harness/status/") ? "status" : undefined;
+  if (kind === undefined) throw new Error("actor fixture requires a conversation or status stream");
+  const record = fromBinary(AppendRecordSchema, encodeAgentAppend(kind, encode.encode(value)));
   const response = fromBinary(AppendResponseSchema, await stream.dispatch("append",
     toBinary(AppendRequestSchema, create(AppendRequestSchema, {
       path, idempotencyKey: encode.encode(`actor-record-${appendId++}`),
-      records: [{ value: encode.encode(`{"record":${value},"version":3}`) }],
+      records: [record],
     }))));
   if (response.outcome.case !== "committed") throw new Error(`actor fixture append: ${response.outcome.case}`);
   return response.outcome.value.tail;
