@@ -6,15 +6,15 @@ impl FileTool {
         scope: &RuntimeScope,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Option<FileRef>, acyclic_fs::NativeCustody)> {
+        #[cfg(not(target_arch = "wasm32"))]
         let owned_io = work
             .map(crate::executor::PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = owned_io.as_ref();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let io: Option<&crate::executor::PreparationIo> = None;
         crate::executor::with_history_io(io, |history| {
             ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), history)
@@ -28,7 +28,7 @@ impl FileTool {
         {
             return Err(Error::tool_rejected("file path is read-only"));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             io.check_json_byte_bound(&invocation.arguments, scope.limits().file_bytes)?;
         } else {
@@ -38,7 +38,7 @@ impl FileTool {
                 &mut None,
             )?;
         }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         crate::executor::json::json_byte_length(
             &invocation.arguments,
             scope.limits().file_bytes,
@@ -90,11 +90,11 @@ impl FileTool {
         scope: &RuntimeScope,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
+    ) -> Result<(Option<FileRef>, acyclic_fs::NativeCustody)> {
         let error = |code, reason| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if work.is_some() {
                 return Error::ToolRejected { code, reason };
             }
@@ -258,9 +258,9 @@ impl FileTool {
         context: Option<&ToolContext>,
         path: &str,
         version: Option<&str>,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
+    ) -> Result<(Option<FileRef>, acyclic_fs::NativeCustody)> {
         self.public_path(path, io)?;
         if path.len() > scope.limits().path_bytes {
             return Err(super::executor::rejection(
@@ -275,8 +275,15 @@ impl FileTool {
             return Ok((None, None));
         }
         version.map_or(Ok((None, None)), |version| {
-            let (file, custody) =
-                super::version::decode_tool_version(context, path, version, work)?;
+            // Validate original token metadata and grants during preflight.
+            // The selected physical layer later establishes its volume match.
+            let (file, custody) = match path
+                .strip_prefix(crate::layers::EFFECTIVE_PATH)
+                .filter(|_| matches!(self, Self::Read))
+            {
+                Some(relative) => super::version::decode_version(relative, version, work)?,
+                None => super::version::decode_tool_version(context, path, version, work)?,
+            };
             match file {
                 super::version::SelectedVersion::Content(file) => Ok((Some(file), custody)),
                 // A selected generation grants no authority. The ordinary path

@@ -14,8 +14,9 @@ impl ToolPolicy for InnerApproval {
         invocation: &'a ToolInvocation,
         _: &'a RuntimeScope,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
-    {
+    ) -> Result<
+        crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
+    > {
         let decision = if invocation.name == "code" {
             ToolPolicyDecision::Allow
         } else {
@@ -348,7 +349,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
     );
     assert!(tool_notice_table(&before[0]).as_array().unwrap().is_empty());
     assert_eq!(binding_notice_table(&before[0])[0]["name"], "code");
-    #[cfg(feature = "filesystem")]
+    #[cfg(not(target_arch = "wasm32"))]
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
@@ -738,7 +739,6 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> Result<()> {
     use crate::conversation::VolumeOperation;
@@ -891,7 +891,6 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn console_values_are_readable_from_the_original_tool_output_directory() -> Result<()> {
     use crate::{conversation::VolumeOperation, runtime::Bindings};
@@ -1659,7 +1658,7 @@ async fn multiple_results_reach_continuation_with_per_part_render_bounds() -> Re
     Ok(())
 }
 
-#[cfg(all(feature = "test-support", feature = "filesystem"))]
+#[cfg(feature = "test-support")]
 #[tokio::test]
 async fn real_console_frames_preserve_render_and_original_allocation_admission() {
     crate::executor::check_code_mode(include_bytes!(concat!(

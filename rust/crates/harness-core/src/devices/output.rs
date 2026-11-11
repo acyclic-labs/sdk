@@ -118,7 +118,7 @@ fn preview(bytes: Vec<u8>) -> String {
         .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned())
 }
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{

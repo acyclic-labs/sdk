@@ -3,117 +3,117 @@
 acyclic_test_support::counting_allocator!();
 
 mod buffer;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod completion;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod completion_popup;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod config;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod display_text;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod feedback;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use feedback::Feedback;
 mod editor;
-#[cfg(all(feature = "tui", not(target_arch = "wasm32"), not(loom)))]
+#[cfg(all(not(target_arch = "wasm32"), not(loom)))]
 pub mod onboarding;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use display_text::{display_text, display_text_prefix};
-#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod editor_args;
-#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod editor_io;
 mod history;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod input_events;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use input_events::WHEEL_ROWS;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod input_keymap;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod key_decode;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod key_event;
 mod keymap;
 mod layout;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod markdown;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use markdown::CodeRow;
 mod settings;
 pub use settings::{DEFAULT_SETTINGS, NotificationPolicy, UiSettings};
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod prompt_box;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod prompt_input;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod query_controller;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod query_page;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use query_controller::QueryController;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use query_page::QueryPage;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod hyperlink;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod screen;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod scrollbar;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod styled_cells;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use hyperlink::{Hyperlinks, RowLink};
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod thinking;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod transcript;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use thinking::Thinking;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use transcript::{BlockKind, TranscriptRows};
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod widget;
 
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use completion::{
     Completion, CompletionKind, CompletionMenu, CompletionRequest, CompletionWork,
     completion_request, fuzzy_score,
 };
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use completion_popup::CompletionPopup;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use crossterm;
 pub use editor::{Editor, Motion};
-#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use editor_args::{editor_command, unix_editor_command, windows_editor_command};
-#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use editor_io::{ClipboardContent, edit_external, prepare_image, prepare_image_with_settings};
 pub use history::PromptHistory;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use input_keymap::InputKeymap;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use key_decode::{DecodedKey, decode_key, key_chord};
 pub use keymap::{ACTIONS, Action, AppAction, Binding, KEYMAP, keymap_help, named_action};
 pub use layout::{Cell, Layout, Row};
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use prompt_box::PromptBox;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use prompt_input::{InputEffect, PromptInput};
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use ratatui;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use widget::{PromptWidget, Viewport};
 
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 mod transcript_anchor;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use transcript_anchor::{RowPosition, TranscriptAnchor, TranscriptOrigin, TranscriptPart};
 
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use screen::{Screen, ScreenAreas};
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub use scrollbar::TranscriptScrollbar;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod term;

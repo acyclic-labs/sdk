@@ -180,7 +180,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    #[cfg(feature = "filesystem")]
     #[tokio::test]
     async fn usage_reads_the_original_projection_with_deep_tool_schemas() -> Result<()> {
         use crate::{

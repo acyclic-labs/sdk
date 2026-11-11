@@ -118,12 +118,12 @@ impl StockExecution<'_> {
         }
         let invalid = |reason| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason);
         let table = if has_tools {
-            #[cfg(feature = "filesystem")]
+            #[cfg(not(target_arch = "wasm32"))]
             let funded = self
                 .io
                 .map(|io| io.encode(&table_tools, u64::MAX, false))
                 .transpose()?;
-            #[cfg(not(feature = "filesystem"))]
+            #[cfg(target_arch = "wasm32")]
             let funded: Option<acyclic_stream::OwnedBytes> = None;
             Some(match funded {
                 Some(bytes) => bytes,
@@ -134,7 +134,7 @@ impl StockExecution<'_> {
         } else {
             None
         };
-        #[cfg(feature = "filesystem")]
+        #[cfg(not(target_arch = "wasm32"))]
         let _table_hold = self
             .io
             .zip(table.as_ref())
@@ -189,7 +189,7 @@ impl StockExecution<'_> {
                 .map(Vec::as_slice)
                 .unwrap_or_default()
         } else {
-            #[cfg(feature = "filesystem")]
+            #[cfg(not(target_arch = "wasm32"))]
             let funded = self
                 .io
                 .map(|io| {
@@ -200,17 +200,14 @@ impl StockExecution<'_> {
                     )
                 })
                 .transpose()?;
-            #[cfg(not(feature = "filesystem"))]
+            #[cfg(target_arch = "wasm32")]
             let funded: Option<(
                 Vec<crate::tool::ToolDefinition>,
                 crate::conversation::ContentHold<'_>,
             )> = None;
             decoded = match funded {
-                Some((table, hold)) => {
-                    #[cfg(feature = "filesystem")]
-                    hold.into_retained()?;
-                    #[cfg(not(feature = "filesystem"))]
-                    let _ = hold;
+                Some((table, _hold)) => {
+                    _hold.into_retained()?;
                     table
                 }
                 None => serde_json::from_str(&previous)
@@ -284,12 +281,12 @@ impl StockExecution<'_> {
                 offset + end == table.len() && removed_offset == removed.len(),
                 &removed[removed_start..removed_offset],
             );
-            #[cfg(feature = "filesystem")]
+            #[cfg(not(target_arch = "wasm32"))]
             let funded = self
                 .io
                 .map(|io| io.encode(&notice, u64::MAX, false))
                 .transpose()?;
-            #[cfg(not(feature = "filesystem"))]
+            #[cfg(target_arch = "wasm32")]
             let funded: Option<acyclic_stream::OwnedBytes> = None;
             let bytes = match funded {
                 Some(bytes) => bytes,
@@ -297,9 +294,9 @@ impl StockExecution<'_> {
                     .map(Into::into)
                     .map_err(|_| invalid("tool notice encoding failed"))?,
             };
-            #[cfg(feature = "filesystem")]
+            #[cfg(not(target_arch = "wasm32"))]
             let _bytes_hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
-            #[cfg(feature = "filesystem")]
+            #[cfg(not(target_arch = "wasm32"))]
             let decoded = self
                 .io
                 .map(|io| {
@@ -310,7 +307,7 @@ impl StockExecution<'_> {
                     )
                 })
                 .transpose()?;
-            #[cfg(not(feature = "filesystem"))]
+            #[cfg(target_arch = "wasm32")]
             let decoded: Option<(ModelContent, crate::conversation::ContentHold<'_>)> = None;
             let decoded = match decoded {
                 Some((message, hold)) => (message, Some(hold)),

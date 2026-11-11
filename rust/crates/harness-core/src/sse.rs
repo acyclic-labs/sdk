@@ -7,7 +7,7 @@ use futures::{Stream, StreamExt as _};
 /// One complete data event and the original funding for its buffer.
 pub struct Frame {
     data: String,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -31,7 +31,7 @@ pub struct Decoder {
     started: bool,
     json_document: bool,
     json: bool,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     custody: Option<acyclic_fs::NativeAllocation>,
 }
 
@@ -62,7 +62,7 @@ impl Decoder {
     fn frame(&mut self) -> Result<Frame> {
         let data = String::from_utf8(std::mem::take(&mut self.buffer))
             .map_err(|_| self.failure("SSE is not UTF-8"))?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let custody = self
             .custody
             .as_mut()
@@ -70,13 +70,13 @@ impl Decoder {
             .transpose()?;
         Ok(Frame {
             data,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             _custody: custody,
         })
     }
 
     fn failure(&self, reason: &'static str) -> Error {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if self.custody.is_some() {
             return Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -87,9 +87,9 @@ impl Decoder {
     }
     /// The body ended inside an event: the connection was cut off, not the stream malformed.
     fn truncated(&self) -> Error {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let native = self.custody.is_some();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let native = false;
         Error::ModelUnavailable {
             failure: ModelTransportFailure::Interrupted,
@@ -100,7 +100,7 @@ impl Decoder {
             },
         }
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     /// Retains the supplied original work and admits capacity before allocation.
     pub fn native(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         Ok(Self {
@@ -118,7 +118,7 @@ impl Decoder {
         let old = self.buffer.capacity();
         if target > old {
             let capacity = target.max(old.saturating_mul(2)).max(8);
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             let mut allocation = self
                 .custody
                 .as_ref()
@@ -137,14 +137,14 @@ impl Decoder {
             self.buffer
                 .try_reserve_exact(capacity - self.buffer.len())
                 .map_err(|_| self.failure("SSE buffer allocation failed"))?;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let (Some(owner), Some(allocation)) = (&mut self.custody, &mut allocation) {
                 allocation.reconcile_capacity(self.buffer.capacity() as u64)?;
                 owner.release(old as u64)?;
                 owner.absorb(allocation)?;
             }
         } else if copy && !bytes.is_empty() {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(owner) = &self.custody {
                 owner.work().charge(acyclic_fs::WorkCounters {
                     bytes_copied: bytes.len() as u64,
@@ -268,7 +268,7 @@ where
                     };
                     chunk = next?;
                 }
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(owner) = &decoder.custody {
                     owner.work().remaining()?;
                 }
@@ -348,7 +348,7 @@ pub fn decode<'a>(
     Box::pin(frames(body, maximum, Decoder::default()).map(|frame| frame.map(|frame| frame.data)))
 }
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use acyclic_fs::{CancellationToken, NativeMaterializationWork};

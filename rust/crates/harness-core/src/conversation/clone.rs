@@ -5,7 +5,7 @@ impl ConversationState {
         &self,
         work: &Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if (self.native_custody.messages.is_some()
             || self.native_custody.digests.is_some()
             || self.native_custody.archive.is_some()

@@ -251,7 +251,7 @@ pub(super) async fn generation_closure<S: crate::AsyncObjectStore>(
     Ok(proof)
 }
 
-#[cfg(feature = "s3-http")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn prove_blob_closure_async<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -281,6 +281,5 @@ pub(crate) async fn prove_blob_closure_async<S: crate::AsyncObjectStore>(
 }
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "../tests/closure/mod.rs"]
 mod tests;

@@ -3,7 +3,7 @@ use super::*;
 /// One decoded or provider-selected source, kept with its original funding.
 pub(super) struct ReadSource {
     pub source: Option<super::version::SelectedVersion>,
-    pub custody: crate::NativeCustody,
+    pub custody: crate::conversation::FileSelectionCustody,
 }
 
 impl ReadSource {
@@ -11,7 +11,7 @@ impl ReadSource {
         context: &ToolContext,
         path: &str,
         version: Option<&str>,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Self> {
         let (source, custody) = match version {
             // An effective alias names no volume until its layer is selected;
@@ -27,7 +27,10 @@ impl ReadSource {
             }
             None => (None, None),
         };
-        Ok(Self { source, custody })
+        Ok(Self {
+            source,
+            custody: selection_custody(custody),
+        })
     }
 }
 
@@ -75,11 +78,23 @@ impl FileReadSource {
         }
     }
 
-    #[cfg(feature = "filesystem")]
     pub(super) fn logical_owned_bytes(&self) -> Result<u64> {
         match self {
             Self::Content(file) => file.logical_owned_bytes(),
             Self::Authored(file) => file.logical_owned_bytes(),
         }
+    }
+}
+
+/// Keeps decoded native ownership in the same carrier as provider selections.
+pub(super) fn selection_custody(
+    custody: acyclic_fs::NativeCustody,
+) -> crate::conversation::FileSelectionCustody {
+    #[cfg(not(target_arch = "wasm32"))]
+    return custody.map(crate::filesystem::PreparationCustody::Native);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = custody;
+        None
     }
 }

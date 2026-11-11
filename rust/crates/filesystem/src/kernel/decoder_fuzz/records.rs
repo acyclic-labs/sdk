@@ -70,7 +70,7 @@ fn fact(input: &[u8], selector: u8) -> SourceFact {
     }
 }
 
-/// Exercise the production source decoder and, when enabled, stream records.
+/// Exercise the production source and distributed record decoders.
 pub fn check(input: &[u8]) {
     let value = fact(input, input.first().copied().unwrap_or(0));
     let bytes = record(
@@ -127,7 +127,6 @@ pub fn check(input: &[u8]) {
             "unknown source reason admitted"
         );
     }
-    #[cfg(feature = "distributed")]
     crate::distributed::record_codec_fuzz::check(input);
 }
 
@@ -146,7 +145,6 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
             )
         }));
     }
-    #[cfg(feature = "distributed")]
     seeds.extend(crate::distributed::record_codec_fuzz::seeds()?);
     Ok(seeds)
 }

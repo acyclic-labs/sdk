@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Capabilities, OperationId, conversation::Limits};
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod effective;
 
 #[test]
@@ -80,7 +80,7 @@ fn publication_template_rejects_missing_scope_and_invalid_path_before_dispatch()
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_write_recovery_observes_the_original_receipt_without_republishing() -> Result<()> {
     use crate::{conversation::VolumeOperation, runtime::Bindings};

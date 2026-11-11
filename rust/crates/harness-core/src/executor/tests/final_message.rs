@@ -1,11 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[test]
 fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
     let mut stock = uncompacted_executor(
@@ -170,11 +166,7 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[test]
 fn response_collection_retires_unpublished_calls_and_metadata() -> Result<()> {
     let mut stock = uncompacted_executor(
@@ -348,11 +340,7 @@ fn response_collection_retires_unpublished_calls_and_metadata() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[test]
 fn assistant_part_admission_keeps_existing_history_and_retires_rejected_payload() -> Result<()> {
     let mut stock = uncompacted_executor(

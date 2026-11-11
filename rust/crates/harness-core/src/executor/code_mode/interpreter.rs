@@ -218,7 +218,6 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "filesystem")]
     #[tokio::test]
     async fn acyclic_files_use_the_real_conditional_publisher_and_pinned_reader()
     -> crate::Result<()> {

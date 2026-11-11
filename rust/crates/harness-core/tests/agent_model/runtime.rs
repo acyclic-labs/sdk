@@ -52,7 +52,7 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
-async fn same_phase_settlement_advances_the_actor_without_appending_status() -> Result {
+async fn same_phase_settlement_after_creation_advances_without_appending_status() -> Result {
     use acyclic_stream::StreamProvider as _;
     use futures::TryStreamExt as _;
     let provider = Arc::new(MemoryStream::default());
@@ -75,6 +75,7 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
     )?;
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     assert!(host.runtime().drain().await.is_empty());
+    let mut first_statuses = None;
     for n in 0..3 {
         let record = InboxRecord::ApprovalRequested(ApprovalRequested {
             child: root.child(&id(2))?,
@@ -102,7 +103,11 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
             }
         );
         let statuses = values(provider.as_ref(), root.status()?).await?;
-        assert_eq!(statuses.len(), 1);
+        if let Some(first) = &first_statuses {
+            assert_eq!(&statuses, first);
+        } else {
+            first_statuses = Some(statuses.clone());
+        }
         let stale = StatusRecord::decode(&statuses[0])?;
         assert!(
             stale.cursor <= inbox,
@@ -1126,7 +1131,7 @@ async fn pending_request_host<P: acyclic_harness_core::store::JournalProvider + 
 
 #[tokio::test]
 async fn reply_waits_require_original_committed_requests() -> Result {
-    #[cfg(feature = "filesystem-local")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let directory = Arc::new(tempfile::tempdir()?);
         let provider = acyclic_stream::LocalStream::open_with_ownership_anchor(

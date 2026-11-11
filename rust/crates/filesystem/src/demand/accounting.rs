@@ -61,7 +61,7 @@ impl DemandWork {
     pub(crate) const fn original_budget(&self) -> WorkBudget {
         self.initial_budget
     }
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
@@ -356,7 +356,7 @@ impl DemandWork {
         }
         delta
     }
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn merge(&mut self, delta: WorkCounters, live: u64) -> Result<(), DemandError> {
         let delta = self.item_charge(delta);
         self.work = self.work.with_backend(delta, live)?;

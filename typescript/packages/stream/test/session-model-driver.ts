@@ -1,7 +1,7 @@
 import { create, equals, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { acknowledge, serve, spend } from "./model-driver.js";
-import { SessionNode, checkpoint } from "./session-node.js";
+import { SessionNode, checkpoint, sessionInterest } from "./session-node.js";
 import { StreamError } from "../src/types.js";
 
 // Test-only fault injection changes the actual module loaded by Bun. Each
@@ -28,8 +28,7 @@ const sessions = new StreamSessions(async (node, signal) => {
   const transport = await peer.connect(node, signal);
   return { ...transport, async send(bytes, writeSignal) {
     const frame = fromBinary(wire.SessionFrameSchema, bytes);
-    const interest = frame.body.case === "hello" ? frame.body.value.interest
-      : frame.body.case === "interest" ? frame.body.value : undefined;
+    const interest = sessionInterest(frame);
     if (rejectWrite && interest?.upsert.some(item => item.kind.case === "follow" && item.kind.value.resource === "streams:/events")) {
       if (failedSends++ === 0) throw Object.assign(new StreamError("unavailable", "Streams session is closed"), { transient: true });
       observedRejection = true;

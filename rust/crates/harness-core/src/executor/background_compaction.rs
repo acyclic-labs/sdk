@@ -141,13 +141,7 @@ impl StockExecution<'_> {
         let (source, bytes) = with_history_io(self.io, |work| {
             crate::context::clone_context(context, Some(through), work)
         })?;
-        #[cfg(feature = "filesystem")]
         let hold = self.io.map(|io| io.guard_owned(bytes)).transpose()?;
-        #[cfg(not(feature = "filesystem"))]
-        let hold = {
-            let _ = bytes;
-            None
-        };
         state.cut = Some(Cut {
             step,
             messages: through,
@@ -195,12 +189,9 @@ impl StockExecution<'_> {
             if let Some(result) = state.ready.take() {
                 state.cut = None;
                 let receipt = result?;
-                #[cfg(feature = "filesystem")]
                 if let Some(hold) = receipt.hold {
                     hold.into_retained()?;
                 }
-                #[cfg(not(feature = "filesystem"))]
-                let _ = receipt.hold;
                 return Ok(Some(receipt.summary));
             }
             drop(state);
@@ -242,13 +233,10 @@ impl StockExecution<'_> {
                     )
                     .await?;
                 stock_retire_text(text, self.io)?;
-                #[cfg(feature = "filesystem")]
                 let hold = self
                     .io
                     .map(|io| io.guard_owned(summary.output.logical_owned_bytes()?))
                     .transpose()?;
-                #[cfg(not(feature = "filesystem"))]
-                let hold = None;
                 Ok(Receipt { summary, hold })
             };
             let result = {

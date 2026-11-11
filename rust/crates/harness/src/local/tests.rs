@@ -1,5 +1,5 @@
 //! Local defaults and the root agent host through the public API.
-#![cfg(feature = "filesystem-local")]
+#![cfg(not(target_arch = "wasm32"))]
 
 use crate as acyclic_harness;
 use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
@@ -26,7 +26,9 @@ mod replay;
 pub(super) mod settings;
 mod transcripts;
 
-fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
+pub(super) fn scripted(
+    turns: impl IntoIterator<Item = ScriptedTurn>,
+) -> Arc<ScriptedModelProvider> {
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(capacity()))
 }
 pub(super) fn text() -> Arc<ScriptedModelProvider> {

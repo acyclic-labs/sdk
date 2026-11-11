@@ -5,16 +5,16 @@ pub(super) struct Window {
     pub source: FileReadSource,
     pub bytes: acyclic_stream::OwnedBytes,
     // The source must be dropped before the credit that owns it.
-    _hold: crate::NativeCustody,
+    _hold: crate::conversation::FileSelectionCustody,
 }
 
 pub(super) fn custody(
     io: Option<&crate::executor::PreparationIo>,
     retained: u64,
-) -> Result<crate::NativeCustody> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+) -> Result<acyclic_fs::NativeCustody> {
+    #[cfg(not(target_arch = "wasm32"))]
     return io.map(|io| io.take_native_custody(retained)).transpose();
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     {
         let _ = (io, retained);
         Ok(None)
@@ -22,12 +22,20 @@ pub(super) fn custody(
 }
 
 impl Window {
+    /// Transfers the original selection owner while retiring its range bytes.
+    pub fn into_source(self) -> super::source::ReadSource {
+        super::source::ReadSource {
+            source: Some(self.source.into()),
+            custody: self._hold,
+        }
+    }
+
     pub async fn first(
         context: &ToolContext,
         input: &ReadFileInput,
         original: super::source::ReadSource,
         range: acyclic_fs::ByteRange,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         let original = match original.source {
@@ -50,7 +58,7 @@ impl Window {
             super::version::SelectedVersion::Content(_) => None,
         });
         let hold;
-        let (source, bytes, retained) = context
+        let (source, bytes, custody) = context
             .read_tool_path_range(
                 &input.path,
                 expected.map(|file| &file.generation),
@@ -58,7 +66,7 @@ impl Window {
                 io,
             )
             .await?;
-        hold = custody(io, retained)?;
+        hold = custody;
         if expected.is_some_and(|expected| !expected.matches_source(&source)) {
             return Err(executor::rejection(
                 work,
@@ -77,7 +85,7 @@ impl Window {
         context: &ToolContext,
         path: &str,
         range: acyclic_fs::ByteRange,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         match &self.source {
@@ -88,10 +96,10 @@ impl Window {
             }
             FileReadSource::Authored(original) => {
                 let _hold;
-                let (selected, bytes, retained) = context
+                let (selected, bytes, custody) = context
                     .read_tool_path_range(path, Some(&original.generation), range, io)
                     .await?;
-                _hold = custody(io, retained)?;
+                _hold = custody;
                 if selected != *original {
                     return Err(executor::rejection(
                         work,
@@ -107,7 +115,7 @@ impl Window {
 fn content_range(
     file: &FileRef,
     range: acyclic_fs::ByteRange,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<acyclic_fs::ByteRange> {
     let remaining = file
         .descriptor()

@@ -3,12 +3,12 @@ use super::*;
 use crate::{BoxProviderFuture, BoxProviderStream, RecordStream};
 use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(test)]
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::grpc::ChannelConnector as Connect;
-#[cfg(all(any(test, loom), feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
 use tonic::transport::Channel as TransportChannel;
 pub mod transport;
 use transport::Endpoint;
@@ -16,6 +16,7 @@ use transport::Endpoint;
 mod admissions;
 mod application;
 mod call;
+mod credentials;
 mod input;
 pub use input::CallInputSender;
 mod data;
@@ -23,11 +24,11 @@ mod socket;
 use admissions::Admissions;
 pub use application::{ApplicationDelivery, ApplicationSubscription};
 pub use socket::{ActorSocket, ActorSocketSender};
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod cache;
 mod credit;
 mod observation;
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use cache::Cache;
 use observation::Observation;
 mod outbound;
@@ -39,15 +40,15 @@ mod pool;
 mod routes;
 #[cfg(loom)]
 pub use admissions::{verify_admission_binding, verify_admission_cancellation};
-#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 pub use cache::verify_cache;
-#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 pub use pool::model::{
     verify_abandoned_reconnect, verify_cancel_before_open, verify_cancelled_queued_open,
     verify_follow_data, verify_interest_accounting, verify_link_isolation, verify_node_dials,
     verify_pool_lifetime, verify_registration_cancellation, verify_terminal_cursor_dial,
 };
-#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 pub use pool::retry_model::verify_initial_retry_yield;
 use routes::Routes;
 mod progress;
@@ -56,7 +57,7 @@ use progress::Progress;
 pub use progress::verify_latest_progress;
 // The client tests drive the native gRPC transport.
 #[cfg(test)]
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 type Ready = (String, Link, Response);
 struct Dial {
@@ -79,6 +80,7 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 /// Shared pool owning one bidirectional Streams session per authenticated node.
 #[derive(Clone)]
 pub struct Client {
+    credential_owner: Option<Arc<credentials::Owner>>,
     pool: PoolHandle,
     /// Requirements owned by this operation, independently of the transport.
     revisions: Arc<crate::RevisionTracker>,
@@ -107,6 +109,7 @@ impl PoolHandle {
     }
     pub(crate) fn with_revisions(self, revisions: Arc<crate::RevisionTracker>) -> Client {
         Client {
+            credential_owner: None,
             pool: self,
             revisions,
         }
@@ -204,6 +207,14 @@ impl futures::Stream for SubscriptionSource {
     }
 }
 enum Command {
+    AcquireCredential {
+        credential: Bytes,
+        withdrawal: mpsc::OwnedPermit<Command>,
+        ready: oneshot::Sender<Result<(u32, Arc<credentials::Owner>), StreamError>>,
+    },
+    ReleaseCredential {
+        slot: u32,
+    },
     Credential {
         slot: u32,
         credential: Bytes,
@@ -279,6 +290,7 @@ struct Link {
     input: Arc<input::Window>,
 }
 struct Pool {
+    credential_slots: credentials::Slots,
     credentials: BTreeMap<u32, Bytes>,
     credential_bytes: usize,
     connections: super::Connections,
@@ -351,7 +363,7 @@ impl Client {
         self
     }
 
-    #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_pool(self) -> PoolHandle {
         self.pool
     }
@@ -384,6 +396,7 @@ impl Client {
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
         let mut pool = Pool {
+            credential_slots: credentials::Slots::new(),
             credentials: BTreeMap::new(),
             credential_bytes: 0,
             connections: connections.clone(),

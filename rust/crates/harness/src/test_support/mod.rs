@@ -2,17 +2,13 @@
 
 pub use acyclic_harness_core::test_support::*;
 
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::local::host_process::children::answer::validation as native_answer;
 
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
 /// Runs the production local state-directory separation and preparation boundary.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn separated_local_state_directory(
     path: &std::path::Path,
     checkout: Option<&std::path::Path>,
@@ -23,11 +19,7 @@ pub fn separated_local_state_directory(
 /// Checks arbitrary sequential schedules against the native child ready queue.
 /// This exercises the production registrations, queue and waiter callbacks;
 /// physical event-hub concurrency remains a separate contract.
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn check_native_readiness(input: &[u8]) {
     crate::local::host_process::children::readiness_validation::verify(input, 16);
 }
@@ -35,16 +27,42 @@ pub fn check_native_readiness(input: &[u8]) {
 /// Checks the native mount-reference parser used before committing a spawn.
 /// Arbitrary bytes cover refusal; generated portable components also require
 /// admission, so rejecting every input cannot satisfy the safety oracle.
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn check_native_child_reference(input: &[u8]) {
+    use crate::agent::{AgentId, AgentPath};
+    use crate::local::host_owner::child;
     use crate::local::host_workspace::child_reference;
     use std::path::{Component, Path};
 
+    crate::agent::codec_fuzz::check(input);
+
+    let mut identity = [0; 16];
+    for (destination, source) in identity.iter_mut().zip(input) {
+        *destination = *source;
+    }
+    let parent = AgentPath::root(&AgentId::from_bytes(identity));
     if let Ok(reference) = std::str::from_utf8(input) {
+        for operation in ["diff", "merge", "discard"] {
+            let mut arguments = [operation.into(), reference.into()];
+            match crate::tools::resolve_child_branch(&parent, &mut arguments, child) {
+                Ok(Some(admitted)) => {
+                    assert!(admitted.is_child_of(&parent));
+                    assert_eq!(arguments[1], admitted.as_str());
+                }
+                Ok(None) | Err(crate::Error::Invalid(_)) => {}
+                Err(error) => panic!("child branch lost its invalid-input type: {error}"),
+            }
+        }
+        if reference.contains('/') {
+            match child(&parent, reference) {
+                Ok(admitted) => {
+                    assert_eq!(admitted.as_str(), reference);
+                    assert!(admitted.is_child_of(&parent));
+                }
+                Err(crate::Error::Invalid(_)) => {}
+                Err(error) => panic!("child path lost its invalid-input type: {error}"),
+            }
+        }
         match child_reference(reference) {
             Ok(()) => {
                 let mut components = Path::new(reference).components();
@@ -85,10 +103,48 @@ pub fn check_native_child_reference(input: &[u8]) {
         child_reference(&portable).is_ok(),
         "generated portable child component was refused"
     );
+    let admitted = child(&parent, &portable).expect("portable child must resolve");
+    assert!(admitted.is_child_of(&parent));
+    assert_eq!(
+        child(&parent, admitted.as_str()).expect("canonical child alias must resolve"),
+        admitted,
+        "local and canonical references must name the same child"
+    );
+    let grandchild = child(&admitted, &portable).expect("nested child must resolve");
+    for operation in ["diff", "merge", "discard"] {
+        for reference in [format!("agents/{portable}"), admitted.to_string()] {
+            let mut arguments = [operation.into(), reference];
+            assert_eq!(
+                crate::tools::resolve_child_branch(&parent, &mut arguments, child)
+                    .expect("child branch alias must resolve"),
+                Some(admitted.clone()),
+            );
+            assert_eq!(arguments[1], admitted.as_str());
+        }
+        for unrelated in [&parent, &grandchild] {
+            let mut arguments = [operation.into(), unrelated.to_string()];
+            assert!(
+                matches!(
+                    crate::tools::resolve_child_branch(&parent, &mut arguments, child),
+                    Err(crate::Error::Invalid(_))
+                ),
+                "a canonical branch bypassed direct-child ownership"
+            );
+        }
+    }
+    for unrelated in [&parent, &grandchild] {
+        assert!(
+            matches!(
+                child(&parent, unrelated.as_str()),
+                Err(crate::Error::Invalid(_))
+            ),
+            "a canonical non-child must be rejected before any storage access"
+        );
+    }
 }
 
 /// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn local_harness_config(
     workspace: impl Into<std::path::PathBuf>,
     model: (
@@ -97,14 +153,14 @@ pub fn local_harness_config(
     ),
 ) -> crate::Result<crate::LocalHarnessConfig> {
     let workspace = workspace.into();
-    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
     // Store opening supplies temporary state only when no explicit root was selected.
     let policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
     let config = crate::LocalHarnessConfig::new(workspace, model)
         .hermetic()
         .approval_policy(policy);
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     let config = {
         let mut config = config;
         config.environment_platform = crate::native_environment::PlatformPolicy::Fixture {
@@ -116,13 +172,13 @@ pub fn local_harness_config(
         };
         config
     };
-    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     let config = config.settings(settings);
     Ok(config)
 }
 
 /// How one root-agent prompt settled.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub enum PromptOutcome {
     /// The turn settled; its conversation entry and decoded output.
@@ -135,7 +191,7 @@ pub enum PromptOutcome {
 /// Prompts `harness`'s root agent as message `id`, then follows its conversation
 /// and phase until that message's turn settles or fails. The one prompt path of
 /// every local scenario, DST replay and provider test.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn prompt_settled(
     harness: &std::sync::Arc<crate::LocalHarness>,
     id: &str,

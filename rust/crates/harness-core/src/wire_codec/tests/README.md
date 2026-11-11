@@ -6,14 +6,14 @@ preparation observers, physical allocation accounting, constructor refusal,
 exact byte admission, cancellation and retirement after cancellation.
 
 ```sh
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib wire_codec::admission_tests::borrowed_index_nodes_keep_original_credit_on_refusal_and_cancelled_retirement -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --lib wire_codec::admission_tests::borrowed_index_nodes_keep_original_credit_on_refusal_and_cancelled_retirement -- --exact
 ```
 
 The retained mutation bypasses byte retention in the actual adapter:
 
 ```sh
 git apply rust/crates/harness-core/src/wire_codec/tests/borrowed_index_unfunded.patch
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib wire_codec::admission_tests::borrowed_index_nodes_keep_original_credit_on_refusal_and_cancelled_retirement -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --lib wire_codec::admission_tests::borrowed_index_nodes_keep_original_credit_on_refusal_and_cancelled_retirement -- --exact
 git apply -R rust/crates/harness-core/src/wire_codec/tests/borrowed_index_unfunded.patch
 ```
 
@@ -31,9 +31,9 @@ covers refused construction, reads with a different observer, cancellation and
 retirement after the original observer has been dropped:
 
 ```sh
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib filesystem::bounded_io::custody_tests::original_index_custody_survives_issuer_drop_and_refused_mutation -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --lib filesystem::bounded_io::custody_tests::original_index_custody_survives_issuer_drop_and_refused_mutation -- --exact
 git apply rust/crates/harness-core/src/wire_codec/tests/owned_index_unfunded.patch
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib filesystem::bounded_io::custody_tests::original_index_custody_survives_issuer_drop_and_refused_mutation -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --lib filesystem::bounded_io::custody_tests::original_index_custody_survives_issuer_drop_and_refused_mutation -- --exact
 git apply -R rust/crates/harness-core/src/wire_codec/tests/owned_index_unfunded.patch
 ```
 

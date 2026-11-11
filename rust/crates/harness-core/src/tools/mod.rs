@@ -6,6 +6,7 @@ pub use agents::check_agent_wait_selection;
 pub use agents::{
     AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
     SpawnAgentInput, WaitAgentInput, bind_agent_tools, definitions as agent_tool_definitions,
+    resolve_child_branch, spawned_child,
 };
 pub mod shell;
 pub mod variants;
@@ -25,10 +26,8 @@ pub(crate) mod fs_command;
 pub mod native;
 mod workspace_executor;
 pub use command::parse_command;
-#[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub use fs_command::{FsCommand, parse_fs_command};
-#[cfg(feature = "filesystem")]
 pub mod git;
 
 /// The one conversion of a rejected fs/shell operand into a model-visible

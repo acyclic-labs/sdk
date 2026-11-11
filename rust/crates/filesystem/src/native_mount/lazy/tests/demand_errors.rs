@@ -40,7 +40,7 @@ fn demand_causes_keep_their_type_without_a_diagnostic_allocation() {
     }
 }
 
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn observation_causes_keep_their_original_box_without_allocating() {
     for lazy in [false, true] {
@@ -67,7 +67,7 @@ fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
     for transport in 0..3 {
         for (cause, expected, terminal) in [
             (DemandError::Cancelled, CallbackFailure::Cancelled, true),
-            #[cfg(feature = "native-watch")]
+            #[cfg(not(target_arch = "wasm32"))]
             (
                 DemandError::Observation(Box::new(crate::watch::NativeWatchError::Cancelled(
                     crate::CancellationError,
@@ -95,7 +95,7 @@ fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
                 CallbackFailure::OutOfMemory,
                 true,
             ),
-            #[cfg(feature = "native-watch")]
+            #[cfg(not(target_arch = "wasm32"))]
             (
                 DemandError::Observation(Box::new(
                     crate::watch::NativeWatchError::BoundedObservationUnavailable,
@@ -177,13 +177,13 @@ fn real_demand_io_keeps_its_host_code_through_both_conversions()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let absent = root.path().join("not-created");
-    let transports = if cfg!(feature = "native-watch") { 6 } else { 3 };
+    let transports = 6;
     for transport in 0..transports {
         // Capture the actual host failure; no fabricated OS-tool fixture.
         let error = std::fs::File::open(&absent).expect_err("fixture path is absent");
         let code = error.raw_os_error().ok_or("host open has no native code")?;
         let cause = match transport / 3 {
-            #[cfg(feature = "native-watch")]
+            #[cfg(not(target_arch = "wasm32"))]
             1 => DemandError::Observation(Box::new(crate::watch::NativeWatchError::Io(error))),
             _ => DemandError::Io(error),
         };
@@ -199,7 +199,7 @@ fn real_demand_io_keeps_its_host_code_through_both_conversions()
         let retained = match &callback {
             NativeMountError::Source(MountSourceError::Io(error, None))
             | NativeMountError::Demand(DemandError::Io(error)) => error,
-            #[cfg(feature = "native-watch")]
+            #[cfg(not(target_arch = "wasm32"))]
             NativeMountError::Demand(DemandError::Observation(error)) => match error.as_ref() {
                 crate::watch::NativeWatchError::Io(error) => error,
                 _ => panic!("original OS cause was replaced: {callback:?}"),
@@ -245,7 +245,7 @@ fn demand_round_trips_do_not_nest_transports_or_allocate() {
     }
 }
 
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn observation_round_trip_returns_the_original_box() {
     let original = Box::new(crate::watch::NativeWatchError::BoundedObservationUnavailable);

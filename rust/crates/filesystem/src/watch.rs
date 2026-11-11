@@ -4653,13 +4653,13 @@ pub enum NativeWatchError {
     #[error("source does not support original native work custody")]
     NativeWorkUnavailable,
     /// Original mounted source cause, moved without formatting or boxing.
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Mount(crate::native_mount::MountSourceError),
     /// Native metadata could not be represented.
     #[cfg(all(
         any(target_os = "linux", target_os = "macos", windows),
-        any(feature = "native-mount", test)
+        any(not(target_arch = "wasm32"), test)
     ))]
     #[error(transparent)]
     Metadata(crate::native_host::NativeMetadataError),
@@ -4733,11 +4733,11 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
         crate::demand::DemandError::NativeWorkUnavailable => {
             NativeWatchError::NativeWorkUnavailable
         }
-        #[cfg(feature = "native-mount")]
+        #[cfg(not(target_arch = "wasm32"))]
         crate::demand::DemandError::Mount(error) => NativeWatchError::Mount(*error),
         #[cfg(all(
             any(target_os = "linux", target_os = "macos", windows),
-            any(feature = "native-mount", test)
+            any(not(target_arch = "wasm32"), test)
         ))]
         crate::demand::DemandError::NativeMetadata(error) => NativeWatchError::Metadata(error),
     }

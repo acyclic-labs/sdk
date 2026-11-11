@@ -183,7 +183,7 @@ impl HostRoot {
             read_link_held(parent, leaf, maximum, work)
         })
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn read_source_link<W: SourceDemandReadWork>(
         &self,
         path: &NativePath,

@@ -26,7 +26,7 @@ impl NativeMaterializationWork {
         self.state
             .register_native_checkout_control(self, producer, header)
     }
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn transfer_capture_allocation(
         &self,
         bytes: u64,

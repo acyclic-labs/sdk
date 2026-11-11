@@ -12,7 +12,7 @@ fn file_opens_check_kind_and_reparse_during_the_open_for_every_disposition()
         (NativeOpenOptions::Read, false, false),
         (NativeOpenOptions::ReadWrite, false, false),
         (NativeOpenOptions::CreateNew, true, true),
-        #[cfg(feature = "local")]
+        #[cfg(not(target_arch = "wasm32"))]
         (NativeOpenOptions::ReadWriteCreateNew, true, true),
         (NativeOpenOptions::ReadWriteCreate, true, false),
     ];
@@ -168,7 +168,7 @@ fn file_opens_reject_final_links_without_changing_the_target()
         NativeOpenOptions::Read,
         NativeOpenOptions::ReadWrite,
         NativeOpenOptions::CreateNew,
-        #[cfg(feature = "local")]
+        #[cfg(not(target_arch = "wasm32"))]
         NativeOpenOptions::ReadWriteCreateNew,
         NativeOpenOptions::ReadWriteCreate,
     ] {
@@ -182,7 +182,7 @@ fn file_opens_reject_final_links_without_changing_the_target()
             NativeOpenOptions::CreateNew => assert!(
                 matches!(result, Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists)
             ),
-            #[cfg(feature = "local")]
+            #[cfg(not(target_arch = "wasm32"))]
             NativeOpenOptions::ReadWriteCreateNew => assert!(
                 matches!(result, Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists)
             ),

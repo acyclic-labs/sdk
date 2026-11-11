@@ -937,7 +937,6 @@ fn shared_runtime_checkpoint_owner_loss_refuses_without_fabricating_custody() ->
     })
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() -> Result<()> {
     block_on(async {
@@ -1110,7 +1109,6 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
     })
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn original_turn_interrupt_wakes_every_checkpoint_and_refuses_ready_completion() -> Result<()> {
     block_on(async {

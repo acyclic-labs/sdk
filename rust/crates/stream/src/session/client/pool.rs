@@ -1,17 +1,17 @@
 use super::*;
 
 // The pool fixtures and searches drive the native gRPC transport.
-#[cfg(all(any(test, loom), feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
 pub(super) mod fixture;
-#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 pub(super) mod model;
 #[cfg(test)]
-#[cfg(all(not(loom), feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod ordering;
-#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 pub(super) mod retry_model;
 #[cfg(test)]
-#[cfg(all(not(loom), feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod route_searches;
 
 // Only the original dispatcher produces handshakes. Client and observation
@@ -213,11 +213,13 @@ impl Pool {
             Err(error) => {
                 // A received frame that fails structural validation is terminal.
                 // Transport I/O failures use the reconnect path in `run`.
-                let error = match error {
-                    StreamError::Unavailable
-                    | StreamError::Refused(_)
-                    | StreamError::InvalidArgument => StreamError::InvalidResponse,
-                    other => other,
+                let error = if matches!(
+                    error.category(),
+                    StreamError::Unavailable | StreamError::InvalidArgument
+                ) {
+                    StreamError::InvalidResponse
+                } else {
+                    error
                 };
                 self.fail_link(node, &error);
                 false
@@ -246,31 +248,26 @@ impl Pool {
     fn apply_command(&mut self, command: Command) -> Result<(), StreamError> {
         self.sync_attempts()?;
         match command {
+            Command::AcquireCredential {
+                credential,
+                withdrawal,
+                ready,
+            } => self.acquire_credential(credential, withdrawal, ready),
+            Command::ReleaseCredential { slot } => {
+                if !self.credential_slots.owned(slot) {
+                    return Err(StreamError::InvalidArgument);
+                }
+                self.install_credential(slot, Bytes::new())?;
+                self.credential_slots.release(slot);
+                Ok(())
+            }
             Command::Credential { slot, credential } => {
-                let total = self
-                    .credential_bytes
-                    .checked_sub(self.credentials.get(&slot).map_or(0, Bytes::len))
-                    .and_then(|current| current.checked_add(credential.len()))
-                    .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
-                    .ok_or(StreamError::Capacity)?;
-                let encoded = frame(
-                    0,
-                    0,
-                    Body::Credential(wire::SessionCredential {
-                        slot,
-                        credential: credential.clone(),
-                    }),
-                );
-                if credential.is_empty() {
-                    self.credentials.remove(&slot);
-                } else {
-                    self.credentials.insert(slot, credential);
+                if self.credential_slots.owned(slot) {
+                    return Err(StreamError::InvalidArgument);
                 }
-                self.credential_bytes = total;
-                let nodes = self.links.keys().cloned().collect::<Vec<_>>();
-                for node in nodes {
-                    self.send(&node, encoded.clone())?;
-                }
+                let empty = credential.is_empty();
+                self.install_credential(slot, credential)?;
+                self.credential_slots.available(slot, empty);
                 Ok(())
             }
             Command::Socket {
@@ -877,8 +874,8 @@ impl Pool {
     pub(super) fn fail_node(&mut self, node: &str, error: &StreamError) {
         if node == self.home
             && matches!(
-                error,
-                StreamError::Unavailable | StreamError::Refused(_) | StreamError::InvalidArgument
+                error.category(),
+                StreamError::Unavailable | StreamError::InvalidArgument
             )
         {
             self.reset_home();
@@ -940,5 +937,8 @@ pub(super) fn poll_dials(
 }
 
 #[cfg(test)]
-#[cfg(all(not(loom), feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod filtered_credit_tests;
+
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+mod credential_ownership_tests;

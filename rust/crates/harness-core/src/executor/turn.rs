@@ -8,7 +8,6 @@ pub(super) struct CollectedStep {
     pub(super) parts: bool,
 }
 
-#[cfg(feature = "filesystem")]
 impl CollectedStep {
     fn retained_payload_bytes(&self) -> Result<u64> {
         let slots = self
@@ -61,7 +60,7 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_turn_input(journal, input).await?;
-        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(reason) = &self.stock.prompt_block {
             return Err(Error::Invalid(reason.clone()));
         }
@@ -83,7 +82,7 @@ impl StockExecution<'_> {
         }
         let mut steering = working_tail::retirement::SteeringHistory::default();
         let mut hook_context = Vec::new();
-        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let mut stop_active = false;
         let mut steps = 0_u32;
         while input.max_steps.is_none_or(|maximum| steps < maximum) {
@@ -121,7 +120,7 @@ impl StockExecution<'_> {
             } = self.collect_step_events(input, step, model_events, &mut prior_messages)?;
             if calls.is_empty() {
                 // A Stop block continues the same journaled turn.
-                #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(reason) =
                     Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?
                 {
@@ -198,7 +197,6 @@ impl StockExecution<'_> {
         model_events: Vec<ModelEvent>,
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<CollectedStep> {
-        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::with_input(
             self.io,
             self.io
@@ -206,10 +204,7 @@ impl StockExecution<'_> {
                 .transpose()?
                 .unwrap_or(0),
         )?;
-        #[cfg(feature = "filesystem")]
         let io = scope.io();
-        #[cfg(not(feature = "filesystem"))]
-        let io = self.io;
         // Inputs and all unpublished outputs die before their shared custody.
         let model_events = model_events;
         let completed_message = self.has_completed_message(&model_events)?;
@@ -306,7 +301,6 @@ impl StockExecution<'_> {
             metadata: completed,
             parts,
         };
-        #[cfg(feature = "filesystem")]
         scope.finish(
             io.map(|_| collected.retained_payload_bytes())
                 .transpose()?
@@ -350,17 +344,12 @@ impl StockExecution<'_> {
         source: Option<&PreparationIo>,
     ) -> Result<()> {
         let content = ModelContent::Part(part);
-        #[cfg(feature = "filesystem")]
         let retained = source
             .map(|_| content.retained_payload_bytes())
             .transpose()?
             .unwrap_or(0);
-        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::with_input(source, retained)?;
-        #[cfg(feature = "filesystem")]
         let io = scope.io();
-        #[cfg(not(feature = "filesystem"))]
-        let io = source;
         // The incoming message dies before its custody if validation or storage
         // admission fails; existing history never moves into this scope.
         let message = ModelMessage {
@@ -371,7 +360,6 @@ impl StockExecution<'_> {
             message.content.validate_limits(self.stock.limits, work)
         })?;
         stock_vec_prepare_push(messages, self.io)?;
-        #[cfg(feature = "filesystem")]
         scope.finish_into(self.io, retained)?;
         // Storage and custody are admitted; insertion cannot fail or allocate.
         messages.push(message);

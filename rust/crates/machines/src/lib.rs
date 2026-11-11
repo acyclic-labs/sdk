@@ -88,14 +88,12 @@ mod simulation;
 pub use simulation::*;
 
 /// Native process execution over the same public output stream.
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod local;
 
-#[cfg(feature = "grpc")]
 pub mod grpc;
-#[cfg(feature = "grpc")]
 mod obs;
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use grpc::Tls;
 
 /// Shared provider qualification, checked benchmarks and request accounting.

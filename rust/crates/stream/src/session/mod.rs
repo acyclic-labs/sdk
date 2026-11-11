@@ -4,7 +4,7 @@ use crate::StreamProvider;
 use crate::StreamProviderExt as _;
 use crate::{StreamError, StreamPath, wire, wire_codec};
 use bytes::Bytes;
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use futures::stream::BoxStream;
 use futures::{StreamExt, future, stream};
 use prost::Message as _;
@@ -53,17 +53,17 @@ mod policy;
 mod queue;
 pub use frame::Frame;
 mod runtime;
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod service;
 use crate::runtime::{signal, sync};
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use client::Cache;
 pub use client::transport;
 pub use client::{
     ActorSocket, ActorSocketSender, ApplicationDelivery, ApplicationSubscription, CallInputSender,
     Client,
 };
-#[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(all(loom, not(target_arch = "wasm32")))]
 pub use client::{
     verify_abandoned_reconnect, verify_cache, verify_cancel_before_open,
     verify_cancelled_queued_open, verify_follow_data, verify_initial_retry_yield,
@@ -72,7 +72,7 @@ pub use client::{
 };
 #[cfg(loom)]
 pub use client::{verify_admission_binding, verify_admission_cancellation};
-#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use service::Service;
 const DATA_FRAME_BYTES: usize = crate::MAX_RECORD_BYTES + 128;
 const RECEIVE_FRAMES: usize = 2;
@@ -92,10 +92,11 @@ pub struct Limits {
     /// Maximum unsent encoded data bytes.
     pub pending_bytes: usize,
 }
+const DEFAULT_CHANNELS: usize = 16_384;
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            channels: 16_384,
+            channels: DEFAULT_CHANNELS,
             pending_frames: crate::MAX_ITEMS,
             pending_bytes: crate::MAX_COMMAND_BYTES,
         }
@@ -116,8 +117,8 @@ struct Channel {
     credit: wire::SessionWindow,
     sent: wire::SessionCursor,
     applied: wire::SessionCursor,
-    /// The `SessionClosed` code sent once every queued frame has drained.
-    ending: Option<&'static str>,
+    /// The original terminal result sent once every queued frame has drained.
+    ending: Option<Result<(), StreamError>>,
     /// Peer frames of an actor socket; dropping it ends that socket.
     socket: Option<Box<dyn SocketInbound>>,
     input: Option<calls::InputProducer>,
@@ -181,7 +182,7 @@ struct Session<P: ?Sized> {
     credit: wire::SessionWindow,
     input_credit: wire::SessionWindow,
     input_released: sync::Arc<signal::Signal<calls::InputReleased>>,
-    controls: VecDeque<wire::SessionFrame>,
+    controls: VecDeque<Frame>,
     pending_frames: usize,
     pending_bytes: usize,
     runnable: BTreeSet<(usize, u64)>,
@@ -194,29 +195,30 @@ enum ServingSession<P: ?Sized> {
     Active(Session<P>, Option<crate::BoxProviderFuture<'static, ()>>),
     Closing(
         std::collections::btree_map::IntoIter<u64, Channel>,
-        std::collections::vec_deque::IntoIter<wire::SessionFrame>,
+        std::collections::vec_deque::IntoIter<Frame>,
     ),
 }
 
 impl<P: ?Sized> ServingSession<P> {
     fn close(
         mut channels: std::collections::btree_map::IntoIter<u64, Channel>,
-        mut controls: std::collections::vec_deque::IntoIter<wire::SessionFrame>,
+        mut controls: std::collections::vec_deque::IntoIter<Frame>,
     ) -> Option<(Frame, Self)> {
         if let Some(frame) = controls.next() {
-            return Some((frame.into(), Self::Closing(channels, controls)));
+            return Some((frame, Self::Closing(channels, controls)));
         }
         let (id, channel) = channels.next()?;
         Some((
-            frame(
-                id,
-                channel.generation,
-                Body::Closed(wire::SessionClosed {
-                    code: StreamError::Unavailable.code().into(),
-                    message: String::new(),
-                }),
-            )
-            .into(),
+            Frame::closed(
+                wire::SessionChannel {
+                    channel_id: id,
+                    generation: channel.generation,
+                },
+                channel
+                    .ending
+                    .and_then(Result::err)
+                    .unwrap_or(StreamError::Unavailable),
+            ),
             Self::Closing(channels, controls),
         ))
     }
@@ -393,7 +395,7 @@ fn serve_on_with_products<
                             // Reuse both collections without allocating a shutdown queue.
                             session
                                 .controls
-                                .retain(|frame| matches!(frame.body, Some(Body::Closed(_))));
+                                .retain(|frame| matches!(frame.wire().body, Some(Body::Closed(_))));
                             return Ok(ServingSession::close(
                                 session.channels.into_iter(),
                                 session.controls.into_iter(),
@@ -415,10 +417,10 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         loop {
             self.fence_changed()?;
             if let Some(frame) = self.controls.pop_front() {
-                return Ok(Some(frame.into()));
+                return Ok(Some(frame));
             }
             if let Some(frame) = self.ready()? {
-                return Ok(Some(frame.into()));
+                return Ok(Some(frame));
             }
             if self.sources.is_empty() && self.terminals.is_empty() {
                 let input = {
@@ -547,14 +549,15 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                             .get(&identity.channel_id)
                             .is_some_and(|channel| channel.generation == identity.generation)
                         {
-                            self.end(identity.channel_id, StreamError::Unavailable.code())?;
+                            self.end(identity.channel_id, Err(StreamError::Unavailable))?;
                         }
                         return Ok(());
                     }
                 };
                 let grant = wire::SessionWindow { bytes, frames: 1 };
                 wire_codec::session::grant_credit(&mut self.input_credit, &grant)?;
-                self.controls.push_back(frame(0, 0, Body::Window(grant)));
+                self.controls
+                    .push_back(frame(0, 0, Body::Window(grant)).into());
                 if let Some(channel) = self.channels.get_mut(&identity.channel_id)
                     && channel.generation == identity.generation
                     && channel.ending.is_none()
@@ -562,11 +565,14 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     && input.is_open()
                 {
                     wire_codec::session::grant_credit(&mut input.credit, &grant)?;
-                    self.controls.push_back(frame(
-                        identity.channel_id,
-                        identity.generation,
-                        Body::Window(grant),
-                    ));
+                    self.controls.push_back(
+                        frame(
+                            identity.channel_id,
+                            identity.generation,
+                            Body::Window(grant),
+                        )
+                        .into(),
+                    );
                 }
                 Ok(())
             }
@@ -620,17 +626,20 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 bytes: hello.receive_bytes,
                 frames: hello.receive_frames,
             };
-            self.controls.push_back(frame(
-                0,
-                0,
-                Body::Welcome(wire::SessionWelcome {
-                    version: VERSION,
-                    node_id: self.node.clone(),
-                    receive_bytes: crate::MAX_COMMAND_BYTES as u64,
-                    receive_frames: u32::try_from(crate::MAX_ITEMS)
-                        .map_err(|_| StreamError::Capacity)?,
-                }),
-            ));
+            self.controls.push_back(
+                frame(
+                    0,
+                    0,
+                    Body::Welcome(wire::SessionWelcome {
+                        version: VERSION,
+                        node_id: self.node.clone(),
+                        receive_bytes: crate::MAX_COMMAND_BYTES as u64,
+                        receive_frames: u32::try_from(crate::MAX_ITEMS)
+                            .map_err(|_| StreamError::Capacity)?,
+                    }),
+                )
+                .into(),
+            );
             return match hello.interest {
                 Some(interest) => self.interest(interest),
                 None => Ok(()),
@@ -720,7 +729,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         generation: input.generation,
                     };
                     if let Err(error) = producer.receive(identity, data, length, released) {
-                        self.end(input.channel_id, error.code())?;
+                        self.end(input.channel_id, Err(error))?;
                     }
                     return Ok(());
                 }
@@ -734,7 +743,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 // Handed over without awaiting the owner, so one socket's
                 // storage latency never stalls the session's other channels.
                 if let Err(error) = socket.receive(bytes) {
-                    self.end(input.channel_id, error.code())?;
+                    self.end(input.channel_id, Err(error))?;
                 }
                 Ok(())
             }
@@ -756,13 +765,16 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 // Echo only the terminal, without copying trailers or consuming
                 // data credit. The caller retains its original route until this
                 // proves all preceding input crossed the physical transport.
-                self.controls.push_back(frame(
-                    input.channel_id,
-                    input.generation,
-                    Body::InputEnd(wire::SessionInputEnd {
-                        trailers: Vec::new(),
-                    }),
-                ));
+                self.controls.push_back(
+                    frame(
+                        input.channel_id,
+                        input.generation,
+                        Body::InputEnd(wire::SessionInputEnd {
+                            trailers: Vec::new(),
+                        }),
+                    )
+                    .into(),
+                );
                 Ok(())
             }
             _ => Err(StreamError::InvalidArgument),
@@ -775,7 +787,8 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 frames: 1,
             };
             wire_codec::session::grant_credit(&mut self.input_credit, &grant)?;
-            self.controls.push_back(frame(0, 0, Body::Window(grant)));
+            self.controls
+                .push_back(frame(0, 0, Body::Window(grant)).into());
         }
         Ok(())
     }

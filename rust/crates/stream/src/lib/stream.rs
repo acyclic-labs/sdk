@@ -230,7 +230,7 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
         }
         let page = match self.stream.read(self.next, REPLAY_PAGE).await {
             Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(StreamError::NotFound) if self.next == 0 => Vec::new(),
+            Err(error) if error.category() == StreamError::NotFound && self.next == 0 => Vec::new(),
             Err(error) => return Err(error),
         };
         for record in &page {
@@ -252,7 +252,7 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
 
 /// Transport callers keep this allocation instead of copying a domain wrapper.
 #[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
+    not(target_arch = "wasm32"),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 fn new_identity_bytes() -> bytes::Bytes {

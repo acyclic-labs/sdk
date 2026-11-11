@@ -5,11 +5,11 @@ uses a production-encoded page, and observes copies through initial growth as
 well as fixed-population churn. A frequently read page must never be evicted.
 
 ```sh
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib filesystem::execution_journal::persistent_index::cache::tests::frequently_read_page_survives_unrelated_publication_churn -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --lib filesystem::execution_journal::persistent_index::cache::tests::frequently_read_page_survives_unrelated_publication_churn -- --exact
 
 git apply rust/crates/harness-core/src/model/instruction_radix.patch
 git apply rust/crates/harness-core/src/filesystem/execution_journal/persistent_index/cache_relocating.patch
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib filesystem::execution_journal::persistent_index::cache::tests::frequently_read_page_survives_unrelated_publication_churn -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --lib filesystem::execution_journal::persistent_index::cache::tests::frequently_read_page_survives_unrelated_publication_churn -- --exact
 
 git apply -R rust/crates/harness-core/src/filesystem/execution_journal/persistent_index/cache_relocating.patch
 git apply -R rust/crates/harness-core/src/model/instruction_radix.patch

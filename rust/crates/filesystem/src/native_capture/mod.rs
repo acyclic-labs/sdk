@@ -26,7 +26,6 @@ mod model;
 #[cfg(unix)]
 mod native_view_baseline_tests;
 #[cfg(test)]
-#[cfg(feature = "memory")]
 mod reserve_tests;
 use accounting::*;
 #[cfg(windows)]
@@ -39,19 +38,17 @@ mod paths;
 use paths::*;
 mod names;
 #[cfg(test)]
-#[cfg(feature = "memory")]
 mod path_error_tests;
 use names::*;
 mod host_walk;
 #[cfg(test)]
-#[cfg(feature = "memory")]
 mod leaf_path_tests;
 pub(crate) use host_walk::walk_watch_tree;
 use host_walk::*;
 #[cfg(test)]
 mod host_observation_tests;
 mod inline_reuse;
-#[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
+#[cfg(all(test, any(windows, target_os = "linux")))]
 mod inline_reuse_tests;
 mod reconcile;
 pub use reconcile::host_path_is_absent;
@@ -76,33 +73,32 @@ mod metadata;
 #[cfg(feature = "test-support")]
 mod metadata_input_tests;
 #[cfg(test)]
-#[cfg(all(any(target_os = "linux", windows), feature = "memory"))]
+#[cfg(any(target_os = "linux", windows))]
 mod rescan_probe_tests;
 #[cfg(test)]
-#[cfg(all(target_os = "linux", feature = "memory"))]
+#[cfg(target_os = "linux")]
 mod stat_probe_tests;
 use metadata::*;
 #[cfg(test)]
-#[cfg(feature = "memory")]
 mod empty_stage_tests;
 #[cfg(test)]
 mod host_file_race_tests;
 #[cfg(test)]
 mod native_range_tests;
 #[cfg(test)]
-#[cfg(all(feature = "memory", any(windows, target_os = "linux")))]
+#[cfg(any(windows, target_os = "linux"))]
 mod owner_allocation_tests;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod reuse_properties;
 #[cfg(test)]
-#[cfg(all(unix, feature = "native-mount"))]
+#[cfg(all(unix, not(target_arch = "wasm32")))]
 mod root_capture_regression;
 #[cfg(test)]
 #[cfg(unix)]
 mod unix_name_tests;
 #[cfg(test)]
-#[cfg(all(windows, feature = "memory"))]
+#[cfg(windows)]
 mod windows_dense_tests;
 #[cfg(test)]
 #[cfg(windows)]
@@ -111,14 +107,14 @@ mod windows_name_tests;
 #[cfg(windows)]
 mod windows_sparse_tests;
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use entry::capture_paths_batched;
 pub(crate) use entry::capture_subtrees_with_native_work;
 pub use entry::{
     HeldRoot, SearchRoot, capture_baseline, capture_held_paths, capture_paths,
     capture_root_identity, capture_subtree, file_identity, hold_root, hold_search_root,
 };
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use model::MAX_NATIVE_EXACT_CAPTURE_PATHS;
 pub(crate) use model::NativeViewBaseline;
 pub use model::{CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt};

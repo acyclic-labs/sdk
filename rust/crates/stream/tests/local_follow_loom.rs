@@ -1,4 +1,4 @@
-//! Run with `RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh` and `--features local,http`.
+//! Run with `RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh` and `--features model-checking`.
 #![cfg(loom)]
 
 #[test]

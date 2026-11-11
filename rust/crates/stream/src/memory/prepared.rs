@@ -368,7 +368,7 @@ impl PreparedCommit {
             .await
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_commit_clock(mut self, clock: Arc<dyn UnixMillisClock>) -> Self {
         self.provider = self.provider.with_commit_clock(clock);
         self
