@@ -164,8 +164,11 @@ version key sorts before all payload keys in both canonical encoding paths.
 The original reader verifies the immutable file descriptor, then admits this header before
 ordinary or funded payload decoding. Headerless and foreign-version manifests
 refuse with `Unsupported`, without migration. Version 2 is also bound into the
-existing manifest attestation. Existing protobuf captures and historical goldens
-are retained; this digest update does not claim a new descriptor/corpus capture.
+existing manifest attestation. The Harness descriptor was recaptured by the
+Rust-owned producer. Descriptor semantics change only for attachment/context-message
+presence and their synthetic oneofs; source spans reflect the added keywords.
+Existing protobuf writer captures and historical goldens are
+retained without regeneration.
 
 Fixed-width codecs do constant work. Variable payload codecs necessarily take
 work proportional to the admitted payload; their cost must not depend on retained
