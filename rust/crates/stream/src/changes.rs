@@ -394,7 +394,7 @@ fn parse<'a>(
 
 /// Decodes a canonical change value into its entries with full keys.
 pub fn decode_changes(bytes: &[u8]) -> Result<wire::ChangeRecord, StreamError> {
-    decode_record(bytes, Some(FORMAT), 0, |_| true)
+    decode_record(bytes, Some(FORMAT), None, 0, |_| true)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -411,6 +411,7 @@ pub(crate) fn decode(
 fn decode_record(
     bytes: &[u8],
     format: Option<&[u8]>,
+    keys: Option<&[OwnedBytes]>,
     capacity: usize,
     keep: impl Fn(&[u8]) -> bool,
 ) -> Result<wire::ChangeRecord, StreamError> {
@@ -421,7 +422,7 @@ fn decode_record(
     let context = parse_record(
         bytes,
         format,
-        None,
+        keys,
         Some(remaining),
         |key, operation, metadata| {
             if keep(key) {
@@ -451,6 +452,7 @@ pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), Stre
 pub(crate) struct AdmittedRecord<'a> {
     bytes: &'a [u8],
     format: Option<&'a [u8]>,
+    keys: &'a [OwnedBytes],
 }
 
 impl<'a> AdmittedRecord<'a> {
@@ -474,7 +476,15 @@ impl<'a> AdmittedRecord<'a> {
                 return Err(StreamError::InvalidArgument);
             }
         }
-        Ok(Self { bytes, format })
+        Ok(Self {
+            bytes,
+            format,
+            keys: if format.is_some() {
+                headers.keys()
+            } else {
+                &[]
+            },
+        })
     }
 
     pub(crate) fn is_changes(&self) -> bool {
@@ -486,7 +496,13 @@ impl<'a> AdmittedRecord<'a> {
         capacity: usize,
         keep: impl Fn(&[u8]) -> bool,
     ) -> Result<wire::ChangeRecord, StreamError> {
-        decode_record(self.bytes, self.format, capacity, keep)
+        decode_record(
+            self.bytes,
+            self.format,
+            self.format.map(|_| self.keys),
+            capacity,
+            keep,
+        )
     }
 }
 
