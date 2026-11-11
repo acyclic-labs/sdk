@@ -18,11 +18,11 @@ impl Cancellation {
             // Subscribe before observing the predicate. Each re-read follows
             // a new input event; no sticky tree invalidation can spin here.
             let changed = self.watcher.changed();
+            self.watcher.arm()?;
             if self.path.try_exists().map_err(storage)? {
                 return Ok(());
             }
             changed.await?;
-            self.watcher.arm()?;
         }
     }
 }

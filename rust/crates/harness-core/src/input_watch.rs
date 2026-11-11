@@ -336,7 +336,7 @@ mod tests {
         link(&old)?;
         let watch = InputWatch {
             paths: vec![alias.clone()],
-            changed: tokio::sync::watch::channel(0).0,
+            changed: tokio::sync::watch::channel(InputRevision::default()).0,
             held: Mutex::new(Vec::new()),
         };
         let mut registered = Vec::new();
