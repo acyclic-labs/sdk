@@ -154,3 +154,25 @@ then shared staged state and persistent authority-root preparation/publication;
 then adapt all provider/transport/read surfaces; finally replace old limit tests
 with the conformance obligations and remove caller workarounds. Each commit
 must leave its implemented mechanism reviewable, with focused validation.
+
+## Implementation checkpoint (2026-11-11)
+
+The first foundation change extracts the Objects manifest v1 codec into
+Stream's content module. Objects delegates both directions to it and preserves
+its existing decoded-vector admission. Manifest::encode now returns a Result:
+physical-count overflow and allocation failure cannot silently truncate a
+persisted count. Call sites and the retained fuzz oracles propagate this result.
+
+The shared content tree stages deterministic 64 KiB physical pages, independent
+of input fragmentation, and returns a small digest/length/height root. Leaves
+have a v1 domain prefix disjoint from manifest bytes: a legitimate value equal
+to encoded manifest bytes cannot collide with internal node interpretation.
+Readers verify every digest and length, retain original leaf custody, and load
+one bounded page at a time. IO is a two-method adapter; publication and stage
+retirement remain outside this foundation and are NOT implemented yet.
+
+Focused controls use actual immutable files: 64 MiB streamed upload and reopened
+lazy read, fragment-independent identity, embedded manifest bytes, empty values,
+fanout carry into a second manifest level, and corruption refusal. These prove
+content-tree behavior only, NOT atomic Stream writes, crash staging visibility,
+event-driven collection, all-backend conformance or removal of public limits.

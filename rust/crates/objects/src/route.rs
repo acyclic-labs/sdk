@@ -376,7 +376,7 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
         "blobs/put-manifest" => {
             let request: wire::PutManifestRequest = decode(input)?;
             let manifest = convert::from_manifest(request.manifest.as_ref())?;
-            let (digest, length) = (Digest::of(&manifest.encode()), manifest.length()?);
+            let (digest, length) = (Digest::of(&manifest.encode()?), manifest.length()?);
             convert::verified_put(&reply(output)?, digest, length).map(drop)
         }
         "blobs/get" => {

@@ -474,7 +474,9 @@ fn check_sites(
 /// only by the generator's mutation/stage/fault/ordinal configuration.
 pub fn seeds() -> Vec<(String, Vec<u8>)> {
     use acyclic_fs::{Digest, FileId, ObjectId, ObjectKind, ObjectStorage};
-    let payload = acyclic_objects::Manifest::default().encode();
+    let payload = acyclic_objects::Manifest::default()
+        .encode()
+        .expect("empty manifest is encodable");
     let mut seeds = Vec::new();
     for sealed in [false, true] {
         let generation = GenerationId::from_root(ObjectId {

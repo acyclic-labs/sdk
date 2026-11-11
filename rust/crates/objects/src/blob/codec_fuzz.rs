@@ -295,7 +295,7 @@ pub fn check(bytes: &[u8]) -> bool {
     let mut encoded = envelope.encode();
     if !check_admission(
         &manifest,
-        &manifest.encode(),
+        &manifest.encode().expect("generated bounded manifest"),
         &[
             manifest.parts.len() * std::mem::size_of::<Part>(),
             manifest.edges.len() * std::mem::size_of::<Digest>(),
@@ -354,7 +354,7 @@ pub fn check(bytes: &[u8]) -> bool {
         MANIFEST_MAGIC,
         manifest,
         Manifest::decode,
-        Manifest::encode,
+        |manifest| manifest.encode().expect("decoded manifest is encodable"),
         |_| false,
     ) && check_codec(
         bytes,
@@ -394,14 +394,18 @@ pub fn check(bytes: &[u8]) -> bool {
 pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     let digest = Digest::of(b"persisted codec corpus");
     let mut seeds = vec![
-        ("manifest-empty", Manifest::default().encode()),
+        (
+            "manifest-empty",
+            Manifest::default().encode().expect("empty manifest"),
+        ),
         (
             "manifest-part-edge",
             Manifest {
                 parts: vec![Part { digest, length: 22 }],
                 edges: vec![digest],
             }
-            .encode(),
+            .encode()
+            .expect("bounded seed manifest"),
         ),
         ("retained-batch", encode_batch(&[digest])),
         ("incarnation", encode_incarnation(7, 9)),

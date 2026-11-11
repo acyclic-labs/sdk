@@ -132,7 +132,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
-        let digest = Digest::of(&manifest.encode());
+        let digest = Digest::of(&manifest.encode()?);
         let length = manifest.length()?;
         self.publish(
             "blobs/put-manifest",

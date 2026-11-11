@@ -316,7 +316,13 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     };
     expect!(
         "manifest-ranges-select-intersecting-parts",
-        verified.digest == Digest::of(&manifest.encode()) && verified.length == 2500,
+        verified.digest
+            == Digest::of(
+                &manifest
+                    .encode()
+                    .map_err(|error| fail("manifest-ranges-select-intersecting-parts", error))?
+            )
+            && verified.length == 2500,
         verified
     );
     let spanning = first

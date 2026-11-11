@@ -19,7 +19,7 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
         condemned: 9,
     };
     let frames: [(&str, Vec<u8>, &[u8], fn(&[u8]) -> Result<(), Error>); 5] = [
-        ("manifest", manifest.encode(), MANIFEST_MAGIC, |bytes| {
+        ("manifest", manifest.encode()?, MANIFEST_MAGIC, |bytes| {
             Manifest::decode(bytes).map(|_| ())
         }),
         (

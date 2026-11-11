@@ -124,7 +124,7 @@ pub struct Manifest {
     pub edges: Vec<Digest>,
 }
 
-const MANIFEST_MAGIC: &[u8; 20] = b"acyclic-manifest-v1\0";
+use acyclic_stream::content::MANIFEST_MAGIC;
 const ENVELOPE_MAGIC: &[u8; 16] = b"acyclic-blob-v2\0";
 const BATCH_MAGIC: &[u8] = b"acyclic-retained-v1\0";
 const INCARNATION_MAGIC: &[u8] = b"acyclic-incarnation-v1\0";
@@ -157,24 +157,17 @@ impl Manifest {
     }
 
     /// Canonical v1 encoding; its BLAKE3 is the manifest's digest.
-    #[must_use]
-    pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(
-            MANIFEST_MAGIC.len() + 8 + self.parts.len() * 40 + self.edges.len() * 32,
-        );
-        bytes.extend_from_slice(MANIFEST_MAGIC);
-        bytes.extend_from_slice(&(self.parts.len() as u32).to_le_bytes());
-        for part in &self.parts {
-            bytes.extend_from_slice(part.digest.as_bytes());
-            bytes.extend_from_slice(&part.length.to_le_bytes());
-        }
-        bytes.extend_from_slice(&(self.edges.len() as u32).to_le_bytes());
-        for edge in &self.edges {
-            bytes.extend_from_slice(edge.as_bytes());
-        }
-        bytes
+    /// Refuses allocation or unrepresentable physical counts without truncation.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        acyclic_stream::content::encode_manifest(
+            self.parts.iter().map(|part| acyclic_stream::content::Part {
+                digest: *part.digest.as_bytes(),
+                length: part.length,
+            }),
+            self.edges.iter().map(|digest| *digest.as_bytes()),
+        )
+        .map_err(|_| Error::from(ErrorCode::QuotaExceeded))
     }
-
     /// Decodes exactly one canonical encoding.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         Self::decode_admitted(bytes, &())
@@ -184,18 +177,33 @@ impl Manifest {
         bytes: &[u8],
         allocation: &impl DecodeAllocation,
     ) -> Result<Self, Error> {
-        let mut reader = Reader(bytes);
-        reader.header(MANIFEST_MAGIC)?;
-        let count = reader.u32()? as usize;
-        let parts = reader.vector(count, 40, allocation, |reader| {
-            Ok(Part {
-                digest: reader.digest()?,
-                length: reader.u64()?,
-            })
-        })?;
-        let count = reader.u32()? as usize;
-        let edges = reader.vector(count, 32, allocation, |reader| reader.digest())?;
-        reader.finish()?;
+        let manifest =
+            acyclic_stream::content::Manifest::decode(bytes).map_err(|error| match error {
+                acyclic_stream::StreamError::Unsupported => ErrorCode::Unsupported.into(),
+                acyclic_stream::StreamError::InvalidArgument
+                    if !bytes.starts_with(MANIFEST_MAGIC) =>
+                {
+                    ErrorCode::Unsupported.into()
+                }
+                _ => corrupt(),
+            })?;
+        let parts = Reader(manifest.part_bytes()).vector(
+            manifest.parts().len(),
+            40,
+            allocation,
+            |reader| {
+                Ok(Part {
+                    digest: reader.digest()?,
+                    length: reader.u64()?,
+                })
+            },
+        )?;
+        let edges = Reader(manifest.edge_bytes()).vector(
+            manifest.edges().len(),
+            32,
+            allocation,
+            |reader| reader.digest(),
+        )?;
         Ok(Self { parts, edges })
     }
 

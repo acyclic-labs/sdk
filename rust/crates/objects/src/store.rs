@@ -1673,7 +1673,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                         return Err(invalid());
                     }
                 }
-                let encoded = manifest.encode();
+                let encoded = manifest.encode()?;
                 let digest = Digest::of(&encoded);
                 let stored = encoded.len() as u64;
                 self.publish(
