@@ -8,7 +8,7 @@
 use crate::addressing::ActorReference;
 use crate::guest::{
     AlarmChange, Checkpoint, CodecIdentity, Delivery, GuestError, GuestFuture, Handler, Manifest,
-    Transition, Trigger,
+    SubscriptionChange, Transition, Trigger,
 };
 use crate::local::{AppliedCut, Clock, Error, PreparedPublish, Store, Subscription};
 use acyclic_stream::StreamProviderExt as _;
@@ -116,7 +116,9 @@ struct Ledger {
 }
 
 /// Reference package. Inbox commands: `emit` appends `r<seq>`; `set <ms>`
-/// arms the alarm `ms` after the delivery; `clear` clears it. A fired alarm
+/// arms the alarm `ms` after the delivery; `clear` clears it; `watch <path>`
+/// binds the `mirror` subscription to `path` at its head; `unwatch` unbinds
+/// it. Mirror records run the same commands. A fired alarm
 /// appends `a<generation>`. Every outbox append carries a Tail condition, so a
 /// duplicate or lost publication is observable.
 pub struct Package {
@@ -141,6 +143,9 @@ impl Package {
         })
     }
 }
+
+/// The subscription a running conformance actor binds and unbinds itself.
+const MIRROR: &str = "mirror";
 
 fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
@@ -176,6 +181,7 @@ impl Handler for Package {
                     alarm: AlarmChange::Keep,
                     effects: Vec::new(),
                     participant: None,
+                    subscriptions: Vec::new(),
                 });
             }
             if let Some(book) = &mut ledger.reservations {
@@ -190,8 +196,10 @@ impl Handler for Package {
                     },
                     alarm: step.alarm,
                     effects: Vec::new(),
+                    subscriptions: Vec::new(),
                 });
             }
+            let mut subscriptions = Vec::new();
             let (alarm, output) = match (&delivery.trigger, &delivery.record) {
                 (Trigger::Alarm { generation, .. }, _) => {
                     (AlarmChange::Keep, Some(format!("a{generation}")))
@@ -209,6 +217,18 @@ impl Handler for Package {
                         }
                         None if command == "clear" => (AlarmChange::Clear, None),
                         None if command == "cancel" => (AlarmChange::Keep, None),
+                        None if command == "unwatch" => {
+                            subscriptions.push(SubscriptionChange::Remove { id: MIRROR.into() });
+                            (AlarmChange::Keep, None)
+                        }
+                        Some(("watch", path)) => {
+                            subscriptions.push(SubscriptionChange::Add {
+                                id: MIRROR.into(),
+                                path: StreamPath::new(path.to_owned()).map_err(guest)?,
+                                from: None,
+                            });
+                            (AlarmChange::Keep, None)
+                        }
                         None if command == "wait" => {
                             cancellation.cancelled().await;
                             (AlarmChange::Keep, Some(format!("c{sequence}")))
@@ -264,6 +284,7 @@ impl Handler for Package {
                 },
                 alarm,
                 effects,
+                subscriptions,
             })
         })
     }
@@ -618,6 +639,7 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     reserved(target, run).await?;
     alarms(target, run).await?;
     paused(target, run).await?;
+    subscribed(target, run).await?;
     interrupted(target, run).await?;
     forked(target, run).await?;
     lineage(target, run).await?;
@@ -1641,6 +1663,80 @@ pub(crate) async fn alarms<T: Backend + ?Sized>(target: &T, run: &str) -> Result
     replaced.expect(&["a2"]).await?;
     target.advance_to(retired_deadline).await?;
     replaced.expect(&["a2"]).await
+}
+
+/// A running actor binds a subscription at the source's head and unbinds it,
+/// each with its own checkpoint. Only records committed after the binding are
+/// delivered, and each one wakes the actor through its producer's same-commit
+/// activation entry; after the unbinding, later records wake nothing.
+async fn subscribed<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+    let mut actor = Fixture::create(target, run, "subscribed").await?;
+    let source =
+        StreamPath::new(format!("conformance/{run}/subscribed/source")).map_err(Error::from)?;
+    actor.send("emit").await?;
+    actor.expect(&["r0"]).await?;
+    // History committed before the binding is not input.
+    produce(target, &actor.actor, &source, 0).await?;
+    actor.send(&format!("watch {source}")).await?;
+    if mirror(target, &actor.actor).await? != Some(1) {
+        return actor.violation("a running actor did not bind at the source's head".into());
+    }
+    produce(target, &actor.actor, &source, 1).await?;
+    actor.expect(&["r0", "r1"]).await?;
+    if mirror(target, &actor.actor).await? != Some(2) {
+        return actor.violation("the bound subscription did not consume its input".into());
+    }
+    actor.send("unwatch").await?;
+    if mirror(target, &actor.actor).await?.is_some() {
+        return actor.violation("a running actor did not unbind its subscription".into());
+    }
+    produce(target, &actor.actor, &source, 2).await?;
+    actor.expect(&["r0", "r1"]).await
+}
+
+/// One producer commit: `emit` at `source`'s exact tail `sent`, with the
+/// subscriber's activation entry, as every producer wakes its subscribers.
+async fn produce<T: Backend + ?Sized>(
+    target: &T,
+    actor: &ActorReference,
+    source: &StreamPath,
+    sent: u64,
+) -> Result<(), Failure> {
+    let mut prepared = PreparedPublish::foreign(idempotency(&format!("{source}/produce/{sent}"))?);
+    prepared.join(target.store().activation(actor))?;
+    prepared.join(acyclic_stream::CommitEffect::hard(
+        vec![if sent == 0 {
+            CommitCondition::Absent {
+                path: source.clone(),
+            }
+        } else {
+            CommitCondition::Tail {
+                path: source.clone(),
+                expected: sent,
+            }
+        }],
+        vec![CommitMutation::Append {
+            path: source.clone(),
+            records: vec![AppendRecord::from(Bytes::from_static(b"emit"))],
+        }],
+    ))?;
+    let outcome = target
+        .store()
+        .provider()
+        .commit(prepared.into_request()?)
+        .await
+        .map_err(Error::from)?;
+    Ok(PreparedPublish::settle(&outcome)?)
+}
+
+/// The committed `mirror` cursor once the host has completed its work.
+async fn mirror<T: Backend + ?Sized>(
+    target: &T,
+    actor: &ActorReference,
+) -> Result<Option<u64>, Failure> {
+    target.complete(actor).await?;
+    let snapshot = target.store().load(actor).await?;
+    Ok(snapshot.state().and_then(|state| state.cursor(MIRROR)))
 }
 
 /// Pause holds input; resume delivers it.

@@ -430,6 +430,7 @@ impl<P: StreamProvider + ?Sized + 'static> Handler for TargetActor<P> {
                 checkpoint: state.checkpoint()?,
                 alarm: AlarmChange::Keep,
                 effects,
+                subscriptions: Vec::new(),
             })
         })
     }

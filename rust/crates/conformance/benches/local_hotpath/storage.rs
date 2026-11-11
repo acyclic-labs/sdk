@@ -481,6 +481,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) 
             alarm: AlarmChange::Keep,
             effects: Vec::new(),
             participant: None,
+            subscriptions: Vec::new(),
         };
         if index == 0 {
             if require_actor_write(&cut, sequence, &payload).is_ok() {
