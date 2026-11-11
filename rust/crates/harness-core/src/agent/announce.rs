@@ -166,6 +166,41 @@ pub struct WorkspaceUpdate {
     pub instructions: Vec<WorkspaceInstructions>,
 }
 
+impl WorkspaceUpdate {
+    /// Shared discovery for a host's actual table and admitted target paths.
+    /// Hosts without shell exposure pass null paths (or no targets), while
+    /// file-only workspaces still receive the same instruction delta.
+    pub async fn discover(
+        entries: Vec<WorkspaceEntry>,
+        roster: Option<&Roster>,
+        exposures: Vec<WorkspaceExposure>,
+        seen: &BTreeMap<super::EntryId, [u8; 32]>,
+        reader: &dyn crate::conversation::ContentResidencyVerifier,
+        policy: &crate::context::ContextDiscoveryPolicy,
+        work: &mut crate::context::DiscoveryWork,
+    ) -> crate::Result<Self> {
+        let table = WorkspaceTable::new(entries).map_err(crate::Error::from)?;
+        let document =
+            WorkspaceAnnouncement::new(&table, roster, exposures).map_err(crate::Error::from)?;
+        let mut instructions = Vec::new();
+        for entry in table
+            .entries()
+            .iter()
+            .filter(|entry| entry.role == super::WorkspaceRole::User)
+        {
+            let source = WorkspaceInstructions::source_for(entry).map_err(crate::Error::from)?;
+            if seen.get(&entry.id) != Some(&source) {
+                instructions
+                    .push(discover_workspace_instructions(entry, reader, policy, work).await?);
+            }
+        }
+        Ok(Self {
+            document,
+            instructions,
+        })
+    }
+}
+
 /// Shared immutable document backing. Reading it never re-encodes or hashes.
 #[derive(Clone, Debug)]
 pub struct Announcement(std::sync::Arc<Canonical>);
@@ -235,15 +270,16 @@ pub struct WorkspaceAnnouncement(Announcement);
 impl WorkspaceAnnouncement {
     /// Admit one actual exposure per table entry. Work depends on workspace
     /// and target counts, never on the size of a tree workspace's subtree.
-    pub fn new(
+    pub fn new<'a>(
         table: &WorkspaceTable,
-        roster: &Roster,
+        roster: impl Into<Option<&'a Roster>>,
         exposures: Vec<WorkspaceExposure>,
     ) -> Result<Self, Error> {
         let mut by_entry = BTreeMap::new();
         let targets = roster
-            .targets()
-            .iter()
+            .into()
+            .into_iter()
+            .flat_map(|roster| roster.targets())
             .map(|target| (target.name.as_str(), target.path_style))
             .collect::<BTreeMap<_, _>>();
         for exposure in &exposures {

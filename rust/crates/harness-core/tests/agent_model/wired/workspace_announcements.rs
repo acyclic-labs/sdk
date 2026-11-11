@@ -1,7 +1,7 @@
 //! C1 over real Streams, filesystem discovery, journal files and model requests.
 use super::*;
 use acyclic_harness_core::{
-    agent::{WorkspaceInstructions, WorkspaceUpdate, discover_workspace_instructions},
+    agent::WorkspaceUpdate,
     conversation::{ContentAccess, ContentGrant},
     runtime::ContentBindings,
 };
@@ -35,6 +35,8 @@ impl TurnExecutors for Exposed {
         agent: &'a AgentState,
         seen: &'a BTreeMap<EntryId, [u8; 32]>,
         content: &'a ContentBindings,
+        _: &'a acyclic_harness_core::core::RuntimeAuthority,
+        _: &'a acyclic_harness_core::core::Scope,
     ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Option<WorkspaceUpdate>>> {
         Box::pin(async move {
             let table = WorkspaceTable::new(agent.volumes.clone())
@@ -48,33 +50,17 @@ impl TurnExecutors for Exposed {
                     paths: [("home".into(), None)].into(),
                 })
                 .collect();
-            let document = WorkspaceAnnouncement::new(&table, &self.roster, exposures)
-                .map_err(|error| acyclic_harness_core::Error::Invalid(error.to_string()))?;
-            let mut instructions = Vec::new();
-            for entry in table
-                .entries()
-                .iter()
-                .filter(|entry| entry.role == WorkspaceRole::User)
-            {
-                let source = WorkspaceInstructions::source_for(entry)
-                    .map_err(|error| acyclic_harness_core::Error::Invalid(error.to_string()))?;
-                if seen.get(&entry.id) == Some(&source) {
-                    continue;
-                }
-                instructions.push(
-                    discover_workspace_instructions(
-                        entry,
-                        content.reader.as_ref(),
-                        &Default::default(),
-                        &mut Default::default(),
-                    )
-                    .await?,
-                );
-            }
-            Ok(Some(WorkspaceUpdate {
-                document,
-                instructions,
-            }))
+            WorkspaceUpdate::discover(
+                agent.volumes.clone(),
+                Some(&self.roster),
+                exposures,
+                seen,
+                content.reader.as_ref(),
+                &Default::default(),
+                &mut Default::default(),
+            )
+            .await
+            .map(Some)
         })
     }
 }

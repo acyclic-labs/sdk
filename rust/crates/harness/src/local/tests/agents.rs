@@ -19,13 +19,19 @@ async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> 
 }
 
 #[tokio::test]
-async fn renaming_the_primary_keeps_local_turns_on_the_same_source() -> Result<()> {
-    use crate::agent::{InboxRecord, WorkspaceChanged, WorkspaceOp, WorkspaceTable};
+async fn workspace_deltas_keep_local_turns_on_the_same_primary() -> Result<()> {
+    use crate::agent::{
+        InboxRecord, WorkspaceChanged, WorkspaceEntry, WorkspaceOp, WorkspaceRole, WorkspaceTable,
+    };
+    use crate::conversation::{
+        ContentPublisher as _, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    };
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let provider = super::scripted([
         super::ScriptedTurn::Text("before rename".into()),
         super::ScriptedTurn::Text("after rename".into()),
+        super::ScriptedTurn::Text("after add".into()),
     ]);
     let harness = Arc::new(
         LocalHarness::open(
@@ -86,6 +92,103 @@ async fn renaming_the_primary_keeps_local_turns_on_the_same_source() -> Result<(
     assert_eq!(primary.id, id);
     assert_eq!(primary.volume()?, &project);
     assert_eq!(primary.name, "renamed");
+    let added = VolumeRef::new(
+        project.provider().clone(),
+        "added-repository".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("test".into()),
+        &mut None,
+    )?;
+    harness.files.create_volume(&added).await?;
+    let issuer = harness
+        .root_authority
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("test signing custody".into()))?;
+    let grants = crate::Capabilities::new([added.capability(VolumeOperation::Write, &mut None)?]);
+    let scope = issuer.bootstrap_scope("added-instructions", &grants, None, &mut None)?;
+    let publisher = crate::filesystem::FilesystemContentPublisher::new(
+        Arc::clone(&harness.files),
+        &added,
+        &harness.verifier,
+        &scope,
+        harness.limits.file_bytes,
+        None,
+    )?;
+    let (instructions, _) = publisher
+        .stage(
+            crate::OperationId::new(),
+            "AGENTS.md",
+            b"Instructions from the newly added repository.",
+            "text/markdown",
+            "AGENTS.md",
+            Default::default(),
+        )?
+        .await?;
+    let record = InboxRecord::WorkspaceChanged(Box::new(WorkspaceChanged {
+        version: 1,
+        op: WorkspaceOp::Add,
+        entry: WorkspaceEntry::initial_volume(WorkspaceRole::User, "second".into(), added),
+    }));
+    let result = streams
+        .commit(acyclic_stream::CommitRequest {
+            idempotency_key: acyclic_stream::IdempotencyKey::new(b"add-second-repository".to_vec())
+                .map_err(agent)?,
+            deadline_unix_millis: None,
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![acyclic_stream::CommitCondition::Absent {
+                    path: root.closed().map_err(agent)?,
+                }],
+                vec![acyclic_stream::CommitMutation::Append {
+                    path: root.inbox().map_err(agent)?,
+                    records: vec![record.encode().map_err(agent)?.into()],
+                }],
+            )],
+        })
+        .await
+        .map_err(agent)?;
+    assert!(matches!(
+        result,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    agents.drain(root).await.map_err(agent)?;
+    let after = observed.send("added", "after add").await?;
+    assert_eq!(after.outcome, crate::agent::TurnOutcome::Completed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[2].messages[..requests[1].messages.len()],
+        requests[1].messages
+    );
+    assert!(
+        !requests[1]
+            .messages
+            .iter()
+            .flat_map(|message| message.content.file_parts())
+            .any(|(file, _)| file == &instructions)
+    );
+    assert!(
+        requests[2]
+            .messages
+            .iter()
+            .flat_map(|message| message.content.file_parts())
+            .any(|(file, _)| file == &instructions)
+    );
+    let announced = after
+        .announcements
+        .iter()
+        .find(|document| document.kind == crate::agent::AnnouncementKind::Workspaces)
+        .ok_or_else(|| Error::NotFound("workspace delta".into()))?;
+    assert!(
+        announced
+            .instructions
+            .iter()
+            .any(|bundle| bundle.files.contains(&instructions))
+    );
+    assert!(
+        super::request_text(&harness, &requests[2])
+            .await?
+            .contains("Instructions from the newly added repository.")
+    );
     Ok(())
 }
 

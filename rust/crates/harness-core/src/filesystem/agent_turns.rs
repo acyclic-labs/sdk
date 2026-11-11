@@ -418,8 +418,10 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         agent: &'a AgentState,
         seen: &'a std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]>,
         content: &'a ContentBindings,
+        issuer: &'a RuntimeAuthority,
+        scope: &'a Scope,
     ) -> BoxFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
-        let _ = (agent, seen, content);
+        let _ = (agent, seen, content, issuer, scope);
         Box::pin(async { Ok(None) })
     }
 
@@ -1902,7 +1904,13 @@ where
                         let seen = context.instruction_entries();
                         if let Some(update) = self
                             .executors
-                            .workspaces(agent, &seen, &bindings.content)
+                            .workspaces(
+                                agent,
+                                &seen,
+                                &bindings.content,
+                                &bindings.issuer,
+                                &bindings.scope,
+                            )
                             .await?
                         {
                             let (bytes, digest) = update.document.canonical();

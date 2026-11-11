@@ -248,7 +248,14 @@ impl TurnContext for LocalContext {
                 .writer
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("agent turn has no private writer".into()))?;
-            let bindings = local.turn_bindings(agent, authority).await?;
+            let bindings = local
+                .turn_bindings(
+                    agent,
+                    &authority.issuer,
+                    &authority.scope,
+                    &authority.content,
+                )
+                .await?;
             let epoch = local
                 .context_epoch(agent, &bindings.context, &**writer)?
                 .await?;
@@ -304,6 +311,96 @@ impl TurnContext for LocalContext {
     fn roster(&self, _: &AgentState) -> Option<Arc<crate::agent::Roster>> {
         let local = self.0.upgrade()?;
         local.harness.targets().map(|targets| targets.roster())
+    }
+
+    fn workspaces<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        seen: &'a std::collections::BTreeMap<crate::agent::EntryId, [u8; 32]>,
+        content: &'a crate::runtime::ContentBindings,
+        issuer: &'a crate::core::RuntimeAuthority,
+        scope: &'a crate::core::Scope,
+    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+        Box::pin(async move {
+            let local = self
+                .0
+                .upgrade()
+                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
+            // Use the same admitted placement as turn preparation, including
+            // the selected child's own project and auxiliary projections.
+            let bindings = local.turn_bindings(agent, issuer, scope, content).await?;
+            let roster = bindings.harness.targets().map(|targets| targets.roster());
+            let exposures = agent
+                .volumes
+                .iter()
+                .filter(|entry| entry.role != WorkspaceRole::Internal)
+                .map(|entry| {
+                    #[cfg(any(test, not(target_arch = "wasm32")))]
+                    let path = bindings
+                        .context
+                        .workspace
+                        .as_ref()
+                        .and_then(|workspace| {
+                            if !entry.root.is_empty()
+                                || entry.mode != crate::agent::WorkspaceMode::ReadWrite
+                            {
+                                return None;
+                            }
+                            let volume = entry.as_volume()?;
+                            let (relative, mount) = workspace
+                                .mounts
+                                .mounts()
+                                .find(|(_, mount)| &mount.view.volume == volume)?;
+                            match &mount.native_root {
+                                crate::workspace::NativeRoot::Logical => None,
+                                crate::workspace::NativeRoot::Composed => {
+                                    Some(workspace.mounts.root.join(relative))
+                                }
+                                crate::workspace::NativeRoot::Path(path) => Some(path.clone()),
+                            }
+                        })
+                        .map(|path| path.to_string_lossy().into_owned());
+                    #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+                    let path: Option<String> = None;
+                    crate::agent::WorkspaceExposure {
+                        entry: entry.id,
+                        paths: roster
+                            .iter()
+                            .flat_map(|roster| roster.targets())
+                            .map(|target| {
+                                (
+                                    target.name.clone(),
+                                    if target.name == HOME_TARGET {
+                                        path.clone()
+                                    } else {
+                                        None
+                                    },
+                                )
+                            })
+                            .collect(),
+                    }
+                })
+                .collect();
+            let limits = crate::context::ContextDiscoveryLimits::default();
+            let mut work = crate::context::DiscoveryWork {
+                limits: crate::context::ContextDiscoveryLimits {
+                    instruction_bytes: limits.instruction_bytes.min(local.limits.file_bytes),
+                    ..limits
+                },
+                ..Default::default()
+            };
+            crate::agent::WorkspaceUpdate::discover(
+                agent.volumes.clone(),
+                roster.as_deref(),
+                exposures,
+                seen,
+                content.reader.as_ref(),
+                &Default::default(),
+                &mut work,
+            )
+            .await
+            .map(Some)
+        })
     }
 }
 
@@ -492,7 +589,9 @@ impl LocalHarness {
     fn turn_bindings<'a>(
         &'a self,
         agent: &'a AgentState,
-        authority: &'a TurnAuthority,
+        issuer: &'a crate::core::RuntimeAuthority,
+        scope: &'a crate::core::Scope,
+        content: &'a crate::runtime::ContentBindings,
     ) -> BoxProviderFuture<'a, Result<TurnBindings<'a>>> {
         Box::pin(async move {
             let project = WorkspaceTable::primary_in(&agent.volumes)
@@ -504,7 +603,7 @@ impl LocalHarness {
                 .find(|binding| binding.role == WorkspaceRole::Home)
                 .and_then(|binding| binding.as_volume())
                 .ok_or_else(|| Error::Invalid("agent has no home volume".into()))?;
-            let verifier = authority.issuer.verifier(&mut None)?;
+            let verifier = issuer.verifier(&mut None)?;
             #[cfg(any(test, not(target_arch = "wasm32")))]
             let journal = agent
                 .volumes
@@ -517,11 +616,11 @@ impl LocalHarness {
                 scratch,
                 #[cfg(any(test, not(target_arch = "wasm32")))]
                 journal,
-                reader: authority.content.reader.as_ref(),
+                reader: content.reader.as_ref(),
                 #[cfg(any(test, not(target_arch = "wasm32")))]
                 verifier: verifier.clone(),
                 #[cfg(any(test, not(target_arch = "wasm32")))]
-                scope: &authority.scope,
+                scope,
                 #[cfg(any(test, not(target_arch = "wasm32")))]
                 workspace: self.workspace.clone(),
             };
@@ -547,7 +646,7 @@ impl LocalHarness {
                         &agent.path,
                         project,
                         &agent.volumes,
-                        &authority.scope,
+                        scope,
                         &verifier,
                     )
                     .await?;
@@ -555,7 +654,7 @@ impl LocalHarness {
                     .executor(
                         (project, &self.files, self.limits.file_bytes),
                         Arc::clone(&self.clock),
-                        &authority.scope,
+                        scope,
                         &verifier,
                         None,
                     )
@@ -570,7 +669,7 @@ impl LocalHarness {
                         Some(home(tools)?),
                         crate::runtime::ContentBindings {
                             volume: project.clone(),
-                            reader: Arc::clone(&authority.content.reader),
+                            reader: Arc::clone(&content.reader),
                             writer: Some(writer),
                         },
                     )?,
@@ -581,7 +680,7 @@ impl LocalHarness {
                 let view = workspace.spawned_project_view(project).await?;
                 let authority = crate::filesystem::NativeMountAuthority::admitted(
                     verifier.clone(),
-                    authority.scope.copy(&mut None)?,
+                    scope.copy(&mut None)?,
                 );
                 super::context::Binding {
                     workspace: Some(workspace.context_task_view(view, project, &authority)?),
@@ -594,7 +693,7 @@ impl LocalHarness {
                 Arc::clone(&self.files),
                 project,
                 &verifier,
-                &authority.scope,
+                scope,
                 self.limits.file_bytes,
                 None,
             )?;
@@ -604,7 +703,7 @@ impl LocalHarness {
                     None,
                     crate::runtime::ContentBindings {
                         volume: project.clone(),
-                        reader: Arc::clone(&authority.content.reader),
+                        reader: Arc::clone(&content.reader),
                         writer: Some(writer),
                     },
                 )?,
