@@ -42,7 +42,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: &PreparationIo,
     ) -> Result<Vec<DiffPublication>> {
         use futures::TryStreamExt as _;
-        let steps = self.diff_private_steps(roots, (base, current), io);
+        let steps = self.diff_private_steps(roots, (base, current), io, false);
         futures::pin_mut!(steps);
         let mut paths = vec![Vec::new(); roots.len()];
         while let Some(step) = steps.try_next().await? {
@@ -52,10 +52,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         Ok(paths
             .into_iter()
-            .map(|paths| DiffPublication {
-                previous: base.clone(),
-                generation: current.clone(),
-                paths,
+            .map(|mut paths| {
+                paths.sort_by(|left, right| left.path.cmp(&right.path));
+                DiffPublication {
+                    previous: base.clone(),
+                    generation: current.clone(),
+                    paths,
+                }
             })
             .collect())
     }
@@ -75,7 +78,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             let root = ContextRoot { volume: volume.clone(), directory: String::new() };
             let roots = [(&root, grant)];
-            let steps = self.diff_private_steps(&roots, (base, current), &io);
+            let steps = self.diff_private_steps(&roots, (base, current), &io, true);
             futures::pin_mut!(steps);
             while let Some(mut step) = steps.try_next().await? {
                 yield step.pop().map(|(_, path)| path);
@@ -88,6 +91,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         roots: &'a [(&'a ContextRoot, &'a ContentGrant)],
         (base, current): (&'a GenerationRef, &'a GenerationRef),
         io: &'a PreparationIo,
+        streaming: bool,
     ) -> impl futures::Stream<Item = Result<Vec<(usize, DiffPath)>>> + 'a {
         async_stream::try_stream! {
         let mut selections = Vec::new();
@@ -107,10 +111,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )?;
         loop {
             let next = io.cursor_receipt(changed.next().await, &mut work)?;
-            for ((_, grant), (before, after)) in roots.iter().zip(&selections) {
-                before.require_current(io).await?;
-                after.require_current(io).await?;
-                grant.recheck(Some(io))?;
+            if streaming || next.is_none() {
+                for ((_, grant), (before, after)) in roots.iter().zip(&selections) {
+                    before.require_current(io).await?;
+                    after.require_current(io).await?;
+                    grant.recheck(Some(io))?;
+                }
             }
             let Some(entry) = next else {
                 break;

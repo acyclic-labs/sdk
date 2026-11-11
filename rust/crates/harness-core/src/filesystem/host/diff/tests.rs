@@ -70,7 +70,7 @@ async fn changed_path_queries_suspend_at_each_row_and_keep_the_original_cut() ->
     let io = PreparationIo::for_unmeasured(&cancellation)?;
     let first_work;
     {
-        let steps = host.diff_private_steps(&roots, (&base, &current), &io);
+        let steps = host.diff_private_steps(&roots, (&base, &current), &io, true);
         futures::pin_mut!(steps);
         assert_eq!(
             io.receipt(),

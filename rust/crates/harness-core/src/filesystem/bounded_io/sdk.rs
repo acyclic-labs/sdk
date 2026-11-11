@@ -135,7 +135,7 @@ impl PreparationIo {
     ) -> Result<T> {
         let cumulative = match &result {
             Ok(receipt) => receipt.work,
-            Err(failure) => failure.work,
+            Err(failure) => *failure.work,
         };
         if matches!(self, Self::Owned { .. }) {
             let delta = cumulative
