@@ -2283,13 +2283,25 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
         ));
     }
     assert_eq!(provider.request_count(), 4);
-    let observed = super::request_text(
-        &harness,
-        &provider
-            .request(3)
-            .ok_or_else(|| Error::NotFound("shared-board read request".into()))?,
-    )
-    .await?;
+    let request = provider
+        .request(3)
+        .ok_or_else(|| Error::NotFound("shared-board read request".into()))?;
+    let result = request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .find_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id, content, ..
+            } if call_id == "read" => Some(content),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound("shared-board read result".into()))?;
+    assert!(
+        !matches!(result, crate::model::ToolResultContent::Error { .. }),
+        "shared-board read failed: {result:?}"
+    );
+    let observed = serde_json::to_string(result).map_err(agent)?;
     assert!(
         observed.contains("shared-board-sentinel-73dae"),
         "the sibling did not read the original shared write: {observed}"
