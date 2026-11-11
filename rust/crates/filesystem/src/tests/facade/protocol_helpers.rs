@@ -74,7 +74,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
             (local.rebase_head(Some(8), B, &cancel).await?.value, None)
         };
         #[cfg(target_arch = "wasm32")]
-        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
         if safe {
             assert!(matches!(decision, RebaseDecision::Safe { .. }));
             let bytes = read(&mut local, id, 0, 70, &cancel).await?;
