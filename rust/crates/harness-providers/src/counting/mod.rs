@@ -1,4 +1,6 @@
 //! Verified provider admission, independent of usage-calibrated planning weights.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod reported_usage_tests;
 pub(crate) mod wire;
 use crate::{HttpRequest, ResolvedModel, dispatch, projection};
 use acyclic_harness_core::{Error, NativeCustody, NativeWork, Result, context::ModelTokenCount};
@@ -19,21 +21,42 @@ pub(crate) fn specification<'a>(
     config: &'a crate::ProviderSpec,
     work: NativeWork<'_>,
 ) -> Result<&'a wire::TokenCounterSpec> {
-    let spec = config.token_counter.as_ref().ok_or_else(|| {
-        let reason = "configure a verified input token counter for this endpoint";
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.is_some() {
-            return Error::NativeBoundary {
-                code: acyclic_harness_core::wire::ErrorCode::Unsupported,
-                reason,
-            };
-        }
-        Error::Unsupported(reason.into())
-    })?;
+    // Compatible Chat providers need no separate tokenizer route. A bounded
+    // completion reports the verified prompt count on the generation origin.
+    static CHAT_USAGE: std::sync::LazyLock<wire::TokenCounterSpec> =
+        std::sync::LazyLock::new(|| wire::TokenCounterSpec {
+            path: "chat/completions".into(),
+            adapter: crate::Adapter::Chat,
+            response_field: wire::TokenCountField::PromptTokens,
+            framing_tokens: 0,
+        });
+    let spec = config
+        .token_counter
+        .as_ref()
+        .or_else(|| (config.adapter == crate::Adapter::Chat).then(|| &*CHAT_USAGE))
+        .ok_or_else(|| {
+            let reason = "configure a verified input token counter for this endpoint";
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.is_some() {
+                return Error::NativeBoundary {
+                    code: acyclic_harness_core::wire::ErrorCode::Unsupported,
+                    reason,
+                };
+            }
+            Error::Unsupported(reason.into())
+        })?;
     if spec.adapter != config.adapter {
         return Err(boundary(
             work,
             "token counter dialect differs from generation",
+        ));
+    }
+    if spec.response_field == wire::TokenCountField::PromptTokens
+        && spec.adapter != crate::Adapter::Chat
+    {
+        return Err(boundary(
+            work,
+            "reported prompt usage requires the Chat adapter",
         ));
     }
     Ok(spec)
@@ -121,7 +144,7 @@ pub(crate) async fn count(
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let generation =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
-        let bytes = wire::body(generation, &provider.model.name, spec.adapter)?;
+        let bytes = wire::body(generation, &provider.model.name, spec)?;
         let url = wire::endpoint(&provider.config, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;
         Ok::<_, Error>((url, bytes, plan))
@@ -244,11 +267,7 @@ async fn read_count(
     response: crate::HttpResponse,
     work: NativeWork<'_>,
 ) -> Result<u64> {
-    let spec = provider
-        .config
-        .token_counter
-        .as_ref()
-        .ok_or_else(|| crate::invalid("missing token counter"))?;
+    let spec = specification(&provider.config, work)?;
     let body =
         crate::http::bounded::read(response.body, provider.config.max_event_bytes, work).await?;
     #[cfg(not(target_arch = "wasm32"))]

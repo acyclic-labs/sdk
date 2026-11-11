@@ -147,6 +147,7 @@ async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
     let file = path("/file")?;
     let mutations = vec![
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: file.clone(),
             bytes: acyclic_stream::OwnedBytes::from_static(b"a"),
             metadata: FileMetadata::default(),
@@ -486,6 +487,7 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
 
 fn options(root: &Path, maximum_paths: u32) -> Result<CaptureOptions, CaptureError> {
     Ok(CaptureOptions {
+        source_namespace: None,
         source_root: root.to_path_buf(),
         expected_root_identity: capture_root_identity(root)?,
         maximum_paths,

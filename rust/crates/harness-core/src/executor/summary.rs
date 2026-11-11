@@ -42,6 +42,8 @@ impl StockExecution<'_> {
                 summary_output,
             )),
             single_request: false,
+            journal_writes: self.journal_writes.borrowed(),
+            background: Default::default(),
             compaction: once_cell::sync::OnceCell::new(),
             records: tokio::sync::Mutex::new(Default::default()),
             working_tail: tokio::sync::Mutex::new(Default::default()),

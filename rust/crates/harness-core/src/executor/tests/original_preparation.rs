@@ -82,7 +82,7 @@ impl StockExecution<'_> {
             .await?;
         let accounting = if matches!(
             self.compaction_policy()?,
-            crate::context::CompactionPolicy::Threshold(_)
+            crate::context::CompactionPolicy::Capacity(_)
         ) {
             let capacity = self.model_capacity()?;
             let prepared = crate::model::PreparedModelRequest::prepare(
@@ -98,7 +98,10 @@ impl StockExecution<'_> {
             if self.io.is_none() {
                 projection.messages = prepared.into_messages();
             }
-            Some(ContextAccounting { capacity, count })
+            Some(ContextAccounting {
+                capacity,
+                count: Some(count),
+            })
         } else {
             None
         };
@@ -247,7 +250,7 @@ impl StockExecution<'_> {
         let (input, step) = turn;
         match (self.compaction_policy()?, accounting) {
             (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
-            (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
+            (crate::context::CompactionPolicy::Capacity(policy), Some(accounting)) => {
                 if self.model_capacity()? != accounting.capacity {
                     return Err(stock_boundary(
                         self.io,
@@ -255,8 +258,13 @@ impl StockExecution<'_> {
                         "selected capacity differs from captured accounting",
                     ));
                 }
-                let input_tokens =
-                    with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+                let input_tokens = with_history_io(self.io, |work| {
+                    accounting
+                        .count
+                        .as_ref()
+                        .ok_or(Error::ModelContextOverflow)?
+                        .validate(&prepared, work)
+                })?;
                 if let Some(retained) = self
                     .retained_compacted_response(
                         journal,
@@ -297,10 +305,7 @@ impl StockExecution<'_> {
                     return Ok(prepared);
                 }
                 let source = if projection.canonical.is_some() {
-                    CompactionSource::Base {
-                        context: source,
-                        count: None,
-                    }
+                    CompactionSource::Base { context: source }
                 } else {
                     CompactionSource::Projected
                 };

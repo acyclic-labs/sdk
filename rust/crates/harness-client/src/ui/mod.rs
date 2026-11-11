@@ -6,7 +6,7 @@ pub use attention::{attention, attention_wants};
 mod project;
 mod reply;
 use acyclic_harness_core::command_request::CommandFileRoot;
-pub use project::{Affected, Cut, Node, Page, ReaderCut, View};
+pub use project::{Affected, AgentRow, Cut, Node, Page, ReaderCut, View};
 pub use reply::{Reply, ReplyPayload, approval_reply};
 
 /// Projection or untrusted document failure.
@@ -30,6 +30,17 @@ pub enum Error {
 }
 /// UI operation result.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Ordered, case-insensitive subsequence matching over an authored title.
+/// Callers page their existing query; matching never reads or scans a tree.
+#[must_use]
+pub fn title_matches(title: &str, query: &str) -> bool {
+    let mut title = title.chars().flat_map(char::to_lowercase);
+    query
+        .chars()
+        .flat_map(char::to_lowercase)
+        .all(|needle| title.any(|c| c == needle))
+}
 
 /// Canonical relative path beneath the bound agent's private `ui/` root.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

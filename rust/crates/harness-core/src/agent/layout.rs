@@ -10,7 +10,7 @@
 //! harness/agents/<path>/machines/<name>    this agent's own Machine on provisioned
 //!                                          target <name>: one MachineBinding
 //! harness/actors/<actor>                  A4 actor state (`Store` root), outside the subtree
-//! harness/status/<id>                      status records, outside the subtree
+//! harness/status/<root>/children/<id>    status records, outside fork destinations
 //! harness/membership/<root>/<id>           self then direct child creations (v1)
 //! ```
 //!
@@ -36,12 +36,10 @@ pub const AGENTS: &str = "harness/agents";
 pub const ACTORS: &str = "harness/actors";
 /// Root of every agent volume authority stream, in the same domain.
 pub const VOLUMES: &str = "harness/volumes";
-/// Root of every agent's status stream, keyed by its globally unique id.
+/// Root of status streams, mirroring agent ancestry outside fork destinations.
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
 pub const NOT_INHERITED: [&str; 5] = [CHILDREN, CLOSED, TARGETS, MACHINES, "context"];
-/// Deepest admitted nesting; bounds every path and every lineage walk.
-pub const MAX_DEPTH: usize = 64;
 
 const CONVERSATION: &str = "conversation";
 /// Generation-linked checkpoints, indexed like [`CONVERSATION`].
@@ -184,9 +182,6 @@ impl AgentPath {
 
     /// The child `id` nested under this agent.
     pub fn child(&self, id: &AgentId) -> Result<Self, Error> {
-        if self.depth + 1 > MAX_DEPTH {
-            return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
-        }
         Ok(Self {
             text: format!("{}/{CHILDREN}/{id}", self.text),
             depth: self.depth + 1,
@@ -281,7 +276,7 @@ impl AgentPath {
 
     /// Status stream.
     pub fn status(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{STATUSES}/{}", self.id_text()))
+        stream(&format!("{STATUSES}{}", &self.text[AGENTS.len()..]))
     }
 
     /// Close marker stream; its existence refuses every later inbox append.
@@ -359,9 +354,6 @@ impl TryFrom<String> for AgentPath {
             }
             AgentId::validate(segments.next().unwrap_or_default())?;
             depth += 1;
-            if depth > MAX_DEPTH {
-                return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
-            }
         }
         Ok(Self { text, depth })
     }
@@ -438,7 +430,7 @@ mod tests {
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
             0x32, 0x10,
         ];
-        for depth in [1, 8, MAX_DEPTH] {
+        for depth in [1, 8, 128] {
             let mut descendant = root.clone();
             for _ in root.depth()..depth {
                 descendant = descendant.child(&AgentId::from_bytes(leaf))?;
@@ -453,10 +445,13 @@ mod tests {
             assert_eq!(parsed, descendant);
             assert_eq!(parsed.as_str().as_ptr(), original);
             assert_eq!(parsing.count_total, 0);
-            // Addressing borrows the canonical identity and root; owning either
+            // Addressing borrows the canonical ancestry and root; owning either
             // again is the retained allocation negative control.
             let (_, status_work) = acyclic_test_support::differential(
-                || stream(&format!("{STATUSES}/{}", parsed.id())).expect("canonical status"),
+                || {
+                    let ancestry = parsed.as_str()[AGENTS.len()..].to_owned();
+                    stream(&format!("{STATUSES}{ancestry}")).expect("canonical status")
+                },
                 || parsed.status().expect("canonical status"),
             );
             let (_, target_work) = acyclic_test_support::differential(

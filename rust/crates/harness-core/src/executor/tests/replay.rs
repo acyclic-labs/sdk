@@ -314,6 +314,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
                     request: journal
                         .stage(operation, "page-fixture", b"null", "application/json", None)?
                         .await?,
+                    context: None,
                 },
                 None,
             )?

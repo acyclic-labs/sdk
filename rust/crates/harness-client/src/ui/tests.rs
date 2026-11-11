@@ -24,6 +24,7 @@ fn agent(n: u128) -> AgentPath {
 }
 fn status(phase: Phase) -> StatusRecord {
     StatusRecord {
+        child_settlement: None,
         child_wakes: None,
         phase,
         cursor: 1,
@@ -161,6 +162,26 @@ async fn ui_default_projection() -> TestResult {
     };
     assert_eq!(view.project(&cut, &index)?, include_str!("golden/index.md"));
     assert_eq!(view.project(&cut, &UiPath::new("status.md")?)?, "Idle\n");
+    // Rows resolve exactly the authored UI cut over the same default files;
+    // absence never invents a model, currency or creation clock.
+    let row = view.row(&cut, |_| None)?;
+    assert_eq!(
+        (&*row.glyph, &*row.title, &*row.model, &*row.cost, &*row.age),
+        ("○", selected.id().as_str(), "—", "—", "—")
+    );
+    let authored = BTreeMap::from([
+        ("title", "Parser worker"),
+        ("model", "selected-model"),
+        ("cost", "0.12 EUR"),
+        ("age", "2m"),
+    ]);
+    let row = view.row(&cut, |path| authored.get(path).copied())?;
+    assert_eq!(
+        (&*row.title, &*row.model, &*row.cost, &*row.age),
+        ("Parser worker", "selected-model", "0.12 EUR", "2m")
+    );
+    assert!(title_matches(&row.title, "pWK"));
+    assert!(!title_matches(&row.title, "wp"));
     assert_eq!(
         view.bytes(&cut, &index, 2..17)?,
         view.project(&cut, &index)?
@@ -250,7 +271,10 @@ async fn ui_default_projection() -> TestResult {
             .iter()
             .any(|want| { matches!(want, crate::reader::Want::Listing { index: 2, .. }) })
     );
-    assert_eq!(view.affected(Affected::Status), &["index.md", "status.md"]);
+    assert_eq!(
+        view.affected(Affected::Status),
+        &["index.md", "status.md", "glyph"]
+    );
     Ok(())
 }
 

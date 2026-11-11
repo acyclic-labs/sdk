@@ -190,7 +190,7 @@ proptest! {
                 &provider.reasoning_origin(provider.key.as_deref(), None),
                 &mut crate::files::FileText::default()).unwrap();
             let generation: serde_json::Value = serde_json::from_slice(&body.encode().unwrap()).unwrap();
-            let count: serde_json::Value = serde_json::from_slice(&crate::counting::wire::body(body, &request.model.name, adapter).unwrap()).unwrap();
+            let count: serde_json::Value = serde_json::from_slice(&crate::counting::wire::body(body, &request.model.name, crate::counting::specification(&provider.config, None).unwrap()).unwrap()).unwrap();
             let count = if adapter == Adapter::Gemini { &count["generateContentRequest"] } else { &count };
             prop_assert_eq!(&count["tools"], &generation["tools"], "count/generation declarations diverged for {:?}", adapter);
             prop_assert_eq!(validate_input(adapter, &generation), Vec::<&str>::new(), "provider grammar {:?}", adapter);

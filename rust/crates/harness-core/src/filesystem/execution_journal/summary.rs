@@ -83,7 +83,7 @@ impl ExecutionSummary {
             }
             ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
-            | ExecutionEvent::ModelStopped { step, purpose } => self
+            | ExecutionEvent::ModelStopped { step, purpose, .. } => self
                 .models
                 .get(&(*step, *purpose), io)?
                 .is_some_and(Option::is_some),
@@ -297,7 +297,7 @@ impl ExecutionSummary {
                         })?;
                 }
             }
-            ExecutionEvent::ModelStopped { step, purpose } => {
+            ExecutionEvent::ModelStopped { step, purpose, .. } => {
                 let state = self
                     .models
                     .get_mut(&(*step, *purpose), io)?

@@ -57,6 +57,7 @@ impl Hosted {
 /// own session credential carries, and its prompts attach the checkout files
 /// they mention.
 struct LocalUser {
+    sessions: bool,
     harness: Weak<LocalHarness>,
     /// The root's retained diff projection, which its continuation pages
     /// read without projecting again.
@@ -73,6 +74,43 @@ impl LocalUser {
 }
 
 impl crate::hosting::Platform for LocalUser {
+    fn sessions(&self) -> bool {
+        self.sessions
+    }
+
+    fn session_source(&self) -> Option<AgentPath> {
+        let local = self.harness().ok()?;
+        Some(AgentPath::root(&crate::agent::AgentId::from_bytes(
+            local.root.into_bytes(),
+        )))
+    }
+
+    fn session_root(
+        &self,
+        agent: crate::agent::AgentId,
+    ) -> BoxProviderFuture<'_, Result<crate::hosting::RootRequest>> {
+        Box::pin(async move {
+            let local = self.harness()?;
+            let policy = local.root_policy(&agent).await?;
+            Ok(crate::hosting::RootRequest {
+                agent,
+                fresh: Vec::new(),
+                retained: Vec::new(),
+                brief: None,
+                policy: Some(policy),
+            })
+        })
+    }
+
+    #[cfg(any(test, feature = "native-execution"))]
+    fn merge_session<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        operation: OperationId,
+    ) -> BoxProviderFuture<'a, Result<Option<String>>> {
+        Box::pin(async move { self.harness()?.merge_session(agent, operation).await })
+    }
+
     fn policy<'a>(
         &'a self,
         _: &'a Principal,
@@ -110,12 +148,46 @@ impl crate::hosting::Platform for LocalUser {
     ) -> BoxProviderFuture<'a, Result<Vec<crate::context::DiffFilePage>>> {
         Box::pin(async move {
             let local = self.harness()?;
-            if local.agents.get().map(Hosted::root) != Some(agent) {
-                return Err(Error::Unsupported(
-                    "a child agent's fork diff is unavailable".into(),
-                ));
+            if local.agents.get().map(Hosted::root) == Some(agent) {
+                return local.project_diff(&self.diffs, page).await;
             }
-            local.project_diff(&self.diffs, page).await
+            let state = local
+                .agents()
+                .await?
+                .0
+                .state(agent)
+                .await
+                .map_err(storage)?;
+            let project = state
+                .volumes
+                .iter()
+                .find(|binding| binding.name == "project")
+                .ok_or_else(|| Error::Invalid("selected agent has no project binding".into()))?;
+            let operation = crate::filesystem::spawned_operation(agent, &project.name);
+            let base = local
+                .files
+                .creation_generation(&project.volume, operation)
+                .await?
+                .ok_or_else(|| {
+                    Error::Unsupported("selected project has no fork creation receipt".into())
+                })?;
+            let reference = crate::filesystem::workspace_ref(
+                project.volume.provider().clone(),
+                &project.volume.storage_name(&mut None)?,
+            )?;
+            let current = local.files.resolve(&reference, None).await?.generation;
+            let reader = local
+                .agents
+                .get()
+                .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+                .server
+                .bound()
+                .content_reader(agent)
+                .await
+                .map_err(storage)?;
+            self.diffs
+                .page(&*reader, &project.volume, (&base, &current), page)
+                .await
         })
     }
 
@@ -214,6 +286,39 @@ struct TurnBindings<'a> {
 }
 
 impl LocalHarness {
+    /// Bind a committed project using the same adapter for turns and human
+    /// filesystem actions. Only an action needing native access binds a view.
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) async fn project_workspace(
+        &self,
+        workspace: &Arc<super::workspace::LocalWorkspace>,
+        agent: &AgentPath,
+        project: &crate::conversation::VolumeRef,
+        bindings: &[VolumeBinding],
+        scope: &crate::core::Scope,
+        verifier: &crate::core::AuthorityVerifier,
+    ) -> Result<Arc<super::workspace::LocalWorkspace>> {
+        if project == &self.project
+            && self.session_bindings().iter().all(|expected| {
+                bindings.iter().any(|binding| {
+                    binding.name == expected.name && binding.volume == expected.volume
+                })
+            })
+        {
+            return Ok(Arc::clone(workspace));
+        }
+        let view = workspace.spawned_project_view(project).await?;
+        let owner = super::workspace::owner::AgentOwner(agent.clone());
+        let authority = crate::filesystem::NativeMountAuthority::admitted(
+            verifier.clone(),
+            scope.copy(&mut None)?,
+        );
+        let workspace = workspace
+            .bound_task_view(view, project, bindings, &owner, &authority)
+            .await?;
+        Ok(workspace)
+    }
+
     /// Retained session volumes are the same for model and native-host roots;
     /// each root binds its own private journal separately.
     pub(super) fn session_bindings(&self) -> [VolumeBinding; 3] {
@@ -270,22 +375,30 @@ impl LocalHarness {
                 #[cfg(any(test, feature = "native-execution"))]
                 workspace: self.workspace.clone(),
             };
-            if project == &self.project && scratch == &self.scratch {
+            if project == &self.project
+                && scratch == &self.scratch
+                && agent.volumes.iter().any(|binding| {
+                    binding.name == super::SHARED_VOLUME && binding.volume == self.shared
+                })
+            {
                 return Ok(TurnBindings {
                     harness: Arc::clone(&self.harness),
                     context,
                 });
             }
             #[cfg(any(test, feature = "native-execution"))]
-            if let Some(workspace) = &self.workspace {
-                let view = workspace.spawned_project_view(project).await?;
-                let owner = super::workspace::owner::AgentOwner(agent.path.clone());
-                let mount_authority = crate::filesystem::NativeMountAuthority::admitted(
-                    verifier.clone(),
-                    authority.scope.copy(&mut None)?,
-                );
-                let workspace = workspace
-                    .bound_task_view(view, project, scratch.clone(), &owner, &mount_authority)
+            if super::open::uses_native_execution(&self.tools)?
+                && let Some(workspace) = &self.workspace
+            {
+                let workspace = self
+                    .project_workspace(
+                        workspace,
+                        &agent.path,
+                        project,
+                        &agent.volumes,
+                        &authority.scope,
+                        &verifier,
+                    )
                     .await?;
                 let (tools, writer) = workspace
                     .executor(
@@ -312,6 +425,20 @@ impl LocalHarness {
                     )?,
                 });
             }
+            #[cfg(any(test, feature = "native-execution"))]
+            let context = if let Some(workspace) = &self.workspace {
+                let view = workspace.spawned_project_view(project).await?;
+                let authority = crate::filesystem::NativeMountAuthority::admitted(
+                    verifier.clone(),
+                    authority.scope.copy(&mut None)?,
+                );
+                super::context::Binding {
+                    workspace: Some(workspace.context_task_view(view, project, &authority)?),
+                    ..context
+                }
+            } else {
+                context
+            };
             let writer = crate::filesystem::FilesystemContentPublisher::new(
                 Arc::clone(&self.files),
                 project,
@@ -570,6 +697,7 @@ impl LocalHarness {
         }
         .map_err(storage)?;
         let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser {
+            sessions: bound.admit_sessions().is_ok(),
             harness: Arc::downgrade(self),
             #[cfg(any(test, feature = "native-execution"))]
             diffs: crate::hosting::DiffPages::default(),

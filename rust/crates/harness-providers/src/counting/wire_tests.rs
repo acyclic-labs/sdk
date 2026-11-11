@@ -10,7 +10,7 @@ fn body(value: Value, model: &str, adapter: Adapter) -> Result<Value> {
         _ => "messages",
     };
     let generation = crate::projection::wire::Request::fixture(value, field);
-    serde_json::from_slice(&super::body(generation, model, adapter)?)
+    serde_json::from_slice(&super::body(generation, model, &spec(adapter))?)
         .map_err(|_| invalid("fixture encoding failed"))
 }
 
@@ -67,7 +67,7 @@ proptest! {
                 "tools":[], "reasoning":{"effort":"high"}, "text":{"format":{"type":"text"}}});
             original[field] = json!([{"role":"user","content":text}]);
             let counted: Value = serde_json::from_slice(
-                &super::body(crate::projection::wire::Request::fixture(original.clone(), field), &model, adapter).unwrap(),
+                &super::body(crate::projection::wire::Request::fixture(original.clone(), field), &model, &spec(adapter)).unwrap(),
             ).unwrap();
             // Independent wire expectations, rather than comparing two implementations.
             let mut expected = json!({"model":model, "tools":[]});

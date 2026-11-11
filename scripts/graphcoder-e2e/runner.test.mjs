@@ -188,7 +188,7 @@ test("observed producer frame asserts captured content with one screen projectio
   const root = mkdtempSync(join(tmpdir(), "observed-frame-"));
   const buffer = Object.getOwnPropertyDescriptor(Terminal.prototype, "buffer");
   const write = TerminalFrames.prototype.write;
-  let reads = 0;
+  let reads = 0, afterWrite;
   let terminalChild, notifyRequest, requestSeen;
   const projections = [];
   Object.defineProperty(Terminal.prototype, "buffer", { ...buffer, get() { reads++; return buffer.get.call(this); } });
@@ -203,6 +203,7 @@ test("observed producer frame asserts captured content with one screen projectio
       };
     }
     return write.call(this, bytes).then(() => {
+      afterWrite?.(bytes);
       if (notifyRequest && !requestSeen) {
         requestSeen = true;
         // The original request event is the only event after the last redraw.
@@ -216,9 +217,8 @@ test("observed producer frame asserts captured content with one screen projectio
   try {
     const raw = queryCapture.stdout.slice(-32);
     for (const [rejects, assertion, requestOnly] of [
-      [false, { contains: ["workspace diff query is u"] }],
+      [false, { contains: ["workspace diff query is u"], raw: [raw] }],
       [true, { contains: ["INTENTIONALLY_ABSENT_DIFF_CONTENT"] }],
-      [false, { raw: [raw] }],
       [true, { raw: [raw + "\0"] }],
       [false, { contains: ["workspace diff query is u"] }, true],
     ]) {
@@ -244,43 +244,63 @@ test("observed producer frame asserts captured content with one screen projectio
         assert.equal(processes.children.size, 0);
       } finally { await processes.close(); }
     }
+    for (const [redraw, requestAfterFrame] of [[false, false], [true, false], [true, true]]) {
+      // Replay original native frames through a real child. Its request arrives
+      // after input, before the next redraw, just as the model fixture can wake
+      // the action driver while the preceding cells are still visible.
+      let owner, request, requested = false, capture, parsed = 0, requestAt, pendingRequest;
+      // The capture ends at a completed synchronized frame. Wait for the full
+      // second replay to be parsed, regardless of pipe coalescing or fragments.
+      const redrawnBytes = 2 * Buffer.byteLength(queryCapture.stdout);
+      afterWrite = bytes => {
+        parsed += Buffer.byteLength(bytes);
+        if (parsed === redrawnBytes) pendingRequest?.();
+      };
+      const processes = new TerminalProcess();
+      const start = processes.startTerminal.bind(processes);
+      processes.startTerminal = (...args) => {
+        owner = start(...args);
+        owner.child.stderr.once("data", () => {
+          const notify = () => {
+            requested = true;
+            requestAt = parsed;
+            request({ case: "observed-frame", path: "search", step: 1 });
+            owner.child.stdin.write("request observed\n");
+          };
+          if (requestAfterFrame && parsed < redrawnBytes) pendingRequest = notify;
+          else notify();
+        });
+        return owner;
+      };
+      try {
+        const running = pty(processes, process.execPath, {
+          id: "observed-frame", workspace: root,
+          args: ["-e", `const fs=require('node:fs');const first=JSON.parse(fs.readFileSync(process.argv[1],'utf8')).stdout;const next=${redraw ? "first" : "JSON.parse(fs.readFileSync(process.argv[2],'utf8')).idle.stdout"};process.stdin.once('data',()=>{${requestAfterFrame ? "process.stdin.once('data',()=>process.stdin.destroy());process.stdout.write(next,()=>process.stderr.write('request\\n'))" : "process.stdin.once('data',()=>process.stdout.write(next,()=>process.stdin.destroy()));process.stderr.write('request\\n')"}});process.stdout.write(first)`,
+            queryCapturePath, fileURLToPath(new URL("./fixtures/terminal-frames.json", import.meta.url))],
+          requested() { return requested; },
+          onRequest(callback) { request = callback; return () => { request = undefined; }; },
+        }, { actions: [
+          { when: { contains: ["storage failure: diff command:"] }, send: "redraw\n" },
+          { after_request: { path: "search", step: 1 }, when: { contains: ["storage failure: diff command:"] } },
+        ] }, result => { capture = result; });
+        if (redraw) {
+          assert.equal((await running).code, 0);
+          if (requestAfterFrame) assert.equal(requestAt, redrawnBytes,
+            "the request follows the final completed frame of the second replay");
+          else assert.ok(requestAt < redrawnBytes,
+            "the request precedes the second replay");
+        }
+        else await assert.rejects(running, /PTY completed 1\/2 actions/);
+        assert.equal(capture.actions, redraw ? 2 : 1,
+          "a request wakeup cannot admit the next input action on consumed cells");
+        assert.equal(processes.children.size, 0);
+      } finally { afterWrite = undefined; await processes.close(); }
+    }
     assert.ok(projections.includes(1), "the original frame must be inspected");
     assert.ok(projections.every(count => count <= 1), "one screen projection serves matching and assertion");
   } finally {
     TerminalFrames.prototype.write = write;
     Object.defineProperty(Terminal.prototype, "buffer", buffer);
-    rmSync(root, { recursive: true });
-  }
-});
-
-test("request callbacks cannot send another action on consumed terminal cells", async () => {
-  let notifyRequest, terminalChild;
-  class TerminalProcess extends Processes {
-    startTerminal(binary, args, { cwd, env }) {
-      const running = this.start(binary, args, { cwd, env });
-      terminalChild = running.child;
-      running.child.stderr.once("data", () => {
-        notifyRequest({ path: "search", step: 1 });
-        terminalChild.stdin.end();
-      });
-      return running;
-    }
-  }
-  const root = mkdtempSync(join(tmpdir(), "consumed-frame-")), processes = new TerminalProcess();
-  let captured;
-  try {
-    const running = pty(processes, process.execPath, {
-      id: "consumed-frame", workspace: root,
-      args: ["-e", "process.stdin.once('data',()=>process.stderr.write('request\\n'));process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).stdout)", queryCapturePath],
-      onRequest(listener) { notifyRequest = listener; return () => { notifyRequest = undefined; }; },
-    }, { actions: [
-      { when: { contains: ["storage failure: diff command:"] }, send: "first\n" },
-      { when: { contains: ["storage failure: diff command:"] }, send: "second\n" },
-    ] }, value => { captured = value; });
-    await assert.rejects(running, /PTY completed 1\/2 actions/);
-    assert.equal(captured.actions, 1, "a request wakeup cannot reuse the previous transaction");
-  } finally {
-    await processes.close();
     rmSync(root, { recursive: true });
   }
 });
@@ -414,6 +434,20 @@ test("a slow transcript holds the source back, so queued bytes stay bounded by a
 });
 
 const raw = text => OutputWatch.of(text, ["\x07", SHOW_CURSOR, HIDE_CURSOR]);
+
+test("PTY waits join cursor-painted wraps and reject absent markers", async () => {
+  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  try {
+    const write = data => new Promise(resolve => screen.write(data, resolve));
+    await write(`\x1b[16;3H${"z".repeat(74)}BAC\x1b[17;3HKGROUND_FIRST_DONE`);
+    assert.ok(matches(screen, raw(""), { contains: ["BACKGROUND_FIRST_DONE"] }));
+    assert.ok(!matches(screen, raw(""), { contains: ["BACKGROUND_NOT_DONE"] }));
+    assert.ok(!matches(screen, raw(""), { absent: ["BACKGROUND_FIRST_DONE"] }));
+    await write("\x1b[2J\x1b[16;3HBAC\x1b[17;3HKGROUND_FIRST_DONE");
+    assert.ok(!matches(screen, raw(""), { contains: ["BACKGROUND_FIRST_DONE"] }),
+      "short rows keep their hard line boundary");
+  } finally { screen.dispose(); }
+});
 
 test("screen conditions require rendered styles and reject literal markdown", async () => {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });

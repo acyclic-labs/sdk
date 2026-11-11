@@ -915,9 +915,9 @@ mod tests {
 
     #[tokio::test]
     async fn deepest_agent_lookup_still_reaches_its_authorized_sibling() -> Result<()> {
-        use crate::agent::{AgentId, MAX_DEPTH};
+        use crate::agent::AgentId;
         let mut parent = AgentPath::root(&AgentId::from_bytes([1; 16]));
-        for _ in 1..MAX_DEPTH {
+        for _ in 1..128 {
             parent = parent.child(&AgentId::from_bytes([2; 16])).map_err(agent)?;
         }
         let deepest = parent.child(&AgentId::from_bytes([3; 16])).map_err(agent)?;

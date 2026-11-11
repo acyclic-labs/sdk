@@ -21,7 +21,7 @@ impl LocalWorkspace {
         &self,
         view: workspace::View,
         project: &VolumeRef,
-        scratch: VolumeRef,
+        bindings: &[crate::agent::VolumeBinding],
         owner: &dyn super::owner::ViewOwner,
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<LocalWorkspace>> {
@@ -38,7 +38,7 @@ impl LocalWorkspace {
         state
             .allocated_workspaces
             .retain(|_, workspace| workspace.strong_count() != 0);
-        let mounts = self.bound_mounts(project, scratch, authority).await?;
+        let mounts = self.bound_mounts(project, bindings, authority).await?;
         let workspace = self
             .mount_task_view(view, owner, Some(mounts), authority)
             .await?;
@@ -61,6 +61,26 @@ impl LocalWorkspace {
             .map_err(storage)
     }
 
+    /// Whether a project already has a physical checkout whose local edits
+    /// must participate in human Git actions, just as they do in model tools.
+    pub(in crate::local) fn has_physical_task_source(
+        &self,
+        view: &workspace::View,
+    ) -> Result<bool> {
+        if self.mounting != WorkspaceMounting::Physical {
+            return Ok(false);
+        }
+        self.physical_task_path(view.workspace().id())
+            .try_exists()
+            .map_err(storage)
+    }
+
+    fn physical_task_path(&self, project: acyclic_fs::WorkspaceId) -> PathBuf {
+        self.mount_directory
+            .join(super::PHYSICAL_VIEW_ROOT)
+            .join(hex::encode(project.into_bytes()))
+    }
+
     /// The physical counterpart of [`Self::mount_task_source`]: `view`'s
     /// complete visible tree as a plain directory below the checkout's
     /// reserved view root, needing no native provider. Its first binding
@@ -77,8 +97,7 @@ impl LocalWorkspace {
             .map_err(storage)?;
         // The binding owns this directory. Selecting another Git workspace
         // must neither share another agent's directory nor orphan this one.
-        let name = hex::encode(self.view().workspace().id().into_bytes());
-        let path = parent.path().join(name);
+        let path = self.physical_task_path(self.view().workspace().id());
         if !path.try_exists().map_err(storage)? {
             let cancellation = CancellationToken::new();
             // Promote every lazily inherited entry first, so the
@@ -161,6 +180,57 @@ impl LocalWorkspace {
             .map_err(storage)
     }
 
+    /// A logical project binding needs no OS mount or physical task directory.
+    pub(in crate::local) fn context_task_view(
+        &self,
+        view: workspace::View,
+        project: &VolumeRef,
+        authority: &crate::filesystem::NativeMountAuthority,
+    ) -> Result<Arc<LocalWorkspace>> {
+        let mounts = Arc::new(mounts::owner(
+            &self.path,
+            project,
+            None,
+            std::iter::empty::<(String, VolumeRef, Option<Arc<MountedVolume>>)>(),
+        )?);
+        Ok(Arc::new(self.unmounted_task_view(view, mounts, authority)))
+    }
+
+    fn unmounted_task_view(
+        &self,
+        view: workspace::View,
+        mounts: Arc<Mounts>,
+        authority: &crate::filesystem::NativeMountAuthority,
+    ) -> LocalWorkspace {
+        LocalWorkspace {
+            shutdown: self.shutdown.clone(),
+            native_mount_probe: self.native_mount_probe.clone(),
+            #[cfg(all(test, not(loom)))]
+            selection_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(all(test, not(loom)))]
+            mount_advances: std::sync::atomic::AtomicUsize::new(0),
+            state: StateArc::new(AsyncMutex::new(State::new(
+                view.workspace().id(),
+                Arc::clone(&mounts),
+            ))),
+            mounts: Arc::clone(&mounts),
+            context_line: mounts.context_line(),
+            processes: self.processes.clone(),
+            path: self.path.clone(),
+            fresh: false,
+            import_source: false,
+            mount_directory: self.mount_directory.clone(),
+            task_view_admission: Arc::clone(&self.task_view_admission),
+            view,
+            mounted: None,
+            mounting: self.mounting,
+            identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
+            filesystem: self.filesystem.clone(),
+            store: self.store.clone(),
+            mount_authority: Some(authority.clone()),
+        }
+    }
+
     // Child admission and tools share this boundary over native mount setup.
     pub(in crate::local) fn mount_task_view<'a>(
         &'a self,
@@ -174,33 +244,11 @@ impl LocalWorkspace {
             // live mount needs its own namespace so retiring it cannot
             // detach a replacement owner's mount at the same path.
             owner.verify().await?;
-            let mut workspace = LocalWorkspace {
-                shutdown: self.shutdown.clone(),
-                native_mount_probe: self.native_mount_probe.clone(),
-                #[cfg(all(test, not(loom)))]
-                selection_reads: std::sync::atomic::AtomicUsize::new(0),
-                #[cfg(all(test, not(loom)))]
-                mount_advances: std::sync::atomic::AtomicUsize::new(0),
-                state: StateArc::new(AsyncMutex::new(State::new(
-                    view.workspace().id(),
-                    Arc::clone(&self.mounts),
-                ))),
-                mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
-                context_line: self.context_line().into(),
-                processes: self.processes.clone(),
-                path: self.path.clone(),
-                fresh: false,
-                import_source: false,
-                mount_directory: self.mount_directory.clone(),
-                task_view_admission: Arc::clone(&self.task_view_admission),
+            let mut workspace = self.unmounted_task_view(
                 view,
-                mounted: None,
-                mounting: self.mounting,
-                identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
-                filesystem: self.filesystem.clone(),
-                store: self.store.clone(),
-                mount_authority: Some(authority.clone()),
-            };
+                mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
+                authority,
+            );
             let (active, pending) = workspace.selected_view().await?;
             let selected = active.as_ref().unwrap_or_else(|| workspace.view());
             let initial_view = selected.workspace().id();

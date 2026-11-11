@@ -73,6 +73,27 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         actor: &ActorReference,
         creation: Creation,
     ) -> Result<CommitEffect, Error> {
+        self.create_with_pause(template, actor, creation, false)
+    }
+
+    /// The same creation overlay, pinned from its first publication until an
+    /// explicit resume. No activation can run a step before the pause exists.
+    pub fn create_paused(
+        &self,
+        template: Option<&Snapshot>,
+        actor: &ActorReference,
+        creation: Creation,
+    ) -> Result<CommitEffect, Error> {
+        self.create_with_pause(template, actor, creation, true)
+    }
+
+    fn create_with_pause(
+        &self,
+        template: Option<&Snapshot>,
+        actor: &ActorReference,
+        creation: Creation,
+        paused: bool,
+    ) -> Result<CommitEffect, Error> {
         let path = self.path(actor)?;
         if creation
             .subscriptions
@@ -102,7 +123,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             checkpoint: creation.checkpoint,
             subscriptions: creation.subscriptions,
             alarm,
-            paused: false,
+            paused,
             metadata: BTreeMap::new(),
             journal_tail: 0,
         };

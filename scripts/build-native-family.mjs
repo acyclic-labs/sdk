@@ -134,13 +134,13 @@ async function assertSourceSnapshot(expected) {
 }
 
 function sourceRevision() {
-  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { maxBuffer: Infinity, cwd: root, encoding: "utf8" }).trim();
   if (!/^[0-9a-f]{40,64}$/.test(revision)) throw new Error("git source revision is unavailable for native artifact provenance");
   return revision;
 }
 
 function commandOutput(command, args) {
-  return execFileSync(command, args, {
+  return execFileSync(command, args, { maxBuffer: Infinity,
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -148,7 +148,7 @@ function commandOutput(command, args) {
 }
 
 function requiredCommandIdentity(command, args) {
-  const result = spawnSync(command, args, {
+  const result = spawnSync(command, args, { maxBuffer: Infinity,
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -854,7 +854,7 @@ function assertMatchingBuildInputs(left, right, options = {}) {
 }
 
 function assertCleanSource() {
-  const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", ...sourceRoots], { cwd: root, encoding: "utf8" });
+  const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", ...sourceRoots], { maxBuffer: Infinity, cwd: root, encoding: "utf8" });
   if (status.trim() !== "") throw new Error("Stream native build requires a clean source closure; commit or stage source changes before building");
 }
 
@@ -927,12 +927,12 @@ function signDarwinAddon(output, target, /** @type {string|null} */ codesignExec
     const artifact = resolve(output, artifactName);
     const args = ["--force", "--sign", "-", "--identifier", `acyclic.${family.key}.napi`, "--timestamp=none", artifact];
     execFileSync(signer, args, { stdio: "inherit" });
-    const verified = spawnSync(signer, ["--verify", "--strict", artifact], { encoding: "utf8" });
+    const verified = spawnSync(signer, ["--verify", "--strict", artifact], { maxBuffer: Infinity, encoding: "utf8" });
     if (verified.status !== 0) {
       const verification = `${verified.stdout ?? ""}${verified.stderr ?? ""}`;
       throw new Error(`codesign strict verification failed: ${verification.trim()}`);
     }
-    const observed = spawnSync(signer, ["-dvv", artifact], { encoding: "utf8" });
+    const observed = spawnSync(signer, ["-dvv", artifact], { maxBuffer: Infinity, encoding: "utf8" });
     const details = `${observed.stdout ?? ""}${observed.stderr ?? ""}`;
     if (observed.status !== 0) throw new Error(`codesign verification failed: ${details.trim()}`);
     return {

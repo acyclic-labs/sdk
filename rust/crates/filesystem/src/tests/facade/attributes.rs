@@ -20,6 +20,7 @@ async fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     let path = path("attributes.bin")?;
     ready!(checkout.value.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: path.clone(),
             bytes: OwnedBytes::new(),
             metadata: FileMetadata::default()

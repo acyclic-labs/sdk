@@ -46,6 +46,7 @@ mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
 use accounting::*;
+mod background_compaction;
 mod binding;
 mod compaction;
 mod composition;
@@ -351,6 +352,9 @@ pub enum ExecutionEvent {
         /// Pinned private artifact containing the exact provider-neutral request bytes.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         request: FileRef,
+        /// Verified occupancy of this exact admitted request, when available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<crate::context::ContextWindow>,
     },
     /// One model stream item was observed.
     Model {
@@ -385,6 +389,10 @@ pub enum ExecutionEvent {
         step: u32,
         /// Admitted response or summary attempt.
         purpose: ModelPurpose,
+        /// Speculative work canceled only because its worker yielded for an
+        /// interaction. It is not a failed context preparation on recovery.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        worker_paused: bool,
     },
     /// Tool dispatch is about to begin.
     ToolStarted {
@@ -663,7 +671,7 @@ pub struct StockExecutor {
         Arc<dyn crate::conversation::ContentResidencyVerifier>,
     )>,
     task_context: Option<(Arc<crate::runtime::TaskContext>, OperationId)>,
-    // `None` is the default: threshold compaction wherever the bound task can
+    // `None` is the default: capacity compaction wherever the bound task can
     // publish private summaries, and none elsewhere. An explicit policy is
     // verified at turn entry.
     compaction: Option<crate::context::CompactionPolicy>,
@@ -690,7 +698,9 @@ pub(crate) struct ResponseProjection {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ContextAccounting {
     pub(crate) capacity: crate::context::ModelContextCapacity,
-    pub(crate) count: crate::context::ModelTokenCount,
+    /// `None` records a typed provider context-overflow refusal for this projection.
+    /// It never supplies an estimated admission count.
+    pub(crate) count: Option<crate::context::ModelTokenCount>,
 }
 
 /// Validated retained model artifacts without provider dispatch.

@@ -19,7 +19,7 @@ const receiptPath = resolve(receiptArgument);
 // All source identity, vector reads and tools observe the runner checkout.
 process.chdir(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
 const command = (executable, args, input) => {
-  const result = spawnSync(executable, args, { encoding: "utf8", input });
+  const result = spawnSync(executable, args, { maxBuffer: Infinity, encoding: "utf8", input });
   if (result.status !== 0) throw new Error(`${executable} failed: ${result.stderr || result.stdout}`);
   return result.stdout.trim();
 };

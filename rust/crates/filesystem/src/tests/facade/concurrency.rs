@@ -306,6 +306,7 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
     for value in ["observed", "local", "remote"] {
         seed.create(
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: path(value)?,
                 bytes: OwnedBytes::from(vec![b'a'; 4096]),
                 metadata: FileMetadata::default(),

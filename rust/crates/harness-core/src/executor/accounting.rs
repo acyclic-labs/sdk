@@ -97,16 +97,28 @@ impl StockExecution<'_> {
     ) -> Result<ContextAccounting> {
         let capacity = self.model_capacity()?;
         let ceiling = self.input_ceiling(capacity)?;
-        let count =
-            stock_count_tokens(self.stock.provider.as_ref(), prepared, ceiling, self.io).await?;
-        with_history_io(self.io, |work| count.validate(prepared, work))?;
+        let count = match stock_count_tokens(
+            self.stock.provider.as_ref(),
+            prepared,
+            ceiling,
+            self.io,
+        )
+        .await
+        {
+            Ok(count) => {
+                with_history_io(self.io, |work| count.validate(prepared, work))?;
+                Some(count)
+            }
+            Err(Error::ModelContextOverflow) if !self.single_request => None,
+            Err(error) => return Err(error),
+        };
         Ok(ContextAccounting { capacity, count })
     }
 
     /// Disabled compaction sends the installed pipeline's ordinary requests
     /// unchecked: no capacity read and no token count on the turn's path. The
     /// provider remains the authority on its window. Single inference and
-    /// threshold turns pass capacity admission.
+    /// capacity-policy turns pass capacity admission.
     pub(super) fn unchecked(&self) -> Result<bool> {
         Ok(!self.single_request
             && matches!(
@@ -119,7 +131,7 @@ impl StockExecution<'_> {
         let capacity =
             stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
         if !self.single_request
-            && let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()?
+            && let crate::context::CompactionPolicy::Capacity(policy) = self.compaction_policy()?
         {
             policy.validate(capacity, self.output_tokens())?;
         } else {
@@ -139,7 +151,7 @@ impl StockExecution<'_> {
             return Ok(u64::from(capacity.context_tokens - output));
         }
         match self.compaction_policy()? {
-            crate::context::CompactionPolicy::Threshold(policy) => {
+            crate::context::CompactionPolicy::Capacity(policy) => {
                 policy.input_ceiling(capacity, self.output_tokens())
             }
             crate::context::CompactionPolicy::Disabled => {

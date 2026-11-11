@@ -11,7 +11,7 @@ const temporary = mkdtempSync(join(tmpdir(), "acyclic-stream-protocol-"));
 
 try {
   const output = join(temporary, "stream.json");
-  const result = spawnSync(buf, ["build", "--path", "rust/crates/stream/proto/stream", "--exclude-source-info", "-o", output], {
+  const result = spawnSync(buf, ["build", "--path", "rust/crates/stream/proto/stream", "--exclude-source-info", "-o", output], { maxBuffer: Infinity,
     cwd: root,
     encoding: "utf8",
   });

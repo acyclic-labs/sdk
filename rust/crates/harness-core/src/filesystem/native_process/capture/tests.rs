@@ -17,7 +17,7 @@ fn launch_failure_returns_its_cause_and_original_custody()
         inherit_environment: false,
         execution_grant: None,
         schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-        maximum_output_bytes: 1024,
+        maximum_output_bytes: Some(1024),
         standard_input: None,
         process_custody: None,
     };
@@ -70,6 +70,13 @@ fn interactive_completion_retains_input_producer_and_cleanup()
     use std::sync::mpsc;
     use tokio::sync::oneshot;
 
+    const INPUT_OWNER_LOST: &str = concat!(
+        "original interactive input producer was dropped; ",
+        "the original subscription still owns the ordered input stream and its ",
+        "terminal generation, so a replacement producer cannot deliver or ",
+        "acknowledge the abandoned input on behalf of that owner"
+    );
+
     struct Interactive {
         input: mpsc::Receiver<ProcessInput>,
         wake: Option<ProcessWake>,
@@ -94,7 +101,7 @@ fn interactive_completion_retains_input_producer_and_cleanup()
                 Err(mpsc::TryRecvError::Empty) => Ok(Default::default()),
                 Err(mpsc::TryRecvError::Disconnected) => Err(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
-                    "original interactive input producer was dropped",
+                    INPUT_OWNER_LOST,
                 )),
             }
         }
@@ -165,7 +172,7 @@ fn interactive_completion_retains_input_producer_and_cleanup()
                 inherit_environment: true,
                 execution_grant: None,
                 schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-                maximum_output_bytes: 32_768,
+                maximum_output_bytes: Some(32_768),
                 standard_input: Some(OwnedCaptureInput::Interactive {
                     initial: Vec::new(),
                     maximum: 5,
@@ -225,10 +232,7 @@ fn interactive_completion_retains_input_producer_and_cleanup()
                 );
                 let stop = result.stop.expect("producer loss must be a typed failure");
                 assert_eq!(stop.kind, NativeProcessStopKind::CaptureFailed);
-                assert!(
-                    stop.message
-                        .contains("original interactive input producer was dropped")
-                );
+                assert_eq!(stop.message, INPUT_OWNER_LOST);
                 assert!(stop.cleanup_completed);
                 assert_eq!((handler.accepted, handler.written), (0, 0));
             } else {
@@ -281,7 +285,7 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
             inherit_environment: true,
             execution_grant: None,
             schedule,
-            maximum_output_bytes: 32_768,
+            maximum_output_bytes: Some(32_768),
             standard_input: None,
             process_custody: None,
         };
@@ -409,7 +413,7 @@ mod simulation {
                         request.schedule,
                         acyclic_native_runtime::CaptureSchedule::Unbounded
                     );
-                    assert_eq!(request.maximum, 3);
+                    assert_eq!(request.maximum, Some(3));
                     assert!(request.input.is_none());
                     check().expect("script ownership check");
                     for chunk in [b"s".as_slice(), b"im".as_slice()] {
@@ -438,7 +442,7 @@ mod simulation {
                 inherit_environment: false,
                 execution_grant: None,
                 schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-                maximum_output_bytes: 3,
+                maximum_output_bytes: Some(3),
                 process_custody: None,
                 standard_input: None,
             };

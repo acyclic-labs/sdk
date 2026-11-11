@@ -54,6 +54,9 @@ tokio = { workspace = true, features = ["test-util"] }
 [lints]
 workspace = true
 
+[target.'cfg(unix)'.dev-dependencies]
+rustix-openpty = "0.2"
+
 [[test]]
 name = "main"
 path = "tests/main.rs"

@@ -3,7 +3,7 @@ export {
   WasmModelProvider,
   WasmModelAlloy,
   defaultCompactionPolicy,
-  validateThresholdCompaction,
+  validateCapacityCompaction,
   validateModelTokenCount,
   type AlloySpec,
   type AlloySelection,
@@ -19,6 +19,6 @@ export {
   type ModelContextCapacity,
   type ModelTokenCount,
   type CompactionPolicy,
-  type ThresholdCompaction,
+  type CapacityCompaction,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export { ensureModelWasm as initializeModelProviders } from "./wasm-runtime.js";

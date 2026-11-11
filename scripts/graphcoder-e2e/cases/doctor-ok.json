@@ -6,8 +6,8 @@
   "model": { "steps": [] },
   "inputs": [{
     "mode": "headless",
-    "args": ["--credentials", "{{workspace}}/../settings/credentials.json", "-p", "hello", "doctor"],
-    "stdout_contains": ["provider credentials: available", "provider network: reachable", "keychain:", "terminal: ready", "filesystem mode:", "shell and state directory:", "ok: local prerequisites checked; state and signing authority unopened"],
+    "args": ["--credentials", "{{workspace}}/../settings/credentials.json", "doctor"],
+    "stdout_contains": ["\"version\":1", "\"kind\":\"doctor\"", "\"mode\":\"headless\"", "\"ready\":true", "\"refusals\":[]", "provider credentials: available", "provider network: reachable", "keychain:", "terminal: ready", "filesystem mode:", "shell and state directory:"],
     "stdout_absent": ["E2E_DOCTOR_NONSECRET", "refused:"],
     "exit": 0
   }],

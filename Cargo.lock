@@ -1324,6 +1324,7 @@ dependencies = [
  "blake3",
  "clap",
  "futures",
+ "rustix-openpty",
  "serde",
  "serde_json",
  "tempfile",
@@ -1649,10 +1650,6 @@ dependencies = [
  "cipher",
  "cpufeatures 0.2.17",
 ]
-
-[[package]]
-name = "agent-spawn-slot-proofs"
-version = "0.0.0"
 
 [[package]]
 name = "ahash"

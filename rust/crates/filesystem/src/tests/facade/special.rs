@@ -15,21 +15,25 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
     let receipt = (checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateEmptySpecial {
+                file_id: None,
                 path: path("fifo")?,
                 kind: FileKind::Fifo,
                 metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateEmptySpecial {
+                file_id: None,
                 path: path("socket")?,
                 kind: FileKind::Socket,
                 metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateEmptySpecial {
+                file_id: None,
                 path: path("mount")?,
                 kind: FileKind::MountBoundary,
                 metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateDevice {
+                file_id: None,
                 path: path("character")?,
                 kind: FileKind::CharacterDevice,
                 major: 1,
@@ -37,6 +41,7 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
                 metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateDevice {
+                file_id: None,
                 path: path("block")?,
                 kind: FileKind::BlockDevice,
                 major: 8,
@@ -53,6 +58,7 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
     for (mutation, sentinel) in [
         (
             AuthoredMutation::CreateEmptySpecial {
+                file_id: None,
                 path: path("invalid-special")?,
                 kind: FileKind::Regular,
                 metadata: FileMetadata::default(),
@@ -61,6 +67,7 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
         ),
         (
             AuthoredMutation::CreateDevice {
+                file_id: None,
                 path: path("invalid-device")?,
                 kind: FileKind::Regular,
                 major: 0,
@@ -93,6 +100,7 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
     let reparse_payload = OwnedBytes::from_static(b"opaque-reparse-data");
     let receipt = (windows_checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateReparsePoint {
+            file_id: None,
             path: reparse.clone(),
             payload: reparse_payload.clone(),
             metadata: FileMetadata::default(),
@@ -126,6 +134,7 @@ async fn windows_reparse_payload_round_trips_without_interpretation()
     let payload = OwnedBytes::from_static(b"opaque-reparse\0payload");
     (checkout.create(
         AuthoredMutation::CreateReparsePoint {
+            file_id: None,
             path: path("junction")?,
             payload: payload.clone(),
             metadata: FileMetadata::default(),
@@ -140,6 +149,7 @@ async fn windows_reparse_payload_round_trips_without_interpretation()
     let empty_reparse = path("empty-reparse")?;
     (checkout.create(
         AuthoredMutation::CreateReparsePoint {
+            file_id: None,
             path: empty_reparse.clone(),
             payload: OwnedBytes::new(),
             metadata: FileMetadata::default(),
@@ -155,6 +165,7 @@ async fn windows_reparse_payload_round_trips_without_interpretation()
     let empty_link = path("empty-link")?;
     (checkout.create(
         AuthoredMutation::CreateSymbolicLink {
+            file_id: None,
             path: empty_link.clone(),
             target: OwnedBytes::new(),
             metadata: FileMetadata::default(),

@@ -59,7 +59,7 @@ proptest! {
                 compose_tools: false,
                 model: provider.model().clone(), messages, tools, sampling: Default::default(), max_output_tokens: Some(64),
             }, Limits::default(), None).unwrap();
-            let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, u64::MAX).unwrap();
+            let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, None).unwrap();
             let mut resolved = crate::files::FileText(vec![text.clone().into()].into_iter());
             let after = crate::projection::body_with_files(&provider, request.request(), &mut resolved).unwrap();
             prop_assert_eq!(extra, text.len() * 6);
@@ -124,6 +124,149 @@ fn with_parts(
         Limits::default(),
         None,
     )
+}
+
+#[tokio::test]
+async fn custom_media_keeps_generic_credit_and_requires_its_own_projection_adapter() -> Result<()> {
+    use acyclic_harness_core::model::{ImageDetail, NativeMediaIntent, NativeMediaPolicy};
+    use acyclic_harness_core::wire::ErrorCode;
+    let (mut provider, script) = provider(Adapter::Chat, 200);
+    let reader = Arc::new(Reader {
+        data: b"ok".to_vec(),
+        reads: AtomicUsize::new(0),
+    });
+    provider.files = crate::files::Files {
+        reader: Some(reader.clone()),
+        maximum_bytes: None,
+    };
+    for (media, intent, refusal) in [
+        (
+            "audio/wav",
+            NativeMediaIntent::Audio {
+                maximum_duration_ms: 1,
+            },
+            ErrorCode::Unsupported,
+        ),
+        (
+            "video/mp4",
+            NativeMediaIntent::Video {
+                maximum_duration_ms: 1,
+                maximum_frames: 1,
+            },
+            ErrorCode::Unsupported,
+        ),
+        (
+            "image/gif",
+            NativeMediaIntent::Image {
+                detail: ImageDetail::Auto,
+            },
+            ErrorCode::Invalid,
+        ),
+    ] {
+        let prepared = with_parts(
+            &provider,
+            vec![ModelContentPart::File {
+                file: file(b"ok", media)?,
+                policy: FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
+                    intent,
+                    maximum_bytes: 2,
+                    maximum_work: 1,
+                    configuration: None,
+                })),
+            }],
+        )?;
+        // Custom providers own their work units; a generic byte plan must not
+        // treat audio/video work as source bytes or impose an HTTP media list.
+        assert_eq!(prepared.projected_file_bytes(None)?, 2);
+        assert_eq!(prepared.projected_file_bytes(Some(2))?, 2);
+        assert!(prepared.projected_file_bytes(Some(1)).is_err());
+        let anchor = prepared.observe_input()?;
+        assert_eq!(prepared.input_since(anchor)?, Some(0));
+        assert!(prepared.input_has_native_media()?);
+        assert!(!prepared.input_has_byte_bound()?);
+        // The byte-preserving HTTP adapter retains its stricter support/work
+        // admission on the same original cached plan, before any source read.
+        assert_eq!(
+            prepared.validate_byte_projection().unwrap_err().code(),
+            refusal
+        );
+        assert_eq!(
+            crate::files::resolve(&provider.files, &prepared, None)
+                .await
+                .err()
+                .unwrap()
+                .code(),
+            refusal
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+        assert!(script.sent.lock().unwrap().is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unbounded_aggregate_credit_does_not_restore_the_former_default() -> Result<()> {
+    let (provider, script) = provider(Adapter::Chat, 200);
+    let former = acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER;
+    let source = file(b"metadata only", "text/plain")?;
+    // These are real admitted descriptors, not materialized source bodies.
+    // Each file fits the request's per-file/per-part bound; their aggregate
+    // exceeds the provider's former implicit credit. No huge allocation occurs.
+    let large = FileRef::new(
+        source.volume().clone(),
+        "large.txt".into(),
+        "1".into(),
+        FileDescriptor::new([0; 32], former, "text/plain".into())?,
+        "large.txt".into(),
+        &mut None,
+    )?;
+    let prepared = with_parts(
+        &provider,
+        vec![
+            ModelContentPart::File {
+                file: large.clone(),
+                policy: FileProjectionPolicy::BoundedFull,
+            },
+            ModelContentPart::File {
+                file: large,
+                policy: FileProjectionPolicy::BoundedFull,
+            },
+        ],
+    )?;
+    assert_eq!(prepared.projected_file_bytes(None)?, former * 2);
+    assert!(prepared.projected_file_bytes(Some(former)).is_err());
+    let reader = Arc::new(Reader {
+        data: Vec::new(),
+        reads: AtomicUsize::new(0),
+    });
+    let dispatch = ModelDispatch {
+        operation_id: acyclic_harness_core::OperationId::new(),
+        step: 0,
+        request_digest: prepared.request_digest(),
+    };
+    let bounded = provider.bind_content(reader.clone(), Some(former)).unwrap();
+    assert!(
+        bounded
+            .generate(&prepared, dispatch)
+            .try_collect::<Vec<_>>()
+            .await
+            .is_err()
+    );
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+    // None passes the actual public binding and cached credit admission. The
+    // original verifier then refuses the deliberately absent body after one
+    // empty read, before HTTP; the symbolic extents are never allocated/read.
+    let unbounded = provider.bind_content(reader.clone(), None).unwrap();
+    assert!(
+        unbounded
+            .generate(&prepared, dispatch)
+            .try_collect::<Vec<_>>()
+            .await
+            .is_err()
+    );
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    assert!(script.sent.lock().unwrap().is_empty());
+    Ok(())
 }
 
 #[tokio::test]
@@ -292,7 +435,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 4096,
+            maximum_bytes: Some(4096),
         };
         let mut files = crate::files::resolve(&provider.files, &prepared, None).await?;
         let actual = projection::body_with_files(&provider, prepared.request(), &mut files)?;
@@ -408,6 +551,7 @@ proptest! {
     fn fix_live_composition_reader_resolves_exact_file_bytes(chars in prop::collection::vec(any::<char>(), 0..64)) {
         futures::executor::block_on(async {
             let text: String = chars.into_iter().collect();
+            for maximum in [None, Some(4096)] {
             let (provider, script) = provider(Adapter::Responses, 200);
             let request = with_parts(&provider, vec![ModelContentPart::File {
                 file: file(text.as_bytes(), "text/plain").unwrap(),
@@ -419,7 +563,7 @@ proptest! {
             assert!(error.to_string().contains("model file byte resolution is unavailable"));
             assert!(script.sent.lock().unwrap().is_empty());
             let reader = Arc::new(Reader { data: text.as_bytes().to_vec(), reads: AtomicUsize::new(0) });
-            let bound = provider.bind_content(reader.clone(), 4096).unwrap();
+            let bound = provider.bind_content(reader.clone(), maximum).unwrap();
             bound.generate(&request, dispatch).try_collect::<Vec<_>>().await.unwrap();
             assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
             let sent = script.sent.lock().unwrap();
@@ -428,6 +572,7 @@ proptest! {
                 {"type":"message","role":"user","content":[{"type":"input_text","text":text}]}
             ]) };
             assert_eq!(body["input"], expected);
+            }
         });
     }
 }
@@ -438,10 +583,11 @@ proptest! {
     fn shared_preparation_matches_independent_requests_without_repeated_reads(chars in prop::collection::vec(any::<char>(), 0..96)) {
         futures::executor::block_on(async {
             let data: String = chars.into_iter().collect();
+            for maximum in [None, Some(4096)] {
             for (adapter, _) in fixtures() {
                 let (mut provider, _) = provider(adapter, 200);
                 let reader = Arc::new(Reader {data:data.as_bytes().to_vec(), reads:AtomicUsize::new(0)});
-                provider.files = crate::files::Files {reader:Some(reader.clone()),maximum_bytes:4096};
+                provider.files = crate::files::Files {reader:Some(reader.clone()),maximum_bytes:maximum};
                 let request = with_parts(&provider, vec![ModelContentPart::File {
                     file: file(data.as_bytes(), "text/plain").unwrap(), policy: FileProjectionPolicy::BoundedFull,
                 }]).unwrap();
@@ -474,7 +620,7 @@ proptest! {
                 let original_counter = provider.config.token_counter.clone();
                 drop(prepared);
                 for counter in std::iter::once(None).chain(fixtures().into_iter().map(|(counter, _)| Some(counter))) {
-                    if counter == Some(adapter) { continue; }
+                    if counter == Some(adapter) || (counter.is_none() && adapter == Adapter::Chat) { continue; }
                     Arc::make_mut(&mut Arc::get_mut(&mut provider).unwrap().config).token_counter = counter.map(|adapter| {
                         let mut spec = original_counter.clone().unwrap();
                         spec.adapter = adapter;
@@ -504,6 +650,7 @@ proptest! {
                     assert_eq!(reader.reads.load(Ordering::SeqCst), before, "counter refusal hydrated a file");
                 }
             }
+            }
         });
     }
 }
@@ -520,7 +667,7 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 64,
+            maximum_bytes: Some(64),
         };
         let prepared = with_parts(
             &provider,
@@ -596,7 +743,7 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
     });
     provider.files = crate::files::Files {
         reader: Some(reader.clone()),
-        maximum_bytes: 4,
+        maximum_bytes: Some(4),
     };
     for bad in [
         (
@@ -661,7 +808,7 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 64,
+            maximum_bytes: Some(64),
         };
         let prepared = with_parts(
             &provider,
@@ -698,7 +845,7 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
     });
     provider.files = crate::files::Files {
         reader: Some(reader.clone()),
-        maximum_bytes: 64,
+        maximum_bytes: Some(64),
     };
     let content = ToolResultContent::Parts {
         parts: vec![
@@ -791,7 +938,7 @@ fn unresolved_fulltext_is_never_silently_omitted() -> Result<()> {
 
 fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<String> {
     let (mut provider, _) = provider(Adapter::Chat, 200);
-    provider.files.maximum_bytes = 4096;
+    provider.files.maximum_bytes = Some(4096);
     let file = file(body.as_bytes(), "text/plain")?;
     let policy = FileProjectionPolicy::ProjectInstructions(Box::new(
         acyclic_harness::model::InstructionIdentity::new(file.volume().clone(), path.into())?,
@@ -815,9 +962,9 @@ fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<String> 
         || (),
         |()| {
             let extra = request.input_bytes()? - request.bytes().len() as u64;
-            assert_eq!(request.projected_file_bytes(extra / 6)?, extra / 6);
+            assert_eq!(request.projected_file_bytes(Some(extra / 6))?, extra / 6);
             if extra > 0 {
-                assert!(request.projected_file_bytes(extra / 6 - 1).is_err());
+                assert!(request.projected_file_bytes(Some(extra / 6 - 1)).is_err());
             }
             let cancel = acyclic_fs::CancellationToken::new();
             let work = super::native_tests::work(&cancel)?;
@@ -827,7 +974,7 @@ fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<String> 
             let resolved = futures::executor::block_on(crate::files::resolve(
                 &crate::files::Files {
                     reader: Some(reader.clone()),
-                    maximum_bytes: 4096,
+                    maximum_bytes: Some(4096),
                 },
                 &request,
                 None,
@@ -851,9 +998,9 @@ fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<String> 
     let actual = resolved.project(&file, &policy)?;
     assert_eq!(extra, actual.len() as u64 * 6);
     let peer = request.clone();
-    assert_eq!(peer.projected_file_bytes(extra / 6)?, extra / 6);
+    assert_eq!(peer.projected_file_bytes(Some(extra / 6))?, extra / 6);
     let recovered = PreparedModelRequest::decode(request.bytes(), Limits::default(), None)?;
-    assert_eq!(recovered.projected_file_bytes(extra / 6)?, extra / 6);
+    assert_eq!(recovered.projected_file_bytes(Some(extra / 6))?, extra / 6);
     Ok(actual)
 }
 

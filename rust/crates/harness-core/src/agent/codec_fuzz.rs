@@ -385,6 +385,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             (
                 "status",
                 StatusRecord {
+                    child_settlement: None,
                     child_wakes: None,
                     phase: Phase::Idle,
                     cursor: 0,
@@ -399,6 +400,15 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                     id: id.clone(),
                 }
                 .encode()?,
+            ),
+            (
+                "closed-portable-intent",
+                written(&Closed {
+                    by: Sender::Host {
+                        host: "native".into(),
+                    },
+                    id: IntentId::try_from("a".repeat(records::MAX_INTENT_BYTES))?,
+                })?,
             ),
             (
                 "effect",
@@ -568,6 +578,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 binding,
             };
             let status = StatusRecord {
+                child_settlement: None,
                 child_wakes: None,
                 phase: state.phase.clone(),
                 cursor: 0,
@@ -584,7 +595,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 (names[2], crate::contract::canonical_json_bytes(&envelope)?),
             ]);
         }
-        // Retain independent persistent membership roots and a paused turn checkpoint.
+        // Retain independent persistent roots and a paused turn's raw checkpoint.
         state.path = state.path.child(&AgentId::from_bytes([8; 16]))?;
         state.parent = state.path.parent();
         state.conversation_tail = 23;
@@ -601,9 +612,10 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             inbox: 17,
             checkpoint: vec![0, 1, 255],
         });
+
         state.phase = Phase::Waiting {
-            deadline_unix_ms: Some(1_700_000_000_000),
             input: false,
+            deadline_unix_ms: Some(1_700_000_000_000),
         };
         for (names, archived) in [
             (
@@ -628,6 +640,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 state.awaiting.clear();
                 state.need = 0;
                 state.turn = None;
+
                 state.phase = Phase::Idle;
             }
             let encoded = checkpoint::encode(&state)?;
@@ -646,6 +659,10 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         }
         seeds.extend(history_seeds()?);
         seeds.extend(roster_seeds()?);
+        // Captured from the real canonical payload writer, before inbox frame
+        // admission: the old writer admitted this identity and stranded its turn.
+        let oversized = serde_json::json!({ "approval": { "id": "a".repeat(records::MAX_RECORD_BYTES - 255) } });
+        seeds.push(("inbox-settlement-overflow", records::seal(&oversized)?));
         Ok(seeds)
     })
 }

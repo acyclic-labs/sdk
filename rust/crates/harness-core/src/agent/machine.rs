@@ -11,8 +11,8 @@ use super::control_trace::{self, Decision};
 pub use super::input::{Progress, Queued, TurnInput};
 use super::input::{awaits, input};
 use super::{
-    AgentOutcome, AgentPath, ChildDone, ChildSettled, ChildWakeSet, Error, ForkAdopted,
-    InboxRecord, IntentId, Phase, StatusRecord, VolumeBinding,
+    AgentOutcome, AgentPath, ChildDone, ChildSettled, ChildSettlement, ChildWakes, Error,
+    ForkAdopted, InboxRecord, IntentId, Phase, StatusRecord, VolumeBinding,
     kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
@@ -43,8 +43,6 @@ pub const OVERSIZED_OUTCOME: &str = "agent outcome exceeds MAX_OUTCOME_BYTES";
 pub enum SpawnRefusal {
     /// The agent is archived.
     Archived,
-    /// The child would exceed [`super::MAX_DEPTH`].
-    Depth,
     /// The host runs no children, so it creates none to wait forever.
     Unhosted,
     /// The parent's role does not admit the requested role.
@@ -71,9 +69,9 @@ pub enum SpawnOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentState {
-    /// Original completion commit times retained only until this wait resumes.
-    #[serde(default, skip_serializing_if = "super::Children::is_empty")]
-    pub child_settlements: super::Children,
+    /// First original completion fact in the status stream for this wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_settlements: Option<u64>,
     /// This agent.
     pub path: AgentPath,
     /// Spawning agent.
@@ -173,17 +171,6 @@ fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
 }
 
 impl AgentState {
-    /// Reattach every immutable child index to the original provider after decode.
-    pub(super) fn bind_children<P: acyclic_stream::StreamProvider + ?Sized>(
-        &mut self,
-        provider: std::sync::Arc<P>,
-    ) {
-        self.open_children.bind(provider.clone());
-        self.archive_pending.bind(provider.clone());
-        self.awaiting.bind(provider.clone());
-        self.child_settlements.bind(provider);
-    }
-
     /// A terminal setup failure frees its name only before any reply or action
     /// committed. Model failure after a tool action must retain the identity.
     /// The brief is queued at adoption, not appended to the conversation: the
@@ -246,7 +233,7 @@ impl AgentState {
             .transpose()
             .map_err(|error| Error::Turn(Box::new(error)))?;
         Ok(Self {
-            child_settlements: super::Children::new(),
+            child_settlements: None,
             path,
             parent: adopted.parent.clone(),
             profile: adopted.profile.clone(),
@@ -272,18 +259,7 @@ impl AgentState {
             awaited: false,
             archive_pending: super::Children::new(),
             archive_refused: false,
-            queued: adopted
-                .brief
-                .iter()
-                .cloned()
-                .map(|brief| Queued {
-                    steering: false,
-                    inbox: adopted.forked_at,
-                    input: TurnInput::Brief {
-                        brief: Box::new(brief),
-                    },
-                })
-                .collect(),
+            queued: VecDeque::new(),
             overflow: None,
             taken: BTreeSet::new(),
             closed: false,
@@ -319,17 +295,9 @@ impl AgentState {
     /// outcome is a function of that state, and no state records outcomes.
     #[must_use]
     pub async fn spawn_outcome(&self, intent: &IntentId) -> Result<SpawnOutcome, Error> {
-        let Ok(child) = self.spawned(intent) else {
-            return Ok(SpawnOutcome::Refused {
-                reason: SpawnRefusal::Depth,
-            });
-        };
+        let child = self.spawned(intent).expect("canonical child path");
         Ok(if self.open_children.contains(&child).await? {
             SpawnOutcome::Spawned { child }
-        } else if self.closed {
-            SpawnOutcome::Refused {
-                reason: SpawnRefusal::Archived,
-            }
         } else {
             return Err(Error::Record("spawn outcome precedes its applying step"));
         })
@@ -648,11 +616,12 @@ impl PreparedStep {
         &mut self,
         provider: std::sync::Arc<P>,
     ) -> Result<(), Error> {
-        self.step.state.bind_children(provider);
+        self.step.state.open_children.bind(provider.clone());
+        self.step.state.archive_pending.bind(provider.clone());
+        self.step.state.awaiting.bind(provider);
         self.step.state.open_children.persist().await?;
         self.step.state.archive_pending.persist().await?;
-        self.step.state.awaiting.persist().await?;
-        self.step.state.child_settlements.persist().await
+        self.step.state.awaiting.persist().await
     }
 
     pub(super) fn step(&self) -> &Step {
@@ -725,6 +694,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     // The last published phase: the creating commit published `Idle`, and
     // admitting a record (a cancel) can itself change the phase.
     let previous = state.as_ref().map_or(Phase::Idle, published);
+    let mut child_settlement = None;
     let mut state = match (state, wake) {
         (
             None,
@@ -736,7 +706,15 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             if adopted.agent != path.id() {
                 return Err(Error::Record("ForkAdopted names another agent"));
             }
-            AgentState::adopted(path.clone(), &adopted)?
+            let mut state = AgentState::adopted(path.clone(), &adopted)?;
+            state.queued.extend(adopted.brief.map(|brief| Queued {
+                steering: false,
+                inbox: adopted.forked_at,
+                input: TurnInput::Brief {
+                    brief: Box::new(brief),
+                },
+            }));
+            state
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         (Some(state), Wake::Alarm) => state,
@@ -760,19 +738,21 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             state
         }
         (Some(state), Wake::Inbox { sequence, record }) => {
-            admit(state, sequence, record, settled_at_micros).await?
+            let (state, fact) = admit(state, sequence, record, settled_at_micros).await?;
+            child_settlement = fact;
+            state
         }
     };
     let mut child_wakes = None;
     let applied = outs.len();
     if state.closed {
-        state.child_settlements.clear();
+        state.child_settlements = None;
         cascade(&mut state, &mut outs).await?;
     } else if !spawn_wake && !quiet_notice {
         run(
             driver,
             &mut state,
-            (cursor, now_unix_ms),
+            (cursor, now_unix_ms, child_settlement.is_some()),
             alarm_wake,
             &mut outs,
             &mut child_wakes,
@@ -789,7 +769,14 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         outs.len(),
         state.pending_notices.clone(),
     );
-    let mut step = finalize_step(state, outs, &previous, cursor, child_wakes)?;
+    let mut step = finalize_step(
+        state,
+        outs,
+        &previous,
+        cursor,
+        child_wakes,
+        child_settlement,
+    )?;
     let mut bytes = checkpoint::encode(&step.state)?;
     // Check the exact final tails, then retain these same bytes for commit.
     // Only a state that must shed its growing input is encoded again.
@@ -799,6 +786,10 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             .as_mut()
             .map(|status| std::mem::take(&mut status.child_wakes))
             .unwrap_or_default();
+        let child_settlement = step
+            .status
+            .as_mut()
+            .and_then(|status| status.child_settlement.take());
         let Step {
             mut state,
             mut outs,
@@ -812,7 +803,14 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         state.pending_notices = completion.4;
         outs.truncate(completion.3);
         shed(&mut state, &mut outs, OVERSIZED_STATE);
-        step = finalize_step(state, outs, &previous, cursor, child_wakes)?;
+        step = finalize_step(
+            state,
+            outs,
+            &previous,
+            cursor,
+            child_wakes,
+            child_settlement,
+        )?;
         bytes = checkpoint::encode(&step.state)?;
     }
     Ok(PreparedStep {
@@ -840,7 +838,7 @@ pub(super) async fn failed_step(
                 sequence,
                 record: record @ InboxRecord::Archive(_),
             },
-        ) => admit(state, sequence, record, None).await?,
+        ) => admit(state, sequence, record, None).await?.0,
         (Some(state), _) => state,
         (
             None,
@@ -854,7 +852,7 @@ pub(super) async fn failed_step(
     let previous = published(&state);
     let mut outs = Vec::new();
     shed(&mut state, &mut outs, failure);
-    let step = finalize_step(state, outs, &previous, cursor, None)?;
+    let step = finalize_step(state, outs, &previous, cursor, None, None)?;
     let checkpoint = checkpoint::from_encoded(checkpoint::encode(&step.state)?)?;
     Ok(PreparedStep { step, checkpoint })
 }
@@ -882,7 +880,8 @@ fn finalize_step(
     mut outs: Vec<Out>,
     previous: &Phase,
     cursor: u64,
-    child_wakes: Option<ChildWakeSet>,
+    child_wakes: Option<ChildWakes>,
+    child_settlement: Option<ChildSettlement>,
 ) -> Result<Step, Error> {
     // Retire admitted boundary input before choosing the next actor alarm.
     for out in &outs {
@@ -981,12 +980,14 @@ fn finalize_step(
         .conversation_tail
         .checked_add(appended)
         .ok_or(Error::Record("agent conversation tail overflow"))?;
-    let status = (&phase != previous || child_wakes.is_some()).then_some(StatusRecord {
-        child_wakes,
-        phase,
-        cursor,
-        conversation: state.conversation_tail,
-    });
+    let status = (&phase != previous || child_wakes.is_some() || child_settlement.is_some())
+        .then_some(StatusRecord {
+            child_settlement,
+            child_wakes,
+            phase,
+            cursor,
+            conversation: state.conversation_tail,
+        });
     state.status_tail = state
         .status_tail
         .checked_add(u64::from(status.is_some()))
@@ -1036,11 +1037,12 @@ async fn admit(
     sequence: u64,
     record: InboxRecord,
     settled_at_micros: Option<u64>,
-) -> Result<AgentState, Error> {
+) -> Result<(AgentState, Option<ChildSettlement>), Error> {
+    let mut fact = None;
     if sequence < state.steered_through
         && matches!(record, InboxRecord::Message(_) | InboxRecord::Notice { .. })
     {
-        return Ok(state);
+        return Ok((state, None));
     }
     let kind = match &record {
         InboxRecord::ForkAdopted(_) => return Err(Error::Record("agent adopted twice")),
@@ -1058,7 +1060,7 @@ async fn admit(
         state.pending_notices = None;
     }
     if !admitted.control.turn {
-        state.child_settlements.clear();
+        state.child_settlements = None;
         state.turn = None;
         state.awaiting.clear();
         state.need = 0;
@@ -1094,10 +1096,11 @@ async fn admit(
             if state.awaiting.contains(child).await?
                 && let Some(settled_at) = settled_at_micros
             {
-                state
-                    .child_settlements
-                    .insert_value(child, settled_at)
-                    .await?;
+                state.child_settlements.get_or_insert(state.status_tail);
+                fact = Some(ChildSettlement {
+                    child: child.id(),
+                    settled_at_micros: settled_at,
+                });
             }
             settle_awaited(&mut state, child).await?;
         }
@@ -1122,7 +1125,7 @@ async fn admit(
             state.overflow.get_or_insert(sequence);
         }
     }
-    Ok(state)
+    Ok((state, fact))
 }
 
 /// An awaited `child` settled: it counts once toward the [`Until`] the turn
@@ -1178,10 +1181,10 @@ fn approval_position(state: &AgentState) -> Option<usize> {
 async fn run<T: TurnDriver + ?Sized>(
     driver: &T,
     state: &mut AgentState,
-    (cursor, now_unix_ms): (u64, u64),
+    (cursor, now_unix_ms, returning_completion): (u64, u64, bool),
     alarm_wake: bool,
     outs: &mut Vec<Out>,
-    child_wakes: &mut Option<ChildWakeSet>,
+    child_wakes: &mut Option<ChildWakes>,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<(), Error> {
     let approval = approval_position(state);
@@ -1201,14 +1204,18 @@ async fn run<T: TurnDriver + ?Sized>(
         Pick::Approval => approval.and_then(|position| state.queued.remove(position)),
     };
     // This is the actual wait return, before the driver performs any work.
-    // Completion times came with the original deliveries. Their immutable index
-    // buys a bounded checkpoint and status record at every population size.
-    // A partial quorum emits nothing; returning the wait publishes only its root.
+    // Completion times came with the original deliveries; this adds no read,
+    // commit or telemetry channel. Partial facts have no return clock until here.
     if picked == Pick::Resume {
-        state.child_settlements.persist().await?;
-        *child_wakes =
-            ChildWakeSet::of(&state.child_settlements, now_unix_ms.saturating_mul(1_000));
-        state.child_settlements.clear();
+        let until = state
+            .status_tail
+            .checked_add(u64::from(returning_completion))
+            .ok_or(Error::Record("status tail overflows"))?;
+        *child_wakes = state.child_settlements.take().map(|from| ChildWakes {
+            from,
+            until,
+            woke_at_micros: now_unix_ms.saturating_mul(1_000),
+        });
     }
     // A resumed turn keeps the input that started it.
     let started = match (&state.turn, &input) {

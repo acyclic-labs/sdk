@@ -54,6 +54,7 @@ async fn browser_prepared_merge_preserves_ancestry_after_composition() -> Result
         for name in ["/a", "/b"] {
             seed.create(
                 AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: NamespacePath::from_portable(
                         &acyclic_fs::path::PortablePath::parse(name, VolumeLimits::default())
                             .map_err(js_error)?,

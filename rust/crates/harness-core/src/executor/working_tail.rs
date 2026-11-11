@@ -434,7 +434,7 @@ impl<'a> StockExecution<'a> {
         if proof
             .summary
             .as_ref()
-            .is_none_or(|summary| (summary.operation_id, summary.step) != identity)
+            .is_none_or(|summary| summary.operation_id != identity.0 || summary.step > identity.1)
         {
             return Err(self.invalid_working_cut());
         }

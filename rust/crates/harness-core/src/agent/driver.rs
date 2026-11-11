@@ -368,6 +368,22 @@ pub struct ConversationEntry {
 }
 
 impl ConversationEntry {
+    /// Exact files this immutable entry publishes to its readers. A reference
+    /// to one grants no directory, later version or unselected turn.
+    pub fn references_file(&self, file: &FileRef) -> bool {
+        self.output == *file
+            || self.targets.as_ref() == Some(file)
+            || match &self.input {
+                TurnInput::Message {
+                    body, attachments, ..
+                } => body.as_ref() == file || attachments.as_deref() == Some(file),
+                TurnInput::Brief { brief } => brief.as_ref() == file,
+                TurnInput::Notice { notice, .. } => notice.as_ref() == file,
+                TurnInput::Hook { event, .. } => event.as_ref() == file,
+                _ => false,
+            }
+    }
+
     /// Seal the reply-search frontier using only admitted model input and the
     /// original turn's input. No later head or unadmitted selection is included.
     pub fn with_observed_prefix(mut self, prefix: u64) -> Self {
@@ -1111,7 +1127,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         }],
                         _ => Vec::new(),
                     };
-                    // The paused turn's recorded spawns keep their slots.
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
                             inbox,

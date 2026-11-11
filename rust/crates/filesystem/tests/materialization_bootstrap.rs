@@ -91,6 +91,7 @@ async fn materialize_in_fresh_process(mode: &str) -> Result<(), Box<dyn std::err
     checkout
         .create(
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: file,
                 bytes: acyclic_stream::OwnedBytes::from_static(b"cold materialization"),
                 metadata: FileMetadata::default(),

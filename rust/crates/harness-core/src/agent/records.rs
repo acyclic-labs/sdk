@@ -10,7 +10,7 @@ use crate::conversation::{FileRef, VolumeRef};
 use serde::{Deserialize, Serialize};
 
 /// Largest agent record. Every part of one is bounded (paths by
-/// [`super::MAX_DEPTH`], file and volume references by the conversation
+/// the primitive record envelope, file and volume references by the conversation
 /// maxima, texts by their own limits), so every record a step builds is
 /// within this; `checkpoint`'s bound test checks each kind at its worst.
 pub const MAX_RECORD_BYTES: usize = 56 * 1024;
@@ -46,11 +46,10 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 18 settles a definitive turn failure as a failed conversation entry.
 /// Version 19 (retired) scoped status addresses by complete ancestry.
 /// Version 20 carries child settlement-to-wake measurements in status records.
-/// Version 21 adds input selection to actor waits.
+/// Version 21 retains child completion facts and pending wake ranges.
 /// Version 22 indexes admitted replies across queued independent turns.
-/// Version 23 retains immutable paged child membership roots without reserved slots.
-/// Version 24 retains child wake measurements behind a lazy immutable root.
-pub const RECORD_VERSION: u32 = 24;
+/// Version 23 combines those facts with input selection on actor waits.
+pub const RECORD_VERSION: u32 = 23;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -631,6 +630,8 @@ impl Phase {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct ChildWake {
+    /// Sequence of the original completion fact in the owner status stream.
+    pub status: u64,
     /// Direct child id, relative to the owner of this status stream.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub child: AgentId,
@@ -640,52 +641,89 @@ pub struct ChildWake {
     pub woke_at_micros: u64,
 }
 
-/// Immutable measurements for one returned wait, fetched only in requested pages.
+/// One admitted completion fact. It is not a wait-return measurement until
+/// an original ChildWakes range supplies the parent's return clock.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
-pub struct ChildWakeSet {
-    /// Content digest of the shared child index's measurement root.
-    pub root: [u8; 32],
-    /// Number of distinct children observed by this returned wait.
-    pub count: u64,
-    /// Parent delivery clock when the wait actually resumed.
+pub struct ChildSettlement {
+    /// Direct child of the status owner.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub child: AgentId,
+    /// Original inbox commit clock, retained in the same ordinary status commit.
+    pub settled_at_micros: u64,
+}
+
+/// Original completion facts for one returned wait. These status sequences
+/// form a dense range: only admitted completions publish while a wait is parked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(deny_unknown_fields)]
+pub struct ChildWakes {
+    /// First completion fact in the owner's status stream.
+    pub from: u64,
+    /// Exclusive end, including a completion in the returning status itself.
+    pub until: u64,
+    /// Parent delivery clock at the actual wait return, before the driver runs.
     pub woke_at_micros: u64,
 }
-impl ChildWakeSet {
-    pub(crate) fn of(children: &super::Children, woke_at_micros: u64) -> Option<Self> {
-        children.root_digest().map(|root| Self {
-            root,
-            count: children.len() as u64,
-            woke_at_micros,
-        })
-    }
-    /// Read at most `limit` measurements after `after`, in child identity order.
-    /// The final returned child is the next page's cursor; an empty page ends it.
+impl ChildWakes {
+    /// Read only the requested original status facts at this immutable cut.
+    /// No index IO, reconstruction of a subtree or per-child retained state.
     pub async fn page<P: acyclic_stream::StreamProvider + ?Sized>(
         &self,
         provider: std::sync::Arc<P>,
-        after: Option<&AgentId>,
+        agent: &AgentPath,
+        after: Option<u64>,
         limit: usize,
     ) -> Result<Vec<ChildWake>, Error> {
-        let count = usize::try_from(self.count)
-            .map_err(|_| Error::Record("child wake count exceeds this platform"))?;
-        let mut children = super::Children::from_digest(self.root, count)?;
-        children.bind(provider);
-        children
-            .page_values(after, limit)
-            .await?
-            .into_iter()
-            .map(|(child, settled_at_micros)| {
-                Ok(ChildWake {
-                    child,
-                    settled_at_micros: settled_at_micros
-                        .ok_or(Error::Record("child wake leaf has no measurement"))?,
-                    woke_at_micros: self.woke_at_micros,
-                })
+        use futures::TryStreamExt as _;
+        let from = after.unwrap_or(self.from);
+        if self.from > from || from > self.until || self.from >= self.until {
+            return Err(Error::Record("completion cursor is outside its status cut"));
+        }
+        if from == self.until || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut source = provider
+            .read(acyclic_stream::ReadRequest {
+                path: agent.status()?,
+                from,
+                limit: u32::try_from(limit)
+                    .map_err(|_| Error::Record("completion page exceeds transport credit"))?,
+                key: None,
+                at_least: Default::default(),
             })
-            .collect()
+            .await
+            .map_err(Error::Stream)?;
+        let mut samples = Vec::new();
+        let mut next = from;
+        while let Some(record) = source.try_next().await.map_err(Error::Stream)? {
+            if record.sequence >= self.until {
+                break;
+            }
+            if record.sequence != next {
+                return Err(Error::Record("completion status range has a gap"));
+            }
+            let fact = StatusRecord::decode(&record.value)?
+                .child_settlement
+                .ok_or(Error::Record(
+                    "completion status range contains an unrelated phase",
+                ))?;
+            samples.push(ChildWake {
+                status: record.sequence,
+                child: fact.child,
+                settled_at_micros: fact.settled_at_micros,
+                woke_at_micros: self.woke_at_micros,
+            });
+            next += 1;
+        }
+        if samples.len() as u64 != (limit as u64).min(self.until - from) {
+            return Err(Error::Record("completion status range is missing"));
+        }
+        Ok(samples)
     }
 }
 
@@ -695,10 +733,13 @@ impl ChildWakeSet {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct StatusRecord {
-    /// Lazy measurements for the observed children, published only when the wait returns.
+    /// One admitted completion fact, durable before a waiting parent resumes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_settlement: Option<ChildSettlement>,
+    /// Paged measurements, published only when the wait returns.
     /// Travels through the existing status/SessionFrame telemetry projection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child_wakes: Option<ChildWakeSet>,
+    pub child_wakes: Option<ChildWakes>,
     /// Phase after the transition that wrote it.
     pub phase: Phase,
     /// Inbox cursor consumed by that transition.
@@ -797,13 +838,6 @@ impl AgentRecord for InboxRecord {
             Self::ForkAdopted(adopted) => {
                 check_model(adopted.profile.as_ref())?;
                 check_volumes(adopted.volumes.iter())?;
-                if adopted
-                    .parent
-                    .as_ref()
-                    .is_some_and(|parent| parent.child(&adopted.agent).is_err())
-                {
-                    return Err(Error::Record("adopted child exceeds MAX_DEPTH"));
-                }
                 Ok(())
             }
             Self::ChildDone(done) => check_outcome(&done.outcome),

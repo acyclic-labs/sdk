@@ -1,10 +1,7 @@
 //! Full shared-host run: files select roles, model spawns commit their selection,
 //! both HTTP adapters execute, and a new host resumes the retained child.
 use super::*;
-use acyclic_harness::agent::AgentRecord as _;
 use acyclic_harness::model::{ModelBinding, ModelResolver};
-use acyclic_stream::StreamProvider as _;
-use futures::TryStreamExt as _;
 
 struct Routes {
     root: Arc<acyclic_harness_providers::ResolvedModel>,
@@ -35,7 +32,6 @@ fn scripted(path: &'static str, steps: Vec<Step>) -> Arc<Scripted> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Budgets {
     Automatic,
-    CopiedRoot,
     SampledKnown,
     PreparedUnknown,
     AutomaticUnknown,
@@ -76,7 +72,6 @@ impl acyclic_harness::filesystem::TurnContext for OutputContext {
 }
 
 async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestResult<bool> {
-    let copy_root_budgets = budgets == Budgets::CopiedRoot;
     let parent = scripted(
         "messages",
         vec![
@@ -128,8 +123,8 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         .clone();
     let mut model = spec.models.remove("model").ok_or("model")?;
     spec.models.insert("replacement".into(), model.clone());
-    // Smaller than the root's automatic 20k recent suffix. Synthetic provider
-    // units count wire bytes, so this still admits the full real tool prefix.
+    // Synthetic provider units count wire bytes; this smaller child capacity
+    // still admits the full real tool prefix.
     model.capacity.context_tokens = 16_384;
     model.capacity.output_tokens = match budgets {
         Budgets::SampledKnown => Some(8192),
@@ -148,12 +143,9 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         let tools = acyclic_harness::tools::registry(&selected, |_| false, Vec::new())?;
         let limits = Limits::default();
         let grants = acyclic_harness::tools::call_grants(&tools, selected.iter().map(String::as_str))?;
-        let compaction = if copy_root_budgets {
-            Some(CompactionPolicy::for_model(None, root_model.model(), root_model.as_ref())?)
-        } else if matches!(budgets, Budgets::SampledKnown | Budgets::PreparedUnknown) {
-            Some(CompactionPolicy::Threshold(ThresholdCompaction {
+        let compaction = if matches!(budgets, Budgets::SampledKnown | Budgets::PreparedUnknown) {
+            Some(CompactionPolicy::Capacity(CapacityCompaction {
                 response_reserve_tokens: 1024,
-                recent_tokens: 10_000,
             }))
         } else {
             None
@@ -391,40 +383,6 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         catalog.resolve("workers/replacement")?,
     ))?)?;
     resumed.agents().drain(&kid).await?;
-    if copy_root_budgets {
-        let state = resumed.agents().state(&kid).await?;
-        assert!(state.conversation_tail > state.conversation_base);
-        let mut entries = stream
-            .read(acyclic_stream::ReadRequest {
-                key: None,
-                path: kid.conversation()?,
-                from: state.conversation_tail - 1,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await?;
-        let record = entries
-            .try_next()
-            .await?
-            .ok_or("missing failed worker turn")?;
-        let entry = acyclic_harness::agent::ConversationEntry::decode(&record.value)?;
-        let acyclic_harness::agent::TurnOutcome::Failed { message } = entry.outcome else {
-            panic!("copying the root's budgets did not fail the smaller worker turn");
-        };
-        assert!(
-            message.contains("compaction budgets exceed selected model capacity"),
-            "unexpected negative-control failure: {message}"
-        );
-        assert!(
-            child
-                .state
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .2
-                .is_empty()
-        );
-        return Ok(true);
-    }
     drop(resumed);
     let resumed = make_bound(make_executors(root_model.clone())?)?;
     // No model on the worker seed: descendants inherit their actual parent.
@@ -546,10 +504,6 @@ async fn role_models_route_across_providers_and_resume_with_stable_prefixes() ->
     assert!(
         run_roles(Adapter::Responses, true, Budgets::Automatic).await?,
         "negative control did not expose forced parent routing"
-    );
-    assert!(
-        run_roles(Adapter::Responses, false, Budgets::CopiedRoot).await?,
-        "negative control did not expose copied root compaction budgets"
     );
     Ok(())
 }

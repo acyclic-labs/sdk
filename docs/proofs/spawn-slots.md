@@ -1,26 +1,13 @@
 # Agent boundary proofs
 
-The Kani package includes the production slot arithmetic by path. Its four
-harnesses quantify over all machine-sized counts, with a valid starting state
-(`open <= 256`, `reserved <= 256 - open`) where needed. They establish the
-client ceiling, room for each reserved child, preservation of a paused turn's
-capacity when a child finishes, and overflow-safe replay admission. They do
-not assume a second implementation of the arithmetic.
+The former Kani slot arithmetic is retired: child count and depth are no longer
+admission conditions. Historical receipts remain available and do not qualify
+the new persistent membership index. Its production tests compare paged point
+updates and reopen against membership, with bounded node-read/write counters.
 
-`agent-model::slot_schedules` executes the production serialized actor step:
-60 pause/client/resume schedules, client response-loss replay, and completion
-of an already-open recorded child during an approval pause. Production actor
-steps commit serially; this is a deterministic transition simulation rather
-than a model of different concurrency primitives. It does not qualify a
-provider's crash recovery or hosted endpoint.
-
-The completion regression found a lost reservation: a recorded spawn can
-already name an open child, so it initially reserves no additional capacity.
-If that child finishes while the turn pauses, a client could take the vacated
-slot before the recorded spawn settles. The transition now holds vacated
-slots until the driver reconciles its recorded effects. Duplicate completion
-does not reserve twice. This conservatively holds other vacated slots during
-the active turn as well; settlement releases them.
+`agent-model::slot_schedules` retains serialized pause/client/resume schedules,
+response-loss replay, and child completion during approval pauses. The native
+reopen controls retain published membership roots and the driver's checkpoint.
 
 The generated `ExplicitStreamProvider` removes defaults from the canonical
 provider declaration. Missing adapter implementations fail compilation,

@@ -178,12 +178,12 @@ impl LocalWorkspace {
         }
         Ok(owned)
     }
-    /// Binds a child's home beside its project and retains the session's
-    /// already admitted shared projections.
+    /// Bind exactly the selected agent's auxiliary volumes. Reuse an admitted
+    /// projection only when it names that same volume.
     pub(super) async fn bound_mounts(
         &self,
         project: &VolumeRef,
-        scratch: VolumeRef,
+        bindings: &[crate::agent::VolumeBinding],
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<Mounts>> {
         // Bind auxiliary volumes outside the sparse projection. Linux's
@@ -198,30 +198,28 @@ impl LocalWorkspace {
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
-        // A physical view projects no volume: its home stays unbound, as the
-        // checkout's does.
+        // Physical views retain logical shared bindings without creating native
+        // projections; their home stays unbound, as the checkout's does.
         let native = self.mounting == WorkspaceMounting::Native;
         let mut mounts = mounts::owner(
             root.path(),
             project,
             None,
-            native
-                .then(|| (crate::filesystem::HOME_VOLUME.into(), scratch, None))
-                .into_iter()
-                .chain(
-                    self.mounts
+            bindings
+                .iter()
+                .filter(|binding| {
+                    binding.name != "project"
+                        && binding.name != crate::filesystem::PRIVATE_VOLUME
+                        && (native || binding.volume.class() == VolumeClass::SessionShared)
+                })
+                .map(|binding| {
+                    let source = self
+                        .mounts
                         .mounts()
-                        .filter(|(_, mount)| {
-                            mount.view.volume.class() == VolumeClass::SessionShared
-                        })
-                        .map(|(_, mount)| {
-                            (
-                                mount.view.name.clone(),
-                                mount.view.volume.clone(),
-                                mount.view.source.clone(),
-                            )
-                        }),
-                ),
+                        .find(|(_, mount)| mount.view.volume == binding.volume)
+                        .and_then(|(_, mount)| mount.view.source.clone());
+                    (binding.name.clone(), binding.volume.clone(), source)
+                }),
         )?;
         volumes::attach(
             &self.filesystem,
@@ -384,7 +382,6 @@ pub(super) async fn open(
     let OwnerState { store, processes } = state;
     let &Attach {
         volume,
-        scratch,
         native_mounts,
         mounting,
         ..
@@ -408,7 +405,7 @@ pub(super) async fn open(
             volumes::recover_after_crash(setup, &Path::new(".volumes").join(name))?;
         }
     }
-    volumes::seed::adopt_home(filesystem, scratch, &root).await?;
+    volumes::seed::adopt_home(filesystem, attach.scratch, &root).await?;
     let binding_root = root.try_clone().map_err(storage)?;
     let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
     let cancellation = acyclic_fs::CancellationToken::new();

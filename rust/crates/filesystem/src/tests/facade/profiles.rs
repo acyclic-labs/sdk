@@ -34,6 +34,7 @@ async fn full_case_fold_keys_resolve_aliases_and_reject_collisions() -> TestResu
             checkout
                 .create(
                     AuthoredMutation::CreateFile {
+                        file_id: None,
                         path: path(&alias)?,
                         bytes: OwnedBytes::from_static(b"collision"),
                         metadata: FileMetadata::default(),
@@ -58,21 +59,25 @@ async fn profile_folded_admission_covers_directories_links_and_renames() -> Test
     for (original, collision) in [
         (
             AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path("Directory")?,
                 metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path("directory")?,
                 metadata: FileMetadata::default(),
             },
         ),
         (
             AuthoredMutation::CreateSymbolicLink {
+                file_id: None,
                 path: path("Link")?,
                 target: OwnedBytes::from_static(b"target"),
                 metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateSymbolicLink {
+                file_id: None,
                 path: path("link")?,
                 target: OwnedBytes::from_static(b"other"),
                 metadata: FileMetadata::default(),
@@ -178,10 +183,12 @@ async fn profile_folded_authored_batches_reject_intra_batch_collisions() -> Test
             .apply_authored_transaction(
                 vec![
                     AuthoredMutation::CreateDirectory {
+                        file_id: None,
                         path: path("Batch")?,
                         metadata: FileMetadata::default()
                     },
                     AuthoredMutation::CreateFile {
+                        file_id: None,
                         path: path("batch")?,
                         bytes: OwnedBytes::from_static(b"body"),
                         metadata: FileMetadata::default()
@@ -208,6 +215,7 @@ async fn profile_folded_authored_batches_reject_intra_batch_collisions() -> Test
         .apply_authored_transaction(
             vec![
                 AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: path("Ordered")?,
                     bytes: OwnedBytes::from_static(b"body"),
                     metadata: FileMetadata::default(),
@@ -237,10 +245,12 @@ async fn profile_folded_authored_batches_reject_intra_batch_collisions() -> Test
         .apply_authored_transaction(
             vec![
                 AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path: path("Nested")?,
                     metadata: FileMetadata::default(),
                 },
                 AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: path_parts(&["nested", "Child"])?,
                     bytes: OwnedBytes::from_static(b"nested"),
                     metadata: FileMetadata::default(),
@@ -376,6 +386,7 @@ async fn nested_alias_listing_preserves_directory_observations() -> TestResult {
     for components in [vec!["Stra\u{df}e"], vec!["Stra\u{df}e", "\u{39f}\u{3a3}"]] {
         seed.create(
             AuthoredMutation::CreateDirectory {
+                file_id: None,
                 path: path_parts(&components)?,
                 metadata: FileMetadata::default(),
             },
@@ -386,6 +397,7 @@ async fn nested_alias_listing_preserves_directory_observations() -> TestResult {
     }
     seed.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: path_parts(&["Stra\u{df}e", "\u{39f}\u{3a3}", "leaf"])?,
             bytes: OwnedBytes::from_static(b"body"),
             metadata: FileMetadata::default(),
@@ -408,6 +420,7 @@ async fn nested_alias_listing_preserves_directory_observations() -> TestResult {
     writer
         .create(
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: path_parts(&["Stra\u{df}e", "\u{39f}\u{3a3}", "new"])?,
                 bytes: OwnedBytes::from_static(b"new"),
                 metadata: FileMetadata::default(),

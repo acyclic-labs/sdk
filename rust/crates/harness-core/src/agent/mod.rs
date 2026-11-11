@@ -42,11 +42,14 @@ mod lifecycle;
 pub use lifecycle::{AgentComposer, AgentLifecycle, CLOSE};
 mod lower;
 mod machine;
+mod names;
 mod notices;
+pub use names::NameIndex;
 pub use notices::NoticeSelection;
 pub(crate) mod records;
 mod release;
 mod reply;
+pub(crate) use reply::entry as conversation_entry;
 mod settled;
 #[cfg(test)]
 mod ui_tests;
@@ -86,7 +89,7 @@ pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, InputProgress, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{
-    ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
+    ACTORS, AGENTS, AgentId, AgentPath, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
 };
 pub use lower::{delivery_key, lower};
 pub use machine::{
@@ -95,12 +98,12 @@ pub use machine::{
     TurnDriver, TurnFuture, TurnInput, TurnStep, Until, Wait, Wake, requested_child, step,
 };
 pub use records::{
-    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, ChildWake,
-    ChildWakeSet, Closed, ContextAction, ContextRequest, Control, CreationConfig, ForkAdopted,
-    Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES,
-    MAX_VOLUMES, Membership, Message, NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext,
-    SpawnRequest, SpawnTemplates, StatusRecord, UnsupportedRecordVersion, VolumeBinding,
-    decode_record,
+    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled,
+    ChildSettlement, ChildWake, ChildWakes, Closed, ContextAction, ContextRequest, Control,
+    CreationConfig, ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
+    MAX_RECORD_BYTES, MAX_VOLUMES, Membership, Message, NoticePayload, Phase, RECORD_VERSION,
+    Sender, SpawnContext, SpawnRequest, SpawnTemplates, StatusRecord, UnsupportedRecordVersion,
+    VolumeBinding, decode_record,
 };
 pub use reply::{Reply, SteeringReply, reply};
 

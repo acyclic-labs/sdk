@@ -42,7 +42,6 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-        tail: u64,
         boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<(
         ResponseProjection,
@@ -77,6 +76,10 @@ impl StockExecution<'_> {
         let prepared_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:prepared"), work)
         })?;
+        let _writer = self.journal_writes.lock().await;
+        let (tail, _) = self
+            .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+            .await?;
         if !journal
             .append_if_tail(
                 input.operation_id,
@@ -107,7 +110,7 @@ impl StockExecution<'_> {
         boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<crate::model::PreparedModelRequest> {
         crate::conversation::BoundedContentFuture::new(self.io, || async {
-            let (tail, records) = self
+            let (_, records) = self
                 .model_records(journal, input.operation_id, step, ModelPurpose::Response)
                 .await?;
             let mut retained = records.iter().filter_map(|record| match &record.event {
@@ -131,7 +134,7 @@ impl StockExecution<'_> {
                     if self.stock.reconciliation_only {
                         return Err(Error::Indeterminate(input.operation_id));
                     }
-                    self.capture_response(journal, input, step, prior_messages, tail, boundary)
+                    self.capture_response(journal, input, step, prior_messages, boundary)
                         .await?
                 }
                 Some(reference) => {
@@ -224,17 +227,17 @@ impl StockExecution<'_> {
                 &proof,
             )
             .await?;
-            let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()?
+            let crate::context::CompactionPolicy::Capacity(policy) = self.compaction_policy()?
             else {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Storage,
-                    "compacted context requires threshold policy",
+                    "compacted context requires capacity policy",
                 ));
             };
             if self.model_capacity()? != final_accounting.capacity
                 || proof.summary.as_ref().is_none_or(|summary| {
-                    summary.operation_id != input.operation_id || summary.step != step
+                    summary.operation_id != input.operation_id || summary.step > step
                 })
             {
                 return Err(stock_boundary(
@@ -246,7 +249,11 @@ impl StockExecution<'_> {
             if policy.needs_compaction(
                 final_accounting.capacity,
                 with_history_io(self.io, |work| {
-                    final_accounting.count.validate(&request, work)
+                    final_accounting
+                        .count
+                        .as_ref()
+                        .ok_or(Error::ModelContextOverflow)?
+                        .validate(&request, work)
                 })?,
                 self.output_tokens(),
             )? {
@@ -256,6 +263,15 @@ impl StockExecution<'_> {
                     "retained compacted context exceeds selected capacity",
                 ));
             }
+            let mut request = request;
+            request.retain_context_window(crate::context::ContextWindow {
+                input_tokens: final_accounting
+                    .count
+                    .as_ref()
+                    .ok_or(Error::ModelContextOverflow)?
+                    .input_tokens,
+                capacity_tokens: final_accounting.capacity.context_tokens,
+            })?;
             return Ok(Some(request));
         }
         Ok(None)
@@ -300,9 +316,13 @@ impl StockExecution<'_> {
                 "selected capacity differs from captured accounting",
             ));
         }
-        let input_tokens =
-            with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+        let input_tokens = accounting
+            .count
+            .as_ref()
+            .map(|count| with_history_io(self.io, |work| count.validate(&prepared, work)))
+            .transpose()?;
         if self.single_request {
+            let input_tokens = input_tokens.ok_or(Error::ModelContextOverflow)?;
             let output = accounting
                 .capacity
                 .output_reservation(self.output_tokens())?;
@@ -322,9 +342,14 @@ impl StockExecution<'_> {
                     "single inference request declares invocable tools",
                 ));
             }
+            let mut prepared = prepared;
+            prepared.retain_context_window(crate::context::ContextWindow {
+                input_tokens,
+                capacity_tokens: accounting.capacity.context_tokens,
+            })?;
             return Ok(prepared);
         }
-        let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()? else {
+        let crate::context::CompactionPolicy::Capacity(policy) = self.compaction_policy()? else {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Storage,
@@ -343,12 +368,78 @@ impl StockExecution<'_> {
         {
             return Ok(retained);
         }
-        let token_pressure =
-            policy.needs_compaction(accounting.capacity, input_tokens, self.output_tokens())?;
+        let token_pressure = match input_tokens {
+            Some(tokens) => {
+                policy.needs_compaction(accounting.capacity, tokens, self.output_tokens())?
+            }
+            None => true,
+        };
         let selected_base = step == 0 && input.selected_context.is_some();
         let possible_message_pressure = selected_base
             && prepared.request().messages.len() > self.compaction_message_limit(true, 0);
         if !possible_message_pressure && !token_pressure {
+            let input_tokens = input_tokens.ok_or(Error::ModelContextOverflow)?;
+            // Preparation borrows the next response's capacity credit. It does
+            // not rewrite the current request, or impose a retention threshold.
+            let reserve = accounting
+                .capacity
+                .output_reservation(self.output_tokens())?;
+            if self.background_available().await
+                && input
+                    .max_steps
+                    .is_none_or(|maximum| step.saturating_add(1) < maximum)
+                && input_tokens.saturating_add(u64::from(reserve))
+                    > policy.input_ceiling(accounting.capacity, self.output_tokens())?
+                && prepared.request().messages.len() > 1
+            {
+                projection.context.messages =
+                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
+                // Choose an immutable source without another provider count on
+                // the worker's critical path. The summary has its own admission.
+                let source = if selected_base
+                    || projection.working.is_some()
+                    || journal.working_checkpoint_authority().is_some()
+                {
+                    let (_, context, _) = self
+                        .response_base(journal, input, step, prior_messages)
+                        .await?;
+                    CompactionSource::Base { context }
+                } else {
+                    CompactionSource::Projected
+                };
+                let context = match &source {
+                    CompactionSource::Projected => &projection.context,
+                    CompactionSource::Base { context } => context,
+                };
+                let stage_messages = projection
+                    .context
+                    .messages
+                    .len()
+                    .saturating_sub(context.messages.len());
+                let limit = self.compaction_message_limit(selected_base, stage_messages);
+                if let Some((through, _)) = with_history_io(self.io, |work| {
+                    policy.try_projection_budget(
+                        context,
+                        limit,
+                        context.messages.len().saturating_sub(1),
+                        work,
+                    )
+                })? {
+                    // Startup declarations alone are not worker history. Wait
+                    // for an existing response that the summary can preserve.
+                    if context.messages[..through]
+                        .iter()
+                        .any(|message| message.role == ModelRole::Assistant)
+                    {
+                        self.queue_background(context, through, step).await?;
+                    }
+                }
+            }
+            let mut prepared = prepared;
+            prepared.retain_context_window(crate::context::ContextWindow {
+                input_tokens,
+                capacity_tokens: accounting.capacity.context_tokens,
+            })?;
             return Ok(prepared);
         }
         projection.context.messages =
@@ -369,6 +460,12 @@ impl StockExecution<'_> {
             && source_context.messages.len() > 1
             && source_context.messages.len() > self.compaction_message_limit(true, stage_messages);
         if !message_pressure && !token_pressure {
+            let input_tokens = input_tokens.ok_or(Error::ModelContextOverflow)?;
+            let mut prepared = prepared;
+            prepared.retain_context_window(crate::context::ContextWindow {
+                input_tokens,
+                capacity_tokens: accounting.capacity.context_tokens,
+            })?;
             return Ok(prepared);
         }
         self.compact_response(

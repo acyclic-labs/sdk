@@ -310,7 +310,7 @@ fn credential_sequence(case: u8, operations: &[(bool, Option<u8>)]) {
     // an API key; its local counter exists only on the native Responses route.
     let selected_login = login && !key && case / 32 == 2;
     let valid_route = !selected_login || (builtin && responses);
-    let accepted = valid_route && (counter || selected_login);
+    let accepted = valid_route && (counter || selected_login || !responses);
     for &(reload, proposed) in operations {
         let before = catalog_snapshot(&registry);
         let default_before = registry.default_model().to_owned();

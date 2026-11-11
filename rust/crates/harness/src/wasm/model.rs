@@ -104,14 +104,14 @@ pub fn default_compaction_policy() -> Result<JsValue, JsValue> {
     to_js(&crate::context::CompactionPolicy::default())
 }
 
-/// Checks a threshold against actual selected capacity, returning its finite output ceiling.
-#[wasm_bindgen(js_name = validateThresholdCompaction)]
-pub fn validate_threshold_compaction(
-    #[wasm_bindgen(unchecked_param_type = "ThresholdCompaction")] config: JsValue,
+/// Checks reserved headroom against actual selected capacity, returning its finite output ceiling.
+#[wasm_bindgen(js_name = validateCapacityCompaction)]
+pub fn validate_capacity_compaction(
+    #[wasm_bindgen(unchecked_param_type = "CapacityCompaction")] config: JsValue,
     #[wasm_bindgen(unchecked_param_type = "ModelContextCapacity")] capacity: JsValue,
     #[wasm_bindgen(unchecked_param_type = "number | undefined")] output_tokens: JsValue,
 ) -> Result<u32, JsValue> {
-    let config: crate::context::ThresholdCompaction = from_js(config)?;
+    let config: crate::context::CapacityCompaction = from_js(config)?;
     let output_tokens = if output_tokens.is_undefined() {
         None
     } else {

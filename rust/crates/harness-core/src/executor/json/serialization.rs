@@ -485,7 +485,7 @@ fn scope<'a>(
 ) -> Scope<'a> {
     Scope {
         bounds: JsonBounds {
-            maximum_depth: bounds.maximum_depth.min(256),
+            maximum_depth: bounds.maximum_depth.min(RECORD_MAXIMUM_DEPTH),
             ..bounds
         },
         code,

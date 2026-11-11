@@ -31,6 +31,43 @@ pub use scripted::{
     ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn, read_request_files,
 };
 
+/// Stages an admitted request through the production versioned producer.
+pub async fn stage_model_request(
+    journal: &dyn crate::executor::ExecutionJournal,
+    operation: crate::OperationId,
+    key: &str,
+    prepared: &crate::model::PreparedModelRequest,
+) -> crate::Result<crate::conversation::FileRef> {
+    crate::executor::transcript::stage_request(journal, operation, key, prepared, None, None).await
+}
+
+/// Stages an unaccounted context through the production versioned producer.
+pub async fn stage_context_projection(
+    journal: &dyn crate::executor::ExecutionJournal,
+    operation: crate::OperationId,
+    key: &str,
+    context: crate::context::Context,
+    prepared: &crate::model::PreparedModelRequest,
+) -> crate::Result<crate::conversation::FileRef> {
+    crate::executor::transcript::stage_projection(
+        journal,
+        operation,
+        key,
+        &crate::executor::ResponseProjection {
+            context,
+            steering: None,
+            canonical: None,
+            checkpoint: None,
+            working: None,
+            accounting: None,
+        },
+        prepared,
+        None,
+        None,
+    )
+    .await
+}
+
 /// Observe the shipping error envelope and outcome uncertainty together.
 /// Comparing only error codes would hide lost diagnostics or operation identity.
 pub fn error_observation(error: &crate::Error) -> (crate::wire::Error, bool) {

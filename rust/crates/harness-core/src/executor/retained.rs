@@ -103,7 +103,7 @@ pub(crate) async fn retained_model_step<'a>(
                 ..Default::default()
             })?;
         }
-        if matches!(&record.event, ExecutionEvent::ModelStopped { step: recorded, purpose: recorded_purpose }
+        if matches!(&record.event, ExecutionEvent::ModelStopped { step: recorded, purpose: recorded_purpose, .. }
             if *recorded == step && *recorded_purpose == purpose)
         {
             return Err(Error::InteractionRejected(
@@ -116,11 +116,12 @@ pub(crate) async fn retained_model_step<'a>(
                 purpose: event_purpose,
                 request_digest,
                 request,
+                context,
             } = &record.event
             && *event_step == step
             && *event_purpose == purpose
         {
-            started = Some((*request_digest, request));
+            started = Some((*request_digest, request, *context));
         }
         if super::model_observation::matches_turn(&record.event, step, purpose) {
             let event = super::model_observation::load(journal, &record.event, io)
@@ -158,14 +159,17 @@ pub(crate) async fn retained_model_step<'a>(
             "model observations exist without an admitted attempt",
         ));
     }
-    let request = if let Some((digest, reference)) = started {
-        let recorded = load_model_request(journal, reference, limits, io).await?;
+    let request = if let Some((digest, reference, context)) = started {
+        let mut recorded = load_model_request(journal, reference, limits, io).await?;
         if recorded.request_digest() != digest {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "recorded model request digest differs from admission",
             ));
+        }
+        if let Some(context) = context {
+            recorded.retain_context_window(context)?;
         }
         Some(recorded)
     } else {

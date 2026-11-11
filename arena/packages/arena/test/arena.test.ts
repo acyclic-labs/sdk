@@ -85,13 +85,15 @@ test("git worktree forker: fork, diff, promote, drop, without acyclic", () => {
   execSync("git init -q -b main && git -c user.email=a@b -c user.name=t commit -q --allow-empty -m init", { cwd: repo });
   writeFileSync(join(repo, "a.txt"), "one\n");
   execSync("git add a.txt && git -c user.email=a@b -c user.name=t commit -q -m a", { cwd: repo });
-  writeFileSync(join(repo, "a.txt"), "one\ntwo\n");           // uncommitted change must reach the fork
+  // Real Git diff/apply must retain the whole dirty file beyond the old capture ceiling.
+  const dirty = "one\ntwo\n" + "x".repeat(17 * 1024 * 1024) + "\n";
+  writeFileSync(join(repo, "a.txt"), dirty);
   writeFileSync(join(repo, "arena.jsonl"), "{}\n");                 // the log must never enter a fork
   const fk = new GitForker(repo);
   const [A, B] = fk.fork(2);
   assert.equal(existsSync(join(A!.path, "arena.jsonl")), false);
   writeFileSync(join(repo, "arena.jsonl"), "{}\n{}\n");             // and base-side growth is never a fork change
-  assert.equal(readFileSync(join(A!.path, "a.txt"), "utf8"), "one\ntwo\n");
+  assert.equal(readFileSync(join(A!.path, "a.txt"), "utf8"), dirty);
   writeFileSync(join(A!.path, "b.txt"), "hello\n");
   writeFileSync(join(A!.path, "a.txt"), "one\ntwo\nthree\n");
   assert.deepEqual(fk.diff(A!).map((c) => `${c.status} ${c.path}`).sort(), ["A b.txt", "M a.txt"]);

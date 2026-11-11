@@ -4,6 +4,7 @@ use super::*;
 enum Dispatch {
     Model,
     Tool,
+    InterleaveStage,
 }
 
 struct BarrierJournal(Journal, Dispatch, AtomicUsize);
@@ -88,7 +89,12 @@ impl ExecutionJournal for BarrierJournal {
         media: &'static str,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
-        self.0.stage(operation, key, bytes, media, io)
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if matches!(self.1, Dispatch::InterleaveStage) {
+                tokio::task::yield_now().await;
+            }
+            self.0.stage(operation, key, bytes, media, io)?.await
+        })
     }
     fn load<'a>(
         &'a self,
@@ -118,6 +124,74 @@ impl ExecutionJournal for BarrierJournal {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<InteractionOutcome>>> {
         self.0.interaction_outcome(id, io)
     }
+}
+
+#[tokio::test]
+async fn concurrent_summary_and_response_preserve_both_dispatch_claims() -> Result<()> {
+    for shared in [true, false] {
+        let journal = BarrierJournal(
+            Journal::default(),
+            Dispatch::InterleaveStage,
+            AtomicUsize::new(0),
+        );
+        let provider = Arc::new(ScriptedModelProvider::new([
+            ScriptedTurn::Text("first".into()),
+            ScriptedTurn::Text("second".into()),
+        ]));
+        let executor = uncompacted_executor(
+            Model::new("test".into(), "concurrent-context".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let execution = StockExecution::ordinary(&executor);
+        let independent = StockExecution::ordinary(&executor);
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            max_steps: None,
+            input: ModelContent::Text("continue".into()),
+            selected_context: None,
+        };
+        execution.ensure_started(&journal, &input).await?;
+        let source = crate::context::Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("history".into()),
+            }],
+            ..Default::default()
+        };
+        let summary_owner = if shared { &execution } else { &independent };
+        let mut phase = DispatchPhase::new();
+        let summary = summary_owner.summarize(
+            &journal,
+            Some(&input),
+            input.operation_id,
+            0,
+            (source, ModelContent::Text("summarize".into())),
+            &mut phase,
+        );
+        let response = execution.model_step(&journal, &input, 0, &[]);
+        let (summary, response) = tokio::join!(summary, response);
+        if shared {
+            summary?;
+            response?;
+            assert_eq!(provider.requests().len(), 2);
+            assert_eq!(
+                journal
+                    .records()?
+                    .iter()
+                    .filter(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
+                    .count(),
+                2
+            );
+        } else {
+            assert!(
+                summary.is_err() || response.is_err(),
+                "independent writers did not expose the stale-tail counterexample"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]

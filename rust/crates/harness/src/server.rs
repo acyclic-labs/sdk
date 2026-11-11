@@ -206,12 +206,11 @@ pub async fn serve<C: Composition>(
     let bound = server.bound();
     // Every client's credential is the capability envelope its issuer
     // signs, verified against the issuer's trust.
-    let authority = Arc::new(crate::filesystem::session_authority(
-        bound.issuer().native().ok_or_else(|| {
-            Error::Invalid("local server enrollment requires native custody".into())
-        })?,
-        host.clock.clone(),
-    )?);
+    let authority = Arc::new(
+        bound
+            .client_authority(server.root(), host.clock.clone())
+            .map_err(failed)?,
+    );
     let (lifetime, ended) = tokio::sync::watch::channel(());
     let completion = host.completion.take();
     let mut completion = std::pin::pin!(async move {
@@ -243,10 +242,21 @@ pub async fn serve<C: Composition>(
         None => format!("http://{address}"),
     };
     let observation = config.verifier.observation(RootCredential(Box::pin(async {
-        let minted = bound
-            .client_credential(server.root(), server.resource(), host.clock.clone())
-            .await
-            .map_err(failed)?;
+        let minted = if server.serves_sessions() {
+            bound
+                .session_credential(
+                    server.root(),
+                    server.resource(),
+                    &server.session_resource(),
+                    host.clock.clone(),
+                )
+                .await
+        } else {
+            bound
+                .client_credential(server.root(), server.resource(), host.clock.clone())
+                .await
+        }
+        .map_err(failed)?;
         Ok((minted.credential, minted.principal))
     })));
     let observation = tokio::select! {

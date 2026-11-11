@@ -4,6 +4,26 @@ use crate::{Result, conversation::PrivateDirectoryPage, resources::GenerationRef
 use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
 
 impl Conversation {
+    /// Read a bounded completion page at an exact original status record.
+    pub async fn child_wakes(
+        &self,
+        status: u64,
+        page: AgentPageRequest,
+    ) -> Result<(Vec<crate::agent::ChildWake>, Option<String>)> {
+        match self
+            .connection
+            .execute(&AgentCommand::ChildWakes {
+                agent: self.agent().clone(),
+                status,
+                page,
+            })
+            .await?
+        {
+            AgentReply::ChildWakes { items, next } => Ok((items, next)),
+            _ => Err(unexpected()),
+        }
+    }
+
     /// Read one bounded file range at the original directory generation.
     /// Continue from the returned byte count until reaching the whole length.
     ///

@@ -17,7 +17,6 @@ const credentialAssignment = /\b(?:aws_secret_access_key|github_token|authorizat
 // Only the recorded public fake-server fixtures may contain credential literals.
 const fixtureDigests = new Map([
   ["typescript/packages/machines/test/fixtures/server-key.pem", "048bbcff062c2c0ccb0ed19df146e59b9cc937f86210be0158076123f24b2340"],
-  ["typescript/packages/inference/test/client.test.ts", "69bf9379c89e4412c81c0228dc996a2eb624fb94f253e601bddacb492300452b"],
   ["typescript/packages/inference/test/idle-kv.test.ts", "6ee7f3e2aaeb15ea681f5de19cd3be5ddfb5a9c9b699d0cd40178ee6e55def58"],
 ]);
 export const credentialFixturePaths = [...fixtureDigests.keys()];
@@ -59,7 +58,7 @@ function inspect(path, content) {
 }
 
 async function main() {
-  const paths = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\u0000").filter(Boolean);
+  const paths = execFileSync("git", ["ls-files", "-z"], { maxBuffer: Infinity, cwd: root, encoding: "utf8" }).split("\u0000").filter(Boolean);
   for (const path of paths) {
     try {
       const content = await readFile(join(root, path), "utf8");

@@ -113,7 +113,7 @@ async fn create(provider: &MemoryStream, agent: AgentId) -> Result<AgentPath> {
 }
 
 #[test]
-fn layout_round_trips_and_bounds_depth() -> Result {
+fn layout_round_trips_beyond_the_former_depth_cap() -> Result {
     let root = AgentPath::root(&id(1));
     let child = root.child(&id(2))?;
     assert_eq!(child.parent().as_ref(), Some(&root));
@@ -122,11 +122,12 @@ fn layout_round_trips_and_bounds_depth() -> Result {
     assert!(AgentPath::try_from(format!("{}/status", root.as_str())).is_err());
     assert!(AgentId::try_from("A".repeat(32)).is_err());
     let mut deep = root;
-    for _ in 0..MAX_DEPTH {
+    for _ in 0..128 {
         deep = deep.child(&id(3))?;
     }
-    assert!(deep.child(&id(3)).is_err());
-    assert!(AgentPath::try_from(format!("{deep}/children/{}", id(3))).is_err());
+    let child = deep.child(&id(3))?;
+    assert_eq!(child.depth(), 129);
+    assert_eq!(AgentPath::try_from(child.as_str().to_owned())?, child);
     Ok(())
 }
 
@@ -237,6 +238,7 @@ async fn seeded() -> Result<Seeded> {
                     path: status,
                     records: vec![
                         StatusRecord {
+                            child_settlement: None,
                             child_wakes: None,
                             phase: Phase::Running,
                             cursor: 1,
@@ -302,6 +304,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
             },
         ],
         status: Some(StatusRecord {
+            child_settlement: None,
             child_wakes: None,
             phase: Phase::Idle,
             cursor: 1,
@@ -346,6 +349,7 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
     assert_eq!(values(&provider, parent.conversation()?).await?.len(), 3);
     // The child's first status rides with its membership: Idle at its ForkAdopted.
     let first = StatusRecord {
+        child_settlement: None,
         child_wakes: None,
         phase: Phase::Idle,
         cursor: 1,
@@ -484,9 +488,13 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
         };
         let cancel = acyclic_actors::guest::CancellationToken::new;
         let first = step(&driver, &path, Some(state), (2, 0), wake(1), cancel()).await?;
-        // The original actor checkpoint publishes the first conversation cut.
-        // Same-phase turns use that event rather than an extra status append.
-        assert!(first.status.is_none());
+        // An Idle -> Idle turn must announce creation of its conversation, while
+        // later appends already have the conversation follow as their event.
+        assert_eq!(first.status.is_some(), initial_tail == 0);
+        if let Some(status) = &first.status {
+            assert_eq!(status.conversation, initial_tail + 2);
+            assert_eq!(status.phase, Phase::Idle);
+        }
         assert_eq!(first.state.checkpoint, Some(initial_tail + 1));
         assert_eq!(first.state.conversation_tail, initial_tail + 2);
         let later = step(&driver, &path, Some(first.state), (3, 0), wake(2), cancel()).await?;
@@ -496,9 +504,7 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
         let spawned = spawning(later.state.clone(), "s1");
         let request = lower(&spawned, 3, delivery_key(&spawned.state, "s1")?)?;
         let adopted = request
-            .effects
-            .iter()
-            .flat_map(|effect| &effect.mutations)
+            .mutations()
             .find_map(|mutation| match mutation {
                 CommitMutation::Fork { records, .. } => records.first(),
                 _ => None,
@@ -937,37 +943,14 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| "corpus name")?;
         let data = std::fs::read(entry.path())?;
-        let (selector, bytes) = data.split_first().ok_or("empty agent corpus input")?;
-        if let Some(expected) = generated.get(name.as_str()) {
-            assert_eq!(
-                &data, expected,
-                "stale current corpus seed {name}; recovery: bun scripts/generate-contracts.mjs write harness"
-            );
-        } else {
-            // Historical production bytes remain immutable. Their original
-            // version is refused before the current payload reader runs.
-            let header = bytes
-                .get(..4)
-                .ok_or("historical agent frame has no version")?;
-            let version = u32::from_be_bytes(header.try_into()?);
-            assert_ne!(
-                version, RECORD_VERSION,
-                "unattributed current corpus seed {name}"
-            );
-            let refusal = match selector % 4 {
-                0 => InboxRecord::decode(bytes).map(drop),
-                1 => StatusRecord::decode(bytes).map(drop),
-                2 => Closed::decode(bytes).map(drop),
-                _ => return Err("historical agent corpus input is not a record".into()),
-            };
-            assert!(
-                matches!(refusal,
-                Err(acyclic_harness_core::agent::Error::UnsupportedRecordVersion(found))
-                    if found.found == version && found.expected == RECORD_VERSION),
-                "historical writer {name} lost its typed version refusal"
-            );
+        assert_eq!(
+            Some(&data),
+            generated.get(name.as_str()),
+            "stale corpus seed {name}; recovery: bun scripts/generate-contracts.mjs write harness"
+        );
+        let Some((selector, bytes)) = data.split_first() else {
             continue;
-        }
+        };
         let accepted = match selector % 4 {
             0 => InboxRecord::decode(bytes)
                 .map(|record| record.encode().map(drop))

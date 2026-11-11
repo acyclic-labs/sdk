@@ -307,6 +307,7 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     checkout
         .create(
             crate::AuthoredMutation::CreateFile {
+                file_id: None,
                 path: first.clone(),
                 bytes: (Bytes::from_static(b"first")).into(),
                 metadata: crate::kernel::FileMetadata::default(),

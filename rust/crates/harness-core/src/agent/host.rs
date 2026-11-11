@@ -320,6 +320,28 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         })
     }
 
+    /// Wait until every input through `input` has settled or been disposed.
+    /// Queued work and a paused turn are included; an idle phase alone is not
+    /// a settlement fence. Each recheck follows an original actor publication.
+    pub async fn wait_for_input(&self, agent: &AgentPath, input: u64) -> Result<(), Error> {
+        loop {
+            let progress = self.input_progress(agent, input).await?;
+            if progress.settled {
+                return Ok(());
+            }
+            acyclic_stream::records_only(
+                self.provider
+                    .follow(progress.follow)
+                    .await
+                    .map_err(Error::Stream)?,
+            )
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .ok_or(Error::Stream(StreamError::Unavailable))?;
+        }
+    }
+
     /// Replays and follows conversation, including before its first turn.
     /// First publication is observed through the original actor checkpoint;
     /// same-phase turns need no extra status record. A terminal checkpoint with
@@ -471,11 +493,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         intent: &IntentId,
         checkpoint: Option<&acyclic_actors::guest::Checkpoint>,
     ) -> Result<SpawnOutcome, Error> {
-        let Ok(child) = super::TurnEffect::child(parent, intent) else {
-            return Ok(SpawnOutcome::Refused {
-                reason: SpawnRefusal::Depth,
-            });
-        };
+        let child = parent.child(&super::AgentId::derive(&parent.id(), intent.as_str()))?;
         match self
             .provider
             .read(ReadRequest {
@@ -568,6 +586,46 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         self.agents.prepare_root(&self.within, intent, adopted)
     }
 
+    /// Prepare a root branch of an admitted source at its coupled history cut.
+    /// Its creation pins the actor paused with independent zero escrow, so
+    /// publishing a branch cannot run the model or spend source funding.
+    pub(crate) fn prepare_root_history(
+        &self,
+        intent: &IntentId,
+        source: &super::AgentState,
+        mut adopted: ForkAdopted,
+        at: u64,
+        saved: &super::HistoryCheckpoint,
+    ) -> Result<Spawn, Error> {
+        if saved.conversation
+            != at
+                .checked_add(1)
+                .ok_or(Error::Record("history cut overflow"))?
+            || saved.conversation > source.conversation_tail
+        {
+            return Err(Error::Record("root branch requires a settled source cut"));
+        }
+        let mut profile = source.profile.clone().ok_or(Error::Record(
+            "a historical root requires the source's admitted creation config",
+        ))?;
+        profile.context = super::SpawnContext::Fork;
+        profile.continuation = Some(Box::new(super::Continuation::at(
+            &source.path,
+            at,
+            saved,
+            None,
+        )));
+        adopted.profile = Some(profile);
+        adopted.conversation_tail = saved.conversation;
+        adopted.checkpoint = saved.checkpoint;
+        let history = super::HistorySelection {
+            conversation: saved.conversation,
+            checkpoint: saved.checkpoint,
+        };
+        self.agents
+            .prepare_root_history(&self.within, intent, adopted, &source.path, &history)
+    }
+
     /// Create root agent `adopted.agent` in one commit, and start hosting it.
     /// Retrying the same `intent` replays exactly and names the same agent.
     pub async fn create(
@@ -601,14 +659,37 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         self.deliver(to, send(to, from, record)?).await
     }
 
-    /// Close `target` and, through its cascade, its open descendants.
-    pub async fn archive(
-        &self,
-        target: &AgentPath,
-        by: &Sender,
-        id: &IntentId,
-    ) -> Result<Delivered, Error> {
-        self.deliver(target, archive(target, by, id)?).await
+    /// Close `target` and its open descendants. Closing admission precedes
+    /// resuming each actor through its original runtime control owner: a
+    /// paused actor must still execute its ordinary closing/cleanup step.
+    /// Only currently open children are visited, never retained history.
+    pub fn archive<'a>(
+        &'a self,
+        target: &'a AgentPath,
+        by: &'a Sender,
+        id: &'a IntentId,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Delivered, Error>> {
+        Box::pin(async move {
+            let delivered = self.deliver(target, archive(target, by, id)?).await?;
+            self.pause(target, false).await?;
+            let state = self.state(target).await?;
+            let mut ancestry = vec![(target.clone(), state.open_children, None)];
+            while let Some((parent, children, after)) = ancestry.last_mut() {
+                // One child is a page credit, not a subtree-size bound. The
+                // persistent cursor and ancestry are the only retained work.
+                let Some(next) = children.page(after.as_ref(), 1).await?.pop() else {
+                    ancestry.pop();
+                    continue;
+                };
+                let child = parent.child(&next)?;
+                *after = Some(next);
+                self.deliver(&child, archive(&child, by, id)?).await?;
+                self.pause(&child, false).await?;
+                let state = self.state(&child).await?;
+                ancestry.push((child, state.open_children, None));
+            }
+            Ok(delivered)
+        })
     }
 
     /// Durably pause or resume one agent. A paused agent consumes nothing:

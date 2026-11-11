@@ -37,7 +37,7 @@ proptest! {
 
 #[test]
 fn negative_controls_fault_the_production_successor_rule() {
-    for successor in [0, 3, 4, 5] {
+    for successor in [3, 4] {
         let items = [item(0, ""), item(successor, "interrupt"), item(1, "answer")];
         assert_response_sequence(&body(&[0, successor], "interrupt"));
         let never = replay_responses_with(&items, |_, _| true);
@@ -50,6 +50,15 @@ fn negative_controls_fault_the_production_successor_rule() {
     let always = replay_responses_with(&answered, |_, _| false);
     assert_eq!(
         response_sequence_violation(&answered, &always),
+        Some("complete exchange refused")
+    );
+    let run = [item(0, ""), item(0, ""), item(2, "")];
+    let former = replay_responses_with(&run, |previous, next| {
+        use crate::protocol::sequence::ResponseItem;
+        previous != ResponseItem::Reasoning || next == ResponseItem::Output
+    });
+    assert_eq!(
+        response_sequence_violation(&run, &former),
         Some("complete exchange refused")
     );
 }

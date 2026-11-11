@@ -1,10 +1,12 @@
 //! Agent checkpoint: persistent membership roots and raw turn bytes.
-use super::{AgentRecord as _, AgentState, Error};
+use super::{AgentRecord, AgentState, Error};
 use acyclic_actors::guest::{Checkpoint, CodecIdentity};
 use prost::Message as _;
 
 /// Protective bound on the complete encoded actor checkpoint.
 pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
+#[cfg(test)]
+pub(crate) const TAIL_SLACK: usize = 2 * 20;
 
 /// The checkpoint codec every agent actor commits with. Checkpoint state and
 /// inbox records carry independent format versions.
@@ -16,7 +18,7 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            // V6 also retains wait measurements behind an immutable membership root.
+            // V6 combines persistent child/fact roots with admitted input frontiers.
             version: "6".into(),
         });
     &IDENTITY
@@ -66,11 +68,6 @@ struct Encoded {
 
 /// Retains the exact final checkpoint bytes for atomic publication.
 pub(super) fn from_encoded(bytes: Vec<u8>) -> Result<Checkpoint, Error> {
-    if bytes.len() > MAX_CHECKPOINT_BYTES {
-        return Err(Error::Record(
-            "agent checkpoint exceeds MAX_CHECKPOINT_BYTES",
-        ));
-    }
     Ok(Checkpoint {
         codec: codec(),
         bytes: bytes.into(),
@@ -156,12 +153,16 @@ pub(super) fn check_wire(bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::AgentId;
+    use std::collections::BTreeSet;
+    // A deep fixture, not an admission bound.
+    const FIXTURE_DEPTH: usize = 64;
+    const FIXTURE_CHILDREN: usize = 256;
     use crate::agent::{
-        AgentId, AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control,
-        ConversationEntry, ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH,
-        MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
-        Message, NoticePayload, Phase, Sender, SpawnRequest, StatusRecord, TurnInput,
-        VolumeBinding,
+        AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
+        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
+        MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, NoticePayload, Phase, Sender,
+        SpawnRequest, StatusRecord, TurnInput, VolumeBinding,
     };
     use crate::conversation::{
         FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES,
@@ -169,7 +170,6 @@ mod tests {
     };
     use crate::resources::ProviderRef;
     use acyclic_actors::local::{SUBSCRIPTION_OVERHEAD, State};
-    use std::collections::BTreeSet;
 
     fn id(n: u64) -> AgentId {
         let mut bytes = [0xff; 16];
@@ -209,7 +209,7 @@ mod tests {
     fn agent(depth: usize) -> AgentPath {
         let mut path = AgentPath::root(&id(0));
         for level in 1..=depth {
-            path = path.child(&id(level as u64)).expect("within MAX_DEPTH");
+            path = path.child(&id(level as u64)).expect("within FIXTURE_DEPTH");
         }
         path
     }
@@ -255,7 +255,7 @@ mod tests {
     fn senders() -> Vec<Sender> {
         vec![
             Sender::Agent {
-                path: agent(MAX_DEPTH),
+                path: agent(FIXTURE_DEPTH),
             },
             Sender::User {
                 principal: widest(MAX_INTENT_BYTES),
@@ -298,7 +298,7 @@ mod tests {
                 peers: Default::default(),
             }),
             agent: id(u64::MAX),
-            parent: Some(agent(MAX_DEPTH - 1)),
+            parent: Some(agent(FIXTURE_DEPTH - 1)),
             forked_at: u64::MAX,
             conversation_tail: u64::MAX,
             checkpoint: Some(u64::MAX),
@@ -315,7 +315,7 @@ mod tests {
 
     /// Every record kind a step sends, each at its widest.
     fn inbox_records() -> Vec<InboxRecord> {
-        let deepest = agent(MAX_DEPTH);
+        let deepest = agent(FIXTURE_DEPTH);
         let mut records = vec![
             InboxRecord::ForkAdopted(Box::new(adoption())),
             InboxRecord::Approval(crate::agent::Approval { id: intent() }),
@@ -426,171 +426,173 @@ mod tests {
     }
 
     #[test]
-    fn record_frames_and_persistent_checkpoint_roots_retain_their_fields() {
-        futures::executor::block_on(async {
-            assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
-            // Names admit no control character, so `widest` is their worst case.
-            let control = Sender::User {
-                principal: "\0".into(),
-            };
-            assert!(
-                InboxRecord::Message(Message {
-                    from: control,
-                    id: intent(),
-                    body: Box::new(file()),
-                    attachments: None,
-                })
-                .encode()
-                .is_err()
-            );
-            let deepest = agent(MAX_DEPTH);
-            // Sends, adoptions (host-bound volumes included), reports, archives.
-            for record in inbox_records() {
-                record.encode().expect("every inbox record fits");
-            }
-            // Waking payload bytes never enter the settlement record. The largest
-            // exact file length still has a fixed-width descriptor, unlike inline
-            // JSON, whose escaping alone could overflow the record.
-            let waking = InboxRecord::Notice {
+    fn every_record_a_step_writes_fits_its_limit_at_the_configured_maxima() {
+        assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
+        // Names admit no control character, so `widest` is their worst case.
+        let control = Sender::User {
+            principal: "\0".into(),
+        };
+        assert!(
+            InboxRecord::Message(Message {
+                from: control,
                 id: intent(),
-                notice: widest_notice(),
-            };
-            let InboxRecord::Notice {
-                notice: NoticePayload::Waking(waking_file),
-                ..
-            } = &waking
-            else {
-                unreachable!()
-            };
-            assert_eq!(waking_file.descriptor().byte_length(), MAX_EXACT_JS_INTEGER);
-            assert!(waking.encode().expect("fixed-size waking reference").len() < MAX_RECORD_BYTES);
-            for by in senders() {
-                Closed { by, id: intent() }
-                    .encode()
-                    .expect("a closed marker fits");
-            }
-            // Statuses and conversation entries.
-            for outcome in outcomes() {
-                let encoded = serde_json::to_vec(&outcome).expect("outcome");
-                assert!(encoded.len() <= MAX_OUTCOME_BYTES, "{}", encoded.len());
-                StatusRecord {
-                    child_wakes: None,
-                    phase: Phase::Done { outcome },
-                    cursor: u64::MAX,
-                    conversation: u64::MAX,
-                }
+                body: Box::new(file()),
+                attachments: None,
+            })
+            .encode()
+            .is_err()
+        );
+        let deepest = agent(FIXTURE_DEPTH);
+        // Sends, adoptions (host-bound volumes included), reports, archives.
+        for record in inbox_records() {
+            record.encode().expect("every inbox record fits");
+        }
+        // Waking payload bytes never enter the settlement record. The largest
+        // exact file length still has a fixed-width descriptor, unlike inline
+        // JSON, whose escaping alone could overflow the record.
+        let waking = InboxRecord::Notice {
+            id: intent(),
+            notice: widest_notice(),
+        };
+        let InboxRecord::Notice {
+            notice: NoticePayload::Waking(waking_file),
+            ..
+        } = &waking
+        else {
+            unreachable!()
+        };
+        assert_eq!(waking_file.descriptor().byte_length(), MAX_EXACT_JS_INTEGER);
+        assert!(waking.encode().expect("fixed-size waking reference").len() < MAX_RECORD_BYTES);
+        for by in senders() {
+            Closed { by, id: intent() }
                 .encode()
-                .expect("a status fits");
+                .expect("a closed marker fits");
+        }
+        // Statuses and conversation entries.
+        for outcome in outcomes() {
+            let encoded = serde_json::to_vec(&outcome).expect("outcome");
+            assert!(encoded.len() <= MAX_OUTCOME_BYTES, "{}", encoded.len());
+            StatusRecord {
+                child_settlement: None,
+                child_wakes: None,
+                phase: Phase::Done { outcome },
+                cursor: u64::MAX,
+                conversation: u64::MAX,
             }
-            for input in turn_inputs() {
-                ConversationEntry {
-                    observed_through: u64::MAX,
-                    inbox: u64::MAX,
-                    input,
-                    output: file(),
-                    outcome: crate::agent::TurnOutcome::Failed {
-                        message: widest_text(MAX_MESSAGE_BYTES),
-                    },
-                    goal: Some(crate::OperationId::from_bytes([255; 16])),
-                    targets: Some(file()),
-                    steering: Some(crate::agent::SteeringTranscript {
-                        through: u64::MAX,
-                        file: file(),
-                    }),
-                    tool_results: Some(format!(
-                        "tools/.results/{}",
-                        crate::OperationId::from_bytes([255; 16])
-                    )),
-                    notices: Some(crate::agent::NoticeSelection {
-                        source: deepest.clone(),
-                        range: 0..u64::MAX,
-                    }),
-                }
-                .encode()
-                .expect("a conversation entry fits");
+            .encode()
+            .expect("a status fits");
+        }
+        for input in turn_inputs() {
+            ConversationEntry {
+                observed_through: u64::MAX,
+                inbox: u64::MAX,
+                input,
+                output: file(),
+                outcome: crate::agent::TurnOutcome::Failed {
+                    message: widest_text(MAX_MESSAGE_BYTES),
+                },
+                goal: Some(crate::OperationId::from_bytes([255; 16])),
+                targets: Some(file()),
+                steering: Some(crate::agent::SteeringTranscript {
+                    through: u64::MAX,
+                    file: file(),
+                }),
+                tool_results: Some(format!(
+                    "tools/.results/{}",
+                    crate::OperationId::from_bytes([255; 16])
+                )),
+                notices: Some(crate::agent::NoticeSelection {
+                    source: deepest.clone(),
+                    range: 0..u64::MAX,
+                }),
             }
-            // Persistent membership remains independent of the checkpoint frame.
-            // Cross the former bitmap byte boundary while retaining all three roots.
-            let adopted = adoption();
-            for depth in [MAX_DEPTH - 1, MAX_DEPTH] {
-                let path = agent(depth);
-                let children = if depth < MAX_DEPTH { 9 } else { 0 };
-                let mut open_children = super::super::Children::new();
+            .encode()
+            .expect("a conversation entry fits");
+        }
+        // The widest settled checkpoint: deepest agent that can have children,
+        // every child open and to archive, the widest adoption, settled with
+        // the widest outcome, counters at their widest, every child awaited.
+        let adopted = adoption();
+        for depth in [FIXTURE_DEPTH - 1, FIXTURE_DEPTH] {
+            let path = agent(depth);
+            let children = if depth < FIXTURE_DEPTH {
+                FIXTURE_CHILDREN
+            } else {
+                0
+            };
+            let mut open_children = crate::agent::Children::new();
+            let identities = futures::executor::block_on(async {
                 for n in 0..children as u64 {
-                    let child = path.child(&id(n)).expect("below MAX_DEPTH");
                     open_children
-                        .insert(&child)
+                        .insert(&path.child(&id(n)).expect("canonical child"))
                         .await
-                        .expect("membership insert");
+                        .expect("membership insertion");
                 }
-                let mut settlements = super::super::Children::new();
-                for n in 0..children as u64 {
-                    settlements
-                        .insert_value(&path.child(&id(n)).unwrap(), u64::MAX)
-                        .await
-                        .unwrap();
-                }
-                for outcome in outcomes() {
-                    let state = AgentState {
-                        child_settlements: settlements.clone(),
-                        profile: adopted.profile.clone(),
-                        parent: path.parent(),
-                        path: path.clone(),
-                        volumes: adopted.volumes.clone(),
-                        policy: adopted.policy.clone(),
-                        brief: Some([u8::MAX; 32]),
-                        conversation_base: u64::MAX,
-                        committed_actions: true,
-                        conversation_tail: u64::MAX,
-                        steered_through: u64::MAX,
-                        steering_tail: u64::MAX,
-                        pending_notices: Some(0..u64::MAX),
-                        dropped_before: u64::MAX,
-                        checkpoint: Some(u64::MAX),
-                        roster: Some([u8::MAX; 32]),
-                        status_tail: u64::MAX,
-                        phase: Phase::Done { outcome },
-                        archive_pending: open_children.clone(),
-                        archive_refused: true,
-                        awaiting: open_children.clone(),
-                        need: u32::MAX,
-                        awaited: true,
-                        open_children: open_children.clone(),
-                        queued: Default::default(),
-                        overflow: None,
-                        taken: BTreeSet::new(),
-                        closed: true,
-                        reported: true,
-                        turn: None,
-                    };
-                    let bytes = encode(&state).expect("encodes");
-                    assert!(
-                        bytes.len() + 2 * 20 <= MAX_CHECKPOINT_BYTES,
-                        "{} > {MAX_CHECKPOINT_BYTES}",
-                        bytes.len() + 2 * 20
-                    );
-                    assert_eq!(decode(&bytes).expect("decodes"), state);
-                    // Retired tag 1 cannot override Actors' committed cut. Keep
-                    // the same artifact decoder for checkpoints carrying it.
-                    let mut with_retired_cursor = bytes;
-                    with_retired_cursor.extend_from_slice(&[0x08, 0x01]);
-                    assert_eq!(decode(&with_retired_cursor).expect("retired cursor"), state);
-                }
+                open_children
+                    .page(None, children)
+                    .await
+                    .expect("membership page")
+            });
+            for outcome in outcomes() {
+                let state = AgentState {
+                    child_settlements: Some(u64::MAX),
+                    profile: adopted.profile.clone(),
+                    parent: path.parent(),
+                    path: path.clone(),
+                    volumes: adopted.volumes.clone(),
+                    policy: adopted.policy.clone(),
+                    brief: Some([u8::MAX; 32]),
+                    conversation_base: u64::MAX,
+                    committed_actions: true,
+                    conversation_tail: u64::MAX,
+                    steered_through: u64::MAX,
+                    steering_tail: u64::MAX,
+                    pending_notices: Some(0..u64::MAX),
+                    dropped_before: u64::MAX,
+                    checkpoint: Some(u64::MAX),
+                    roster: Some([u8::MAX; 32]),
+                    status_tail: u64::MAX,
+                    phase: Phase::Done { outcome },
+                    archive_pending: open_children.clone(),
+                    archive_refused: true,
+                    awaiting: open_children.clone(),
+                    need: u32::MAX,
+                    awaited: true,
+                    open_children: open_children.clone(),
+                    queued: Default::default(),
+                    overflow: None,
+                    taken: BTreeSet::new(),
+                    closed: true,
+                    reported: true,
+                    turn: None,
+                };
+                let bytes = encode(&state).expect("encodes");
+                assert!(
+                    bytes.len() + TAIL_SLACK <= MAX_CHECKPOINT_BYTES,
+                    "{} > {MAX_CHECKPOINT_BYTES}",
+                    bytes.len() + TAIL_SLACK
+                );
+                assert_eq!(decode(&bytes).expect("decodes"), state);
+                // Retired tag 1 cannot override Actors' committed cut. Keep
+                // the same artifact decoder for checkpoints carrying it.
+                let mut with_retired_cursor = bytes;
+                with_retired_cursor.extend_from_slice(&[0x08, 0x01]);
+                assert_eq!(decode(&with_retired_cursor).expect("retired cursor"), state);
             }
-            // Wrapped in the actor state record with its one inbox subscription.
-            let inbox = deepest.inbox().expect("inbox");
-            let codec = codec();
-            let record = State::record_bound(
-                codec.name.len() + codec.version.len() + MAX_CHECKPOINT_BYTES,
-                INBOX.len() + inbox.as_str().len() + SUBSCRIPTION_OVERHEAD,
-                0,
-            );
-            assert!(
-                record <= acyclic_stream::MAX_RECORD_BYTES,
-                "{record} > {}",
-                acyclic_stream::MAX_RECORD_BYTES
-            );
-        });
+        }
+        // Wrapped in the actor state record with its one inbox subscription.
+        let inbox = deepest.inbox().expect("inbox");
+        let codec = codec();
+        let record = State::record_bound(
+            codec.name.len() + codec.version.len() + MAX_CHECKPOINT_BYTES,
+            INBOX.len() + inbox.as_str().len() + SUBSCRIPTION_OVERHEAD,
+            0,
+        );
+        assert!(
+            record <= acyclic_stream::MAX_RECORD_BYTES,
+            "{record} > {}",
+            acyclic_stream::MAX_RECORD_BYTES
+        );
     }
 
     // Exercise the canonical encoder itself, before its size refusal. A refused
@@ -683,7 +685,7 @@ mod tests {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);
             for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
-                let record = StatusRecord { child_wakes: Some(super::super::ChildWakeSet { root: [255; 32], count: u64::MAX, woke_at_micros: u64::MAX }), phase, cursor: u64::MAX, conversation: u64::MAX };
+                let record = StatusRecord { child_settlement: Some(crate::agent::ChildSettlement { child: id(u64::MAX), settled_at_micros: u64::MAX }), child_wakes: Some(crate::agent::ChildWakes { from: 0, until: u64::MAX, woke_at_micros: u64::MAX }), phase, cursor: u64::MAX, conversation: u64::MAX };
                 let worst = assert_record_bound(&record);
                 let mut sample: StatusRecord = varied(&record, name, text);
                 sample.cursor = cursor;
@@ -702,6 +704,7 @@ mod tests {
     fn waiting_host_status_requires_a_bounded_name() {
         for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
             let record = StatusRecord {
+                child_settlement: None,
                 child_wakes: None,
                 phase: Phase::WaitingHost { host },
                 cursor: 0,
@@ -713,6 +716,7 @@ mod tests {
             );
         }
         let record = StatusRecord {
+            child_settlement: None,
             child_wakes: None,
             phase: Phase::WaitingHost {
                 host: widest(MAX_INTENT_BYTES),

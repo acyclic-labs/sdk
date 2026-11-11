@@ -43,6 +43,8 @@ pub struct ActorStateSeed {
 pub struct ActorStateCommit {
     /// Last assignment for each changed metadata key.
     pub writes: Vec<ActorMetadataWrite>,
+    /// Keys removed in this same publication, before applying assignments.
+    pub deletions: Vec<String>,
     /// Original committed journal tail, as exact u64 decimal.
     pub journal_from: String,
     /// Opaque canonical journal frames, appended in order.

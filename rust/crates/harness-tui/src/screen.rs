@@ -33,6 +33,8 @@ pub struct Screen<'a> {
     pub goal: &'a [Line<'a>],
     /// plans/ live-query projection.
     pub plans: &'a [Line<'a>],
+    /// Visible rows of the shared lazy agent explorer.
+    pub tree: &'a [Line<'a>],
     /// Notification/feedback rows from the followed attention files.
     pub notifications: &'a [Line<'a>],
     /// Optional panel, docked over the top of the transcript region. The
@@ -77,6 +79,8 @@ pub struct ScreenAreas {
     pub terminal: Rect,
     /// Optional right-hand file/diff views.
     pub side: Rect,
+    /// Agent sidebar, independent of transcript and file panels.
+    pub tree: Rect,
     /// Attention and feedback.
     pub notifications: Rect,
     /// Prompt including border.
@@ -299,6 +303,14 @@ impl Screen<'_> {
             terminal_height,
         );
         remaining.height -= terminal_height;
+        let tree_width = if area.width >= 80 && !self.tree.is_empty() {
+            area.width / 3
+        } else {
+            0
+        };
+        let tree = Rect::new(remaining.x, remaining.y, tree_width, remaining.height);
+        remaining.x += tree_width;
+        remaining.width -= tree_width;
         let side_width = if area.width >= 80
             && (!self.diff.is_empty() || !self.goal.is_empty() || !self.plans.is_empty())
         {
@@ -341,6 +353,7 @@ impl Screen<'_> {
             scrollbar_total: 0,
             terminal,
             side,
+            tree,
             notifications,
             prompt,
             completions,
@@ -481,6 +494,11 @@ impl Screen<'_> {
                 .style(input.theme.token(crate::config::Token::Muted)),
             areas.status,
         );
+        if !self.tree.is_empty() {
+            let block = Block::default().borders(Borders::ALL).title("Agents");
+            rows(frame, self.tree, block.inner(areas.tree), 0);
+            frame.render_widget(block, areas.tree);
+        }
         let mut side = areas.side;
         let panels = [
             ("Diff", self.diff),

@@ -1,6 +1,8 @@
 //! Bounded JSON buffers and borrowed Value conversions.
 use super::*;
-use crate::executor::json::{JsonBounds, JsonCodecCharge as Charge, JsonValueSchema as Schema};
+use crate::executor::json::{
+    JsonBounds, JsonCodecCharge as Charge, JsonValueSchema as Schema, RECORD_MAXIMUM_DEPTH,
+};
 use std::mem::size_of;
 
 pub(in crate::filesystem) fn decode_record<T: PreparationRecord>(
@@ -28,7 +30,7 @@ impl PreparationIo {
         let bounds = JsonBounds {
             maximum_bytes: remaining.bytes_encoded,
             maximum_items: remaining.items_examined,
-            maximum_depth: 256,
+            maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
         let code = self
             .original_native_work()
@@ -61,7 +63,7 @@ impl PreparationIo {
         let bounds = JsonBounds {
             maximum_bytes: remaining.bytes_encoded,
             maximum_items: remaining.items_examined,
-            maximum_depth: 256,
+            maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
         let code = self
             .original_native_work()
@@ -100,7 +102,7 @@ impl PreparationIo {
         let bounds = JsonBounds {
             maximum_bytes: (bytes.len() as u64).min(remaining.bytes_encoded),
             maximum_items: remaining.items_examined,
-            maximum_depth: 256,
+            maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
         let code = self
             .original_native_work()
@@ -143,7 +145,7 @@ impl PreparationIo {
         let bounds = JsonBounds {
             maximum_bytes: maximum.min(remaining.bytes_encoded),
             maximum_items: remaining.items_examined,
-            maximum_depth: 256,
+            maximum_depth: RECORD_MAXIMUM_DEPTH,
         };
         let code = self
             .original_native_work()

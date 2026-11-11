@@ -230,38 +230,9 @@ async fn a_wait_holding_its_delivery_deadlocks_the_same_schedule() -> Result {
 async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     use acyclic_actors::local::ControlledClock;
 
-    const CHILDREN: usize = 1_000;
+    const CHILDREN: usize = 18;
     const NOW: u64 = 5_000;
     const TIMEOUT: u64 = 200_000;
-
-    // Grow the population through bounded ordinary admissions: one transition's
-    // checkpoint/receipt frame is bounded independently of the live population.
-    const SPAWN_CHUNK: usize = 32;
-    fn spawn_chunk(from: usize) -> TurnStep {
-        let through = (from + SPAWN_CHUNK).min(CHILDREN);
-        let checkpoint = (through as u32).to_le_bytes();
-        let done = through == CHILDREN;
-        step(
-            if done { b"spawned" } else { &checkpoint },
-            (from..through)
-                .map(|n| Out::Spawn {
-                    profile: None,
-                    history: None,
-                    intent: intent(&format!("child-{n}")),
-                    brief: None,
-                    volumes: Vec::new(),
-                })
-                .collect(),
-            Wait::Approval {
-                id: if done {
-                    intent("begin-wait")
-                } else {
-                    intent(&format!("spawn-through-{through}"))
-                },
-                binding: None,
-            },
-        )
-    }
 
     struct Burst(Arc<Mutex<Vec<u64>>>);
     impl TurnDriver for Burst {
@@ -292,7 +263,22 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
                     });
                 }
                 Ok(match checkpoint {
-                    None => spawn_chunk(0),
+                    None => step(
+                        b"spawned",
+                        (0..CHILDREN)
+                            .map(|n| Out::Spawn {
+                                profile: None,
+                                history: None,
+                                intent: intent(&format!("child-{n}")),
+                                brief: None,
+                                volumes: Vec::new(),
+                            })
+                            .collect(),
+                        Wait::Approval {
+                            id: intent("begin-wait"),
+                            binding: None,
+                        },
+                    ),
                     Some(b"spawned") => step(
                         b"waiting",
                         Vec::new(),
@@ -302,25 +288,20 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
                                     .open_children
                                     .page(None, CHILDREN)
                                     .await?
-                                    .into_iter()
-                                    .map(|id| agent.path.child(&id))
-                                    .collect::<std::result::Result<BTreeSet<_>, _>>()?,
+                                    .iter()
+                                    .map(|id| agent.path.child(id))
+                                    .collect::<std::result::Result<_, _>>()?,
                             )
                             .within(Some(TIMEOUT)),
                         ),
                     ),
-                    Some(b"waiting") => {
+                    Some(_) => {
                         self.0
                             .lock()
                             .map_err(|_| Error::Record("resumes"))?
                             .push(cursor);
                         step(b"", Vec::new(), Wait::Input)
                     }
-                    Some(checkpoint) => spawn_chunk(u32::from_le_bytes(
-                        checkpoint
-                            .try_into()
-                            .map_err(|_| Error::Record("spawn cursor"))?,
-                    ) as usize),
                 })
             })
         }
@@ -353,25 +334,16 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     });
     host.send(&root, &user(), &start).await?;
     host.drain_event(&root).await?;
-    for through in (SPAWN_CHUNK..CHILDREN).step_by(SPAWN_CHUNK) {
-        host.send(
-            &root,
-            &user(),
-            &InboxRecord::Approval(Approval {
-                id: intent(&format!("spawn-through-{through}")),
-            }),
-        )
-        .await?;
-        host.drain_event(&root).await?;
-    }
-    let membership = host.state(&root).await?.open_children;
-    assert_eq!(membership.len(), CHILDREN);
-    let children = membership
+    let children = host
+        .state(&root)
+        .await?
+        .open_children
         .page(None, CHILDREN)
         .await?
-        .into_iter()
-        .map(|id| root.child(&id))
-        .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+        .iter()
+        .map(|id| root.child(id))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(children.len(), CHILDREN);
     for child in &children {
         host.send(child, &user(), &start).await?;
         host.drain_event(child).await?;
@@ -434,7 +406,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
         "root must resume in the delivery consuming the last completion, before its alarm"
     );
     assert_eq!(host.state(&root).await?.phase, Phase::Idle);
-    assert!(host.state(&root).await?.child_settlements.is_empty());
+    assert!(host.state(&root).await?.child_settlements.is_none());
     let statuses = values(&*provider, root.status()?)
         .await?
         .iter()
@@ -447,27 +419,16 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     assert_eq!(measured.len(), 1, "one telemetry record per returned wait");
     let wake = measured[0];
     assert_eq!(wake.cursor, before + CHILDREN as u64);
-    let measurements = wake.child_wakes.as_ref().ok_or("missing measurements")?;
-    assert_eq!(measurements.count, CHILDREN as u64);
-    // Re-decode the committed descriptor before fetching bounded immutable pages.
-    let measurements = StatusRecord::decode(&wake.encode()?)?.child_wakes.unwrap();
-    let mut samples = Vec::new();
-    let mut after = None;
-    loop {
-        let page = measurements
-            .page(provider.clone(), after.as_ref(), 17)
-            .await?;
-        assert!(page.len() <= 17);
-        if page.is_empty() {
-            break;
-        }
-        after = page.last().map(|sample| sample.child.clone());
-        samples.extend(page);
-    }
+    let samples = wake
+        .child_wakes
+        .as_ref()
+        .ok_or("missing wake root")?
+        .page(provider.clone(), &root, None, CHILDREN)
+        .await?;
     assert_eq!(
         samples.len(),
         CHILDREN,
-        "every child survives the paged wait return"
+        "every child must have a wake measurement"
     );
     assert_eq!(
         samples

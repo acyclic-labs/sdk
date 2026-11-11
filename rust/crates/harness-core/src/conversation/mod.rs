@@ -269,7 +269,10 @@ pub use files::{FileDescriptor, FileRef};
 pub(crate) use files::{PublicationDomain, PublicationWitness};
 pub use message::{ConversationMessage, MessageKind};
 pub use outcome::TaskOutcomeRecord;
-pub use volumes::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
+pub use volumes::{
+    ContentGrant, PRIVATE_VOLUME, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    private_volume,
+};
 #[doc(hidden)]
 pub use volumes::{
     contains_content_label, content_label, is_inherited_context_path, is_internal_path,

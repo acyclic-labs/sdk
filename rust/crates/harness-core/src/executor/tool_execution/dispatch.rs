@@ -443,6 +443,7 @@ impl<'io> StockExecution<'io> {
         ),
         started: bool,
     ) -> Result<bool> {
+        let _writer = self.journal_writes.lock().await;
         let (operation_id, step) = identity;
         let invocation = record.invocation;
         let claimed = if started {
@@ -631,6 +632,7 @@ impl<'io> StockExecution<'io> {
             Ok(projection) => projection,
             Err(reason) => return Ok(Err(reason)),
         };
+        let _writer = self.journal_writes.lock().await;
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;

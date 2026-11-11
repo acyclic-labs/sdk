@@ -135,7 +135,18 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         agent: &AgentPath,
         cursor: u64,
     ) -> Result<[CommitEffect; 2], Error> {
+        self.create_with_pause(actor, agent, cursor, false)
+    }
+
+    fn create_with_pause(
+        &self,
+        actor: &ActorReference,
+        agent: &AgentPath,
+        cursor: u64,
+        paused: bool,
+    ) -> Result<[CommitEffect; 2], Error> {
         let creation = Creation {
+            escrow: paused.then(|| acyclic_actors::escrow::Escrow::new(Some(0))),
             subscriptions: BTreeMap::from([(
                 INBOX.to_owned(),
                 Subscription {
@@ -145,10 +156,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             )]),
             ..Creation::default()
         };
-        let state = self
-            .store
-            .create(None, actor, creation)
-            .map_err(|_| Error::Record("agent actor state cannot be created"))?;
+        let state = if paused {
+            self.store.create_paused(None, actor, creation)
+        } else {
+            self.store.create(None, actor, creation)
+        }
+        .map_err(|_| Error::Record("agent actor state cannot be created"))?;
         Ok([state, self.wake(actor)])
     }
 
@@ -162,14 +175,34 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         adopted: ForkAdopted,
     ) -> Result<Spawn, Error> {
         let created = create_root(intent, adopted)?;
+        self.root_actor(within, created, false)
+    }
+
+    pub(super) fn prepare_root_history(
+        &self,
+        within: &ActorReference,
+        intent: &IntentId,
+        adopted: ForkAdopted,
+        source: &AgentPath,
+        history: &super::HistorySelection,
+    ) -> Result<Spawn, Error> {
+        let created = super::commit::create_root_at(intent, adopted, Some((source, history)))?;
+        self.root_actor(within, created, true)
+    }
+
+    fn root_actor(
+        &self,
+        within: &ActorReference,
+        created: Spawn,
+        paused: bool,
+    ) -> Result<Spawn, Error> {
         let actor = Self::actor(within, &created.child.id())?;
         let mut publish = PreparedPublish::foreign(created.request.idempotency_key.clone());
-        let effects =
-            created
-                .request
-                .effects
-                .into_iter()
-                .chain(self.create(&actor, &created.child, 0)?);
+        let effects = created
+            .request
+            .effects
+            .into_iter()
+            .chain(self.create_with_pause(&actor, &created.child, 0, paused)?);
         for effect in effects {
             publish
                 .join(effect)
@@ -235,7 +268,13 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
             return Err(Error::Record("agent state binding differs"));
         }
-        observed.bind_children(Arc::clone(self.store.provider()));
+        observed
+            .open_children
+            .bind(Arc::clone(self.store.provider()));
+        observed
+            .archive_pending
+            .bind(Arc::clone(self.store.provider()));
+        observed.awaiting.bind(Arc::clone(self.store.provider()));
         Ok((observed, cursor))
     }
 
@@ -349,7 +388,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             }
         }
         if let Some(state) = state.as_mut() {
-            state.bind_children(Arc::clone(self.agents.store.provider()));
+            state
+                .open_children
+                .bind(Arc::clone(self.agents.store.provider()));
+            state
+                .archive_pending
+                .bind(Arc::clone(self.agents.store.provider()));
+            state
+                .awaiting
+                .bind(Arc::clone(self.agents.store.provider()));
         }
         let mut prepared = if let Some(failure) = failure {
             super::machine::failed_step(&path, state, wake, cursor, failure).await?

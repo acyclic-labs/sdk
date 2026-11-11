@@ -39,6 +39,8 @@ pub use resources::{
 };
 pub use sockets::{PreparedSocketOpen, SocketChannel, SocketInbound, SocketProvider};
 mod client;
+mod read_provider;
+pub use read_provider::ReadProvider;
 mod connection;
 mod local;
 pub use connection::Connections;

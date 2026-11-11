@@ -140,7 +140,7 @@ pub fn merge_bytes(
     let theirs = optional_text(theirs, limits)?;
     match (ours, theirs) {
         (Some(ours), Some(theirs)) => {
-            let result = merge_text(base.unwrap_or(""), ours, theirs, ours_label, theirs_label);
+            let result = merge_optional_base(base, ours, theirs, ours_label, theirs_label);
             if result.clean {
                 Ok(ByteMerge::Merged(result.content.into_bytes()))
             } else {
@@ -198,6 +198,16 @@ fn result_has_trailing_newline(base: &str, ours: &str, theirs: &str) -> bool {
 #[must_use]
 pub fn merge_text(
     base: &str,
+    ours: &str,
+    theirs: &str,
+    ours_label: &str,
+    theirs_label: &str,
+) -> TextMerge {
+    merge_optional_base(Some(base), ours, theirs, ours_label, theirs_label)
+}
+
+fn merge_optional_base(
+    base: Option<&str>,
     ours: &str,
     theirs: &str,
     ours_label: &str,
@@ -344,6 +354,25 @@ mod tests {
     #[test]
     fn byte_merge_owns_gate_and_modify_delete_semantics() {
         let limits = ByteMergeLimits { max_bytes: 16 };
+        for (ours, theirs) in [("", "added"), ("added", ""), ("one\n", "two\n")] {
+            let ByteMerge::Conflicted { bytes, hunks, .. } = merge_bytes(
+                None,
+                Some(ours.as_bytes()),
+                Some(theirs.as_bytes()),
+                "fork",
+                "main",
+                limits,
+            )
+            .expect("text additions") else {
+                panic!("different additions must conflict")
+            };
+            assert_eq!(hunks, 1);
+            assert!(has_conflict_markers(&bytes));
+        }
+        assert_eq!(
+            merge_bytes(None, Some(b"same"), Some(b"same"), "fork", "main", limits),
+            Ok(ByteMerge::Merged(b"same".to_vec()))
+        );
         assert_eq!(
             merge_bytes(Some(b"a\n"), Some(b"b\n"), None, "fork", "main", limits),
             Ok(ByteMerge::Conflicted {

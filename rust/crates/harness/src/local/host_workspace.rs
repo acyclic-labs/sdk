@@ -201,39 +201,21 @@ impl HostWorkspace {
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
         };
-        let parsed = commands.fs_arguments(command, &self.scope)?;
-        let mut state =
-            crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
-        let (selected, pending) = self.workspace.selected_view().await?;
-        super::checkout_tools::reconciliation::recover_pending(
-            &self.workspace,
-            selected.as_ref().unwrap_or_else(|| self.workspace.view()),
-            pending,
-            &|| owner.verify(),
-        )
-        .await?;
-        state.active = selected;
-        let physical = self.workspace.selected_workspace(&mut state, owner).await?;
-        self.capture_volumes().await?;
         let result = commands
-            .fs(
-                parsed,
-                &workspace::git::CommandContext {
+            .invoke(
+                command,
+                workspace::git::CommandContext {
                     owner,
                     operation,
                     scope: &self.scope,
                     request,
                 },
-                &mut state,
-                &physical,
+                Box::pin(self.capture_volumes()),
             )
             .await?;
         self.verify().await?;
         verify_root(&self.mount_root)?;
-        match result {
-            workspace::git::Outcome::Completed(output) => Ok(*output),
-            workspace::git::Outcome::Rejected(error) => Err(*error),
-        }
+        Ok(result)
     }
 
     /// Mounts spawned child `child`'s project view, idempotently, and names it
@@ -262,7 +244,7 @@ impl HostWorkspace {
                 .ok_or_else(|| Error::Invalid(format!("host child has no {name} volume")))
         };
         let project = bound("project")?;
-        let scratch = bound(crate::filesystem::HOME_VOLUME)?;
+        bound(crate::filesystem::HOME_VOLUME)?;
         if project.class() != VolumeClass::Project {
             return Err(Error::Invalid(
                 "host child project volume class differs".into(),
@@ -313,7 +295,7 @@ impl HostWorkspace {
             .for_scope(&signed)?;
         let workspace = self
             .workspace
-            .bound_task_view(view, &project, scratch, &*child_owner, &authority)
+            .bound_task_view(view, &project, volumes, &*child_owner, &authority)
             .await?;
         verify_root(&self.mount_root)?;
         let mut result = Self {

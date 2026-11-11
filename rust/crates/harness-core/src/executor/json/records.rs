@@ -21,7 +21,7 @@ where
     F: FnMut(JsonCodecCharge) -> Result<()>,
 {
     let bounds = JsonBounds {
-        maximum_depth: bounds.maximum_depth.min(256),
+        maximum_depth: bounds.maximum_depth.min(RECORD_MAXIMUM_DEPTH),
         ..bounds
     };
     let admitted = admission::admit_typed(

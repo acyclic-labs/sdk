@@ -319,6 +319,7 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
     for name in ["a", "b"] {
         seed.create(
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: path(name)?,
                 bytes: OwnedBytes::from_static(b"old"),
                 metadata: FileMetadata::default(),
