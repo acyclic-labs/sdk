@@ -72,7 +72,7 @@ pub fn bounded_result(
     result: crate::tool::ToolResult,
     maximum: u64,
 ) -> Result<crate::tool::ToolResult> {
-    super::bounds::result(PLATFORM.name, result, maximum)
+    super::bounds::result(PLATFORM.name, result, Some(maximum))
 }
 
 pub(crate) struct ShellProjection;

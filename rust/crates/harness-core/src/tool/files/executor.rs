@@ -113,7 +113,7 @@ impl FileTool {
                     .await;
             }
 
-            Self::Read => return self.read(context, Some(invocation), work, io).await,
+            Self::Read => return self.read(context, invocation, work, io).await,
 
             Self::Remove => {
                 let input = decode::<RemoveFileInput>(&invocation.arguments, work)?;
