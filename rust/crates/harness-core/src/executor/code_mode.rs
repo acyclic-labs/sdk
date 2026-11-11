@@ -203,7 +203,7 @@ fn encode_reply(
     let reply = Reply { ok, value, version };
 
     if let Some(io) = io {
-        return io.encode(&reply, u64::MAX, false);
+        return io.encode(&reply, None, false);
     }
     serde_json::to_vec(&reply).map(Into::into).map_err(|_| {
         stock_boundary(
@@ -274,7 +274,7 @@ impl StockExecution<'_> {
                 stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?;
             let funded = self
                 .io
-                .map(|io| io.encode(&definitions, u64::MAX, false))
+                .map(|io| io.encode(&definitions, None, false))
                 .transpose()?;
             let definitions = match funded {
                 Some(bytes) => bytes,
@@ -463,7 +463,7 @@ impl StockExecution<'_> {
             // receipt wrapper is never part of the model's output.
             stock_json_bound(
                 value.get("value").unwrap_or(&value),
-                maximum as u64,
+                Some(maximum as u64),
                 self.io,
             )?;
             logs.attach(&mut value, maximum, self.io)?;

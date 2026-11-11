@@ -401,7 +401,7 @@ async fn stage_manifest(
     let _hold;
     let bytes: acyclic_stream::OwnedBytes = match io {
         Some(io) => {
-            let bytes = io.encode(manifest, io.remaining()?.bytes_encoded, true)?;
+            let bytes = io.encode(manifest, Some(io.remaining()?.bytes_encoded), true)?;
             _hold = io.guard_bytes(&bytes)?;
             bytes
         }

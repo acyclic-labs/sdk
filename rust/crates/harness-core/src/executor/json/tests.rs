@@ -236,7 +236,7 @@ mod digest_properties {
                 let before = io.receipt();
                 let owned = io.owned_bytes().unwrap();
                 let measured = acyclic_test_support::measure(|| {
-                    crate::executor::stock_json_bound(&value, length, Some(&io)).unwrap();
+                    crate::executor::stock_json_bound(&value, Some(length), Some(&io)).unwrap();
                 });
                 prop_assert_eq!(measured.count_total, 0);
                 prop_assert_eq!(io.owned_bytes().unwrap(), owned);
@@ -246,7 +246,7 @@ mod digest_properties {
                 prop_assert_eq!(after.bytes_copied, before.bytes_copied);
                 prop_assert_eq!(after.allocation_operations, before.allocation_operations);
                 prop_assert_eq!(after.items_examined - before.items_examined, items(&value).0);
-                let failure = crate::executor::stock_json_bound(&value, length - 1, Some(&io)).unwrap_err();
+                let failure = crate::executor::stock_json_bound(&value, Some(length - 1), Some(&io)).unwrap_err();
                 prop_assert_eq!(failure.code(), crate::wire::ErrorCode::Invalid);
                 drop(failure);
                 // The original finite path serializes twice and retains a full
@@ -254,15 +254,27 @@ mod digest_properties {
                 if !native {
                     let mut encoded = None;
                     let legacy = acyclic_test_support::measure(|| {
-                        encoded = Some(io.encode(&value, length, false).unwrap());
+                        encoded = Some(io.encode(&value, Some(length), false).unwrap());
                     });
                     prop_assert!(legacy.count_total > measured.count_total);
                     prop_assert!(legacy.bytes_current >= length as i64);
                     prop_assert!(io.receipt().bytes_encoded > after.bytes_encoded);
                     drop(encoded);
                 }
+                // Optional policy never bypasses the original work owner. Both
+                // funded paths produce the independent compact-JSON oracle.
+                let expected = serde_json::to_vec(&value).unwrap();
+                for maximum in [None, Some(length)] {
+                    let before = io.receipt().bytes_encoded;
+                    let encoded = io.encode(&value, maximum, false).unwrap();
+                    prop_assert_eq!(encoded.as_ref(), expected.as_slice());
+                    prop_assert_eq!(io.receipt().bytes_encoded - before, length);
+                    drop(encoded);
+                }
+                prop_assert!(io.encode(&value, Some(length - 1), false).is_err());
+                crate::executor::stock_json_bound(&value, None, Some(&io)).unwrap();
                 cancellation.cancel();
-                let failure = crate::executor::stock_json_bound(&value, length, Some(&io)).unwrap_err();
+                let failure = crate::executor::stock_json_bound(&value, Some(length), Some(&io)).unwrap_err();
                 prop_assert_eq!(failure.code(), crate::wire::ErrorCode::Cancelled);
                 drop(failure);
                 drop(io);
@@ -276,8 +288,10 @@ mod digest_properties {
                     budget.source_bytes_read = length - 1;
                 }
                 let io = crate::filesystem::PreparationIo::from_budget(budget, &acyclic_fs::CancellationToken::new()).unwrap();
-                prop_assert!(crate::executor::stock_json_bound(&value, length, Some(&io)).is_err());
-                prop_assert_eq!(io.owned_bytes().unwrap(), 0);
+                for maximum in [Some(length), None] {
+                    prop_assert!(crate::executor::stock_json_bound(&value, maximum, Some(&io)).is_err());
+                    prop_assert_eq!(io.owned_bytes().unwrap(), 0);
+                }
             }
         }
 

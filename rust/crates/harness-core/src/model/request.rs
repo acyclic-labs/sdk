@@ -362,7 +362,7 @@ impl ModelRequest {
         match io {
             Some(io) => {
                 let _hold;
-                let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
+                let bytes = io.encode(content, Some(io.remaining()?.bytes_encoded), false)?;
                 _hold = io.guard_bytes(&bytes)?;
                 let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
                 tool.check_projection_schema(&envelope.0, Some(io))??;
@@ -647,7 +647,7 @@ impl PreparedModelRequest {
             let request_hold;
             let bytes_hold;
             // Bound JSON depth before the recursive capacity inventory.
-            let bytes = io.encode(&request, io.remaining()?.bytes_encoded, true)?;
+            let bytes = io.encode(&request, Some(io.remaining()?.bytes_encoded), true)?;
             bytes_hold = io.guard_bytes(&bytes)?;
             let retained_payload = request.retained_payload_bytes()?;
             request_hold = io.reserve_decode(add(size_of::<Self>() as u64, retained_payload)?)?;
@@ -713,7 +713,7 @@ impl PreparedModelRequest {
         request.split_summary_instruction()?;
         let bytes_hold;
         let bytes: acyclic_stream::OwnedBytes = match io {
-            Some(io) => io.encode(&request, io.remaining()?.bytes_encoded, true)?,
+            Some(io) => io.encode(&request, Some(io.remaining()?.bytes_encoded), true)?,
             _ => crate::contract::canonical_json_bytes(&request)?.into(),
         };
         {

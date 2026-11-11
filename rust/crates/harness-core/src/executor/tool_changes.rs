@@ -120,7 +120,7 @@ impl StockExecution<'_> {
         let table = if has_tools {
             let funded = self
                 .io
-                .map(|io| io.encode(&table_tools, u64::MAX, false))
+                .map(|io| io.encode(&table_tools, None, false))
                 .transpose()?;
             Some(match funded {
                 Some(bytes) => bytes,
@@ -281,7 +281,7 @@ impl StockExecution<'_> {
             #[cfg(not(target_arch = "wasm32"))]
             let funded = self
                 .io
-                .map(|io| io.encode(&notice, u64::MAX, false))
+                .map(|io| io.encode(&notice, None, false))
                 .transpose()?;
             #[cfg(target_arch = "wasm32")]
             let funded: Option<acyclic_stream::OwnedBytes> = None;

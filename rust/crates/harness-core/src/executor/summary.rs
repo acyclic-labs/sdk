@@ -23,7 +23,7 @@ impl StockExecution<'_> {
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
         })?;
-        stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
+        stock_json_bound(&instruction, Some(self.stock.limits.file_bytes), self.io)?;
         let (source_bytes, source_digest, source_messages) =
             self.summary_source_identity(&source)?;
         let summary_output = self.output_budget()?;
@@ -128,9 +128,9 @@ impl StockExecution<'_> {
             ));
         }
         let source_bytes: acyclic_stream::OwnedBytes = match self.io {
-            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
+            Some(io) => io.encode(&source, Some(self.stock.limits.file_bytes), true)?,
             _ => {
-                stock_json_bound(source, self.stock.limits.file_bytes, self.io)?;
+                stock_json_bound(source, Some(self.stock.limits.file_bytes), self.io)?;
                 crate::contract::canonical_json_bytes(&source)?.into()
             }
         };
@@ -245,7 +245,7 @@ pub(super) async fn stage_summary_provenance(
         .map(|io| io.guard_owned(key.capacity() as u64))
         .transpose()?;
     let bytes: acyclic_stream::OwnedBytes = match io {
-        Some(io) => io.encode(summary, io.remaining()?.bytes_encoded, true)?,
+        Some(io) => io.encode(summary, Some(io.remaining()?.bytes_encoded), true)?,
         _ => crate::contract::canonical_json_bytes(summary)?.into(),
     };
     let bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
