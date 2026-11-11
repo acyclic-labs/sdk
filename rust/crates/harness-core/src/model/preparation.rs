@@ -121,7 +121,7 @@ fn inspect_value(value: &Value, maximum: u64, work: &mut Option<&mut dyn History
             crate::executor::json::JsonBounds {
                 maximum_bytes: maximum,
                 maximum_items,
-                maximum_depth: 256,
+                maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             crate::executor::json::JsonValueSchema::None,
             &mut |next| observer.codec_charge(next),
