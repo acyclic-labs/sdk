@@ -484,6 +484,7 @@ impl HostWorkspaceOwner {
             self.native.resume(agent).await?;
             (state, session) = self.native.session(agent).await?;
         }
+        self.local.require_shared_binding(&state)?;
         let workspace = if let Some(parent) = &state.parent {
             let parent_view = self.attach(parent).await?;
             let reference = session
