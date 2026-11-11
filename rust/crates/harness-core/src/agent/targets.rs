@@ -11,7 +11,7 @@
 //!
 //! The model learns the targets from the [`Roster`]. When its selected
 //! history lacks the current roster, a turn announces it by an immutable file
-//! on the agent's private volume, named by its conversation entry. History
+//! in the agent's journal volume, named by its conversation entry. History
 //! windows and checkpoints preserve this by appending a new announcement
 //! when needed; retained messages, system prompts and tool schemas stay fixed.
 
@@ -180,9 +180,7 @@ struct AdmittedRoster {
     #[serde(skip)]
     home_position: usize,
     #[serde(skip)]
-    canonical: Vec<u8>,
-    #[serde(skip)]
-    digest: [u8; 32],
+    document: super::Announcement,
     #[serde(skip)]
     positions: RosterPositions,
 }
@@ -307,17 +305,13 @@ impl Roster {
             home: home.to_owned(),
             targets,
         };
-        let bytes = crate::contract::canonical_json_bytes(&wire)
-            .map_err(|_| super::Error::Record("roster does not encode"))?;
-        let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.targets.roster.v1");
-        hasher.update(&bytes);
+        let document = super::Announcement::new(&wire, "acyclic.harness.targets.roster.v1", &[])?;
         Ok(Self {
             admitted: Arc::new(AdmittedRoster {
                 home: wire.home,
                 targets: wire.targets,
                 home_position,
-                canonical: bytes,
-                digest: *hasher.finalize().as_bytes(),
+                document,
                 positions,
             }),
         })
@@ -345,14 +339,14 @@ impl Roster {
     /// The retained canonical announcement bytes and digest, admitted once
     /// with this immutable roster. Reading them neither encodes nor hashes.
     pub fn canonical(&self) -> (&[u8], [u8; 32]) {
-        (&self.admitted.canonical, self.admitted.digest)
+        super::AnnouncementDocument::canonical(&self.admitted.document)
     }
 
     /// What a turn announces when its agent last announced `announced`: this
     /// roster's encoding and digest when they differ, else nothing.
     ///
     pub fn announcement(&self, announced: Option<[u8; 32]>) -> Option<(&[u8], [u8; 32])> {
-        (announced != Some(self.admitted.digest)).then(|| self.canonical())
+        super::AnnouncementDocument::announcement(&self.admitted.document, announced)
     }
 
     /// The target a call names: its home when `target` is omitted, the
