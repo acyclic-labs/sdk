@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { create, toBinary } from "@bufbuild/protobuf";
+import { SessionDelivery, SessionSubscriptionSchema } from "../../stream/generated/proto/stream/v1/session_pb.js";
 import { AgentClient, WasmStream, WireSession, initializeClientQueries } from "../src/client.js";
 import { exerciseAgents, root } from "./swarm-client.scenario.js";
 import { bindLocalSession } from "./session-authority.js";
@@ -52,7 +54,10 @@ test("explicit view reservations count distinct stream paths", async () => {
   const session = new WireSession(stream, 1, 1);
   try {
     session.setView([path, path], [], []);
-    await session.openStream(path, 0n);
+    session.openStream(path, toBinary(SessionSubscriptionSchema, create(SessionSubscriptionSchema, {
+      credential: 0, resume: { next: 0n },
+      kind: { case: "follow", value: { resource: `streams:/${path}`, delivery: SessionDelivery.ALL } },
+    })));
     expect(session.followedAgents()).toBe(1);
     expect(() => session.setView([path, `${root}/another`], [], [])).toThrow();
     expect(session.followedAgents()).toBe(1);
