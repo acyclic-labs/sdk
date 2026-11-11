@@ -195,7 +195,15 @@ async fn coherent_native_heads_keep_original_credit_and_leave_future_cut_append_
                 .await??;
             output.value().validate_for(&selected)?;
             assert_eq!(output.value(), &original);
-            assert_eq!(meter.examined.load(Ordering::SeqCst), paths.len() as u64);
+            // One selection plus its namespace components. Resolving the
+            // covering fork is charged on this original too; it must not scan
+            // records or unrelated paths to discover the input revision.
+            let examined = meter.examined.load(Ordering::SeqCst);
+            let bound = paths
+                .iter()
+                .map(|path| 1 + path.split('/').count() as u64)
+                .sum::<u64>();
+            assert!(examined >= paths.len() as u64 && examined <= bound);
             assert_eq!(
                 meter.allocations.load(Ordering::SeqCst),
                 if paths.len() == 1 { 1 } else { 2 }
