@@ -14,7 +14,8 @@ test("Actor bindings retain the original shared ledger and refuse a port without
   const values = new Map<string, string>();
   const storage: EventStorage = {
     get: key => values.get(key), put: (key, value) => { values.set(key, value); },
-    entries: () => [...values], transaction: action => action(),
+    delete: key => { values.delete(key); },
+    entries: (prefix, after, limit) => [...values].filter(([key]) => key.startsWith(prefix) && key > after).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, limit), transaction: action => action(),
     flush: async () => {}, alarm: async () => {},
   };
   const unexpected = async (): Promise<never> => { throw new Error("unexpected Objects or wake operation"); };
@@ -44,7 +45,9 @@ test("Actor bindings retain the original shared ledger and refuse a port without
     const ledger = harnessStreamLedger(binding, port);
     expect(await ledger.register("root", ["tree/root/inbox", "tree/root/control"])).toEqual({ admitted: true });
     expect(await ledger.register("child", ["tree/child/inbox", "tree/child/control"])).toEqual({ admitted: true });
-    expect(await ledger.register("other", ["tree/child/inbox", "tree/other/control"])).toEqual({ refused: "conflict" });
+    expect(await ledger.register("other", ["tree/child/inbox", "tree/other/control"])).toEqual({ admitted: true });
+    expect(await ledger.register("other", ["tree/child/control"], "0")).toEqual({ admitted: true });
+    expect(await ledger.register("other", ["tree/other/control"], "0")).toEqual({ refused: "conflict" });
     await sharedProviderTree({ ...streamLedgerPort(ledger, "root"), close: () => provider.close() });
   } finally { provider.close(); }
 });

@@ -5,7 +5,9 @@
 export interface EventStorage {
   get(key: string): string | undefined;
   put(key: string, value: string): void;
-  entries(): [string, string][];
+  delete(key: string): void;
+  /** A key-ordered page, strictly after the cursor and restricted to the prefix. */
+  entries(prefix: string, after: string, limit: number): [string, string][];
   transaction<T>(operation: () => T): T;
   flush(): Promise<void>;
   alarm(time: number | undefined): Promise<void>;
@@ -14,6 +16,13 @@ export type StreamChange = readonly [path: string, subtree: boolean];
 /** Definitive placement decisions; rejected transport/durability promises are unknown. */
 export type Placement = { admitted: true } | { refused: "invalid_argument" | "conflict" | "capacity" };
 export { WakeIndex } from "./event-wakes.js";
+
+/** A page is a positive finite chunk, never SQLite's negative unlimited sentinel. */
+export function checkMetadataPage(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new RangeError("STEP host-metadata-page failed; recovery: supply a positive safe page size");
+  }
+}
 
 export function decodeMetadata(value: string): unknown {
   try { return JSON.parse(value); }

@@ -1,5 +1,5 @@
 import type { WasmObjectsMedium } from "../generated/wasm/acyclic_harness_wasm.js";
-import type { EventStorage, StreamChange } from "./event-storage.js";
+import { checkMetadataPage, type EventStorage, type StreamChange } from "./event-storage.js";
 export type { StreamChange } from "./event-storage.js";
 
 /** The synchronous SQLite surface used by the storage adapter. */
@@ -15,6 +15,22 @@ export interface SqliteStorage {
 
 /** Values accepted by Durable Objects SQLite parameter binding. */
 export type SqlValue = string | number | ArrayBuffer | null;
+
+/** Exclusive prefix end in SQLite's UTF-8 binary order; no end means all remaining keys. */
+function prefixEnd(prefix: string): string | undefined {
+  for (let start = prefix.length; start > 0;) {
+    const last = prefix.charCodeAt(--start);
+    if (last >= 0xdc00 && last <= 0xdfff && start > 0) {
+      const previous = prefix.charCodeAt(start - 1);
+      if (previous >= 0xd800 && previous <= 0xdbff) --start;
+    }
+    const scalar = prefix.codePointAt(start)!;
+    if (scalar < 0x10ffff) {
+      return prefix.slice(0, start) + String.fromCodePoint(scalar === 0xd7ff ? 0xe000 : scalar + 1);
+    }
+  }
+  return undefined;
+}
 
 /** Raw metadata rows and alarm I/O. Host rules live in the shared event core. */
 export class SqliteEventStorage implements EventStorage {
@@ -32,8 +48,16 @@ export class SqliteEventStorage implements EventStorage {
   put(key: string, value: string): void {
     this.storage.sql.exec("INSERT INTO acyclic_host_metadata (domain, key, value) VALUES (?, ?, ?) ON CONFLICT(domain, key) DO UPDATE SET value = excluded.value", this.domain, key, value);
   }
-  entries(): [string, string][] {
-    return Array.from(this.storage.sql.exec("SELECT key, value FROM acyclic_host_metadata WHERE domain = ? ORDER BY key", this.domain), row => {
+  delete(key: string): void {
+    this.storage.sql.exec("DELETE FROM acyclic_host_metadata WHERE domain = ? AND key = ?", this.domain, key);
+  }
+  entries(prefix: string, after: string, limit: number): [string, string][] {
+    checkMetadataPage(limit);
+    const end = prefixEnd(prefix);
+    const rows = end === undefined
+      ? this.storage.sql.exec("SELECT key, value FROM acyclic_host_metadata WHERE domain = ? AND key >= ? AND key > ? ORDER BY key LIMIT ?", this.domain, prefix, after, limit)
+      : this.storage.sql.exec("SELECT key, value FROM acyclic_host_metadata WHERE domain = ? AND key >= ? AND key < ? AND key > ? ORDER BY key LIMIT ?", this.domain, prefix, end, after, limit);
+    return Array.from(rows, row => {
       if (typeof row.key !== "string" || typeof row.value !== "string") throw new Error("STEP sqlite-metadata-read failed; recovery: restore metadata from a verified SQLite backup");
       return [row.key, row.value];
     });
@@ -75,9 +99,11 @@ function equal(a: Uint8Array, b: Uint8Array): boolean {
  */
 export class SqliteJournal {
   private maximumFrameBytes = 0;
+  private durable: number | undefined;
+  private readonly subscribers = new Set<{ after: number; ready: () => void }>();
   constructor(private readonly storage: SqliteStorage, private readonly domain: string, private readonly appended?: (changes: readonly StreamChange[]) => void) {
-    if (domain.length === 0 || domain.length > 256) {
-      throw new Error("STEP sqlite-open failed: invalid domain; recovery: choose a nonempty domain of at most 256 characters");
+    if (domain.length === 0) {
+      throw new Error("STEP sqlite-open failed: invalid domain; recovery: choose a nonempty domain");
     }
   }
 
@@ -88,14 +114,15 @@ export class SqliteJournal {
       this.storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_stream_commands (domain TEXT NOT NULL, ordinal INTEGER NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(domain, ordinal))");
       this.storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_stream_chunks (domain TEXT NOT NULL, ordinal INTEGER NOT NULL, chunk INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(domain, ordinal, chunk))");
       this.storage.sql.exec("INSERT INTO acyclic_stream_domains (domain, configuration, authority, count, bytes) VALUES (?, ?, ?, 0, 0) ON CONFLICT(domain) DO NOTHING", this.domain, Uint8Array.from(configuration).buffer, Uint8Array.from(authority).buffer);
-      const [row] = this.storage.sql.exec("SELECT configuration, authority FROM acyclic_stream_domains WHERE domain = ?", this.domain);
+      const [row] = this.storage.sql.exec("SELECT configuration, authority, count FROM acyclic_stream_domains WHERE domain = ?", this.domain);
       if (!row || !equal(bytes(row.configuration), configuration)) {
         throw new Error("STEP sqlite-open failed: journal configuration differs; recovery: reopen with the original stream limits or choose a new domain");
       }
-      return bytes(row.authority);
+      return { authority: bytes(row.authority), head: count(row.count) };
     });
     await this.storage.sync();
-    return retained;
+    this.durable = Math.max(this.durable ?? 0, retained.head);
+    return retained.authority;
   }
 
   flush(): Promise<void> {
@@ -145,6 +172,14 @@ export class SqliteJournal {
     return output;
   }
 
+  changed(after: number, ready: () => void): () => void {
+    if (this.durable === undefined) throw new Error("STEP sqlite-changed failed: unopened journal; recovery: configure the original domain before observing it");
+    if (this.durable > after) { ready(); return () => {}; }
+    const subscriber = { after, ready };
+    this.subscribers.add(subscriber);
+    return () => { this.subscribers.delete(subscriber); };
+  }
+
   async append(index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]): Promise<number> {
     const accepted = this.storage.transactionSync(() => {
       const [metadata] = this.storage.sql.exec("SELECT count, bytes FROM acyclic_stream_domains WHERE domain = ?", this.domain);
@@ -171,6 +206,10 @@ export class SqliteJournal {
     });
     if (accepted.accepted) {
       await this.storage.sync();
+      this.durable = Math.max(this.durable ?? 0, accepted.head);
+      for (const subscriber of this.subscribers) {
+        if (this.durable > subscriber.after) { this.subscribers.delete(subscriber); subscriber.ready(); }
+      }
     }
     return accepted.head;
   }
@@ -182,7 +221,7 @@ export class SqliteJournal {
  * once it returns; `flush` is the only durability wait. Persisted format v1. */
 export class SqliteMedium implements WasmObjectsMedium {
   constructor(private readonly storage: SqliteStorage, private readonly domain: string) {
-    if (domain.length === 0 || domain.length > 256) throw new Error("STEP sqlite-object-open failed; recovery: choose a domain of 1 to 256 characters");
+    if (domain.length === 0) throw new Error("STEP sqlite-object-open failed; recovery: choose a nonempty domain");
     storage.transactionSync(() => {
       storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_objects_v1_keys (domain TEXT NOT NULL, key TEXT NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(domain, key))");
       storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_objects_v1_chunks (domain TEXT NOT NULL, key TEXT NOT NULL, chunk INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(domain, key, chunk))");
