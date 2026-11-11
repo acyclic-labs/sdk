@@ -6,17 +6,9 @@ const fn retryable_status(status: u16) -> bool {
     matches!(status, 408 | 429 | 500..=599)
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Admission {
-    Unknown,
-    Refused(u16),
-    Accepted,
-}
-
 /// One HTTP operation's recovery owner. Only permanent refusals end recovery.
 pub(crate) struct Attempt {
-    admission: Admission,
-    count: bool,
+    status: Option<u16>,
     redelivery: Redelivery,
     #[cfg(not(target_arch = "wasm32"))]
     refreshed: bool,
@@ -24,17 +16,16 @@ pub(crate) struct Attempt {
 
 impl Attempt {
     pub(crate) fn generation(spec: RetrySpec, dispatch: ModelDispatch) -> Self {
-        Self::new(Redelivery::new(spec, dispatch), false)
+        Self::new(Redelivery::new(spec, dispatch))
     }
 
     pub(crate) fn count(spec: RetrySpec, request_digest: [u8; 32]) -> Self {
-        Self::new(Redelivery::for_request(spec, request_digest), true)
+        Self::new(Redelivery::for_request(spec, request_digest))
     }
 
-    fn new(redelivery: Redelivery, count: bool) -> Self {
+    fn new(redelivery: Redelivery) -> Self {
         Self {
-            admission: Admission::Unknown,
-            count,
+            status: None,
             redelivery,
             #[cfg(not(target_arch = "wasm32"))]
             refreshed: false,
@@ -43,11 +34,7 @@ impl Attempt {
 
     /// Record headers before reading a refusal or a successful count body.
     pub(crate) fn observe(&mut self, status: u16) {
-        self.admission = if (200..300).contains(&status) {
-            Admission::Accepted
-        } else {
-            Admission::Refused(status)
-        };
+        self.status = Some(status);
     }
 
     pub(crate) fn next(
@@ -55,38 +42,31 @@ impl Attempt {
         error: &Error,
         retry_after: Option<Duration>,
     ) -> Option<Duration> {
-        let retryable = match self.admission {
-            Admission::Unknown => true,
-            Admission::Refused(status) => retryable_status(status),
-            Admission::Accepted => true,
-        };
-        if !retryable {
+        if self
+            .status
+            .is_some_and(|status| !(200..300).contains(&status) && !retryable_status(status))
+        {
             return None;
         }
         let wait = self.redelivery.next(error, retry_after);
         if wait.is_some() {
-            self.admission = Admission::Unknown;
+            self.status = None;
         }
         wait
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refresh(&mut self, error: &Error) -> bool {
-        if self.count
-            || error.code() != ErrorCode::Unauthorized
-            || self.admission != Admission::Refused(401)
-            || self.refreshed
-        {
+        if error.code() != ErrorCode::Unauthorized || self.status != Some(401) || self.refreshed {
             return false;
         }
         self.refreshed = true;
-        self.admission = Admission::Unknown;
+        self.status = None;
         true
     }
 }
 
-/// One exchange's redelivery schedule. Its owner supplies the operation's
-/// completion fence; generation additionally requires refusal or connection failure.
+/// One operation's uncapped backoff schedule. Its owner retains permanent HTTP status.
 struct Redelivery {
     spec: RetrySpec,
     /// Jitter seed: concurrent exchanges spread out while one exchange's schedule replays.

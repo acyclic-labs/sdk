@@ -73,9 +73,17 @@ async fn run_provider_scenario(root: &std::path::Path, path: &std::path::Path) -
 }
 
 #[tokio::test]
-async fn exhausted_provider_retries_settle_failed() -> TestResult {
+async fn transient_provider_failures_recover_in_the_same_turn() -> TestResult {
     let root = acyclic_test_support::crate_path!("tests/scenarios");
-    run_provider_scenario(&root, &root.join("providers/anthropic/exhausted-500.json")).await
+    for name in [
+        "retry-500.json",
+        "stall-before-output.json",
+        "stall-after-output.json",
+        "unreachable-retry.json",
+    ] {
+        run_provider_scenario(&root, &root.join("providers/anthropic").join(name)).await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]
