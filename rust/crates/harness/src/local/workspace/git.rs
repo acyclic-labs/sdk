@@ -159,6 +159,112 @@ impl Commands<'_> {
         state: &mut State,
         workspace: &Arc<LocalWorkspace>,
     ) -> Result<Outcome> {
+        let project = parsed.volume.is_none();
+        let result = self.fs_one(parsed, context, state, workspace).await?;
+        if project && matches!(result, Outcome::Completed(_)) {
+            self.drain_publications(context, state, workspace).await?;
+        }
+        Ok(result)
+    }
+
+    async fn drain_publications(
+        &self,
+        context: &CommandContext<'_>,
+        state: &mut State,
+        workspace: &Arc<LocalWorkspace>,
+    ) -> Result<()> {
+        loop {
+            let repository = acyclic_fs::GitCompatRepository::new(
+                workspace.view().workspace().id(),
+                workspace.store.clone(),
+            );
+            let snapshot = repository.load().await.map_err(storage)?;
+            if snapshot.pending.is_some() {
+                return Ok(());
+            }
+            let Some((sequence, publication)) = self.workspace.next_publication().await? else {
+                return Ok(());
+            };
+            // A branch is a disposable reference. The queued request owns
+            // its source workspace independently, including across restart.
+            match snapshot.branches.get(&publication.branch) {
+                Some(branch) if branch.workspace_id != publication.source => {
+                    return Err(Error::Conflict(
+                        "deferred publication branch was rebound".into(),
+                    ));
+                }
+                Some(_) => {}
+                None => repository
+                    .register_branch_workspace(
+                        publication.branch.clone(),
+                        publication.source,
+                        None,
+                        false,
+                    )
+                    .await
+                    .map_err(storage)?,
+            }
+            let parsed =
+                self.fs_arguments(&format!("merge {}", publication.branch), context.scope)?;
+            let result = self
+                .fs_one(
+                    parsed,
+                    &CommandContext {
+                        owner: context.owner,
+                        operation: publication.operation,
+                        scope: context.scope,
+                        request: Some(acyclic_fs::GitRequest {
+                            operation: acyclic_fs::OperationId::from_bytes(
+                                publication.operation.into_bytes(),
+                            ),
+                            unanswered: Arc::new(|_| true),
+                        }),
+                    },
+                    state,
+                    workspace,
+                )
+                .await?;
+            match result {
+                Outcome::Completed(_) => {}
+                Outcome::Rejected(error) => {
+                    // Its projection is retained by this exact pending join.
+                    let pending = acyclic_fs::GitCompatRepository::new(
+                        workspace.view().workspace().id(),
+                        workspace.store.clone(),
+                    )
+                    .pending_transition()
+                    .await
+                    .map_err(storage)?;
+                    if !matches!(*error, Error::Conflict(_))
+                        || !pending.is_some_and(|pending| {
+                            pending.request
+                                == Some(acyclic_fs::OperationId::from_bytes(
+                                    publication.operation.into_bytes(),
+                                ))
+                                && matches!(
+                                    pending.mutation,
+                                    acyclic_fs::GitPendingMutation::Join {
+                                        conflicts: Some(_),
+                                        ..
+                                    }
+                                )
+                        })
+                    {
+                        return Err(*error);
+                    }
+                }
+            }
+            self.workspace.acknowledge_publication(sequence).await?;
+        }
+    }
+
+    async fn fs_one(
+        &self,
+        parsed: crate::tools::FsCommand,
+        context: &CommandContext<'_>,
+        state: &mut State,
+        workspace: &Arc<LocalWorkspace>,
+    ) -> Result<Outcome> {
         let (source, reserved) =
             self.fs_target_with_reserved_paths(workspace, &parsed, context.scope)?;
         let native = match &source {

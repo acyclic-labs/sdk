@@ -15,6 +15,10 @@ pub(super) fn runtime_read_roots() -> io::Result<Vec<PathBuf>> {
         "/lib",
         "/lib64",
         "/etc/ld.so.cache",
+        // Crypto runtimes read their public configuration during startup.
+        // Grant the files, never the adjacent private-key directories.
+        "/etc/ssl/openssl.cnf",
+        "/etc/pki/tls/openssl.cnf",
     ]
     .into_iter()
     .map(PathBuf::from)

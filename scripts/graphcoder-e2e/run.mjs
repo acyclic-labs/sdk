@@ -29,6 +29,7 @@ import { failedCase, failureReport, finishCase, publishReport, retainCapture, ve
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { mountingArguments, variants } from "./serial.mjs";
+import { verifyNativeTrace } from "./native-trace.mjs";
 import { conversation } from "./conversation.mjs";
 import { nativeHostEnvironment } from "../../plugin/tests/hosts/native-host.mjs";
 import { withFileSource } from "./file-source.mjs";
@@ -124,7 +125,7 @@ async function prepare(test, gitOrigin) {
   const provider = { adapter: test.adapter ?? "responses", authentication: test.authentication ?? "optional", base_url: expand(test.base_url ?? fixture.url, fixture),
     models: Object.fromEntries((test.models ?? ["tiny"]).map(model => [model, {
       capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true }
-    }])), max_event_bytes: 65536,
+    }])),
     token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
   await json(fixture.catalog, { ...(test.first_run ? { default_model: `${fixture.provider}/tiny` } : {}), [fixture.provider]: provider });
   fixture.env.E2E_MOCK_URL = fixture.url;
@@ -251,6 +252,11 @@ async function execute(test, prepared) {
         }
       });
     }
+    for (const { path, ignored } of test.assert.git_ignored ?? []) {
+      const result = await processes.run("git", ["check-ignore", "--no-index", "--quiet", path],
+        { cwd: fixture.workspace, env: fixture.env });
+      assert.equal(result.code, ignored ? 0 : 1, `Git exclusion for ${path}: ${result.stderr}`);
+    }
     // Check while the mock's held response is still open. Killing the mock
     // first would let an unfenced descendant exit and produce a false pass.
     await checkTree(test);
@@ -286,38 +292,7 @@ function verify(result, records) {
   const { test, fixture, captures } = contexts.get(result.case);
   try {
     requests(test, records);
-    if (test.assert.trace) {
-      const expected = test.assert.trace;
-      const lines = path => readFileSync(join(fixture.workspace, path), "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
-      const agents = lines(join(expected.directory, "agents.jsonl"));
-      assert.equal(agents.length, expected.agents, "trace agent count");
-      const ids = new Set(agents.map(agent => agent.id));
-      assert.equal(ids.size, agents.length, "trace repeats an agent identity");
-      assert.equal(agents.filter(agent => agent.parent === null).length, 1, "trace root count");
-      for (const agent of agents) {
-        assert.equal(agent.version, 1);
-        assert.deepEqual(agent.topology, expected.topology);
-        assert.equal(agent.role, agent.parent === null ? (expected.root_role ?? "orchestrator") : "worker");
-        assert.equal(typeof agent.model, "string");
-        if (agent.parent !== null) assert.ok(ids.has(agent.parent), "trace parent is absent");
-      }
-      const usage = lines(expected.usage);
-      for (const agent of agents) {
-        const calls = usage.filter(row => row.usage.agent_path === agent.agent_path && row.usage.completed);
-        assert.ok(calls.length, "trace has no completed call for an agent");
-        for (const row of calls) {
-          assert.ok(Number.isSafeInteger(row.usage.tokens.input));
-          assert.ok(Number.isSafeInteger(row.usage.tokens.output));
-          assert.ok(Object.hasOwn(row.usage.tokens, "cached"));
-          assert.ok(Object.hasOwn(row, "estimated_cost"), "trace lost cost observation");
-          if (expected.price_revision) {
-            assert.equal(row.estimated_cost.price_revision, expected.price_revision);
-            assert.equal(row.estimated_cost.currency, "USD");
-            assert.ok(Number.isSafeInteger(row.estimated_cost.token_nano_units), "trace lost selected token cost");
-          }
-        }
-      }
-    }
+    if (test.assert.trace) verifyNativeTrace(fixture.workspace, test.assert.trace);
     const client = JSON.stringify(captures);
     for (const text of test.assert.wire_contains ?? []) assert.ok(client.includes(text), `client wire missing ${text}`);
     for (const text of test.assert.wire_absent ?? []) assert.ok(!client.includes(text), "client output exposed forbidden content");

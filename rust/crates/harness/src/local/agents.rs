@@ -341,6 +341,22 @@ impl LocalHarness {
             &[],
         )
         .await?;
+        // The base checkout belongs to the task; a bound child checkout
+        // belongs to its conversation. Keep each workspace's original
+        // audience and the parent's exact volume grants and identity.
+        let (signed, verifier) = if parent_project == self.project {
+            (
+                issuer.bootstrap_scope(
+                    "child-completion",
+                    &authority.grants,
+                    Some(crate::AgentId::from_bytes(parent.path.id_bytes())),
+                    &mut None,
+                )?,
+                issuer.verifier(&mut None)?,
+            )
+        } else {
+            (authority.scope, authority.verifier)
+        };
         let owner = super::workspace::owner::AgentOwner(parent.path.clone());
         let parent_workspace = self
             .project_workspace(
@@ -348,8 +364,8 @@ impl LocalHarness {
                 &parent.path,
                 &parent_project,
                 &parent.volumes,
-                &authority.scope,
-                &authority.verifier,
+                &signed,
+                &verifier,
             )
             .await?;
         let child = root.spawned_project_view(&child_project).await?;
@@ -365,13 +381,14 @@ impl LocalHarness {
             super::checkout_tools::capture::configuration(&parent_workspace)?;
         let commands = super::workspace::git::Commands {
             workspace: &parent_workspace,
-            signed: &authority.scope,
+            signed: &signed,
             clock: &*self.clock,
             capture_options: &capture_options,
             capture_policy: &capture_policy,
         };
         let scope = crate::runtime::RuntimeScope::new(authority.grants, Default::default())?;
         let parsed = commands.fs_arguments(&format!("merge {branch}"), &scope)?;
+        let publication = acyclic_fs::OperationId::from_bytes(turn.into_bytes());
         let mut state = crate::sync::owned::lock_owned(super::workspace::StateArc::clone(
             &parent_workspace.state,
         ))
@@ -379,6 +396,29 @@ impl LocalHarness {
         let physical = parent_workspace
             .selected_workspace(&mut state, &owner)
             .await?;
+        if let Some(pending) = acyclic_fs::GitCompatRepository::new(
+            physical.view().workspace().id(),
+            physical.store.clone(),
+        )
+        .pending_transition()
+        .await
+        .map_err(storage)?
+            && pending.request != Some(publication)
+            && matches!(
+                pending.mutation,
+                acyclic_fs::GitPendingMutation::Join {
+                    conflicts: Some(_),
+                    ..
+                }
+            )
+        {
+            // Let every worker settle so a parent waiting for all of them can
+            // resolve the conflict. The original request stays durable until
+            // the shared command path publishes it after that resolution.
+            return parent_workspace
+                .defer_publication(turn, branch, child.workspace().id())
+                .await;
+        }
         let result = commands
             .fs(
                 parsed,
@@ -386,7 +426,10 @@ impl LocalHarness {
                     owner: &owner,
                     operation: turn,
                     scope: &scope,
-                    request: None,
+                    request: Some(acyclic_fs::GitRequest {
+                        operation: publication,
+                        unanswered: Arc::new(|_| true),
+                    }),
                 },
                 &mut state,
                 &physical,
@@ -394,7 +437,35 @@ impl LocalHarness {
             .await?;
         match result {
             super::workspace::git::Outcome::Completed(_) => Ok(()),
-            super::workspace::git::Outcome::Rejected(error) => Err(*error),
+            super::workspace::git::Outcome::Rejected(error) => {
+                // A published conflict belongs to the parent's workspace, not
+                // the worker's conversation. Preserve the answer and allow
+                // follow-up work while the parent resolves the shared join.
+                if matches!(*error, Error::Conflict(_))
+                    && matches!(
+                        acyclic_fs::GitCompatRepository::new(
+                            physical.view().workspace().id(),
+                            physical.store.clone(),
+                        )
+                        .pending_transition()
+                        .await
+                        .map_err(storage)?,
+                        Some(acyclic_fs::GitPendingTransition {
+                            request: Some(request),
+                            mutation: acyclic_fs::GitPendingMutation::Join {
+                                conflicts: Some(_),
+                                rebase: false,
+                                source_branch,
+                                ..
+                            },
+                            ..
+                        }) if request == publication && source_branch == branch
+                    )
+                {
+                    return Ok(());
+                }
+                Err(*error)
+            }
         }
     }
 

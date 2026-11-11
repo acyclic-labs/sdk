@@ -6,9 +6,12 @@ import { copyFileSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "no
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const [binary, mock, output] = process.argv.slice(2);
+const [binary, mock, output, ...selectedCases] = process.argv.slice(2);
 assert.ok(binary && mock && output && [binary, mock, output].every(isAbsolute),
-  "usage: node scripts/qualify-topology-modes.mjs GRAPHCODER MOCK FRESH_OUTPUT");
+  "usage: node scripts/qualify-topology-modes.mjs GRAPHCODER MOCK FRESH_OUTPUT [CASE-positive|CASE-negative ...]");
+const modes = [["topology-single", "swarm"], ["topology-team", "swarm"], ["topology-swarm", "single"]];
+const labels = new Set(modes.flatMap(([id]) => [`${id}-positive`, `${id}-negative`]));
+for (const selected of selectedCases) assert.ok(labels.has(selected), `unknown qualification case: ${selected}`);
 const root = fileURLToPath(new URL("../", import.meta.url));
 mkdirSync(output);
 const input = join(output, "input");
@@ -39,17 +42,19 @@ const swarm = { id: "topology-swarm", workspace: { kind: "plain", files: {} }, m
   // qualification exercises topology, while context-window admission has its own suite.
   capacity: { context_tokens: 1 << 20, output_tokens: 1 << 16 },
   inputs: [{ mode: "headless", text: "SWARM_ROOT", answer: "SWARM_ALL_DONE", extra_args: ["--topology", "swarm", "--transcripts", "{{workspace}}/../native-traces", "--usage-jsonl", "{{workspace}}/../usage.jsonl"] }],
-  assert: { requests: steps.length, model_tools: [{ step: 0, present: ["spawn"] }], tool_contains: ["SWARM_CHAIN_DONE", "SIBLING_256_DONE"], trace: { directory: "../native-traces", usage: "../usage.jsonl", agents: width + depth, topology: { version: 1, mode: "swarm" } } },
+  assert: { requests: steps.length, model_tools: [{ step: 0, present: ["spawn"] }], tool_contains: ["SWARM_CHAIN_DONE"], trace: { assistant_text: ["SIBLING_256_DONE"], width, depth, directory: "../native-traces", usage: "../usage.jsonl", agents: width + depth, topology: { version: 1, mode: "swarm" } } },
   physical: true, adapter: "responses" };
 writeFileSync(join(input, "cases/topology-swarm.json"), JSON.stringify(swarm));
 const coverage = JSON.parse(readFileSync(join(input, "coverage.json")));
 coverage.rows.A3.cases.push("topology-swarm");
 writeFileSync(join(input, "coverage.json"), JSON.stringify(coverage));
 
-for (const [id, negativeMode] of [["topology-single", "swarm"], ["topology-team", "swarm"], ["topology-swarm", "team:256"]]) {
+for (const [id, negativeMode] of modes) {
   const file = join(input, "cases", `${id}.json`);
   const positive = JSON.parse(readFileSync(file));
   for (const negative of [false, true]) {
+    const label = `${id}-${negative ? "negative" : "positive"}`;
+    if (selectedCases.length && !selectedCases.includes(label)) continue;
     const selected = structuredClone(positive);
     if (negative) selected.inputs[0].extra_args[1] = negativeMode;
     writeFileSync(file, JSON.stringify(selected));
@@ -63,7 +68,10 @@ for (const [id, negativeMode] of [["topology-single", "swarm"], ["topology-team"
     const report = JSON.parse(readFileSync(join(destination, "matrix.json")));
     assert.equal(result.status, negative ? 1 : 0, JSON.stringify(report.results));
     assert.ok(report.results.length > 0);
-    for (const row of report.results) assert.equal(row.status, negative ? "fail" : "pass", JSON.stringify(row));
+    for (const row of report.results) {
+      assert.equal(row.status, negative ? "fail" : "pass", JSON.stringify(row));
+      if (negative) assert.ok(row.evidence?.requests?.some(request => request.step === 0 && request.status === 200), "negative control must reach the model");
+    }
     console.log(JSON.stringify({ id, negative, status: "pass", seconds: report.seconds }));
   }
 }

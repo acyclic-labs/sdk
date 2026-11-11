@@ -339,6 +339,15 @@ impl CheckoutTools {
                             })
                         })
                     {
+                        tracing::error!(
+                            operation = %invocation.operation_id,
+                            error = ?result.as_ref().err(),
+                            cleanup_completed = ?result.as_ref().ok()
+                                .and_then(|result| result.value.get("stop"))
+                                .and_then(|stop| stop.get("cleanup_completed"))
+                                .and_then(serde_json::Value::as_bool),
+                            "shell outcome requires reconciliation"
+                        );
                         state.unsettled.insert(invocation.operation_id);
                         return Err(Error::Indeterminate(invocation.operation_id));
                     }

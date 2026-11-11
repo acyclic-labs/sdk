@@ -118,6 +118,7 @@ fn linux_mount_serves_without_abort_control_and_retains_available_control()
 }
 
 fn isolated_case(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
     let temporary = tempfile::tempdir()?;
     let hidden = temporary.path().join("hidden");
     std::fs::create_dir(&hidden)?;
@@ -152,7 +153,7 @@ fn isolated_case(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
             crate::NativeMountRequest {
                 mount_id: crate::MountId::new(),
                 volume_id: source.volume_id()?,
-                destination,
+                destination: destination.clone(),
                 writable: true,
                 shared,
             },
@@ -177,8 +178,11 @@ fn isolated_case(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
             nix::mount::umount(CONNECTIONS)?;
         } else {
             let mut session = result?;
-            std::fs::write(root.join("child"), b"without abort control")?;
-            assert_eq!(std::fs::read(root.join("child"))?, b"without abort control");
+            std::fs::write(destination.join("child"), b"without abort control")?;
+            assert_eq!(
+                std::fs::read(destination.join("child"))?,
+                b"without abort control"
+            );
             assert!(session.stop()?);
         }
         let table = std::fs::read_to_string("/proc/self/mountinfo")?;

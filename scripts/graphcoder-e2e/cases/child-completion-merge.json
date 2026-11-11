@@ -51,7 +51,7 @@
             "id": "write-child",
             "name": "code",
             "arguments": {
-              "code": "const result = await tools.shell({command:['node','-e',\"require('fs').writeFileSync('child.txt','CHILD_COMPLETION_CONTENT\\n')\"]}); if (!result.success || result.exit_code !== 0) throw Error('child write failed: '+JSON.stringify(result)); ({written:'CHILD_WRITE_OK'})"
+              "code": "const result = await tools.shell({command:['node','-e',\"require('fs').writeFileSync('child.txt','CHILD_COMPLETION_CONTENT' + String.fromCharCode(10))\"]}); if (!result.success || result.exit_code !== 0) throw Error('child write failed: '+JSON.stringify(result)); export default {written:'CHILD_WRITE_OK'}"
             }
           }
         ]
@@ -75,7 +75,7 @@
             "id": "verify-parent",
             "name": "code",
             "arguments": {
-              "code": "const result = await tools.shell({command:['node','-e',\"const fs=require('fs');if(fs.readFileSync('child.txt','utf8')!=='CHILD_COMPLETION_CONTENT\\n'||fs.readFileSync('root.txt','utf8')!=='ROOT_KEPT\\n')process.exit(1);for(const path of ['.acyclic-sdk/control','.volumes/agents/probe']){const ignored=require('child_process').spawnSync('git',['check-ignore','--no-index','--quiet',path]);if(ignored.status!==0)throw Error('SDK state was not excluded: '+path)};console.log('PARENT_HAS_CHILD_WORK')\"]}); if (!result.success || result.exit_code !== 0 || !result.text.includes('PARENT_HAS_CHILD_WORK')) throw Error('child completion did not publish into parent: '+JSON.stringify(result)); ({verified:'PARENT_HAS_CHILD_WORK'})"
+              "code": "const result = await tools.shell({command:['node','-e',\"const fs=require('fs');if(fs.readFileSync('child.txt','utf8')!=='CHILD_COMPLETION_CONTENT' + String.fromCharCode(10)||fs.readFileSync('root.txt','utf8')!=='ROOT_KEPT' + String.fromCharCode(10))process.exit(1);console.log('PARENT_HAS_CHILD_WORK')\"]}); if (!result.success || result.exit_code !== 0 || !result.text.includes('PARENT_HAS_CHILD_WORK')) throw Error('child completion did not publish into parent: '+JSON.stringify(result)); export default {verified:'PARENT_HAS_CHILD_WORK'}"
             }
           }
         ]
@@ -103,7 +103,21 @@
     "files": {
       "child.txt": "CHILD_COMPLETION_CONTENT\n",
       "root.txt": "ROOT_KEPT\n"
-    }
+    },
+    "git_ignored": [
+      {
+        "path": ".acyclic-sdk/control",
+        "ignored": true
+      },
+      {
+        "path": ".volumes/agents/probe",
+        "ignored": true
+      },
+      {
+        "path": "root.txt",
+        "ignored": false
+      }
+    ]
   },
   "physical": true,
   "adapter": "responses"

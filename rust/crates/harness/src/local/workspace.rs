@@ -23,6 +23,7 @@ mod children;
 pub(in crate::local) mod git;
 mod mounts;
 pub(in crate::local) mod owner;
+pub(in crate::local) mod publications;
 pub(in crate::local) use children::LocalVolumeResources;
 pub(super) mod projection;
 mod task_views;
@@ -162,8 +163,25 @@ impl LocalWorkspace {
                     )
                 }),
         )?;
-        volumes::link(path, &mut mounts, &self.mount_directory.join(BINDINGS))?;
-        Ok(Arc::new(mounts))
+        // A served path can wait for this runtime's FUSE callbacks. Never
+        // occupy an async worker with its synchronous alias syscalls.
+        let path = path.to_path_buf();
+        let bindings = self.mount_directory.join(BINDINGS);
+        let mounted = self.mounted.clone();
+        acyclic_native_runtime::run_blocking_io(
+            move || {
+                // A cancelled waiter cannot retire the server while this
+                // submitted syscall still uses its mounted namespace.
+                let _mounted = mounted;
+                volumes::link(&path, &mut mounts, &bindings)?;
+                Ok(Arc::new(mounts))
+            },
+            None,
+        )
+        .map_err(storage)?
+        .offloaded()
+        .await
+        .map_err(storage)?
     }
 
     /// Root-relative paths that this view's bound volumes own. A mounted
