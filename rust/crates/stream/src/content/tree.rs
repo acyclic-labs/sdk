@@ -291,7 +291,7 @@ impl<'a, S: Storage> Writer<'a, S> {
             .filter(|height| *height <= MAX_HEIGHT)
             .ok_or(StreamError::Capacity)?;
         let (edge, _) = self.dependencies.finish_tree().await?;
-        let bytes = encode_manifest([body.part], [edge.0])?;
+        let bytes = encode_manifest(std::iter::once(body.part), std::iter::once(edge.0))?;
         let part = put(storage, Kind::Manifest, bytes, body.part.length).await?;
         Ok(Root { part, height })
     }
