@@ -237,8 +237,7 @@ pub use changes::{
     decode_changes, is_changes,
 };
 pub use record_headers::{
-    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordAttribute,
-    RecordAttributeIter, RecordAttributes, RecordHeaders,
+    MAX_RECORD_KEY_BYTES, RecordAttribute, RecordAttributeIter, RecordAttributes, RecordHeaders,
 };
 
 include!("lib/provider_context.rs");
@@ -268,7 +267,7 @@ mod native;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{
     NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
-    PreparedNativeCommit,
+    PreparedNativeCommit, PreparedRecordCapacity,
 };
 #[cfg(test)]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
