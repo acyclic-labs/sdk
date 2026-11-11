@@ -291,8 +291,8 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
                         .file_refs()
                         .any(|file| *file == document.file))
                     .count(),
-                1,
-                "exactly one appended announcement message"
+                if turn == 16 { 2 } else { 1 },
+                "one new delta; restoring instructions retains the earlier document message"
             );
             if matches!(turn, 2 | 4 | 16) {
                 assert_eq!(document.instructions.len(), 1);
@@ -316,6 +316,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
                 let delta = request
                     .messages
                     .iter()
+                    .rev()
                     .find(|message| {
                         message
                             .content
