@@ -357,6 +357,18 @@
               "Discarded ·"
             ]
           },
+          "send": "\u0014"
+        },
+        {
+          "when": {
+            "contains": [
+              "TREE_ROOT_DONE"
+            ],
+            "absent": [
+              "Pine · M · $1 · 2m"
+            ],
+            "cursor": true
+          },
           "prompt": "TREE_VERIFY"
         },
         {
