@@ -168,15 +168,7 @@ pub(super) fn volume_key(volume: &VolumeRef) -> Result<[u8; 32]> {
 pub(super) fn auxiliary_key(bindings: &[crate::agent::WorkspaceEntry]) -> Result<[u8; 32]> {
     let mut ordered: Vec<_> = bindings.iter().collect();
     ordered.sort_unstable_by(|left, right| left.name.cmp(&right.name));
-    let mut hash = blake3::Hasher::new();
-    for binding in ordered {
-        hash.update(&(binding.name.len() as u64).to_be_bytes());
-        hash.update(binding.name.as_bytes());
-        let encoded = serde_json::to_vec(binding).map_err(storage)?;
-        hash.update(&(encoded.len() as u64).to_be_bytes());
-        hash.update(&encoded);
-    }
-    Ok(*hash.finalize().as_bytes())
+    crate::executor::json::canonical_json_digest(&ordered, None, &mut None)
 }
 
 impl Selection {

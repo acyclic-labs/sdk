@@ -15,6 +15,11 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     let session_bindings = harness.session_bindings();
     let mut changed_bindings = session_bindings.clone();
     changed_bindings[1].source = crate::agent::WorkspaceSource::Volume(harness.project.clone());
+    let mut changed_mode = session_bindings.clone();
+    changed_mode[1].mode = match changed_mode[1].mode {
+        crate::agent::WorkspaceMode::ReadOnly => crate::agent::WorkspaceMode::ReadWrite,
+        crate::agent::WorkspaceMode::ReadWrite => crate::agent::WorkspaceMode::ReadOnly,
+    };
     let workspace = harness
         .workspace()
         .ok_or_else(|| Error::NotFound("workspace".into()))?;
@@ -79,18 +84,20 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             .named(Some(crate::filesystem::HOME_VOLUME))
             .is_err()
     );
-    assert!(matches!(
-        workspace
-            .bound_task_view(
-                view().await?,
-                &harness.project,
-                &changed_bindings,
-                &owner.original,
-                &authority,
-            )
-            .await,
-        Err(Error::Conflict(_)),
-    ));
+    for selection in [&changed_bindings, &changed_mode] {
+        assert!(matches!(
+            workspace
+                .bound_task_view(
+                    view().await?,
+                    &harness.project,
+                    selection,
+                    &owner.original,
+                    &authority,
+                )
+                .await,
+            Err(Error::Conflict(_)),
+        ));
+    }
     std::fs::write(second.path.join("shared.txt"), b"shared").map_err(storage)?;
     release
         .send(())
