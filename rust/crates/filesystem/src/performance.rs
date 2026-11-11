@@ -611,6 +611,16 @@ impl WorkCounters {
         ];
         for (counter, observed, maximum) in fields {
             if observed > maximum {
+                static TRACED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if counter == "items_examined"
+                    && !TRACED.swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    eprintln!(
+                        "SDK_BUDGET_TRACE {counter} observed={observed} maximum={maximum}\n{}",
+                        std::backtrace::Backtrace::force_capture()
+                    );
+                }
                 return Err(WorkError::BudgetExceeded {
                     counter,
                     observed,

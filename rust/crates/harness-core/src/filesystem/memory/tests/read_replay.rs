@@ -23,7 +23,16 @@ async fn read(task: &TaskContext, arguments: Value) -> Result<Value> {
     let (result, _hold) = tool
         .executor
         .execute_with_native_context(&context, &invocation, &work)?
-        .await?;
+        .await
+        .map_err(|error| {
+            eprintln!(
+                "SDK_REPLAY_REQUEST selection={:?} range={:?} pinned={}",
+                invocation.arguments.get("selection"),
+                invocation.arguments.get("range"),
+                invocation.arguments.get("version").is_some()
+            );
+            error
+        })?;
     let full = tool
         .projection
         .project(&invocation, &result, Some(&work))?
