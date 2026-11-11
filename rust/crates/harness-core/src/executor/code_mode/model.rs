@@ -230,6 +230,8 @@ async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, t
         (Some(literal_module.as_str()), literal.len(), false),
         (Some(literal_module.as_str()), literal.len() - 1, false),
         (Some(literal_module.as_str()), literal.len(), true),
+        // Invalid syntax must not run an unfunded parser before admission.
+        (Some("export default ("), literal.len(), true),
     ] {
         if let Some(source) = source {
             let work = native_work(deny_allocation);

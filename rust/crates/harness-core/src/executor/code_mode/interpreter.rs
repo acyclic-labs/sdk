@@ -49,6 +49,7 @@ pub(super) async fn run(
     allocator: super::allocator::EngineAllocator,
     interrupt_budget: u64,
 ) -> Result<super::allocator::EngineResult, String> {
+    // Parse JavaScript inside the same original-caller-funded engine as execution.
     let bridge = allocator.clone();
     let result_allocator = allocator.clone();
     let runtime = AsyncRuntime::new_with_alloc(allocator).map_err(|error| error.to_string())?;
@@ -138,10 +139,6 @@ pub(super) async fn run(
             let drain: Function = bridge.get("drain")?;
             let protect: Function = bridge.get("protect")?;
             Module::declare(ctx.clone(), "acyclic", include_str!("acyclic.mjs"))?;
-            // The tool's contract is JavaScript ESM. Parse and compile it once,
-            // in QuickJS under the original caller's EngineAllocator, rather
-            // than first constructing an unfunded TypeScript arena and output.
-            // Only the admitted module above is registered; no host loader exists.
             let module = Module::declare(ctx.clone(), "code.js", code)?;
             let (module, evaluated) = module.eval()?;
             let evaluated: Promise = protect.call((evaluated,))?;
