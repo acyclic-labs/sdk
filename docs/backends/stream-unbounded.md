@@ -432,6 +432,16 @@ interruption guard retires a canceled range cursor. This supports reopening
 staged sections and seeking large record content without prefix materialization;
 it does not itself publish or authorize a stage.
 
+An opaque `staged::Bookmark` records a successfully decoded token boundary,
+the remaining shape counters, and the verified submission binding. `bookmark`
+refuses an interrupted decoder. `Reader::resume(storage, staged, bookmark)`
+accepts only the same immutable body, commit id, retry key and request family;
+accepted-output projection is not part of that identity. It seeks through the
+same content range reader and continues the same structural validation. A
+bookmark at end resumes as end. Bookmarks retain constant metadata, not decoded
+prefix tokens or record bytes. They are process-local decoder state, not a wire
+authorization credential or a substitute for a stage owner's retention pin.
+
 Add stage_tokens(Submission, Stream<Token>) as the bounded-memory entrypoint.
 Submission binds commit id, retry key, original family, deadline, effect count
 and output projection. Owned stage(WriteRequest) remains a convenience adapter;

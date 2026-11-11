@@ -5,15 +5,25 @@ struct Cursor<'a, S> {
     page: OwnedBytes,
     offset: usize,
     remaining: u64,
+    position: u64,
 }
 
 impl<'a, S: Storage> Cursor<'a, S> {
     fn new(storage: &'a S, root: Root) -> Result<Self, StreamError> {
+        Self::at(storage, root, 0)
+    }
+    fn at(storage: &'a S, root: Root, position: u64) -> Result<Self, StreamError> {
+        let remaining = root
+            .part
+            .length
+            .checked_sub(position)
+            .ok_or(StreamError::InvalidArgument)?;
         Ok(Self {
-            content: tree::Reader::new(storage, root)?,
+            content: tree::Reader::range(storage, root, position, remaining)?,
             page: OwnedBytes::new(),
             offset: 0,
-            remaining: root.part.length,
+            remaining,
+            position,
         })
     }
     async fn copy(&mut self, output: &mut [u8]) -> Result<(), StreamError> {
@@ -40,6 +50,7 @@ impl<'a, S: Storage> Cursor<'a, S> {
             self.offset += count;
             written += count;
             self.remaining -= count as u64;
+            self.position += count as u64;
         }
         Ok(())
     }
@@ -125,7 +136,7 @@ enum Phase {
     End,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Shape {
     family: Option<Family>,
     effects: u64,
@@ -268,9 +279,21 @@ impl Shape {
 /// are observations to perform at final apply, never evaluated by this reader.
 pub struct Reader<'a, S> {
     cursor: Cursor<'a, S>,
+    binding: StagedWrite,
     deadline: Option<u64>,
     shape: Shape,
     interrupted: bool,
+}
+
+/// Opaque verified token boundary in one immutable staged submission.
+/// Retains constant decoder metadata, not token or record prefixes. The stage
+/// owner must keep its content alive; this is not an authorization credential.
+#[derive(Clone)]
+pub struct Bookmark {
+    binding: StagedWrite,
+    position: u64,
+    deadline: Option<u64>,
+    shape: Shape,
 }
 
 impl<'a, S: Storage> Reader<'a, S> {
@@ -302,10 +325,56 @@ impl<'a, S: Storage> Reader<'a, S> {
         }
         Ok(Self {
             cursor,
+            binding: staged.clone(),
             deadline,
             shape: Shape::new(family, effects),
             interrupted: false,
         })
+    }
+
+    /// Retains the next token boundary, refusing a failed or canceled cursor.
+    pub fn bookmark(&self) -> Result<Bookmark, StreamError> {
+        if self.interrupted {
+            return Err(StreamError::Unavailable);
+        }
+        Ok(Bookmark {
+            binding: self.binding.clone(),
+            position: self.cursor.position,
+            deadline: self.deadline,
+            shape: self.shape.clone(),
+        })
+    }
+
+    /// Reopens a verified boundary without decoding or retaining its prefix.
+    /// Accepted-output projection may change; the input binding may not.
+    pub fn resume(
+        storage: &'a S,
+        staged: &StagedWrite,
+        bookmark: &Bookmark,
+    ) -> Result<Self, StreamError> {
+        let original = &bookmark.binding;
+        if original.body != staged.body
+            || original.commit_id != staged.commit_id
+            || original.key != staged.key
+            || original.family != staged.family
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(Self {
+            cursor: Cursor::at(storage, staged.body, bookmark.position)?,
+            binding: staged.clone(),
+            deadline: bookmark.deadline,
+            shape: bookmark.shape.clone(),
+            interrupted: false,
+        })
+    }
+
+    /// Logical byte offset of the next token boundary in the sealed body.
+    pub fn position(&self) -> Result<u64, StreamError> {
+        if self.interrupted {
+            return Err(StreamError::Unavailable);
+        }
+        Ok(self.cursor.position)
     }
 
     /// Original deadline, to be checked only by final apply's authority.

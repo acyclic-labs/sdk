@@ -11,7 +11,7 @@ use crate::{
 
 mod decode;
 mod encode;
-pub use decode::Reader;
+pub use decode::{Bookmark, Reader};
 
 const MAGIC: &[u8] = b"acyclic-stream-staged-v1\0";
 // This chooses a chunk representation, never an accepted logical byte ceiling.

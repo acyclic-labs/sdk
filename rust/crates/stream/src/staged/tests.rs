@@ -420,6 +420,76 @@ async fn staged_fork_exclusions_and_headers_keep_typed_token_order()
 }
 
 #[tokio::test]
+async fn staged_bookmarks_resume_boundaries_across_content_pages()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Disk::open(directory.path());
+    let tokens = || {
+        [
+            Ok(Token::Effect {
+                soft: false,
+                conditions: 0,
+                mutations: 1,
+            }),
+            Ok(Token::Append {
+                path: Field::Inline(OwnedBytes::from_static(b"bookmarks")),
+                records: 20,
+            }),
+        ]
+        .into_iter()
+        .chain((0..20_u8).map(|index| {
+            Ok(Token::Record {
+                value: Field::Inline(OwnedBytes::from(vec![index; INLINE_BYTES])),
+                keys: 0,
+                attributes: 0,
+            })
+        }))
+    };
+    let staged = stage_tokens(
+        &storage,
+        Submission {
+            commit_id: CommitId::from_bytes([9; 32]),
+            idempotency_key: IdempotencyKey::new("bookmarks")?,
+            family: Family::Commit,
+            deadline_unix_millis: Some(42),
+            effects: 1,
+            accepted: false,
+        },
+        futures::stream::iter(tokens()),
+    )
+    .await?;
+    assert!(staged.body().part.length > tree::PAGE_BYTES as u64);
+    let mut reader = Reader::open(&storage, &staged).await?;
+    let mut projection = staged.clone();
+    projection.accepted = true;
+    for expected in tokens() {
+        let expected = expected?;
+        let bookmark = reader.bookmark()?;
+        let before = reader.position()?;
+        let mut resumed = Reader::resume(&storage, &projection, &bookmark)?;
+        assert_eq!(resumed.deadline_unix_millis(), Some(42));
+        assert_eq!(resumed.position()?, before);
+        assert_eq!(resumed.next().await?, Some(expected.clone()));
+        assert_eq!(reader.next().await?, Some(expected));
+        assert_eq!(resumed.position()?, reader.position()?);
+        assert!(reader.position()? > before);
+
+        let mut rebound = staged.clone();
+        rebound.commit_id = CommitId::from_bytes([10; 32]);
+        assert!(matches!(
+            Reader::resume(&storage, &rebound, &bookmark),
+            Err(StreamError::InvalidArgument)
+        ));
+    }
+    assert!(reader.next().await?.is_none());
+    let end = reader.bookmark()?;
+    let mut resumed = Reader::resume(&storage, &staged, &end)?;
+    assert_eq!(resumed.position()?, staged.body().part.length);
+    assert!(resumed.next().await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn streamed_ingress_refuses_missing_extra_and_wrong_family_tokens()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
