@@ -321,5 +321,24 @@ async fn cancellation_watches_the_target_of_a_home_alias() -> Result<()> {
     assert!(futures::poll!(&mut waiting).is_pending());
     std::fs::write(alias.join(format!("shell-{operation}.cancel")), b"cancel").map_err(storage)?;
     waiting.await?;
+
+    // An alias retarget after registration must not leave cancellation bound
+    // to the old home. The original wait observes both the move and new input.
+    let replacement = directory.path().join("replacement");
+    std::fs::create_dir(&replacement).map_err(storage)?;
+    let operation = crate::OperationId::new();
+    let cancellation = Cancellation::open(&alias, operation)?;
+    let mut waiting = std::pin::pin!(cancellation.wait());
+    assert!(futures::poll!(&mut waiting).is_pending());
+    #[cfg(unix)]
+    std::fs::remove_file(&alias).map_err(storage)?;
+    #[cfg(windows)]
+    std::fs::remove_dir(&alias).map_err(storage)?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&replacement, &alias).map_err(storage)?;
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&replacement, &alias).map_err(storage)?;
+    std::fs::write(alias.join(format!("shell-{operation}.cancel")), b"cancel").map_err(storage)?;
+    waiting.await?;
     Ok(())
 }
