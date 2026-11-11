@@ -175,7 +175,7 @@ impl Default for ContextDiscoveryPolicy {
     }
 }
 
-/// Explicit finite discovery bounds, independent of the retained workspace count.
+/// Discovery work bounds and optional instruction byte policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -186,8 +186,8 @@ pub struct ContextDiscoveryLimits {
     pub directories: u32,
     /// Maximum frontmatter prefix bytes read per skill.
     pub header_bytes: u32,
-    /// Maximum complete instruction bytes per file.
-    pub instruction_bytes: u64,
+    /// Maximum complete instruction bytes per file; absence is unbounded.
+    pub instruction_bytes: Option<u64>,
 }
 
 impl Default for ContextDiscoveryLimits {
@@ -196,7 +196,7 @@ impl Default for ContextDiscoveryLimits {
             entries: 4_096,
             directories: 256,
             header_bytes: 16_384,
-            instruction_bytes: 65_536,
+            instruction_bytes: None,
         }
     }
 }
@@ -205,7 +205,9 @@ impl ContextDiscoveryLimits {
     /// Rejects oversized, non-UTF-8 or NUL-containing instruction bodies.
     pub fn validate_instruction(self, bytes: &[u8]) -> Result<()> {
         self.validate()?;
-        if bytes.len() as u64 > self.instruction_bytes
+        if self
+            .instruction_bytes
+            .is_some_and(|maximum| bytes.len() as u64 > maximum)
             || std::str::from_utf8(bytes).is_err()
             || bytes.contains(&0)
         {
@@ -221,7 +223,7 @@ impl ContextDiscoveryLimits {
         if self.entries == 0
             || self.directories == 0
             || self.header_bytes == 0
-            || self.instruction_bytes == 0
+            || self.instruction_bytes == Some(0)
         {
             return Err(Error::Invalid(
                 "discovery requires finite positive bounds".into(),
@@ -323,7 +325,7 @@ impl PinnedContextPath {
         reader: &dyn ContentResidencyVerifier,
         maximum_bytes: u64,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
-        self.read_if_present(reader, maximum_bytes)
+        self.read_if_present(reader, Some(maximum_bytes))
             .await?
             .ok_or_else(|| Error::NotFound("selected context file does not exist".into()))
     }
@@ -331,10 +333,11 @@ impl PinnedContextPath {
     pub(super) async fn read_if_present(
         &self,
         reader: &dyn ContentResidencyVerifier,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<Option<(FileRef, acyclic_stream::OwnedBytes)>> {
         self.validate(&mut None)?;
-        if maximum_bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
+        if maximum_bytes.is_some_and(|maximum| maximum > crate::conversation::MAX_EXACT_JS_INTEGER)
+        {
             return Err(Error::Invalid(
                 "context byte bound exceeds protocol precision".into(),
             ));
@@ -345,7 +348,7 @@ impl PinnedContextPath {
                 &self.root.directory,
                 &self.path,
                 Some(&self.generation),
-                Some(maximum_bytes),
+                maximum_bytes,
                 crate::conversation::ContentAccess::default(),
             )?
             .await?
@@ -354,7 +357,7 @@ impl PinnedContextPath {
         };
         if file.volume() != &self.root.volume
             || file.path() != self.path
-            || bytes.len() as u64 > maximum_bytes
+            || maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
         {
             return Err(Error::Storage(
                 "pinned path reader returned another file".into(),
@@ -362,5 +365,29 @@ impl PinnedContextPath {
         }
         file.descriptor().verify(&bytes, &mut None)?;
         Ok(Some((file, bytes)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // Property: every accepted instruction round-trips without normalization;
+        // exactly the positive byte bound, UTF-8 and NUL constraints determine acceptance.
+        #[test]
+        fn instruction_text_round_trip(bytes in prop_oneof![prop::collection::vec(any::<u8>(), 0..128), (65_537usize..131_073).prop_map(|length| vec![b'x'; length])], maximum in proptest::option::of(0u64..128)) {
+            let limits = ContextDiscoveryLimits { instruction_bytes: maximum, ..Default::default() };
+            let accepted = limits.validate_instruction(&bytes).is_ok();
+            prop_assert_eq!(accepted, maximum != Some(0) && maximum.is_none_or(|maximum| bytes.len() as u64 <= maximum) && std::str::from_utf8(&bytes).is_ok() && !bytes.contains(&0));
+            if accepted {
+                prop_assert_eq!(std::str::from_utf8(&bytes).unwrap().as_bytes(), bytes.as_slice());
+                let mut invalid = bytes;
+                invalid.push(0);
+                prop_assert!(limits.validate_instruction(&invalid).is_err());
+            }
+        }
+
     }
 }
