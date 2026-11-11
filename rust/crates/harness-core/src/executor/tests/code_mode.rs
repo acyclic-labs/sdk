@@ -327,7 +327,18 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
             .collect::<Vec<_>>(),
         ["code"]
     );
-    assert!(tool_notice_table(&before[0]).as_array().unwrap().is_empty());
+    let has_tool_notice = |request: &ModelRequest| {
+        request.messages.iter().any(|message| {
+            message.content.notice_parts().is_some_and(|(notices, _)| {
+                notices
+                    .iter()
+                    .any(|notice| notice.source == "tools" && notice.kind == "tools.changed")
+            })
+        })
+    };
+    assert!(!has_tool_notice(&before[0]));
+    let mut revoking = first.clone();
+    revoking.epoch_tools = Some(Arc::new(after[0].tools.clone()));
     #[cfg(feature = "filesystem")]
     for native in [false, true] {
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -341,7 +352,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
         };
         let execution = StockExecution {
             io: Some(&io),
-            ..StockExecution::ordinary(&first)
+            ..StockExecution::ordinary(&revoking)
         };
         let mut context = crate::context::Context::default();
         let initial = io.remaining()?;
@@ -352,8 +363,8 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
             );
         notice?;
         use json::CodecOperation::{DecodeBytes, Serialize};
-        // Framing count, document encoding, then the typed notice decode.
-        let expected = [Serialize, Serialize, DecodeBytes];
+        // Framing, two removed names, document encoding and typed decode.
+        let expected = [Serialize, Serialize, Serialize, Serialize, DecodeBytes];
         assert_eq!(codec, expected);
         let remaining = io.remaining()?;
         assert_eq!(context.messages.len(), 1);
@@ -426,14 +437,17 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
     let (mut revoked, revoked_model, _) =
         executor("typeof tools['example.echo']", allowed()?, true)?;
     revoked.tools.remove_from_model("example.echo")?;
+    let native_epoch: Vec<_> = revoked
+        .tools
+        .definitions(None)?
+        .into_iter()
+        .filter(|tool| crate::tools::catalog::is_native_declaration(&tool.name))
+        .collect();
+    assert!(!native_epoch.is_empty());
+    revoked.epoch_tools = Some(Arc::new(native_epoch));
     revoked.execute(input(), &Journal::default()).await?;
     assert_eq!(result(&revoked_model), "undefined");
-    assert!(
-        tool_notice_table(&revoked_model.requests()[0])
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(!has_tool_notice(&revoked_model.requests()[0]));
     // Carry the actual earlier table into the next input boundary: removing
     // the last dynamic tool must publish an empty successor, not a stale table.
     let mut context = crate::context::Context {

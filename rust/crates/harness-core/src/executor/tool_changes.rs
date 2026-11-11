@@ -142,9 +142,13 @@ impl StockExecution<'_> {
         // With no current, inherited or announced tools there is no table
         // transition. Retain explicit empty updates when revoking a prior table.
         if previous == table
-            || (tools.0.is_empty()
+            || (!has_dynamic
                 && previous.is_empty()
-                && self.stock.epoch_tools.as_deref().is_none_or(Vec::is_empty))
+                && self.stock.epoch_tools.as_deref().is_none_or(|tools| {
+                    !tools
+                        .iter()
+                        .any(|tool| !crate::tools::catalog::is_native_declaration(&tool.name))
+                }))
         {
             return Ok(());
         }
