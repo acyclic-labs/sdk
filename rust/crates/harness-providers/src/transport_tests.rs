@@ -385,7 +385,7 @@ async fn tls_failure_is_typed_for_shared_recovery() -> Result<()> {
     let error = transport
         .inner
         .send(HttpRequest {
-            method: http::Method::POST,
+            method: ::http::Method::POST,
             url: provider.config.base_url.clone(),
             headers: std::collections::BTreeMap::new(),
             body: Bytes::new(),
