@@ -31,9 +31,8 @@ impl WideDeliveryBatch<'_> {
         }
         // Only the batch that owns this callback may notify its completion.
         // Other packets can return without acquiring the native read lock.
-        self.pending = true;
         let delivery = self.delivery;
-        if let Some(mut native) = work.native_source_work().cloned() {
+        let result = if let Some(mut native) = work.native_source_work().cloned() {
             delivery.callback(|| {
                 delivery
                     .sink
@@ -44,7 +43,9 @@ impl WideDeliveryBatch<'_> {
                 delivery.callback(|| delivery.sink.host_changed_wide(changes, work))
             })
             .unwrap_or(Err(DemandError::NativeWorkUnavailable))
-        }
+        };
+        self.pending = true;
+        result
     }
 }
 
