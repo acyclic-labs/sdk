@@ -250,7 +250,9 @@ mod tests {
         assert_eq!(small_work, large_work);
         // One root witness and page; each visible row admits its status,
         // children's witness and first page. No request depends on total size.
-        assert!(large.view.reader_ref().issued() <= 2 + 3 * large.view.rows().len());
+        assert!(
+            large.view.reader_ref().issued() <= 2 + 3 * u64::try_from(large.view.rows().len())?
+        );
         let before = large.view.reader_ref().issued();
         large.view.scroll(64);
         loop {
