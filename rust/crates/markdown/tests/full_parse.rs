@@ -912,3 +912,120 @@ fn consuming_visible_lines_moves_the_existing_text_allocations() {
         }
     }
 }
+
+#[test]
+fn deferred_syntax_styles_only_visible_windows_and_survives_reflow()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cache = CodeCache::default();
+    let mut markdown = Markdown::with_deferred_code_in(80, cache.clone());
+    let source = format!(
+        "```rust\n/* open\n{}close */\nlet number = {}42;\n```",
+        "still a comment\n".repeat(1000),
+        "42 + ".repeat(1000)
+    );
+    let before = code::HIGHLIGHTED.get();
+    markdown.push(&source);
+    assert_eq!(
+        code::HIGHLIGHTED.get(),
+        before,
+        "offscreen code was highlighted"
+    );
+    let line = markdown
+        .lines()
+        .iter()
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.syntax.as_ref())
+        .find(|line| line.text().contains("close"))
+        .ok_or("closing comment")?
+        .clone();
+    let styles = line.styles_for(0..5);
+    assert_eq!(code::HIGHLIGHTED.get() - before, 1);
+    assert!(
+        !styles.is_empty()
+            && styles
+                .iter()
+                .all(|(range, style)| range.end <= 5 && style.dim),
+        "the hidden prefix must preserve comment context"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(&styles, &line.styles_for(0..5)),
+        "unchanged visible styles were rebuilt"
+    );
+    markdown.set_width(120);
+    let reflowed = markdown
+        .lines()
+        .iter()
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.syntax.as_ref())
+        .find(|line| line.text().contains("close"))
+        .ok_or("reflowed closing comment")?;
+    assert!(
+        std::sync::Arc::ptr_eq(&styles, &reflowed.styles_for(0..5)),
+        "source-keyed styles were lost on reflow"
+    );
+    let number = markdown
+        .lines()
+        .iter()
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.syntax.as_ref())
+        .find(|line| line.text().contains("number"))
+        .ok_or("number after comment")?;
+    let visible = number.text().len() - 3..number.text().len();
+    let number_styles = number.styles_for(visible.clone());
+    assert!(
+        number_styles
+            .iter()
+            .all(|(range, _)| range.start >= visible.start && range.end <= visible.end)
+    );
+    assert!(
+        number_styles
+            .iter()
+            .any(|(_, style)| style.foreground == Some(Tone::Attention))
+    );
+    assert_eq!(
+        code::HIGHLIGHTED.get() - before,
+        2,
+        "unseen rows acquired styles"
+    );
+    let mut committed = Markdown::with_deferred_code_in(80, cache);
+    committed.push(&source);
+    let committed_number = committed
+        .lines()
+        .iter()
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.syntax.as_ref())
+        .find(|line| line.text().contains("number"))
+        .ok_or("committed number")?;
+    assert!(
+        std::sync::Arc::ptr_eq(&number_styles, &committed_number.styles_for(visible)),
+        "settlement lost the source-keyed cache"
+    );
+    assert_eq!(code::HIGHLIGHTED.get() - before, 2);
+
+    let parsed = code::PARSED.get();
+    for line in markdown
+        .lines()
+        .iter()
+        .rev()
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.syntax.as_ref())
+    {
+        line.styles_for(0..5);
+    }
+    assert_eq!(
+        code::PARSED.get(),
+        parsed,
+        "upward scrolling reparsed a hidden prefix"
+    );
+
+    // Negative control: the eager consumer styles every row of identical code.
+    let before_eager = code::HIGHLIGHTED.get();
+    let mut eager = Markdown::with_width(80);
+    eager.push(&source);
+    assert!(code::HIGHLIGHTED.get() - before_eager > 1000);
+    assert!(
+        code::PARSED.get() > parsed,
+        "the parse-work oracle must observe a fresh consumer"
+    );
+    Ok(())
+}

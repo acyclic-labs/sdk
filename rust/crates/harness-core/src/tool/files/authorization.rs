@@ -19,6 +19,15 @@ impl FileTool {
         crate::executor::with_history_io(io, |history| {
             ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), history)
         })?;
+        if !self.is_read()
+            && invocation
+                .arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(crate::layers::read_only)
+        {
+            return Err(Error::tool_rejected("file path is read-only"));
+        }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io {
             io.check_json_byte_bound(&invocation.arguments, scope.limits().file_bytes)?;

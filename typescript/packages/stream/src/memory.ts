@@ -68,14 +68,14 @@ class RustStreamProvider implements StreamProvider {
     await validateWireRequest(request);
     return fromBinary(TailResponseSchema, await this.#dispatch("tail", wireRequest(request))).tail;
   }
-  async append(path: string, values: readonly Uint8Array[], options: AppendOptions = {}): Promise<AppendResult> {
+  async append(path: string, values: readonly Uint8Array[], options: AppendOptions): Promise<AppendResult> {
     const records = values.map(value => value.slice());
     const authored = structuredClone(options);
     const request = await validateAppend(path, records, authored);
     return this.#project<AppendResult>("append", request);
   }
 
-  async fork(source: string, destination: string, options: ForkOptions = {}): Promise<ForkReceipt> {
+  async fork(source: string, destination: string, options: ForkOptions): Promise<ForkReceipt> {
     const authored = structuredClone(options);
     await validateWireRequest({ kind: "fork", source, destination, options: authored });
     const request = wireRequest({ kind: "fork", source, destination, options: authored });

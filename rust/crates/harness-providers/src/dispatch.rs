@@ -13,6 +13,8 @@ pub(crate) fn generate<'a>(
     dispatch: ModelDispatch,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
     Box::pin(async_stream::try_stream! {
+        let current = provider.current_credentials()?;
+        let provider = &current;
         provider.validate(&request.request().model)?;
         if request.request_digest() != dispatch.request_digest {
             Err(invalid("model dispatch digest differs from prepared request"))?;
@@ -73,6 +75,12 @@ pub(crate) async fn authenticate<'a>(
             .bearer(provider.transport.as_ref(), None, custody)
             .await?;
         return Ok((Some(Cow::Owned(key)), account));
+    }
+    if provider.key.is_none()
+        && provider.credential_scope.is_none()
+        && provider.config.authentication != crate::Authentication::Optional
+    {
+        return Err(invalid("model provider API key is unavailable"));
     }
     Ok((provider.key.as_deref().map(Cow::Borrowed), None))
 }
@@ -139,7 +147,7 @@ pub(crate) async fn encode(
     io: Option<&acyclic_harness_core::conversation::ContentIo>,
     origin: &acyclic_harness_core::model::ReasoningOrigin,
 ) -> Result<projection::cache::Encoded> {
-    let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
+    let mut files = crate::files::resolve(&provider.files, request, io).await?;
     let body = projection::body_named(provider, request.request(), names, origin, &mut files)?;
     projection::cache::encode(&body, provider, origin)
 }

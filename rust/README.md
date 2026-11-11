@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let objects = HttpObjects::new(
         &std::env::var("OBJECTS_ENDPOINT")?,
         &std::env::var("ACYCLIC_API_KEY")?,
-        1024 * 1024,
+        Some(1024 * 1024),
         None,
     )?;
     let put = objects.put(b"hello".to_vec().into(), Vec::new()).await?;
@@ -109,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let token = std::env::var("ACYCLIC_API_KEY")?;
     let workers = Client::new(
         http::Client::new(&endpoint, &token, 1024 * 1024)?,
-        HttpObjects::new(&endpoint, &token, 1024 * 1024, None)?,
+        HttpObjects::new(&endpoint, &token, Some(1024 * 1024), None)?,
     );
     let prepared = PreparedEntry::new(
         manifest::parse(&std::fs::read("deployment.json")?)?,

@@ -1,0 +1,25 @@
+80x24
+«Named(Foreground)/Named(Background)/Flags(DIM)/»○ GraphCoder · project · main
+«Named(Foreground)/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(INVERSE)/»●«Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/»┌─ rust«Named(Foreground)/Named(Background)/Flags(INVERSE)/»
+«Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/» │ // Answer the question.«Named(Foreground)/Named(Background)/Flags(INVERSE)/»
+«Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/» │ «Named(Foreground)/Named(Background)/Flags(INVERSE)/»fn answer() -> u32 {
+«Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/» │ «Named(Foreground)/Named(Background)/Flags(INVERSE)/»    let text = "forty-two";
+«Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/» │ «Named(Foreground)/Named(Background)/Flags(INVERSE)/»    42
+«Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/» │ «Named(Foreground)/Named(Background)/Flags(INVERSE)/»}
+«Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/» └─«Named(Foreground)/Named(Background)/Flags(INVERSE)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/» ┌─ sh«Named(Foreground)/Named(Background)/Flags(INVERSE)/»
+«Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/» │ «Named(Foreground)/Named(Background)/Flags(INVERSE)/»echo "$HOME" «Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/»# where«Named(Foreground)/Named(Background)/Flags(INVERSE)/»
+«Named(Foreground)/Named(Background)/Flags(INVERSE | DIM)/» └─«Named(Foreground)/Named(Background)/Flags(INVERSE)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(DIM)/»────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» Follow up
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                   model · 24% (2400/10000) · $0.12 · 2 children
+«Named(Foreground)/Named(Background)/Flags(DIM)/»                                         Enter: send · Tab: queue · Ctrl-D: quit

@@ -86,12 +86,12 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
                 &mut work,
             )?;
             assert_eq!(
-                request.0.conditions.len(),
+                request.0.effects[0].conditions.len(),
                 if unconditional { 3 } else { 5 }
             );
-            assert_eq!(request.0.mutations.len(), 5);
+            assert_eq!(request.0.effects[0].mutations.len(), 5);
             if let Some(index) = omitted {
-                request.0.mutations.remove(index);
+                request.0.effects[0].mutations.remove(index);
             }
             let original = request.0.clone();
             let outcome = provider.commit(request.0).await?;
@@ -172,7 +172,7 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
             let mut history = io.history_io();
             let mut work = Some(&mut history as &mut dyn crate::store::HistoryIo);
             let (key, held) = crate::distributed::digest_key(&[13; 32], &mut work)?;
-            let (request, quota) = crate::distributed::commit_request(key, held, &mut work);
+            let (request, quota) = crate::distributed::commit_request(key, held, &mut work)?;
             let mut commit = acyclic_fs::FilesystemCommit::new(request);
             let context = if mode == 1 { &foreign } else { &original };
             let mut existing = context.claim(32, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
@@ -230,7 +230,7 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
             // Both preparation adapters are gone. The original unsent batch
             // still pays for every journal vector and its pre-existing guard.
             assert!(original.live_allocation_bytes() > baseline + 32);
-            assert_eq!(commit.request().mutations.len(), 3);
+            assert_eq!(commit.request().effects[0].mutations.len(), 3);
             let mut work = acyclic_fs::AuthorityWork::native(&original, &cancellation);
             let outcome = store
                 .submit(commit, &mut work)
@@ -311,9 +311,9 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     };
     let key = acyclic_stream::IdempotencyKey::unique();
     let mut work = None;
-    let (mut request, mut quota) = crate::distributed::commit_request(key.clone(), 0, &mut work);
+    let (mut request, mut quota) = crate::distributed::commit_request(key.clone(), 0, &mut work)?;
     // The caller's original batch owns its key and members before the Cut is added.
-    request.conditions.extend([
+    request.effects[0].conditions.extend([
         CommitCondition::Absent {
             path: caller.clone(),
         },
@@ -325,7 +325,7 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
         &caller,
         &[OwnedBytes::from_static(b"caller effect")],
     )?;
-    request.mutations.push(CommitMutation::Fork {
+    request.effects[0].mutations.push(CommitMutation::Fork {
         source: context.clone(),
         destination: fork,
         at_tail: 1,
@@ -478,7 +478,7 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
             &mut work,
         )?;
         if let Some(index) = omitted {
-            request.0.mutations.remove(index);
+            request.0.effects[0].mutations.remove(index);
         }
         let original = request.0.clone();
         let outcome = provider.commit(request.0).await?;

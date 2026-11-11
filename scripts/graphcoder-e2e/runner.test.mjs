@@ -13,6 +13,50 @@ import { TerminalFrames } from "./frames.mjs";
 import { fuzz as fuzzTerminalFrames } from "./frames.fuzz.mjs";
 import { failureReport } from "./report.mjs";
 
+test("terminal commands reject typed unavailable notices before waiting for changed colours", async () => {
+  class TerminalProcess extends Processes {
+    startTerminal(binary, args, { cwd, env }) { return this.start(binary, args, { cwd, env }); }
+  }
+  const root = mkdtempSync(join(tmpdir(), "terminal-command-refusal-"));
+  try {
+    for (const action of [{ prompt: "/theme light" },
+      { send: "\x1b[200~/help\x1b[201~\r\x1b[27u\x1b[200~/theme light\x1b[201~\r" }]) {
+      for (const notice of ["/theme light is not available in this view",
+        "Theme { mode: Light } is not available in this view", "Light theme applied"]) {
+        const processes = new TerminalProcess();
+        try {
+          await assert.rejects(pty(processes, process.execPath, {
+            id: "terminal-command-refusal", workspace: root,
+            args: ["-e", `process.stdout.write('ready');process.stdin.once('data',()=>process.stdout.write(${JSON.stringify("\x1b[24;1H" + notice)},()=>process.stdin.destroy()))`],
+            onRequest() { return () => {}; },
+          }, { actions: [{ when: { contains: ["ready"] }, ...action },
+            { when: { contains: ["new theme colours"] }, send: "finish\n" }] }, () => {}), error => {
+            if (notice.endsWith(" is not available in this view")) {
+              assert.equal(error.code, "terminal_frame_failed");
+              assert.ok(error.message.includes(notice));
+            } else assert.notEqual(error.code, "terminal_frame_failed", "ordinary status text became a command refusal");
+            return true;
+          });
+          assert.equal(processes.children.size, 0);
+        } finally { await processes.close(); }
+      }
+    }
+    // An explicitly accepted refusal can remain visible through another raw
+    // input and original EOF; it must not become a new, unexpected failure.
+    const processes = new TerminalProcess();
+    try {
+      const notice = "Theme { mode: Light } is not available in this view";
+      await pty(processes, process.execPath, {
+        id: "accepted-terminal-command-refusal", workspace: root,
+        args: ["-e", `let sent=false;process.stdin.on('data',()=>{if(sent)process.stdin.destroy();else{sent=true;process.stdout.write(${JSON.stringify("\x1b[24;1H" + notice)})}});process.stdout.write('ready')`],
+        onRequest() { return () => {}; },
+      }, { actions: [{ when: { contains: ["ready"] }, send: "/theme light\r" },
+        { when: { contains: [notice] }, send: "finish\n" }] }, () => {});
+      assert.equal(processes.children.size, 0);
+    } finally { await processes.close(); }
+  } finally { rmSync(root, { recursive: true }); }
+});
+
 test("terminal action failure survives original native completion and capture rejection", {
   skip: process.platform === "win32",
 }, async () => {

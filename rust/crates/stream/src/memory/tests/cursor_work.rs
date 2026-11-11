@@ -29,7 +29,7 @@ impl BaselineCursor {
     }
     pub(super) fn next_record(&mut self) -> Option<Record> {
         let window = self.windows.front_mut()?;
-        let record = window.records.records.get(window.start)?.clone();
+        let record = window.records.record(window.start)?;
         window.start += 1;
         self.next = record.sequence.checked_add(1)?;
         if window.start == window.end {
@@ -77,11 +77,7 @@ fn baseline(cursor: &mut BaselineCursor, root: Option<&Arc<History>>, tail: u64)
                 if let Some(window) = history_window(Arc::clone(records), tail, cursor.next) {
                     added.push(window);
                 }
-                if records
-                    .records
-                    .first()
-                    .is_some_and(|first| first.sequence <= cursor.next)
-                {
+                if records.start <= cursor.next {
                     break;
                 }
                 node = parent.as_ref();
@@ -403,10 +399,11 @@ proptest! {
             let mut actual = Vec::new();
             while let Some(window) = crate::pages::PageSource::next_page(&mut pinned, after, budget).await.unwrap() {
                 prop_assert!(window.end - window.start <= budget as usize);
-                for record in &window.records.records[window.start..window.end] {
+                for index in window.start..window.end {
+                    let record = window.records.record(index).unwrap();
                     prop_assert_eq!(record.sequence, after);
                     after += 1;
-                    actual.push(record_bytes(record.clone()));
+                    actual.push(record_bytes(record));
                 }
             }
             prop_assert_eq!(actual, expected);

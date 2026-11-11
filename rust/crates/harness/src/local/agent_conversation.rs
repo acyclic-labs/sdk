@@ -28,14 +28,14 @@ use crate::{
     },
     conversation::FileRef,
     executor::TurnOutput,
-    interaction::{ApprovalBinding, Interaction},
+    interaction::{ApprovalBinding, ApprovalVerdict, Interaction},
     model::ModelContent,
 };
 pub use acyclic_harness_client::ExecutionQuery;
 use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
-pub use history::HistoryPage;
+pub use history::{HistoryPage, PreparedHistoryAction};
 use std::sync::Arc;
 pub use usage_query::UsageQuery;
 
@@ -308,13 +308,13 @@ impl Conversation {
         &self,
         request: &IntentId,
         binding: ApprovalBinding,
-        approved: bool,
+        verdict: ApprovalVerdict,
     ) -> Result<()> {
         self.committed(&AgentCommand::Decide {
             agent: self.agent().clone(),
             id: request.clone(),
             binding,
-            approved,
+            verdict,
             reason: None,
         })
         .await
@@ -485,6 +485,25 @@ impl Conversation {
         }
     }
 
+    /// Fold one explicitly selected agent or subtree's original usage. Uses
+    /// the same bounded visitor and shared estimator as the JSONL exporter;
+    /// retains only fixed totals and the active traversal path. Missing usage
+    /// or price observations remain unknown, including after provider failure.
+    pub async fn usage_totals(
+        &self,
+        scope: UsageScope<'_>,
+        prices: &crate::executor::ModelPrices,
+    ) -> Result<crate::executor::ModelUsageTotals> {
+        let mut totals = prices.totals();
+        self.visit_usage(scope, &mut |row| {
+            totals
+                .push(&row.estimate(prices.price(row)).map_err(failed)?)
+                .map_err(failed)
+        })
+        .await?;
+        Ok(totals)
+    }
+
     /// A settled turn as a view shows it: its prompt, its tool calls and its
     /// answer, from the entry's input and its one output record.
     ///
@@ -623,6 +642,20 @@ impl Conversation {
         Ok(self.settlement().await?.0)
     }
 
+    /// Observes new turns and the latest status, returning the current phase
+    /// from the same settlement that selected both opening positions. A
+    /// reconnecting client can admit input before consuming its first event.
+    ///
+    /// # Errors
+    /// Session, host, decoding or follow admission failures.
+    pub async fn observe_current(&self) -> Result<(super::Observer, Phase)> {
+        let (settled, statuses, phase) = self.settlement().await?;
+        Ok((
+            super::Observer::open(&self.connection, settled, statuses.saturating_sub(1))?,
+            phase,
+        ))
+    }
+
     /// Every settled turn from conversation sequence `from`, or from the current
     /// settled tail when `None`, together with the agent's latest phase and its
     /// newest tool call's output. The default turn cursor and status cursor come
@@ -743,7 +776,7 @@ fn finished(phase: &Phase) -> Option<String> {
 mod tests {
     use super::*;
     use acyclic_harness_client::CommandError;
-    use acyclic_stream::{CommitRequest, IdempotencyKey, StreamError};
+    use acyclic_stream::{CommitEffect, CommitRequest, IdempotencyKey, StreamError};
 
     #[test]
     fn only_a_host_refusal_settles_a_send() -> Result<()> {
@@ -771,8 +804,7 @@ mod tests {
         // may each have committed it.
         let request = CommitRequest {
             deadline_unix_millis: None,
-            conditions: Vec::new(),
-            mutations: Vec::new(),
+            effects: vec![CommitEffect::hard(Vec::new(), Vec::new())],
             idempotency_key: IdempotencyKey::new(b"message".to_vec()).map_err(failed)?,
         };
         let unknown = AgentControlFailure::Unknown(Box::new(request));

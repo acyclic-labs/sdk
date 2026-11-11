@@ -31,6 +31,7 @@ schema!(CONTROL_RESPONSE => ControlResponse, "", [], ["result" => ROOT : 0], [])
 schema!(CONTEXT => Context, "", [], ["messages" => MESSAGES : 0], []);
 schema!(SUMMARY_SOURCE => SummarySource, "", [], ["context" => CONTEXT : 0], []);
 schema!(RESPONSE_PROJECTION => ResponseProjection, "", [], ["context" => CONTEXT : 0, "steering" => CONTEXT : 0], []);
+schema!(PROJECTION_RECORD => ProjectionRecord, "", [], ["header" => MODEL_REQUEST : 0, "projection" => RESPONSE_PROJECTION : 0], []);
 schema!(MESSAGE_SEGMENT => MessageSegment, "", [], ["suffix" => MESSAGES : 0], []);
 schema!(MODEL_EVENT => ModelEvent, "kind", ["tool_call" => 1, "completed" => 2], ["arguments" => ROOT : 1, "metadata" => ROOT : 3], []);
 schema!(MODEL_REQUEST => ModelRequest, "", [], ["model" => MODEL : 0, "messages" => MESSAGES : 0, "tools" => TOOLS : 0], []);
@@ -70,7 +71,7 @@ schema!(RECURSIVE_MERGE_TOOL_PLAN => RecursiveMergeToolPlan, "", [], ["authorize
 schema!(MESSAGES, "", [], [], [MESSAGE]);
 schema!(MESSAGE, "", [], ["content" => MODEL_CONTENT : 0], []);
 schema!(MODEL, "", [], ["options" => ROOT : 0], []);
-schema!(TOOLS, "", [], [], [TOOL]);
+schema!(TOOLS => ToolDefinitions, "", [], [], [TOOL]);
 schema!(TOOL, "", [], ["input_schema" => ROOT : 0, "output_schema" => ROOT : 0, "projection_schema" => ROOT : 0], []);
 schema!(STATE_RECORD, "", [], ["state" => ROOT : 0], []);
 schema!(TRANSITION, "", [], ["state" => ROOT : 0, "status" => STATUS : 0], []);

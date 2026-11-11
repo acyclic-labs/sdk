@@ -33,7 +33,27 @@ pub struct HookDiagnostic {
     pub blocking: bool,
 }
 
+pub(crate) enum ToolHookDecision {
+    Allow,
+    RequireApproval { prompt: String },
+}
+
 impl HookOutput {
+    /// Only a successfully retained before-tool outcome can admit dispatch.
+    /// Reporting a hook failure is useful context, but is not tool authority.
+    pub(crate) fn take_tool_decision(&mut self) -> Result<ToolHookDecision> {
+        if let Some(reason) = self.take_block_reason() {
+            return Err(Error::Unauthorized(reason));
+        }
+        if !self.diagnostics.is_empty() {
+            return Err(Error::Process(self.diagnostics.remove(0).cause));
+        }
+        Ok(match self.approval.take() {
+            Some(prompt) => ToolHookDecision::RequireApproval { prompt },
+            None => ToolHookDecision::Allow,
+        })
+    }
+
     /// Whether an explicit decision or configured failure policy blocks.
     pub fn blocks(&self) -> bool {
         self.blocked.is_some() || self.diagnostics.iter().any(|failure| failure.blocking)

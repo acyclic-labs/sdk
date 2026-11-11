@@ -1,18 +1,18 @@
-//! The process's few shared `FSEvents` streams, which every [`EventStream`]
+//! The process's shared `FSEvents` stream, which every [`EventStream`]
 //! registers its roots on.
 //!
 //! A process can run only about 512 streams, so one stream per watch cannot
-//! reach the number of watches the harness keeps. The hub runs at most
-//! [`SHARDS`], made as they are first needed, all on one serial queue. Each
-//! registration joins the least-loaded shard, and each event reaches the
+//! reach the number of watches the harness keeps. The hub runs one stream
+//! on one serial queue. Each event reaches the
 //! registrations whose root is its path or a component-boundary ancestor.
 //!
-//! Each shard watches one common ancestor of its routes. `WatchRoot` opens a
-//! descriptor for every native path, so passing the route list would still
-//! exhaust descriptors with only a few streams. New routes already beneath
-//! that ancestor reuse its stream; only expanding coverage re-arms it.
+//! Native coverage is `/`, independent of the registered paths. A native
+//! `RootChanged` has id zero and is not replayed: watching a moved leaf loses
+//! its ancestor's rename during a deferred arm. Stable coverage instead replays
+//! ordinary directory rename/removal events, which invalidate the routes below
+//! them. One native root also keeps descriptor use independent of watch count.
 //!
-//! A shard whose coverage grows is re-armed: its new stream replays history from
+//! A stream with pending registrations is re-armed: it replays history from
 //! the older of the last event the shard delivered and each new
 //! registration's start id. Every route drops an event at or below its
 //! floor, the last id its registration has had or did not want, so a re-arm
@@ -37,8 +37,8 @@ mod tests;
 /// The start id of a registration not yet armed: the id when it is.
 const AT_ARM: u64 = EVENT_ID_SINCE_NOW;
 
-/// The most native streams the hub runs.
-pub(super) const SHARDS: usize = 16;
+/// One native producer covers every logical registration.
+pub(super) const SHARDS: usize = 1;
 
 static HUB: OnceLock<Hub> = OnceLock::new();
 
@@ -383,22 +383,12 @@ impl Hub {
                     route.floor = now;
                 }
             }
-            let mut root = shard.root.clone().filter(|_| !shard.routes.is_empty());
-            for route in &batch {
-                if route.registration.live.load(Ordering::Acquire) {
-                    for path in &route.registration.roots {
-                        if let Some(root) = &mut root {
-                            while !path.starts_with(root.as_path()) {
-                                if !root.pop() {
-                                    break;
-                                }
-                            }
-                        } else {
-                            root = Some(path.clone());
-                        }
-                    }
-                }
-            }
+            let covered = !shard.routes.is_empty()
+                || batch.iter().any(|route| {
+                    route.registration.live.load(Ordering::Acquire)
+                        && !route.registration.roots.is_empty()
+                });
+            let root = covered.then(|| PathBuf::from("/"));
             let since = batch
                 .iter()
                 .map(|route| route.floor)

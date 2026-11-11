@@ -1,510 +1,209 @@
 use super::*;
-use crate::credentials::{KeychainDecode, Source};
-use proptest::prelude::*;
+use crate::credentials::Source;
+use acyclic_auth::credential::{CredentialValidity, CredentialWatch};
+use acyclic_harness_core::model::ModelProvider as _;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use futures::TryStreamExt as _;
 use serde_json::json;
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
-#[derive(Default)]
-struct Sources {
-    key: Option<Source>,
-    decode_error: Option<&'static str>,
-    reads: BTreeMap<(String, Source), usize>,
-}
-
-fn fixture() -> (Registry, Arc<Mutex<Sources>>) {
-    let sources = Arc::new(Mutex::new(Sources::default()));
-    let mut credentials = Credentials::default();
-    let reader = sources.clone();
-    credentials.source = Some(Arc::new(move |provider, source| {
-        let mut state = reader.lock().unwrap();
-        *state.reads.entry((provider.into(), source)).or_default() += 1;
-        if state.decode_error == Some(provider) && source == Source::Keychain {
-            return Err(KeychainDecode {
-                provider: provider.into(),
-            });
-        }
-        if provider != "openai" {
-            return Ok(None);
-        }
-        Ok((state.key == Some(source)).then(|| "snapshot-key".into()))
-    }));
-    let registry = Registry::new(credentials)
-        .unwrap()
-        .with_codex_login(crate::CodexLogin::from_path("unused-auth.json".into()));
-    (registry, sources)
-}
-
-fn specification(counted: bool) -> ProviderSpec {
-    let mut spec = crate::catalog::default_catalog()["openai"].clone();
-    if !counted {
-        spec.token_counter = None;
-    }
-    spec
-}
-
-fn load(registry: &mut Registry, counted: bool) -> Result<()> {
-    let file = tempfile::NamedTempFile::new().unwrap();
-    let document = json!({"default_model":"openai/gpt-5", "openai":specification(counted)});
-    std::fs::write(file.path(), serde_json::to_vec(&document).unwrap()).unwrap();
-    registry.load_catalog(file.path())
-}
-
-fn reads(sources: &Mutex<Sources>) -> BTreeMap<(String, Source), usize> {
-    sources.lock().unwrap().reads.clone()
-}
-
-fn changed_key_sequence(broken: bool, operations: &[(Option<Source>, u8)]) {
-    let (mut registry, sources) = fixture();
-    registry.selection.live = broken;
-    load(&mut registry, false).unwrap();
-    for &(key, action) in operations {
-        sources.lock().unwrap().key = key;
-        let before = reads(&sources);
-        match action {
-            0 => {}
-            1 | 2 => {
-                let result = if action == 1 {
-                    load(&mut registry, false)
-                } else {
-                    registry.register("openai".into(), specification(false))
+proptest::proptest! {
+    #[test]
+    fn arbitrary_credential_source_changes_follow_only_their_watch_events(
+        operations in proptest::collection::vec((
+            proptest::array::uniform3(proptest::option::of(proptest::num::u8::ANY)),
+            proptest::bool::ANY, proptest::bool::ANY,
+        ), 1..24),
+    ) {
+        let state = Arc::new(Mutex::new(([None; 3], false, 0usize)));
+        let observed = state.clone();
+        let (events, _) = tokio::sync::watch::channel(0);
+        let mut credentials = Credentials::default().with_watch(watched(events.clone()));
+        credentials.source = Some(Arc::new(move |provider, source| {
+            let mut state = observed.lock().unwrap();
+            state.2 += 1;
+            let index = match source {
+                Source::Keychain if state.1 => return Err(crate::credentials::KeychainDecode { provider: provider.into() }),
+                Source::Keychain => 0,
+                Source::Environment => 1,
+                Source::Configuration => 2,
+                Source::CodexHome => return Ok(None),
+            };
+            Ok(state.0[index].map(|key| format!("watched-key-{key}")))
+        }));
+        let inputs = crate::credentials::CredentialInputs::new(credentials);
+        let selected = || inputs.select("openai").map(|credential| match credential {
+            crate::credentials::Credential::Key(key) => Some(key.to_string()),
+            crate::credentials::Credential::Missing => None,
+            crate::credentials::Credential::Codex(_) => panic!("fixture has no login"),
+        }).map_err(|_| ());
+        let mut expected = selected();
+        for (revision, (keys, decode_error, changed)) in operations.into_iter().enumerate() {
+            let before = {
+                let mut state = state.lock().unwrap();
+                state.0 = keys;
+                state.1 = decode_error;
+                state.2
+            };
+            if changed {
+                events.send_replace(revision as u64 + 1);
+                expected = if decode_error { Err(()) } else {
+                    Ok(keys.into_iter().flatten().next().map(|key| format!("watched-key-{key}")))
                 };
-                assert_eq!(
-                    result.is_ok(),
-                    key.is_none(),
-                    "refresh validates the new selection"
-                );
-                if let Err(error) = result {
-                    assert!(
-                        error
-                            .to_string()
-                            .contains("the provider API key displaces the Codex login"),
-                        "{error}"
-                    );
-                }
             }
-            _ => unreachable!(),
-        }
-        // Rejected refreshes roll back the catalog AND its admitted selection.
-        // Changed source state alone never displaces that selection.
-        let resolved = registry.resolve(registry.default_model());
-        assert!(
-            resolved.is_ok(),
-            "resolution must retain its admitted snapshot"
-        );
-        let resolved = resolved.unwrap();
-        assert!(
-            resolved.key.is_none() && resolved.codex_login.is_some(),
-            "resolution must retain its admitted snapshot"
-        );
-        if action == 0 {
-            assert_eq!(
-                reads(&sources),
-                before,
-                "resolve performs no credential I/O"
-            );
-        }
-    }
-}
-
-#[test]
-fn adding_a_key_changes_only_an_explicit_reload_or_registration() {
-    for source in [Source::Keychain, Source::Environment, Source::Configuration] {
-        changed_key_sequence(
-            false,
-            &[
-                (Some(source), 0),
-                (Some(source), 1),
-                (Some(source), 2),
-                (None, 1),
-                (None, 2),
-            ],
-        );
-    }
-}
-
-#[test]
-#[should_panic(expected = "resolution must retain its admitted snapshot")]
-fn negative_control_detects_live_reads_after_catalog_admission() {
-    changed_key_sequence(true, &[(Some(Source::Keychain), 0)]);
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn arbitrary_source_changes_and_updates_preserve_the_admitted_selection(
-        operations in proptest::collection::vec(
-            (proptest::option::of(prop_oneof![Just(Source::Keychain),
-                Just(Source::Environment), Just(Source::Configuration)]), 0u8..3), 0..24),
-    ) {
-        changed_key_sequence(false, &operations);
-    }
-}
-
-#[test]
-fn every_entry_point_observes_each_credential_source_once_per_snapshot() {
-    for first in 0..3 {
-        for key in [
-            None,
-            Some(Source::Keychain),
-            Some(Source::Environment),
-            Some(Source::Configuration),
-        ] {
-            let (mut registry, sources) = fixture();
-            sources.lock().unwrap().key = key;
-            match first {
-                0 => {
-                    load(&mut registry, true).unwrap();
-                }
-                1 => {
-                    registry
-                        .register("openai".into(), specification(true))
-                        .unwrap();
-                    // Without a default, admission validates and observes nothing.
-                    assert!(reads(&sources).is_empty());
-                    registry.resolve("openai/gpt-5").unwrap();
-                }
-                _ => {
-                    registry.resolve("openai/gpt-5").unwrap();
-                }
-            }
-            let observed = reads(&sources);
-            assert!(observed.values().all(|&count| count == 1));
-            assert!(
-                observed.keys().all(|(provider, _)| provider == "openai"),
-                "unselected provider credentials observed: {observed:?}"
-            );
-            for (source, expected) in [
-                (Source::Keychain, 1),
-                (
-                    Source::Environment,
-                    usize::from(key != Some(Source::Keychain)),
-                ),
-                (
-                    Source::Configuration,
-                    usize::from(!matches!(key, Some(Source::Keychain | Source::Environment))),
-                ),
-            ] {
-                assert_eq!(
-                    observed
-                        .get(&("openai".into(), source))
-                        .copied()
-                        .unwrap_or(0),
-                    expected
-                );
-            }
-            for _ in 0..3 {
-                let resolved = registry.resolve("openai/gpt-5").unwrap();
-                assert_eq!(resolved.key.as_deref(), key.map(|_| "snapshot-key"));
-                assert_eq!(resolved.codex_login.is_some(), key.is_none());
-            }
-            assert_eq!(reads(&sources), observed);
-            load(&mut registry, true).unwrap();
-            assert_eq!(
-                reads(&sources),
-                observed
-                    .iter()
-                    .map(|(id, count)| (id.clone(), count * 2))
-                    .collect()
-            );
-            registry
-                .register("openai".into(), specification(true))
-                .unwrap();
-            assert_eq!(
-                reads(&sources),
-                observed
-                    .iter()
-                    .map(|(id, count)| (id.clone(), count * 3))
-                    .collect()
-            );
-        }
-    }
-}
-
-#[test]
-fn decode_failure_names_its_provider_and_is_observed_only_at_snapshot_time() {
-    for first in 0..3 {
-        let (mut registry, sources) = fixture();
-        sources.lock().unwrap().decode_error = Some("openai");
-        let error = match first {
-            0 => load(&mut registry, true).err().unwrap(),
-            1 => {
-                registry
-                    .register("openai".into(), specification(true))
-                    .unwrap();
-                assert!(reads(&sources).is_empty());
-                registry.resolve("openai/gpt-5").err().unwrap()
-            }
-            _ => registry.resolve("openai/gpt-5").err().unwrap(),
-        };
-        assert!(matches!(error, acyclic_harness_core::Error::Invalid(_)));
-        assert_eq!(
-            error.to_string(),
-            "invalid request: provider openai: cannot decode keychain credential"
-        );
-        let observed = reads(&sources);
-        sources.lock().unwrap().decode_error = None;
-        for _ in 0..3 {
-            assert_eq!(
-                registry.resolve("openai/gpt-5").err().unwrap().to_string(),
-                error.to_string()
-            );
-        }
-        assert_eq!(reads(&sources), observed);
-        load(&mut registry, true).unwrap();
-        assert!(registry.resolve("openai/gpt-5").is_ok());
-    }
-}
-
-#[test]
-fn an_unselected_provider_is_never_observed_and_keeps_its_own_decode_failure() {
-    let (mut registry, sources) = fixture();
-    sources.lock().unwrap().decode_error = Some("anthropic");
-    load(&mut registry, true).unwrap();
-    registry.resolve("openai/gpt-5").unwrap();
-    let observed = reads(&sources);
-    assert!(
-        observed.keys().all(|(provider, _)| provider == "openai"),
-        "unselected provider credentials observed: {observed:?}"
-    );
-    let error = registry
-        .resolve("anthropic/claude-sonnet-4-5")
-        .err()
-        .unwrap();
-    assert_eq!(
-        error.to_string(),
-        "invalid request: provider anthropic: cannot decode keychain credential"
-    );
-    let observed = reads(&sources);
-    sources.lock().unwrap().decode_error = None;
-    assert_eq!(
-        registry
-            .resolve("anthropic/claude-sonnet-4-5")
-            .err()
-            .unwrap()
-            .to_string(),
-        error.to_string()
-    );
-    assert!(registry.resolve("openai/gpt-5").is_ok());
-    assert_eq!(reads(&sources), observed);
-}
-
-#[test]
-fn a_codex_login_supplied_after_observation_overrides_the_previous_login() {
-    for previous in [false, true] {
-        let mut registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
-        if previous {
-            registry =
-                registry.with_codex_login(crate::CodexLogin::from_path("previous.json".into()));
-        }
-        assert_eq!(registry.resolve("openai/gpt-5").is_ok(), previous);
-        let registry =
-            registry.with_codex_login(crate::CodexLogin::from_path("supplied.json".into()));
-        // Inspect the shared selector before resolve creates its per-model login.
-        let selected = registry
-            .selected_credential("openai", &specification(true))
-            .unwrap();
-        let Credential::Codex(selected) = selected else {
-            panic!("supplied login missing")
-        };
-        assert!(Arc::ptr_eq(
-            &selected,
-            registry.codex_login.as_ref().unwrap()
-        ));
-        assert!(
-            registry
-                .resolve("openai/gpt-5")
-                .unwrap()
-                .codex_login
-                .is_some()
-        );
-    }
-}
-
-fn supplied_login_sequence(
-    broken: bool,
-    initial: Option<Source>,
-    decode_failure: bool,
-    first: u8,
-    counted: bool,
-    operations: &[Option<Source>],
-) {
-    let (mut registry, sources) = fixture();
-    {
-        let mut state = sources.lock().unwrap();
-        state.key = initial;
-        state.decode_error = decode_failure.then_some("openai");
-    }
-    match first {
-        0 => {
-            let _ = load(&mut registry, counted);
-        }
-        1 => {
-            registry
-                .register("openai".into(), specification(counted))
-                .unwrap();
-        }
-        _ => {}
-    }
-    let before = registry.resolve("openai/gpt-5");
-    // Resolution permits generation without a count endpoint. Automatic context
-    // admission still checks the selected default's counter in load/register.
-    assert_eq!(before.is_ok(), !decode_failure);
-    let observed = reads(&sources);
-    for &key in operations {
-        {
-            let mut state = sources.lock().unwrap();
-            state.key = key;
-            state.decode_error = None;
-        }
-        registry =
-            registry.with_codex_login(crate::CodexLogin::from_path("replacement.json".into()));
-        if broken {
-            // Restore the removed production reset: the same oracle must fail.
-            registry.selection = snapshot::Snapshot::default();
-        }
-        let resolved = registry.resolve("openai/gpt-5");
-        assert_eq!(
-            reads(&sources),
-            observed,
-            "supplying a login must preserve key observations"
-        );
-        if let Err(error) = &before {
-            assert_eq!(resolved.err().unwrap().to_string(), error.to_string());
-        } else {
-            let resolved = resolved.unwrap();
-            assert_eq!(resolved.key.as_deref(), initial.map(|_| "snapshot-key"));
-            assert_eq!(resolved.codex_login.is_some(), initial.is_none());
-        }
-    }
-}
-
-#[test]
-fn supplied_logins_preserve_keys_errors_and_default_counting_at_every_entry_point() {
-    let sources = [
-        None,
-        Some(Source::Keychain),
-        Some(Source::Environment),
-        Some(Source::Configuration),
-    ];
-    for initial in sources {
-        for decode_failure in [false, true] {
-            for first in 0..3 {
-                for counted in [false, true] {
-                    supplied_login_sequence(
-                        false,
-                        initial,
-                        decode_failure,
-                        first,
-                        counted,
-                        &sources,
-                    );
-                }
+            proptest::prop_assert_eq!(selected(), expected.clone());
+            if !changed {
+                proptest::prop_assert_eq!(state.lock().unwrap().2, before);
             }
         }
     }
 }
 
-#[test]
-#[should_panic(expected = "supplying a login must preserve key observations")]
-fn negative_control_detects_supplied_login_resetting_the_admitted_generation() {
-    supplied_login_sequence(true, None, false, 0, false, &[Some(Source::Keychain)]);
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn supplied_login_sequences_preserve_credential_observations(
-        initial in proptest::option::of(prop_oneof![Just(Source::Keychain), Just(Source::Environment), Just(Source::Configuration)]),
-        decode_failure in any::<bool>(), first in 0u8..3, counted in any::<bool>(),
-        operations in proptest::collection::vec(proptest::option::of(prop_oneof![Just(Source::Keychain), Just(Source::Environment), Just(Source::Configuration)]), 0..12),
-    ) {
-        supplied_login_sequence(false, initial, decode_failure, first, counted, &operations);
+struct Server(Mutex<Vec<crate::HttpRequest>>);
+impl HttpTransport for Server {
+    fn send(
+        &self,
+        request: crate::HttpRequest,
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<crate::HttpResponse>> {
+        self.0.lock().unwrap().push(request);
+        Box::pin(async {
+            Ok(crate::HttpResponse {
+                request_id: None,
+                retry_after: None,
+                status: 200,
+                body: Box::pin(futures::stream::once(async {
+                    Ok(bytes::Bytes::from_static(b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"done\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"))
+                })),
+            })
+        })
+    }
+    fn delay(
+        &self,
+        wait: std::time::Duration,
+    ) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
+        crate::fixtures::delay(wait)
+    }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
     }
 }
 
-#[test]
-fn a_rejected_first_update_keeps_source_observations_without_its_policy() {
-    let (mut registry, sources) = fixture();
-    let mut spec = specification(false);
-    spec.authentication = Authentication::ApiKey;
-    let file = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(
-        file.path(),
-        serde_json::to_vec(&json!({
-            "default_model":"openai/gpt-5", "openai":spec,
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(registry.load_catalog(file.path()).is_err());
-    let before = reads(&sources);
-    assert!(
-        registry
-            .resolve("openai/gpt-5")
-            .unwrap()
-            .codex_login
-            .is_some()
-    );
-    assert_eq!(reads(&sources), before);
+pub(crate) fn watched(
+    sender: tokio::sync::watch::Sender<u64>,
+) -> impl Fn() -> CredentialWatch + Send + Sync {
+    move || {
+        let mut receiver = sender.subscribe();
+        let mut revision = [0; 32];
+        revision[..8].copy_from_slice(&receiver.borrow_and_update().to_be_bytes());
+        CredentialWatch::from_custodian(
+            CredentialValidity {
+                now_unix_seconds: 0,
+                revision: Some(revision.into()),
+            },
+            async move {
+                receiver
+                    .changed()
+                    .await
+                    .map_err(|_| acyclic_auth::credential::CredentialCacheError::Unavailable)
+            },
+        )
+    }
 }
 
-/// Discovers the Codex login from a fixture CODEX_HOME, never the user's.
-/// Returns discovery count, admission and whether resolution used the login.
-fn discovery(native: bool, auth: bool, live: bool) -> (usize, bool, bool) {
-    let home = tempfile::tempdir().unwrap();
-    if auth {
-        std::fs::write(home.path().join("auth.json"), "{}").unwrap();
-    }
-    let mut credentials = if native {
-        Credentials::default()
-    } else {
-        Credentials::explicit(BTreeMap::new())
-    };
-    let discovered = Arc::new(Mutex::new(0));
-    let (counter, root) = (discovered.clone(), home.path().to_str().unwrap().to_owned());
+/// A catalog memo fails at the second request; a per-request reader fails the
+/// unchanged-read assertion. The same prepared request is used throughout.
+#[tokio::test]
+async fn credential_watch_login_creation_refresh_and_account_pin() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services()
+        .map_err(acyclic_fs::NativeTreeMaterializationError::Io)?;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("auth.json");
+    let state = Arc::new(Mutex::new(Some("initial-key".to_owned())));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (events, _) = tokio::sync::watch::channel(0);
+    let mut credentials = Credentials::default().with_watch(watched(events.clone()));
+    let keys = state.clone();
+    let observed = reads.clone();
+    let home = root.path().to_string_lossy().into_owned();
     credentials.source = Some(Arc::new(move |_, source| {
-        if source != Source::CodexHome {
-            return Ok(None);
-        }
-        *counter.lock().unwrap() += 1;
-        Ok(Some(root.clone()))
+        observed.fetch_add(1, Ordering::SeqCst);
+        Ok(match source {
+            Source::Environment => keys.lock().unwrap().clone(),
+            Source::CodexHome => Some(home.clone()),
+            _ => None,
+        })
     }));
-    let mut registry = Registry::new(credentials).unwrap();
-    registry.selection.live = live;
-    // The uncounted default is admitted only through the login's local counter.
-    let admitted = load(&mut registry, false).is_ok();
-    let mut selected = false;
-    for _ in 0..3 {
-        selected = registry
-            .resolve("openai/gpt-5")
-            .is_ok_and(|resolved| resolved.codex_login.is_some());
-        assert!(registry.resolve("anthropic/claude-sonnet-4-5").is_err());
-    }
-    let count = *discovered.lock().unwrap();
-    assert!(
-        count <= 1,
-        "Codex login discovered more than once per generation"
+    let server = Arc::new(Server(Mutex::new(Vec::new())));
+    let registry = Registry::with_transport(credentials, server.clone());
+    let provider = registry.resolve("openai/gpt-5")?;
+    let (request, dispatch) = crate::tests::request(&provider)?;
+    let frozen = request.bytes().to_vec();
+    provider
+        .generate(&request, dispatch)
+        .try_collect::<Vec<_>>()
+        .await?;
+    let unchanged = reads.load(Ordering::SeqCst);
+    provider
+        .generate(&request, dispatch)
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        unchanged,
+        "unchanged requests perform no source reads"
     );
-    load(&mut registry, true).unwrap();
-    assert_eq!(*discovered.lock().unwrap(), count * 2);
-    (count, admitted, selected)
-}
-
-#[test]
-fn codex_login_is_the_last_source_discovered_once_per_generation_only_natively() {
-    for native in [false, true] {
-        for auth in [false, true] {
-            assert_eq!(
-                discovery(native, auth, false),
-                (usize::from(native), native && auth, native && auth),
-                "native={native} auth={auth}"
-            );
-        }
+    let auth = |token: &str, account: &str| {
+        let jwt = format!(
+            "{token}.{}.signature",
+            URL_SAFE_NO_PAD.encode(
+                json!({"exp":time::OffsetDateTime::now_utc().unix_timestamp()+3600}).to_string()
+            )
+        );
+        (
+            jwt.clone(),
+            json!({"tokens":{"access_token":jwt,"refresh_token":"refresh","account_id":account}}),
+        )
+    };
+    *state.lock().unwrap() = None;
+    for (revision, token, account) in [(1, "created", "account"), (2, "refreshed", "account")] {
+        let (bearer, document) = auth(token, account);
+        std::fs::write(&path, document.to_string()).unwrap();
+        events.send_replace(revision);
+        provider
+            .generate(&request, dispatch)
+            .try_collect::<Vec<_>>()
+            .await?;
+        let sent = server.0.lock().unwrap();
+        let next = sent.last().unwrap();
+        assert_eq!(next.headers["authorization"], format!("Bearer {bearer}"));
+        assert_eq!(request.bytes(), frozen);
+        let first: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
+        let next: serde_json::Value = serde_json::from_slice(&next.body).unwrap();
+        assert_eq!(first["instructions"], next["instructions"]);
+        assert_eq!(first["tools"], next["tools"]);
+        assert_eq!(first["input"], next["input"]);
+        assert_eq!(first["prompt_cache_key"], next["prompt_cache_key"]);
+        drop(sent);
+        // No watch event means no reread. The former per-request auth.json
+        // load fails this control even though source discovery was memoized.
+        std::fs::remove_file(&path).unwrap();
+        provider
+            .generate(&request, dispatch)
+            .try_collect::<Vec<_>>()
+            .await?;
     }
-}
-
-#[test]
-#[should_panic(expected = "Codex login discovered more than once per generation")]
-fn negative_control_detects_discovery_outside_the_generation_memo() {
-    discovery(true, true, true);
+    std::fs::write(path, auth("switched", "other").1.to_string()).unwrap();
+    events.send_replace(3);
+    let before = server.0.lock().unwrap().len();
+    let error = provider
+        .generate(&request, dispatch)
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("account changed"), "{error}");
+    assert_eq!(server.0.lock().unwrap().len(), before);
+    Ok(())
 }

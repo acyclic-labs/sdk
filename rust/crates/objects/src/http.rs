@@ -135,7 +135,7 @@ impl HttpObjects {
         self
     }
 
-    /// Creates a client with optional aggregate response credit and exclusive PEM trust.
+    /// Creates a client with optional response policy and exclusive PEM trust.
     pub fn new(
         endpoint: &str,
         token: &str,
@@ -187,7 +187,7 @@ impl HttpObjects {
         let authorization = token.map(credential_header).transpose()?;
         let mut transport = Client::builder().redirect(reqwest::redirect::Policy::none());
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > crate::MAX_PEM_BYTES {
+            if ca.is_empty() {
                 return Err(invalid());
             }
             transport = transport
@@ -280,7 +280,7 @@ impl HttpObjects {
                 context.check()?;
             }
             let decoded =
-                json::decode(output_name, &bytes, bytes.len()).map_err(|_| unavailable())?;
+                json::decode(output_name, &bytes, self.maximum).map_err(|_| unavailable())?;
             if let Some(lease) = &lease {
                 lease
                     .check()
@@ -319,7 +319,7 @@ impl HttpObjects {
             Ok(bytes) => bytes,
             Err(error) => return error,
         };
-        if let Some(error) = json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, bytes.len())
+        if let Some(error) = json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, self.maximum)
             .ok()
             .and_then(Error::from_detail)
         {

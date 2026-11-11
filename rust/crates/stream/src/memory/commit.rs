@@ -101,13 +101,9 @@ fn bind_histories(
         if let History::Batch { records, .. } =
             Arc::get_mut(&mut history.history).ok_or(StreamError::Unavailable)?
         {
-            for record in &mut Arc::get_mut(records)
-                .ok_or(StreamError::Unavailable)?
-                .records
-            {
-                record.commit_id = commit_id;
-                record.committed_at_micros = time;
-            }
+            let records = Arc::get_mut(records).ok_or(StreamError::Unavailable)?;
+            records.commit_id = commit_id;
+            records.committed_at_micros = time;
         }
     }
     Ok(())
@@ -154,14 +150,14 @@ impl MemoryStream {
         Ok((records, claim))
     }
 
-    fn facts<'a>(
+    fn facts(
         &self,
         state: &State,
-        source: impl Iterator<Item = &'a CommitMutation> + Clone,
+        source: &[&CommitMutation],
         commit_id: CommitId,
         time: u64,
     ) -> Result<(Vec<CommittedMutation>, Allocation), StreamError> {
-        let (output, mut allocation) = self.vector(source.clone().count())?;
+        let (output, mut allocation) = self.vector(source.len())?;
         let facts = crate::preparation::facts(
             source,
             |path| Ok(state.tail(path)),
@@ -222,11 +218,10 @@ impl MemoryStream {
         let mut ranges = original.map_or_else(HistoryRanges::default, |path| path.ranges.clone());
         if let Some(History::Batch { records, .. }) =
             original.and_then(|path| path.history.as_deref())
-            && let Some(first) = records.records.first()
-            && before.is_none_or(|before| first.sequence < before)
+            && before.is_none_or(|before| records.start < before)
         {
             ranges = ranges.insert(
-                first.sequence.to_be_bytes(),
+                records.start.to_be_bytes(),
                 Arc::clone(records),
                 &mut HistoryIndexWork(self),
             )?;
@@ -265,27 +260,38 @@ impl MemoryStream {
             });
         }
         let (mut records, mut claim) = self.vector(source.len())?;
+        let first = source.first().ok_or(StreamError::Unavailable)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let copied = (source.len() * std::mem::size_of::<crate::AppendRecord>()
+            + std::mem::size_of::<(u64, StreamPath, CommitId, u64)>()) as u64;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
-            work.record(work.meter.admit_examination(
-                source.len() as u64,
-                (source.len() * std::mem::size_of::<Record>()) as u64,
-            ))?;
+            work.record(work.meter.admit_examination(source.len() as u64, copied))?;
         }
-        records.extend(source.iter().cloned());
+        let (start, origin, commit_id, committed_at_micros) = (
+            first.sequence,
+            first.origin.clone(),
+            first.commit_id,
+            first.committed_at_micros,
+        );
+        records.extend(source.iter().map(|record| crate::AppendRecord {
+            value: record.value.clone(),
+            headers: record.headers.clone(),
+        }));
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
-            work.record(work.meter.record_examination(
-                source.len() as u64,
-                (source.len() * std::mem::size_of::<Record>()) as u64,
-            ))?;
+            work.record(work.meter.record_examination(source.len() as u64, copied))?;
         }
         self.absorb(
             &mut claim,
             self.allocate(std::mem::size_of::<RecordBatch>())?,
         )?;
         let records = Arc::new(RecordBatch {
-            records,
+            values: records,
+            start,
+            origin,
+            commit_id,
+            committed_at_micros,
             _allocation: claim,
         });
         let keys = parent
@@ -428,19 +434,22 @@ impl MemoryStream {
         Ok(None)
     }
 
-    /// Plans `request` without its `skipped` soft appends.
+    /// Plans the `applied` mutations of a settled commit, in canonical order.
     fn plan_commit(
         &self,
         state: &mut State,
-        request: &CommitRequest,
-        skipped: &[StreamPath],
+        applied: &[&CommitMutation],
         commit_id: CommitId,
         time: u64,
     ) -> Result<CommitPlan, StreamError> {
-        let applied = crate::preparation::applied(request, skipped);
-        let (facts, facts_claim) = self.facts(state, applied.clone(), commit_id, time)?;
+        let (facts, facts_claim) = self.facts(state, applied, commit_id, time)?;
         let (histories, mut scratch) = self.histories(state, &facts)?;
-        let (paths, paths_claim) = self.paths(state, applied.map(crate::CommitMutation::path))?;
+        let (paths, paths_claim) = self.paths(
+            state,
+            applied
+                .iter()
+                .map(|mutation| crate::CommitMutation::path(mutation)),
+        )?;
         let envelope = CommittedEnvelope {
             commit_id,
             committed_at_micros: time,
@@ -509,12 +518,17 @@ impl MemoryStream {
         };
         check_deadline()?;
         let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
-        let (mut conflicts, output_claim) = self.vector(request.conditions.len())?;
-        for condition in &request.conditions {
-            if let Some(conflict) = self.condition_conflict(state, condition)? {
-                conflicts.push(conflict);
-            }
-        }
+        let (conflicts, output_claim) =
+            self.vector(crate::preparation::hard_conditions(request))?;
+        // The receipt carries the skipped soft effects, so their claim joins
+        // the receipt's output claim below.
+        let (skipped, skipped_claim) = self.vector(crate::preparation::soft(request))?;
+        let (conflicts, skipped) = crate::preparation::settle(
+            request,
+            |condition| self.condition_conflict(state, condition),
+            conflicts,
+            skipped,
+        )?;
         if !conflicts.is_empty() {
             check_deadline()?;
             let result = CommitOutcome::Conflict(conflicts);
@@ -547,13 +561,14 @@ impl MemoryStream {
             return Ok(Decision::Returned((result, output_claim)));
         }
         drop((conflicts, output_claim));
-        // The receipt carries the skipped soft appends, so their claim joins
-        // the receipt's output claim below.
-        let (skipped, skipped_claim) = self.vector(crate::preparation::soft(request))?;
-        let skipped = crate::preparation::settle(request, |path| Ok(state.tail(path)), skipped)?;
-        crate::preparation::authority(request, |path| Ok(state.tail(path)))?;
+        // Planning views the applied mutations in canonical order through one
+        // admitted vector of references; no request vector is copied.
+        let (applied, applied_claim) =
+            self.vector(crate::preparation::applied_len(request, &skipped))?;
+        let applied = crate::preparation::applied(request, &skipped, applied)?;
+        crate::preparation::authority(&applied, |path| Ok(state.tail(path)))?;
         admit_replay(state, self.limits)?;
-        reserve_coordinated(state, request, &skipped, self.limits)?;
+        reserve_coordinated(state, &applied, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -570,7 +585,8 @@ impl MemoryStream {
             state.last_committed_at_micros,
             self.commit_clock.now_unix_millis(),
         );
-        let mut plan = self.plan_commit(state, request, &skipped, commit_id, time)?;
+        let mut plan = self.plan_commit(state, &applied, commit_id, time)?;
+        drop((applied, applied_claim));
         self.absorb(&mut plan.output_claim, skipped_claim)?;
         if let CommitOutcome::Committed(receipt) = &mut plan.result {
             receipt.skipped = skipped;
@@ -652,7 +668,7 @@ impl MemoryStream {
         state: &State,
         condition: &CommitCondition,
     ) -> Result<Option<CommitConflict>, StreamError> {
-        let path = condition_path(condition);
+        let path = crate::CommitCondition::path(condition);
         let actual = state.tail(path);
         crate::preparation::condition_conflict(condition, actual, || {
             let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
@@ -678,9 +694,9 @@ impl MemoryStream {
             .and_then(|window| {
                 window
                     .records
-                    .records
+                    .values
                     .get(window.start)
-                    .map(|record| record.commit_id)
+                    .map(|_| window.records.commit_id)
             })
             .ok_or(StreamError::Unavailable)
     }
@@ -734,10 +750,7 @@ fn bind_acceptance(
         if fact_records(fact).is_empty() {
             continue;
         }
-        let path = match fact {
-            CommittedMutation::Append(append) => &append.path,
-            CommittedMutation::Fork(fork) => &fork.destination,
-        };
+        let path = crate::request::fact_path(fact);
         let data = namespace.unpublished_path(path)?;
         let History::Batch { records, .. } =
             Arc::get_mut(data.history.as_mut().ok_or(StreamError::Unavailable)?)
@@ -757,12 +770,9 @@ fn bind_acceptance(
                 None
             }
         });
-        for record in &mut Arc::get_mut(records)
+        Arc::get_mut(records)
             .ok_or(StreamError::Unavailable)?
-            .records
-        {
-            record.committed_at_micros = time;
-        }
+            .committed_at_micros = time;
         for (slot, window) in data.prefix.iter_mut().zip(windows) {
             if let Some((start, end)) = window {
                 *slot = Some(HistoryWindow {
@@ -878,10 +888,7 @@ fn install_namespace(
     // Only missing subscriptions beneath a published destination can be
     // created. Range over subscribers, never over the inherited subtree.
     for fact in &envelope.mutations {
-        let path = match fact {
-            CommittedMutation::Append(append) => &append.path,
-            CommittedMutation::Fork(fork) => &fork.destination,
-        };
+        let path = crate::request::fact_path(fact);
         if previous.get(path).is_some() {
             continue;
         }
@@ -958,15 +965,13 @@ fn fact_data(
             }
         }
     }
-    if let History::Batch { records, .. } = history.as_ref()
-        && let Some(first) = records.records.first()
-    {
+    if let History::Batch { records, .. } = history.as_ref() {
         for (slot, sequence) in prefix.iter_mut().zip([0_u64, 1]) {
             if slot.is_none()
                 && let Some(index) = sequence
-                    .checked_sub(first.sequence)
+                    .checked_sub(records.start)
                     .and_then(|index| usize::try_from(index).ok())
-                    .filter(|&index| index < records.records.len())
+                    .filter(|&index| index < records.values.len())
             {
                 *slot = Some(HistoryWindow {
                     records: Arc::clone(records),

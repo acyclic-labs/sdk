@@ -201,12 +201,11 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
             Default::default(),
         )
         .await?;
-    assert!(
-        spill
-            .windows(80_000)
-            .any(|bytes| bytes.iter().all(|byte| *byte == b'x'))
-    );
+    // Stdout and stderr are independent pipes. Their observed chunks may
+    // interleave without losing a byte of either stream.
+    assert_eq!(spill.iter().filter(|byte| **byte == b'x').count(), 80_000);
     assert!(spill.windows(10).any(|bytes| bytes == b"JOB_STDERR"));
+    assert!(spill.windows(8).any(|bytes| bytes == b"JOB_DONE"));
     assert_eq!(
         std::fs::read(directory.path().join("two/completed")).map_err(storage)?,
         b"committed"

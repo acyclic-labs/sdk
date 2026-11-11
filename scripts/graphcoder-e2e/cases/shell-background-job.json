@@ -1,0 +1,237 @@
+{
+  "id": "shell-background-job",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "SHELL_PARENT_START"
+        },
+        "tools": [
+          {
+            "id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "name": "shell-worker",
+              "task": "SHELL_WORKER_START",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_PARENT_START",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                {
+                  "$tool_result": "/agent"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_WORKER_START"
+        },
+        "tools": [
+          {
+            "id": "jobs",
+            "name": "code",
+            "arguments": {
+              "code": "const one = await tools.shell({command:'node \"{{support}}/shell-job.mjs\" one', background:true}); const two = await tools.shell({command:'node \"{{support}}/shell-job.mjs\" two', background:true}); for (const job of [one,two]) { const started=JSON.parse((await tools.read({path:'.volumes/output/'+job.output_directory+'/started.json'})).text); if (!started.background || started.output_directory!==job.output_directory || started.cancel!==job.cancel) throw Error('original admission changed'); } let refused=false; try { await tools.edit({path:'.volumes/output/'+one.output_directory+'/started.json',old_text:'true',new_text:'false'}); } catch(error) { refused=String(error).includes('read-only'); } if(!refused) throw Error('private output edit was accepted'); ({one,two})"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_WORKER_START",
+          "tool_result": "Background shell started"
+        },
+        "text": [
+          "{{tool_result:}}"
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_PARENT_START",
+          "tool_result": "settled"
+        },
+        "text": [
+          "{{tool_result:/settled/0/answer}}"
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_PARENT_FOREGROUND"
+        },
+        "tools": [
+          {
+            "id": "send",
+            "name": "send",
+            "arguments": {
+              "agent": "shell-worker",
+              "message": "SHELL_WORKER_FOREGROUND",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_PARENT_FOREGROUND",
+          "tool_result": "queued"
+        },
+        "tools": [
+          {
+            "id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "shell-worker"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_WORKER_FOREGROUND"
+        },
+        "tools": [
+          {
+            "arguments": {
+              "code": "const foreground=await tools.shell({command:'echo FOREGROUND_PROGRESS'}); if(foreground.success!==true || foreground.exit_code!==0) throw Error('foreground command failed: '+JSON.stringify(foreground)); ({one:{{tool_result:/one}},two:{{tool_result:/two}},foreground:foreground.text})"
+            },
+            "name": "code",
+            "id": "foreground"
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_WORKER_FOREGROUND",
+          "tool_result": "FOREGROUND_PROGRESS"
+        },
+        "text": [
+          "{{tool_result:}}"
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_PARENT_FOREGROUND",
+          "tool_result": "settled"
+        },
+        "text": [
+          "{{tool_result:/settled/0/answer}}"
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_PARENT_INSPECT"
+        },
+        "tools": [
+          {
+            "id": "send",
+            "name": "send",
+            "arguments": {
+              "agent": "shell-worker",
+              "message": "SHELL_WORKER_INSPECT",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_PARENT_INSPECT",
+          "tool_result": "queued"
+        },
+        "tools": [
+          {
+            "id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "shell-worker"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_WORKER_INSPECT"
+        },
+        "tools": [
+          {
+            "id": "inspect",
+            "name": "code",
+            "arguments": {
+              "code": "const cancelled=await tools.shell({command:['node','{{support}}/shell-job.mjs','cancel','{{tool_result:/one/cancel}}']}); if(cancelled.success!==true || cancelled.exit_code!==0) throw Error('cancellation write failed: '+JSON.stringify(cancelled)); async function readJson(path) { let page=await tools.read({path,wait:true}); const source=page.file.authored??page.file.content; const version=page.file.authored?'authored-file-v1:'+JSON.stringify(source):JSON.stringify(source); const length=page.file.authored?source.byte_length:source.descriptor.byte_length; let text=page.text; while(page.page?.next!=null) { const start=page.page.next; page=await tools.read({path,version,range:{start,end:length}}); if(page.page?.next!=null && page.page.next<=start) throw Error('private file page did not advance'); text+=page.text; } return JSON.parse(text); } const one=await readJson('.volumes/output/{{tool_result:/one/output_directory}}/result.json'); if(one.stop?.kind!=='control_stopped' || one.stop.cleanup_completed!==true) throw Error('cancelled terminal failed: '+JSON.stringify(one)); const two=await readJson('.volumes/output/{{tool_result:/two/output_directory}}/result.json'); if(two.success!==true || two.exit_code!==0 || typeof two.spill!=='string') throw Error('sibling terminal failed: '+JSON.stringify(two)); const verified=await tools.shell({command:['node','{{support}}/shell-job.mjs','verify',two.spill]}); if(verified.success!==true || verified.exit_code!==0) throw Error('spill verification failed: '+JSON.stringify(verified)); let absent=false; try { await tools.read({path:'one.completed'}); } catch(error) { if(!/not found|does not exist|no such file/i.test(String(error))) throw error; absent=true; } if(!absent) throw Error('cancelled job committed'); const completed=(await tools.read({path:'two.completed'})).text; if(completed!=='committed\\n') throw Error('completed job did not commit'); ({cancelled_completion_absent:absent,completed,one,two:{success:two.success,exit_code:two.exit_code,stop:two.stop,omitted_bytes:two.omitted_bytes},verified:verified.text})"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_WORKER_INSPECT",
+          "tool_result": "COMPLETE_SPILL_AND_NEGATIVE_CONTROL"
+        },
+        "text": [
+          "{{tool_result:}}"
+        ]
+      },
+      {
+        "when": {
+          "user": "SHELL_PARENT_INSPECT",
+          "tool_result": "settled"
+        },
+        "text": [
+          "{{tool_result:/settled/0/answer}}"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "qualification",
+      "format": "shell-jobs",
+      "operation": "00000000-0000-0000-0000-000000000001",
+      "turns": [
+        {
+          "id": "start",
+          "text": "SHELL_PARENT_START"
+        },
+        {
+          "id": "foreground",
+          "text": "SHELL_PARENT_FOREGROUND"
+        },
+        {
+          "id": "inspect",
+          "text": "SHELL_PARENT_INSPECT"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 15,
+    "tool_contains": [
+      "FOREGROUND_PROGRESS",
+      "COMPLETE_SPILL_AND_NEGATIVE_CONTROL"
+    ]
+  },
+  "physical": true
+}

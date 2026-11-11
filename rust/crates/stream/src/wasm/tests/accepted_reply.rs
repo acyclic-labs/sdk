@@ -1,6 +1,7 @@
 use super::super::*;
 use crate::{
-    AcceptedCommitOutcome, CommitCondition, CommitMutation, CommitRequest, IdempotencyKey,
+    AcceptedCommitOutcome, CommitCondition, CommitEffect, CommitMutation, CommitRequest,
+    IdempotencyKey,
 };
 use std::cell::Cell;
 
@@ -77,24 +78,26 @@ async fn accepted_reply_metadata_fits_both_browser_adapters_and_exact_replay() {
             .map(|index| crate::StreamPath::new(format!("accepted/{case}/{index}")).unwrap())
             .collect::<Vec<_>>();
         let request = CommitRequest {
-            conditions: paths
-                .iter()
-                .cloned()
-                .map(|path| CommitCondition::Absent { path })
-                .collect(),
-            mutations: paths
-                .iter()
-                .cloned()
-                .map(|path| CommitMutation::Append {
-                    path,
-                    records: vec![
-                        crate::AppendRecord::from(crate::OwnedBytes::from(
-                            vec![7; value_bytes]
-                        ));
-                        crate::MAX_ITEMS
-                    ],
-                })
-                .collect(),
+            effects: vec![CommitEffect::hard(
+                paths
+                    .iter()
+                    .cloned()
+                    .map(|path| CommitCondition::Absent { path })
+                    .collect(),
+                paths
+                    .iter()
+                    .cloned()
+                    .map(|path| CommitMutation::Append {
+                        path,
+                        records: vec![
+                            crate::AppendRecord::from(crate::OwnedBytes::from(
+                                vec![7; value_bytes]
+                            ));
+                            crate::MAX_ITEMS
+                        ],
+                    })
+                    .collect(),
+            )],
             idempotency_key: IdempotencyKey::unique(),
             deadline_unix_millis: None,
         };

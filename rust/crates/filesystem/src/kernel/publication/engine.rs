@@ -1,16 +1,16 @@
 use super::*;
 
-pub(super) struct PublicationCallbacks<'a, F, G, R> {
+pub(super) struct PublicationCallbacks<'a, F, G, E> {
     pub(super) before_publication: &'a mut F,
     pub(super) dispatch: &'a mut G,
-    pub(super) prepare_roots: &'a mut R,
+    pub(super) prepare_roots: &'a mut preparation::RootPreparation<'a, E>,
     pub(super) batch_seal: Option<combiner::SharedSeal>,
 }
 
-pub(super) async fn publish_generation_async_inner<P, E, F, Fut, G, Dispatch, R>(
+pub(super) async fn publish_generation_async_inner<P, E, F, Fut, G, Dispatch>(
     preparation: preparation::Preparation<'_, P>,
     accounting: &mut KernelAccounting<'_>,
-    callbacks: PublicationCallbacks<'_, F, G, R>,
+    callbacks: PublicationCallbacks<'_, F, G, E>,
 ) -> Result<RetainedPublication<ProofGuard>, E>
 where
     P: PublicationOwner,
@@ -20,11 +20,6 @@ where
     G: FnMut(GuardedAppend, Option<WorkBudget>) -> Dispatch + acyclic_stream::ProviderTask,
     Dispatch: Future<Output = Result<(AppendOutcome, Option<WorkCounters>), PublicationStepFailure<E>>>
         + acyclic_stream::ProviderTask,
-    R: FnMut(
-        &crate::kernel::GenerationRoot,
-        &mut ProofGuard,
-        &mut KernelAccounting<'_>,
-    ) -> Result<(), E>,
 {
     let preparation = preparation.validate(accounting).map_err(E::from)?;
     crate::heap_future::in_borrowed_frame!(accounting, |accounting| async move {

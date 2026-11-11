@@ -72,7 +72,7 @@ pub fn approval_reply(
     agent: AgentPath,
     pending: &PendingApproval,
     block: &InputBlock,
-    approved: bool,
+    verdict: acyclic_harness_core::interaction::ApprovalVerdict,
     reason: Option<String>,
 ) -> Result<AgentCommand> {
     if block.attributes.get("approval").map(String::as_str) != Some(pending.id.as_str()) {
@@ -84,7 +84,7 @@ pub fn approval_reply(
         agent,
         id: pending.id.clone(),
         binding: pending.binding.clone(),
-        approved,
+        verdict,
         reason,
     })
 }

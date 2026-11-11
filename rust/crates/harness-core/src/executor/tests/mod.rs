@@ -377,6 +377,18 @@ pub(crate) struct Journal(
 );
 
 impl Journal {
+    pub(crate) fn reopen_before_tool_completion(&self, call: &str) -> Self {
+        Self(
+            Mutex::new(self.0.lock().unwrap().iter().take_while(|record|
+                !matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id == call)
+            ).cloned().collect()),
+            Mutex::new(self.1.lock().unwrap().clone()),
+            Mutex::new(self.2.lock().unwrap().clone()),
+            AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0),
+            ExecutionClaims::default(), AtomicUsize::new(0), None,
+            ExecutionJournalCacheId::default(), Default::default(),
+        )
+    }
     fn stage_source<'a>(
         &'a self,
         operation_id: OperationId,

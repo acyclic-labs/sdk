@@ -34,6 +34,7 @@ include!("wasm_follow.rs");
 include!("provider_request.rs");
 
 pub(crate) mod provider_rpc;
+pub use provider_rpc::InjectedStream;
 mod remote;
 mod socket;
 

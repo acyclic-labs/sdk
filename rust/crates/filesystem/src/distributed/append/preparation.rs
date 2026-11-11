@@ -129,8 +129,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 },
                 request: CommitRequest {
                     deadline_unix_millis: None,
-                    conditions,
-                    mutations,
+                    effects: crate::distributed::composition::funded_effect(
+                        acyclic_stream::CommitEffect::hard(conditions, mutations),
+                        work,
+                    )?,
                     idempotency_key,
                 },
                 deadline,

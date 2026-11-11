@@ -66,8 +66,6 @@ impl HttpObjects {
             }
             let source = Source {
                 response,
-                // Cursor frames retain physical protocol protection; the aggregate
-                // response policy does not impose a total availability-history cap.
                 decoder: FrameDecoder::with_decoder(
                     self.maximum
                         .map_or(acyclic_stream::MAX_COMMAND_BYTES, |maximum| {

@@ -296,7 +296,7 @@ async fn human_decides(backend: &dyn Backend) -> Result {
     let mut other = exact.clone();
     other.action_digest[0] ^= 1;
     if bound
-        .decide(&root, &pending, &other, HUMAN, true, None)
+        .decide(&root, &pending, &other, HUMAN, true.into(), None)
         .await
         .is_ok()
     {
@@ -305,7 +305,7 @@ async fn human_decides(backend: &dyn Backend) -> Result {
 
     // The exact decision resumes the turn, which runs the tool and completes.
     bound
-        .decide(&root, &pending, &exact, HUMAN, true, None)
+        .decide(&root, &pending, &exact, HUMAN, true.into(), None)
         .await?;
     bound
         .agents()
@@ -327,7 +327,7 @@ async fn human_decides(backend: &dyn Backend) -> Result {
 
     // Retrying the identical decision replays it; it never decides again.
     bound
-        .decide(&root, &pending, &exact, HUMAN, true, None)
+        .decide(&root, &pending, &exact, HUMAN, true.into(), None)
         .await?;
     bound
         .agents()
@@ -385,7 +385,7 @@ pub async fn verify_recovery(backend: &dyn Backend) -> Result {
         drop(stream.take_commits());
         stream.arm_matching(approval_wake, fault);
         let failed = bound
-            .decide(&root, &pending, &exact, HUMAN, true, None)
+            .decide(&root, &pending, &exact, HUMAN, true.into(), None)
             .await;
         let Err(Error::Unknown(request)) = failed else {
             return Err("approval wake uncertainty lost its original request".into());
@@ -405,7 +405,7 @@ pub async fn verify_recovery(backend: &dyn Backend) -> Result {
         // The public contract requires this explicit identical caller retry.
         // The decision file already exists; only the original wake is repaired.
         let delivered = bound
-            .decide(&root, &pending, &exact, HUMAN, true, None)
+            .decide(&root, &pending, &exact, HUMAN, true.into(), None)
             .await?;
         if !matches!(delivered, Delivered::Committed { inbox } if inbox == before) {
             return Err("approval wake retry changed its original inbox position".into());
@@ -431,7 +431,7 @@ pub async fn verify_recovery(backend: &dyn Backend) -> Result {
 }
 
 fn approval_wake(request: &CommitRequest) -> bool {
-    request.mutations.iter().any(|mutation| match mutation {
+    request.mutations().any(|mutation| match mutation {
         CommitMutation::Append { records, .. } => records.iter().any(|record| {
             matches!(
                 InboxRecord::decode(record.value.as_ref()),

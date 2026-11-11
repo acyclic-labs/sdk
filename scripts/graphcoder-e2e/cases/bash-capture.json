@@ -7,20 +7,67 @@
   "model": {
     "steps": [
       {
-        "when": {},
+        "when": {
+          "user": "CAPTURE_PARENT_TASK"
+        },
         "tools": [
           {
-            "id": "bash",
-            "name": "shell",
+            "id": "spawn",
+            "name": "spawn",
             "arguments": {
-              "command": "node \"{{support}}/capture.mjs\""
+              "name": "capture-worker",
+              "task": "CAPTURE_WORKER_TASK",
+              "role": "worker"
             }
           }
         ]
       },
       {
         "when": {
-          "tool_result": "BASH_E2E_CONTENT"
+          "user": "CAPTURE_PARENT_TASK",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                {
+                  "$tool_result": "/agent"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CAPTURE_WORKER_TASK"
+        },
+        "tools": [
+          {
+            "id": "capture",
+            "name": "code",
+            "arguments": {
+              "code": "const result=await tools.shell({\"command\":\"node \\\"{{support}}/capture.mjs\\\"\"}); const file=await tools.read({path:'bash.txt'}); if(file.text!=='BASH_E2E_CONTENT\\n') throw Error('captured file differs'); if(!result.success || result.exit_code!==0 || !(result.omitted_bytes>0) || typeof result.spill!=='string') throw Error('foreground capture did not spill successfully: '+JSON.stringify({success:result.success,exit_code:result.exit_code,omitted_bytes:result.omitted_bytes,spill:result.spill,stop:result.stop,keys:Object.keys(result),text:result.text?.slice(-500)})); const verified=await tools.shell({command:['node','{{support}}/capture.mjs','verify',result.spill]}); if(!verified.success || verified.exit_code!==0 || !verified.text.includes('COMPLETE_SPILL_AND_NEGATIVE_CONTROL')) throw Error('foreground spill verification failed'); const markers=['bytes omitted from this preview','complete output:'].map(marker=>{ const offset=result.text.indexOf(marker); if(offset<0) throw Error('shell preview lost '+marker); return result.text.slice(offset,offset+marker.length); }); ({verified:'CAPTURE_VERIFIED',captured:file.text,markers,spill_check:verified.text})"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CAPTURE_WORKER_TASK",
+          "tool_result": "CAPTURE_VERIFIED"
+        },
+        "text": [
+          "CAPTURE_WORKER_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "CAPTURE_PARENT_TASK",
+          "tool_result": "CAPTURE_WORKER_DONE"
         },
         "text": [
           "done"
@@ -31,16 +78,29 @@
   "inputs": [
     {
       "mode": "headless",
-      "text": "hello",
+      "text": "CAPTURE_PARENT_TASK",
       "answer": "done"
     }
   ],
   "assert": {
-    "requests": 2,
-    "tool_contains": ["bytes omitted from this preview", "complete output:"],
-    "files": {
-      "bash.txt": "BASH_E2E_CONTENT\n"
-    }
+    "requests": 5,
+    "tool_contains": [
+      "bytes omitted from this preview",
+      "complete output:",
+      "BASH_E2E_CONTENT",
+      "COMPLETE_SPILL_AND_NEGATIVE_CONTROL"
+    ],
+    "tool_results": [
+      {
+        "settled": [
+          {
+            "phase": "idle",
+            "answer": "CAPTURE_WORKER_DONE"
+          }
+        ],
+        "unsettled": []
+      }
+    ]
   },
   "physical": true
 }

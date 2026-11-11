@@ -154,13 +154,11 @@ impl Opening {
             let mut opening = self;
             let installation = match &opening.settings {
                 Some(settings) => {
-                    let mcp =
-                        crate::native_settings::NativeSettings::load_mcp(Arc::clone(settings))
-                            .await?;
                     let root = std::fs::canonicalize(opening.config.project.root())
                         .map_err(Error::process_io)?;
-                    mcp.install(
+                    crate::mcp::McpConfig::install_watched(
                         opening.tools,
+                        Arc::clone(settings),
                         &root,
                         opening.config.mcp_limits,
                         Arc::new(crate::secrets::EnvSecrets),
@@ -275,7 +273,8 @@ impl Opening {
         .map_err(storage)?;
         let volume_stream = filesystem.stream_provider();
         let provider_ref = owner.project.provider();
-        let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
+        let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?
+            .with_changes(filesystem.stream_provider())?;
         let issuer = AuthorityRoot::bootstrap(
             "acyclic.local",
             &owner.key_ref,

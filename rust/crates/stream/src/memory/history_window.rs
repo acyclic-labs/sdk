@@ -12,7 +12,7 @@ impl Iterator for HistoryWindow {
         if self.start == self.end {
             return None;
         }
-        let record = self.records.records.get(self.start)?.clone();
+        let record = self.records.record(self.start)?;
         self.start += 1;
         Some(record)
     }

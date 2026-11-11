@@ -6,6 +6,10 @@
       "target": "Local composition and thin CLI",
       "owner": "e2e-gate",
       "cases": [
+        "pty-status-line",
+        "pty-status-priced",
+        "session-cost-rollup",
+        "usage-durable-on-provider-error",
         "cli-help",
         "cli-invalid-option",
         "doctor-all-missing",
@@ -24,6 +28,8 @@
       "owner": "tool-latency",
       "cases": [
         "bash-capture",
+        "shell-background-job",
+        "shell-no-deadline",
         "shell-gemini-signed",
         "file-tools-responses",
         "file-tools-chat",
@@ -131,9 +137,12 @@
       "target": "Human allow/deny and durable approvals",
       "owner": "approvals (#1421)",
       "cases": [
+        "pty-approval-rule",
         "pty-approval-policy",
         "pty-approval-deny",
         "pty-approval-form-approve",
+        "pty-hook-allow",
+        "hook-failure-refuses",
         "pty-approval-form-deny",
         "pty-approval-policy-deny",
         "pty-approval-clear-confirm"
@@ -203,6 +212,7 @@
         "pty-conversation",
         "pty-help",
         "pty-markdown",
+        "pty-code-highlight",
         "pty-stream-delta",
         "pty-tool-cards",
         "pty-image-attach",
@@ -215,7 +225,8 @@
       "target": "Source-anchored viewport and bounded transcripts",
       "owner": "client-perf (#1425)",
       "cases": [
-        "pty-scrolling"
+        "pty-scrolling",
+        "tui-render-work"
       ],
       "gaps": [
         "A 50-line scroll screenshot does not prove large-transcript bounds, source anchors or resize stability."

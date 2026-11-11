@@ -230,7 +230,26 @@ impl ToolRegistry {
         &self,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
-        self.definitions_for_names(|| self.data.selected.keys().map(String::as_str), false, io)
+        let mut definitions = self.definitions_for_names(
+            || self.data.selected.keys().map(String::as_str),
+            false,
+            io,
+        )?;
+        for source in &self.sources {
+            for definition in source.snapshot()?.definitions(io)? {
+                if self.source_allowed(&definition.name) {
+                    crate::executor::stock_vec_push(&mut definitions, definition, io)?;
+                }
+            }
+        }
+        definitions.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        if definitions
+            .windows(2)
+            .any(|pair| pair[0].name == pair[1].name)
+        {
+            return Err(Error::Conflict("tool sources overlap".into()));
+        }
+        Ok(definitions)
     }
 
     pub(crate) fn definitions_for_grants(
@@ -238,7 +257,7 @@ impl ToolRegistry {
         grants: &crate::Capabilities,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
-        self.definitions_for_names(
+        let mut definitions = self.definitions_for_names(
             || {
                 grants
                     .iter()
@@ -246,7 +265,34 @@ impl ToolRegistry {
             },
             true,
             io,
-        )
+        )?;
+        for source in &self.sources {
+            let snapshot = source.snapshot()?;
+            if source
+                .capability()
+                .is_some_and(|grant| grants.contains(grant))
+            {
+                for definition in snapshot.definitions(io)? {
+                    if self.source_allowed(&definition.name) {
+                        crate::executor::stock_vec_push(&mut definitions, definition, io)?;
+                    }
+                }
+            } else {
+                for definition in snapshot.definitions_for_grants(grants, io)? {
+                    if self.source_allowed(&definition.name) {
+                        crate::executor::stock_vec_push(&mut definitions, definition, io)?;
+                    }
+                }
+            }
+        }
+        definitions.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        if definitions
+            .windows(2)
+            .any(|pair| pair[0].name == pair[1].name)
+        {
+            return Err(Error::Conflict("tool sources overlap".into()));
+        }
+        Ok(definitions)
     }
 
     /// `capabilities` reads each name as a granted capability, offered as its

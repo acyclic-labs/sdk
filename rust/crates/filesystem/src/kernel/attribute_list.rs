@@ -33,7 +33,7 @@ pub async fn list_attributes<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<AttributeListing, DirectoryReadFailure> {
-    persistent_pagination::paginate::<S, AttributeFormat>(
+    persistent_pagination::paginate::<AttributeFormat>(
         store,
         (
             root,
@@ -64,7 +64,7 @@ pub(crate) async fn list_attributes_async_with_accounting<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(AttributeListing, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    persistent_pagination::paginate_with_accounting::<S, AttributeFormat>(
+    persistent_pagination::paginate_with_accounting::<AttributeFormat>(
         store,
         (
             root,

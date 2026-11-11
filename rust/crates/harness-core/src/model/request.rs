@@ -21,8 +21,7 @@ pub struct ModelRequest {
     pub model: Model,
     /// Ordered reconstructable context.
     pub messages: Vec<ModelMessage>,
-    /// Expose catalog declarations and announce dynamic tools through code notices.
-    /// Stock execution sets this only for its bound JavaScript executor.
+    /// Expose frozen catalog declarations and announce dynamic tool changes.
     pub compose_tools: bool,
     /// Registered tool definitions, including schemas retained for history validation.
     pub tools: Vec<crate::tool::ToolDefinition>,
@@ -138,7 +137,82 @@ impl ModelRequest {
             }
         }
         let mut pending = BTreeMap::new();
-        for message in messages {
+        // Each notice table supplies the schemas in force at its original
+        // position. Revoking a tool cannot invalidate its earlier results.
+        let mut tables = Vec::new();
+        let mut fragments = String::new();
+        for (index, message) in messages.iter().enumerate() {
+            if let Some((notices, _)) = message.content.notice_parts() {
+                for notice in notices
+                    .iter()
+                    .filter(|notice| notice.kind == "tools.changed" && notice.source == "tools")
+                {
+                    let offset = notice
+                        .body
+                        .get("offset")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| Error::Invalid("tool notice lacks offset".into()))?;
+                    if offset == 0 {
+                        fragments.clear();
+                    }
+                    if offset != fragments.len() as u64 {
+                        return Err(Error::Invalid(
+                            "tool notice fragments are discontinuous".into(),
+                        ));
+                    }
+                    let fragment = notice
+                        .body
+                        .get("json")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| Error::Invalid("tool notice lacks schemas".into()))?;
+                    crate::executor::stock_string_push(
+                        &mut fragments,
+                        fragment,
+                        u64::MAX,
+                        "tool notice schema size overflows",
+                        io,
+                    )?;
+                    if notice.body.get("complete").and_then(Value::as_bool) == Some(true) {
+                        #[cfg(feature = "filesystem")]
+                        let funded = io
+                            .map(|io| {
+                                io.decode(
+                                    std::marker::PhantomData::<Vec<crate::tool::ToolDefinition>>,
+                                    fragments.as_bytes(),
+                                    Storage,
+                                )
+                            })
+                            .transpose()?;
+                        #[cfg(not(feature = "filesystem"))]
+                        let funded: Option<(
+                            Vec<crate::tool::ToolDefinition>,
+                            crate::conversation::ContentHold<'_>,
+                        )> = None;
+                        let table = match funded {
+                            Some((table, hold)) => {
+                                #[cfg(feature = "filesystem")]
+                                hold.into_retained()?;
+                                #[cfg(not(feature = "filesystem"))]
+                                let _ = hold;
+                                table
+                            }
+                            None => serde_json::from_str(&fragments).map_err(|_| {
+                                Error::Invalid("tool notice schemas are invalid".into())
+                            })?,
+                        };
+                        crate::executor::stock_vec_push(&mut tables, (index, table), io)?;
+                    }
+                }
+            }
+        }
+        for (index, message) in messages.iter_mut().enumerate() {
+            if let Some((_, table)) = tables.iter().find(|(at, _)| *at == index) {
+                tools.retain(|name, _| crate::tools::catalog::is_native_declaration(name));
+                for tool in table {
+                    validate_declaration(tool)?;
+                    tools.insert(tool.name.as_str(), tool);
+                }
+            }
             charge_items(io, 1)?;
             with_history_io(io, |work| message.content.validate_limits(limits, work))?;
             let standalone = matches!(message.content, ModelContent::Part(_))
@@ -195,14 +269,9 @@ impl ModelRequest {
             // Only the fixed envelope is new. The admitted payload moves into
             // it for validation and returns even when its schema refuses it.
             std::mem::swap(value, &mut envelope["value"]);
-            let result = with_history_io(io, |work| {
-                crate::executor::validate_json_schema_value(
-                    &tool.projection_schema,
-                    &envelope,
-                    "model tool result",
-                    work,
-                )
-            });
+            let result = tool
+                .check_projection_schema(&envelope, io)
+                .and_then(|result| result);
             std::mem::swap(value, &mut envelope["value"]);
             return result;
         }
@@ -213,24 +282,12 @@ impl ModelRequest {
                 let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
                 _hold = io.guard_bytes(&bytes)?;
                 let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
-                crate::executor::with_history_io(Some(io), |work| {
-                    crate::executor::validate_json_schema_value(
-                        &tool.projection_schema,
-                        &envelope.0,
-                        "model tool result",
-                        work,
-                    )
-                })?;
+                tool.check_projection_schema(&envelope.0, Some(io))??;
             }
             _ => {
                 let envelope = serde_json::to_value(content)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                crate::executor::validate_json_schema_value(
-                    &tool.projection_schema,
-                    &envelope,
-                    "model tool result",
-                    &mut None,
-                )?;
+                tool.check_projection_schema(&envelope, None)??;
             }
         }
         Ok(())

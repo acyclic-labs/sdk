@@ -58,6 +58,21 @@ pub struct SettingsConfig {
 }
 
 impl SettingsConfig {
+    /// Host files contributing MCP configuration, under the same trust policy.
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+    pub(crate) fn mcp_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![
+            self.home.join(".claude.json"),
+            self.codex_home.join("config.toml"),
+        ];
+        if self.trust_project_mcp {
+            paths.extend([
+                self.workspace.join(".mcp.json"),
+                self.workspace.join(".codex/config.toml"),
+            ]);
+        }
+        paths
+    }
     #[cfg(feature = "native-execution")]
     #[doc(hidden)]
     pub fn skill_roots(&self) -> [PathBuf; 3] {
@@ -189,10 +204,7 @@ impl NativeSettings {
         Ok(Self::snapshot(config, false, true).await?.hooks)
     }
 
-    #[cfg(all(
-        feature = "filesystem-local",
-        any(feature = "mcp-stdio", feature = "mcp-http")
-    ))]
+    #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     #[doc(hidden)]
     pub async fn load_mcp(config: std::sync::Arc<SettingsConfig>) -> Result<McpConfig> {
         Ok(Self::snapshot(config, true, false).await?.mcp)

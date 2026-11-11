@@ -5,12 +5,13 @@ use serde::Deserialize;
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 /// Host-owned connection configuration. Credentials are never serialized into task records.
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct McpConfig {
     pub(super) servers: BTreeMap<String, McpServer>,
 }
 
 /// One normalized server declaration; credentials remain host-owned.
+#[derive(Clone, PartialEq)]
 pub struct McpServer {
     /// Selected connection implementation and parameters.
     pub transport: McpTransport,
@@ -28,6 +29,7 @@ pub struct McpServer {
 }
 
 /// Finite native connection vocabulary, without an embedded command language.
+#[derive(Clone, PartialEq)]
 pub enum McpTransport {
     /// One persistent child process.
     Stdio {

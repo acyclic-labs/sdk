@@ -19,11 +19,11 @@ fn byte_limit(value: f64) -> Result<usize, JsValue> {
 
 #[wasm_bindgen]
 pub fn encode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
-    json::encode_binary(name, bytes, byte_limit(maximum)?).map_err(error)
+    json::encode_binary(name, bytes, Some(byte_limit(maximum)?)).map_err(error)
 }
 #[wasm_bindgen]
 pub fn decode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
-    json::decode_binary(name, bytes, byte_limit(maximum)?).map_err(error)
+    json::decode_binary(name, bytes, Some(byte_limit(maximum)?)).map_err(error)
 }
 #[wasm_bindgen]
 pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue> {

@@ -184,15 +184,20 @@ impl MemoryStream {
 #[cfg(not(target_arch = "wasm32"))]
 impl MemoryStream {
     pub(crate) fn request_claim(&self, request: &CommitRequest) -> Result<Allocation, StreamError> {
-        let bytes = request.conditions.capacity() * std::mem::size_of::<CommitCondition>()
-            + request.mutations.capacity() * std::mem::size_of::<CommitMutation>()
+        let bytes = request.effects.capacity() * std::mem::size_of::<crate::CommitEffect>()
             + request
-                .mutations
+                .effects
                 .iter()
+                .map(|effect| {
+                    effect.conditions.capacity() * std::mem::size_of::<CommitCondition>()
+                        + effect.mutations.capacity() * std::mem::size_of::<CommitMutation>()
+                })
+                .sum::<usize>()
+            + request
+                .mutations()
                 .map(|mutation| {
                     let (records, exclusions) = match mutation {
-                        CommitMutation::Append { records, .. }
-                        | CommitMutation::SoftAppend { records, .. } => (records, 0),
+                        CommitMutation::Append { records, .. } => (records, 0),
                         CommitMutation::Fork {
                             records, exclude, ..
                         } => (
@@ -212,10 +217,11 @@ impl MemoryStream {
     }
 
     fn digest(&self, request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
+        crate::request::normalize_commit_with(request, |length| self.vector(length))?;
         let bytes = commit_hash_bytes(request);
         let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
         work.record(work.meter.admit_codec(0, 0, bytes))?;
-        let digest = commit_digest(request)?;
+        let digest = crate::request::canonical_digest(request);
         work.record(work.meter.record_codec(0, 0, bytes))?;
         work.record(work.meter.check())?;
         Ok(digest)

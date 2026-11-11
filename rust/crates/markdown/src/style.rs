@@ -42,6 +42,11 @@ pub struct Span {
     pub style: Style,
     /// Link target, retained independently of the visible label.
     pub link: Option<Arc<str>>,
+    /// This span belongs to a fenced or indented code row. A renderer paints
+    /// the row's background continuously, including its label and gutter.
+    pub code: bool,
+    /// Deferred grammar for this span's original code bytes.
+    pub syntax: Option<crate::CodeLine>,
 }
 
 impl Clone for Span {
@@ -51,6 +56,8 @@ impl Clone for Span {
             text: self.text.clone(),
             style: self.style,
             link: self.link.clone(),
+            code: self.code,
+            syntax: self.syntax.clone(),
         }
     }
 }
@@ -70,6 +77,7 @@ impl Line {
         #[cfg(test)]
         crate::work::copy(text.len());
         if let Some(last) = self.spans.last_mut()
+            && last.syntax.is_none()
             && last.style == style
             && match (&last.link, link) {
                 (None, None) => true,
@@ -100,6 +108,8 @@ impl Line {
                 text: text.into(),
                 style,
                 link: link.cloned(),
+                code: false,
+                syntax: None,
             });
         }
     }

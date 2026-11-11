@@ -201,6 +201,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-hosted-actors-conformance",
  "acyclic-stream",
  "base64 0.23.1",
  "bytes",
@@ -275,6 +276,8 @@ dependencies = [
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-observability",
+ "acyclic-plugin",
  "acyclic-stream",
  "acyclic-test-support",
  "async-trait",
@@ -283,7 +286,6 @@ dependencies = [
  "bytes",
  "divan",
  "futures",
- "graphcoder",
  "hex",
  "notify",
  "object_store",
@@ -773,7 +775,6 @@ dependencies = [
  "diffy",
  "ed25519-dalek",
  "futures",
- "graphcoder",
  "harness-mock-model",
  "libfuzzer-sys",
  "p256",
@@ -931,6 +932,20 @@ name = "acyclic-host-platform"
 version = "0.2.0"
 dependencies = [
  "proptest",
+]
+
+[[package]]
+name = "acyclic-hosted-actors-conformance"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-stream",
+ "futures",
+ "js-sys",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -1297,14 +1312,23 @@ version = "0.2.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-client",
+ "acyclic-harness-providers",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-plugin-identity",
+ "acyclic-stream",
  "acyclic-test-support",
+ "axum",
  "blake3",
+ "clap",
+ "futures",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3886,28 +3910,6 @@ checksum = "da55feca5d1625466bae068f9fd4b87892caeae70c3fe671ddb0f50d41aebf37"
 dependencies = [
  "arraydeque",
  "smallvec",
-]
-
-[[package]]
-name = "graphcoder"
-version = "0.2.0"
-dependencies = [
- "acyclic-harness",
- "acyclic-harness-client",
- "acyclic-harness-providers",
- "acyclic-native-runtime",
- "acyclic-observability",
- "acyclic-stream",
- "acyclic-test-support",
- "axum",
- "clap",
- "futures",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

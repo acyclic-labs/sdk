@@ -1,0 +1,41 @@
+120x40
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»○ GraphCoder · project · main
+«Spec(Rgb { r: 97, g: 175, b: 239 })/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 97, g: 175, b: 239 })/Named(Background)/Flags(0x0)/»●«Spec(Rgb { r: 97, g: 175, b: 239 })/Named(Background)/Flags(BOLD)/»# Review«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(BOLD)/»Bold«Named(Foreground)/Named(Background)/Flags(0x0)/», «Named(Foreground)/Named(Background)/Flags(ITALIC)/»emphasis«Named(Foreground)/Named(Background)/Flags(0x0)/», «Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(STRIKEOUT)/»removed«Named(Foreground)/Named(Background)/Flags(0x0)/» and «Spec(Rgb { r: 229, g: 192, b: 123 })/Named(Background)/Flags(0x0)/»code«Named(Foreground)/Named(Background)/Flags(0x0)/».
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» 1. «Named(Foreground)/Named(Background)/Flags(0x0)/»first
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» 2. «Named(Foreground)/Named(Background)/Flags(0x0)/»second
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»    • «Named(Foreground)/Named(Background)/Flags(0x0)/»nested
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» │ «Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(ITALIC)/»Read «Spec(Rgb { r: 97, g: 175, b: 239 })/Named(Background)/Flags(ITALIC | UNDERLINE)/https://example.com/docs»the «Spec(Rgb { r: 97, g: 175, b: 239 })/Named(Background)/Flags(BOLD | ITALIC | UNDERLINE)/https://example.com/docs»docs«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(ITALIC)/».«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» ┌───────┬───────────┐«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» │«Named(Foreground)/Named(Background)/Flags(0x0)/» «Named(Foreground)/Named(Background)/Flags(BOLD)/»crate«Named(Foreground)/Named(Background)/Flags(0x0)/» «Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/»      «Named(Foreground)/Named(Background)/Flags(BOLD)/»note«Named(Foreground)/Named(Background)/Flags(0x0)/» «Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» ├───────┼───────────┤«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» │«Named(Foreground)/Named(Background)/Flags(0x0)/» tui   «Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/» 界面 👩‍ é «Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»│«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/» └───────┴───────────┘«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» Follow up
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                                                           model · 24% (2400/10000) · $0.12 · 2 children
+«Spec(Rgb { r: 127, g: 132, b: 142 })/Named(Background)/Flags(0x0)/»                                                                                 Enter: send · Tab: queue · Ctrl-D: quit

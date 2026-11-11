@@ -51,10 +51,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let mut stream = self
             .authority_read(
                 acyclic_stream::ReadRequest {
-                    key: Some(acyclic_stream::ReadKeySeek {
-                        key: key.clone(),
-                        before,
-                    }),
+                    key: Some(acyclic_stream::ReadKeySeek::exact(key.clone(), before)),
                     path: path.clone(),
                     from: 1,
                     limit: 1,

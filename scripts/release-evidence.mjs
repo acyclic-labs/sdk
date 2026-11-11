@@ -41,8 +41,8 @@ function createSbom(outputArgument, sourceSha, version) {
   const metadata = JSON.parse(run("cargo", ["metadata", "--locked", "--format-version", "1"]));
   const nodes = new Map(metadata.resolve.nodes.map(node => [node.id, node]));
   const packages = new Map(metadata.packages.map(item => [item.id, item]));
-  // GraphCoder is distributed as an executable, not a crates.io package.
-  const cargoRoots = [...cargoReleaseNames, "graphcoder"].map(name => {
+  // Both shipping executables are targets of the published plugin crate.
+  const cargoRoots = cargoReleaseNames.map(name => {
     const matches = metadata.packages.filter(item => item.name === name);
     if (matches.length !== 1 || matches[0].version !== version) fail(`Cargo release identity differs for ${name}`);
     return matches[0];

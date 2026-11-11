@@ -1,0 +1,25 @@
+80x24
+«Indexed(8)/Named(Background)/Flags(0x0)/»○ GraphCoder · project · main
+«Named(Foreground)/Named(Background)/Flags(0x0)/»┌help──────────────────────────────────────────────────────────────────────────┐
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│/help  Commands                                                               │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│/diff  Workspace changes                                                      │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│/history  Settled history                                                     │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│/theme auto|dark|light                                                        │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│Esc: close                                                                    │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»│                                                                              │
+«Named(Foreground)/Named(Background)/Flags(0x0)/»└──────────────────────────────────────────────────────────────────────────────┘
+«Indexed(4)/Named(Background)/Flags(0x0)/»›«Named(Foreground)/Named(Background)/Flags(BOLD)/»Review the implementation«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(4)/Named(Background)/Flags(0x0)/»●«Indexed(4)/Named(Background)/Flags(BOLD)/»# Review«Named(Foreground)/Named(Background)/Flags(0x0)/»
+«Indexed(8)/Named(Background)/Flags(0x0)/»────────────────────────────────────────────────────────────────────────────────
+«Named(Foreground)/Named(Background)/Flags(0x0)/» Follow up
+«Named(Foreground)/Named(Background)/Flags(0x0)/»                                   model · 24% (2400/10000) · $0.12 · 2 children
+«Indexed(8)/Named(Background)/Flags(0x0)/»                                         Enter: send · Tab: queue · Ctrl-D: quit

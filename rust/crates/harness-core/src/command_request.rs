@@ -158,6 +158,8 @@ pub enum CommandQuery {
     Model,
     /// Captured workspace changes against each volume's base.
     Diff,
+    /// Original priced calls for this agent and its descendants.
+    Cost,
     /// Committed conversation cuts, newest first.
     History,
     /// Markdown files in the private plans/ directory.

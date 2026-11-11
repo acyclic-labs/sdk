@@ -242,7 +242,7 @@ impl YieldingFile {
         work: &mut W,
         cancellation: &ReadCancellation,
     ) -> Result<usize, DemandError> {
-        work.with_native_read_meter(|meter| {
+        work.metered_read(|meter| {
             use acyclic_native_runtime::{
                 NativeByteReservation, NativeOperationKind, NativeOperationReservation,
             };

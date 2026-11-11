@@ -1,0 +1,119 @@
+{
+  "id": "shell-no-deadline",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "LIFETIME_PARENT_TASK"
+        },
+        "tools": [
+          {
+            "id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "name": "lifetime-worker",
+              "task": "LIFETIME_WORKER_TASK",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "LIFETIME_PARENT_TASK",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                {
+                  "$tool_result": "/agent"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "LIFETIME_WORKER_TASK"
+        },
+        "tools": [
+          {
+            "id": "unbounded",
+            "name": "code",
+            "arguments": {
+              "code": "const result=await tools.shell({\"command\":\"node -e \\\"console.log('OMITTED_LIFETIME')\\\"\"}); if(result.success!==true || result.exit_code!==0 || !result.text.includes('OMITTED_LIFETIME')) throw Error('lifetime command failed: '+JSON.stringify(result)); ({verified:'UNBOUNDED_EXECUTION_VERIFIED'})"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "UNBOUNDED_EXECUTION_VERIFIED",
+          "user": "LIFETIME_WORKER_TASK"
+        },
+        "tools": [
+          {
+            "id": "explicit",
+            "name": "code",
+            "arguments": {
+              "code": "const result=await tools.shell({\"command\":\"node -e \\\"console.log('EXPLICIT_LONG_LIFETIME')\\\"\",\"timeout_ms\":300001}); if(result.success!==true || result.exit_code!==0 || !result.text.includes('EXPLICIT_LONG_LIFETIME')) throw Error('lifetime command failed: '+JSON.stringify(result)); ({verified:'EXPLICIT_EXECUTION_VERIFIED'})"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "EXPLICIT_EXECUTION_VERIFIED",
+          "user": "LIFETIME_WORKER_TASK"
+        },
+        "text": [
+          "LIFETIME_WORKER_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "LIFETIME_PARENT_TASK",
+          "tool_result": "LIFETIME_WORKER_DONE"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "LIFETIME_PARENT_TASK",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 6,
+    "tool_contains": [
+      "UNBOUNDED_EXECUTION_VERIFIED",
+      "EXPLICIT_EXECUTION_VERIFIED"
+    ],
+    "tool_results": [
+      {
+        "settled": [
+          {
+            "phase": "idle",
+            "answer": "LIFETIME_WORKER_DONE"
+          }
+        ],
+        "unsettled": []
+      }
+    ]
+  },
+  "physical": true
+}

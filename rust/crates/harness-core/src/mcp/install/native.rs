@@ -81,13 +81,20 @@ pub(super) async fn connect(
                 crate::build_metadata::PACKAGE_VERSION,
             )?;
             let response = provider.exchange(operation, request).await?;
-            let (transport, _, initialized) =
+            let (mut transport, capabilities, initialized) =
                 transport.accept_initialization(operation, response).await?;
             let response = provider.exchange(OperationId::new(), initialized).await?;
             if !matches!(response.status, 202 | 204) {
                 return Err(Error::Invalid(
                     "MCP initialized notification was rejected".into(),
                 ));
+            }
+            if capabilities
+                .pointer("/capabilities/tools/listChanged")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                transport.watch_tools()?;
             }
             (Connection::Http(transport), binding)
         }
@@ -98,14 +105,15 @@ pub(super) async fn connect(
             ));
         }
     };
+    let generation = match &connection {
+        #[cfg(feature = "mcp-stdio")]
+        Connection::Stdio(transport) => transport.tools_generation(),
+        #[cfg(feature = "mcp-http")]
+        Connection::Http(transport) => transport.tools_generation(),
+    };
     // Eager schema exposure deliberately materializes the catalog. The shared
     // page stream itself fetches only when its consumer requests another page.
-    let tools = super::super::tool_pages(|cursor| connection.list(cursor))
-        .try_fold(Vec::new(), |mut tools, page| async move {
-            tools.extend(page);
-            Ok(tools)
-        })
-        .await?;
+    let tools = discover(|cursor| connection.list(cursor)).await?;
     let transport = match connection {
         #[cfg(feature = "mcp-stdio")]
         Connection::Stdio(transport) => {
@@ -122,6 +130,7 @@ pub(super) async fn connect(
         transport,
         tools,
         binding,
+        generation,
     })
 }
 
@@ -210,6 +219,19 @@ impl Connection {
     }
 }
 
+/// Materializes the shared page stream for an eagerly exposed catalog.
+pub(super) async fn discover<F, Fut>(list: F) -> Result<Vec<McpToolDefinition>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<rmcp::model::ListToolsResult>>,
+{
+    super::super::tool_pages(list)
+        .try_fold(Vec::new(), |mut tools, page| async move {
+            tools.extend(page);
+            Ok(tools)
+        })
+        .await
+}
 /// Resolved credentials of one server, held only by the host, zeroed on drop.
 pub(super) type Credentials = std::collections::BTreeMap<String, zeroize::Zeroizing<String>>;
 

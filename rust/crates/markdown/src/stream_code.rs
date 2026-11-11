@@ -68,7 +68,11 @@ impl Markdown {
             CodeBlockKind::Indented => return false,
         };
         out.event(&Event::Start(tag.clone()));
-        let mut code = code::highlighter(info.split_whitespace().next().unwrap_or_default());
+        let mut code = code::highlighter(
+            info.split_whitespace().next().unwrap_or_default(),
+            out.deferred_code,
+            out.code_cache.clone(),
+        );
         if indented && let Some(line) = code_line {
             out.block_line(code::highlight(&mut code, line));
         }

@@ -3,11 +3,28 @@ use super::*;
 /// One principal's verdict about one exact approval request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ApprovalVerdict {
     /// The exact bound action may run.
     Approve,
+    /// Approve and retain an exact-action rule at this human policy stage.
+    ApproveRule,
     /// The exact bound action must not run.
     Deny,
+}
+
+impl ApprovalVerdict {
+    /// Whether this verdict permits its original bound action.
+    #[must_use]
+    pub const fn approved(self) -> bool {
+        matches!(self, Self::Approve | Self::ApproveRule)
+    }
+}
+
+impl From<bool> for ApprovalVerdict {
+    fn from(approved: bool) -> Self {
+        if approved { Self::Approve } else { Self::Deny }
+    }
 }
 
 /// Immutable `approvals/<id>/decisions/<principal>.json` body.
@@ -26,6 +43,10 @@ pub struct ApprovalDecisionFile {
     pub expected_version: u64,
     /// The principal's verdict.
     pub verdict: ApprovalVerdict,
+    /// BLAKE3 of the original canonical standing-rule record. Present exactly
+    /// for allow-rule, binding replay to its agent, policy, principal and action.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_digest: Option<[u8; 32]>,
     /// Participant explanation.
     pub reason: Option<String>,
 }
@@ -48,6 +69,7 @@ impl ApprovalDecisionFile {
             } else {
                 ApprovalVerdict::Deny
             },
+            rule_digest: None,
             reason,
         };
         value.validate()?;
@@ -83,13 +105,18 @@ impl ApprovalDecisionFile {
                 "approval decision has no exact request binding".into(),
             ));
         }
+        if (self.verdict == ApprovalVerdict::ApproveRule) != self.rule_digest.is_some() {
+            return Err(Error::Invalid(
+                "approval rule decision has no exact retained scope".into(),
+            ));
+        }
         Ok(())
     }
 
     /// Whether this decision approves its request.
     #[must_use]
     pub const fn approved(&self) -> bool {
-        matches!(self.verdict, ApprovalVerdict::Approve)
+        self.verdict.approved()
     }
 
     /// Whether this body decides the request with these exact bytes and version.

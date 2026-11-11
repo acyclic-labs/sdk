@@ -193,7 +193,8 @@ fork_join_conformance() {
 
 # Exercise the shipping binary through its shared real-provider CLI suite.
 installed_graphcoder() {
-  cargo test --locked -p graphcoder --test cli
+  cargo test --locked -p acyclic-plugin --test cli
+  node scripts/qualify-cli-input.mjs --build "$(command -v cargo)"
 }
 
 # The native hosts own tools and providers. Qualify their thin adapters and the
@@ -356,6 +357,7 @@ case "$lane" in
     # when the dependency cache is cold.
     cargo fetch --locked
     node scripts/check-git-proto-build.mjs
+    node scripts/check-proto-source-root.mjs
     background napi native_binding
     bash scripts/check-inference-package.sh "$SDK_ARTIFACT_DIR/packages/inference"
     bash scripts/check-machines-package.sh "$SDK_ARTIFACT_DIR/packages/machines"

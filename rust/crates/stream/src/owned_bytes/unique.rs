@@ -109,32 +109,53 @@ impl UniqueOwnedBytes {
     /// Replaces an initialized suffix within already admitted capacity.
     /// The operation checks cancellation and copy allowance before mutation.
     pub fn replace_suffix(&mut self, prefix: usize, suffix: &[u8]) -> std::io::Result<()> {
-        let length = prefix
-            .checked_add(suffix.len())
+        self.replace_range(prefix..self.as_slice().len(), &[suffix])
+    }
+
+    /// Replaces an initialized range with borrowed fragments, preserving the
+    /// remaining tail. An empty range inserts at its cut. Capacity must already
+    /// cover the result; no temporary allocation or historical prefix copy is
+    /// needed. Cancellation and all inserted and moved bytes are admitted
+    /// before mutation. A late observation error leaves completed bytes funded.
+    pub fn replace_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        replacement: &[&[u8]],
+    ) -> std::io::Result<()> {
+        let length = self.as_slice().len();
+        if range.start > range.end || range.end > length {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        let inserted = replacement.iter().try_fold(0usize, |size, part| {
+            size.checked_add(part.len())
+                .ok_or(std::io::ErrorKind::InvalidInput)
+        })?;
+        let removed = range.end - range.start;
+        let result = (length - removed)
+            .checked_add(inserted)
             .ok_or(std::io::ErrorKind::InvalidInput)?;
-        if prefix > self.as_slice().len() || length > self.capacity() {
+        if result > self.capacity() {
             return Err(std::io::ErrorKind::InvalidInput.into());
         }
         match &mut self.storage {
             Storage::Ordinary(data) => {
-                data.truncate(prefix);
-                data.extend_from_slice(suffix);
+                replace(data, range, replacement, inserted);
                 Ok(())
             }
             #[cfg(not(target_arch = "wasm32"))]
             Storage::Native(guard) => {
                 let guard = exclusive(guard);
-                guard.metadata.meter().check()?;
-                guard
-                    .metadata
-                    .meter()
-                    .admit_codec(0, suffix.len() as u64, 0)?;
-                guard.data.truncate(prefix);
-                guard.data.extend_from_slice(suffix);
-                guard
-                    .metadata
-                    .meter()
-                    .record_codec(0, suffix.len() as u64, 0)
+                let copied = inserted
+                    + if inserted == removed {
+                        0
+                    } else {
+                        length - range.end
+                    };
+                let meter = guard.metadata.meter();
+                meter.check()?;
+                meter.admit_codec(0, copied as u64, 0)?;
+                replace(&mut guard.data, range, replacement, inserted);
+                meter.record_codec(0, copied as u64, 0)
             }
         }
     }
@@ -153,6 +174,19 @@ impl UniqueOwnedBytes {
             },
         }
     }
+}
+
+fn replace(data: &mut Vec<u8>, range: std::ops::Range<usize>, parts: &[&[u8]], size: usize) {
+    let mut bytes = parts.iter().flat_map(|part| part.iter().copied());
+    // Splice uses the exact lower bound to move its tail once, without
+    // collecting a temporary vector. The count came from these same slices.
+    let bytes = std::iter::repeat_with(|| {
+        bytes
+            .next()
+            .unwrap_or_else(|| unreachable!("borrowed fragments retain their length"))
+    })
+    .take(size);
+    drop(data.splice(range, bytes));
 }
 
 #[cfg(not(target_arch = "wasm32"))]

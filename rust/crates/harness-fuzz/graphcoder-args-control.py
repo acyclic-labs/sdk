@@ -56,14 +56,14 @@ controls = {
         b"provider and opaque model stay paired",
     ),
     "graphcoder_args": (
-        "rust/crates/harness/src/bin/graphcoder/args.rs",
+        "plugin/src/runner/args.rs",
         b"if self.input_format == InputFormat::Jsonl && self.operation.is_none() {",
         b"if false {",
         "exec-missing-operation",
         b"JSONL requires an operation identity",
     ),
     "graphcoder_input": (
-        "rust/crates/harness/src/bin/graphcoder/headless/input.rs",
+        "plugin/src/runner/headless/input.rs",
         b"#[serde(untagged, deny_unknown_fields)]",
         b"#[serde(untagged)]",
         "mixed-actions",
@@ -156,14 +156,14 @@ additional_controls = {
     ],
     "native_input": [
         (
-            "rust/crates/harness/src/local/host_owner.rs",
-            b'#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]',
-            b'#[serde(tag = "kind", rename_all = "snake_case")]',
+            "rust/crates/harness-core/src/native_host.rs",
+            b'#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]\npub enum HostAction {',
+            b'#[serde(tag = "kind", rename_all = "snake_case")]\npub enum HostAction {',
             "null",
             b"native action unknown fields must be refused",
         ),
         (
-            "rust/crates/harness/src/local/host_owner/sessions.rs",
+            "rust/crates/harness-core/src/native_host.rs",
             b"    Next {},",
             b"    Next,",
             "null",
@@ -205,7 +205,7 @@ additional_controls = {
             b"catalog argument-shape-",
         ),
         (
-            "rust/crates/harness/src/local/host_owner/sessions.rs",
+            "rust/crates/harness-core/src/native_host.rs",
             b"    Recover {},",
             b"    Recover,",
             "null",
@@ -490,7 +490,7 @@ def binding_oracle_regression():
     # This must be the exact original oracle, not a parallel failing example.
     require(
         hashlib.sha256(stale).hexdigest()
-        == "688bd1ba9de86b3ee2b05dfab135c226ee0271a6402d6e23b4856a203dfbb4f2",
+        == "08d5a1df137af5f5dadc4c0b74e0990ec93907c51e1c09fe138411f5af492ff0",
         "restore exact original binding oracle for red-first regression",
     )
     try:

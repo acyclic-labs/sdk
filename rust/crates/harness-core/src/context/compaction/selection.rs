@@ -72,8 +72,15 @@ impl ThresholdCompaction {
             compaction_step(&mut quota)?;
             let component = &groups[group.root];
             end = end.max(component.end);
-            if component.end == position && !selected[group.root] {
+            if component.retained_through == position && !selected[group.root] {
                 mandatory -= component.size;
+            }
+            if component.end == position
+                && let Some(source) = component.source
+            {
+                if groups[source].retained_through == position && !selected[source] {
+                    mandatory -= groups[source].size;
+                }
             }
             if end <= position && position + 1 >= through && mandatory < maximum_messages {
                 cut = Some(position + 1);
@@ -142,6 +149,14 @@ fn mandatory_selection(
         let keep = selected[position];
         selected[group.root] |= keep;
     }
+    for group in groups {
+        compaction_step(quota)?;
+        if selected[group.root]
+            && let Some(source) = groups[group.root].source
+        {
+            selected[source] = true;
+        }
+    }
     for (position, group) in groups.iter().enumerate() {
         compaction_step(quota)?;
         let keep = selected[group.root];
@@ -209,9 +224,13 @@ pub(crate) fn compact_context(
         for group in groups.iter().rev() {
             compaction_step(&mut quota)?;
             let root = group.root;
-            let size = groups[root].size;
+            let dependency = groups[root].source.filter(|source| !selected[*source]);
+            let size = groups[root].size + dependency.map_or(0, |source| groups[source].size);
             if !selected[root] && size < maximum - count {
                 selected[root] = true;
+                if let Some(source) = dependency {
+                    selected[source] = true;
+                }
                 count += size;
             }
         }

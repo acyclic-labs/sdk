@@ -59,14 +59,17 @@ where
             .await
             .map_err(|error| (E::from(error), None))?
             .into_mutation_phase();
-        self.publish(
-            permit,
-            work,
-            cancellation,
-            acknowledged,
-            &mut before_publication,
-            None,
-        )
+        crate::heap_future::native_future(work, || {
+            self.publish(
+                permit,
+                work,
+                cancellation,
+                acknowledged,
+                &mut before_publication,
+                None,
+            )
+        })
+        .map_err(|error| (E::from(MountSourceError::NativeWork(error)), None))?
         .await
     }
 

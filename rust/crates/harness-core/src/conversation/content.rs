@@ -9,9 +9,19 @@ pub type ContentIo = ();
 /// Retained content metadata ownership.
 #[cfg(feature = "filesystem")]
 pub type ContentHold<'a> = crate::filesystem::DecodeReservation<'a>;
-/// Retained content metadata ownership.
+/// Retained content metadata ownership. Without filesystem accounting no
+/// content is funded, so no hold can exist and every funded branch is
+/// statically unreachable while keeping the same API as the funded hold.
 #[cfg(not(feature = "filesystem"))]
-pub type ContentHold<'a> = std::marker::PhantomData<&'a ()>;
+pub struct ContentHold<'a>(std::convert::Infallible, std::marker::PhantomData<&'a ()>);
+
+#[cfg(not(feature = "filesystem"))]
+impl ContentHold<'_> {
+    /// Same contract as the funded hold; uninhabited, so never called.
+    pub(crate) fn into_retained(self) -> Result<()> {
+        match self.0 {}
+    }
+}
 
 /// Caller authority ceiling and accounting for a content operation.
 /// The ceiling can only narrow the adapter's authenticated workload authority.
@@ -298,6 +308,28 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
             access.io,
             crate::wire::ErrorCode::Unsupported,
             "authenticated generation selection is unavailable",
+        ))
+    }
+
+    /// Waits for an authorized current path to exist, using its provider's
+    /// change event. Dropping the future releases that interest. This never
+    /// waits for a pinned historical generation to change.
+    /// With `after`, waits for a different generation or removal of that path.
+    fn wait_private_path<'a, 'io>(
+        &'a self,
+        _volume: &'a VolumeRef,
+        _granted_prefix: &'a str,
+        _path: &'a str,
+        _after: Option<&'a GenerationRef>,
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, ()>>
+    where
+        'io: 'a,
+    {
+        Err(content_error(
+            access.io,
+            crate::wire::ErrorCode::Unsupported,
+            "content provider has no path change event",
         ))
     }
 
@@ -862,6 +894,26 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
     {
         self.bound_reader(volume, access.io)?
             .select_private_generation(volume, granted_prefix, path, expected_generation, access)
+    }
+
+    fn wait_private_path<'a, 'io>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        after: Option<&'a GenerationRef>,
+        access: ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, ()>>
+    where
+        'io: 'a,
+    {
+        self.bound_reader(volume, access.io)?.wait_private_path(
+            volume,
+            granted_prefix,
+            path,
+            after,
+            access,
+        )
     }
 
     fn read_private_range<'a, 'io>(

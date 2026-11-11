@@ -101,6 +101,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
+        crate::heap_future::in_borrowed_frame!(accounting, |accounting| self
+            .describe_conflict_contents_inner(conflict, contents, accounting, cancellation))
+    }
+
+    async fn describe_conflict_contents_inner(
+        &self,
+        conflict: MergeConflict,
+        contents: ConflictContents,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Owned<crate::ConflictView>, WorkspaceError> {
         cancellation.check()?;
         // The path buffer follows the completed view, rather than losing its
         // original credit at a String projection or being cloned per branch.

@@ -52,10 +52,10 @@ async fn publication_uses_only_required_sql_observations()
         (u32::MAX, None),
         (
             1,
-            Some(crate::ReadKeySeek {
-                key: vec![0; crate::MAX_RECORD_KEY_BYTES + 1].into(),
-                before: 1,
-            }),
+            Some(crate::ReadKeySeek::exact(
+                vec![0_u8; crate::MAX_RECORD_KEY_BYTES + 1],
+                1,
+            )),
         ),
     ] {
         assert!(matches!(
@@ -301,14 +301,16 @@ async fn publication_uses_only_required_sql_observations()
     // already elapsed deadline. A condition conflict must not mask expiry.
     let expired_conflict = CommitRequest {
         deadline_unix_millis: Some(1),
-        conditions: vec![CommitCondition::Tail {
-            path: original.path.clone(),
-            expected: 0,
-        }],
-        mutations: vec![CommitMutation::Append {
-            path: StreamPath::new("deadline/control")?,
-            records: vec!["deadline".into()],
-        }],
+        effects: vec![crate::CommitEffect::hard(
+            vec![CommitCondition::Tail {
+                path: original.path.clone(),
+                expected: 0,
+            }],
+            vec![CommitMutation::Append {
+                path: StreamPath::new("deadline/control")?,
+                records: vec!["deadline".into()],
+            }],
+        )],
         idempotency_key: IdempotencyKey::unique(),
     };
     replica.set_proposal_clock(0);
@@ -334,9 +336,12 @@ async fn publication_uses_only_required_sql_observations()
             .execute(
                 WriteRequest::Commit(CommitRequest {
                     deadline_unix_millis: None,
-                    conditions: vec![CommitCondition::Tail {
-                        path: original.path.clone(),
-                        expected: 2,
+                    effects: vec![crate::CommitEffect {
+                        conditions: vec![CommitCondition::Tail {
+                            path: original.path.clone(),
+                            expected: 2,
+                        }],
+                        ..expired_conflict.effects[0].clone()
                     }],
                     ..expired_conflict
                 }),
@@ -800,14 +805,16 @@ fn refresh_producer_retirement_ends_public_waits()
                 let session = runtime.block_on(provider.inner.session.lock());
                 let mut tail = Box::pin(provider.tail(path.clone()));
                 let mut publication = Box::pin(provider.commit(CommitRequest {
-                    conditions: vec![CommitCondition::Tail {
-                        path: path.clone(),
-                        expected: 1,
-                    }],
-                    mutations: vec![CommitMutation::Append {
-                        path: path.clone(),
-                        records: vec!["retained-session".into()],
-                    }],
+                    effects: vec![crate::CommitEffect::hard(
+                        vec![CommitCondition::Tail {
+                            path: path.clone(),
+                            expected: 1,
+                        }],
+                        vec![CommitMutation::Append {
+                            path: path.clone(),
+                            records: vec!["retained-session".into()],
+                        }],
+                    )],
                     deadline_unix_millis: None,
                     idempotency_key: IdempotencyKey::unique(),
                 }));

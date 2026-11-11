@@ -9,6 +9,13 @@ pub enum Part<'a> {
     Other,
     /// Provider-native assistant continuity.
     Native,
+    /// One fragment of the declaration environment used by later calls.
+    Declarations {
+        /// First fragment of a new table.
+        start: bool,
+        /// Last fragment, making this table active.
+        complete: bool,
+    },
     /// A tool invocation and whether it carries native continuity.
     Call {
         /// Original borrowed call identity.
@@ -41,6 +48,10 @@ pub struct Group {
     pub end: usize,
     /// Component size at the root; zero at other members.
     pub size: usize,
+    /// Original declaration component required if this exchange is retained.
+    pub source: Option<usize>,
+    /// Last dependent exchange endpoint; bounds when this component can retire.
+    pub retained_through: usize,
 }
 
 /// Native bytes on any assistant part, its assistant calls and their results
@@ -102,11 +113,15 @@ pub fn exchange_groups<M: Message, W: IndexWork>(
             root: position,
             end: position,
             size: 1,
+            source: None,
+            retained_through: position,
         });
     }
     let pending =
         CompiledPrefixIndex::from_repeated_entries(pending, |entry| entry.0.as_bytes(), work)?;
     let mut reasoning_start = None;
+    let mut declaration_start = None;
+    let mut declarations = None;
     for (position, message) in messages.iter().enumerate() {
         work.examine(1).map_err(Work)?;
         if !message.assistant() {
@@ -134,7 +149,19 @@ pub fn exchange_groups<M: Message, W: IndexWork>(
                 }
             }
             match part {
+                Part::Declarations { start, complete } => {
+                    if start {
+                        declaration_start = Some(position);
+                    }
+                    let first = declaration_start.ok_or(CompiledPrefixError::Invariant)?;
+                    link(groups, first, position, work).map_err(Work)?;
+                    if complete {
+                        declarations = Some(first);
+                        declaration_start = None;
+                    }
+                }
                 Part::Call { id, .. } => {
+                    groups[position].source = declarations;
                     let entry = pending
                         .matches(id.as_bytes(), |_| false, work)?
                         .exact
@@ -178,6 +205,34 @@ pub fn exchange_groups<M: Message, W: IndexWork>(
     }
     for position in 0..groups.len() {
         root(groups, position, work).map_err(Work)?;
+    }
+    for position in 0..groups.len() {
+        work.examine(1).map_err(Work)?;
+        if let Some(source) = groups[position].source {
+            let source = root(groups, source, work).map_err(Work)?;
+            let owner = groups[position].root;
+            if source >= owner
+                || groups[owner]
+                    .source
+                    .is_some_and(|prior| groups[prior].root != source)
+            {
+                return Err(CompiledPrefixError::Invariant);
+            }
+            groups[owner].source = Some(source);
+        }
+        groups[position].retained_through = groups[position].end;
+    }
+    for position in 0..groups.len() {
+        work.examine(1).map_err(Work)?;
+        if groups[position].size > 0
+            && let Some(source) = groups[position].source
+        {
+            if groups[source].source.is_some() {
+                return Err(CompiledPrefixError::Invariant);
+            }
+            groups[source].retained_through =
+                groups[source].retained_through.max(groups[position].end);
+        }
     }
     Ok(())
 }

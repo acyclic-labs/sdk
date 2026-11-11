@@ -68,7 +68,7 @@ fn baseline_native_read<'a>(
                 };
                 let length = window
                     .records
-                    .records
+                    .values
                     .get(window.start)
                     .ok_or(std::io::ErrorKind::InvalidData)?
                     .value

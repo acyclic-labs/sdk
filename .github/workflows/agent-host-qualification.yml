@@ -183,7 +183,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$ACYCLIC_E2E_RECEIPT_DIR"
-          cargo build --locked -p acyclic-plugin -p graphcoder --bins --message-format=json > "$ACYCLIC_E2E_RECEIPT_DIR/normal-cargo.jsonl"
+          cargo build --locked -p acyclic-plugin --bins --message-format=json > "$ACYCLIC_E2E_RECEIPT_DIR/normal-cargo.jsonl"
 
       - name: Run scripted native sessions in the Codex sandbox
         if: runner.os == 'Linux'
@@ -193,7 +193,7 @@ jobs:
       - name: Build shared resource instrumentation
         if: runner.os == 'Linux'
         shell: bash
-        run: cargo build --locked -p acyclic-plugin -p graphcoder --bins --features graphcoder/test-support --message-format=json > "$ACYCLIC_E2E_RECEIPT_DIR/scale-cargo.jsonl"
+        run: cargo build --locked -p acyclic-plugin --bins --features acyclic-harness/test-support --message-format=json > "$ACYCLIC_E2E_RECEIPT_DIR/scale-cargo.jsonl"
 
       - name: Run shared mount scale through every host adapter
         if: runner.os == 'Linux'

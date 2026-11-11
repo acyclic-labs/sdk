@@ -696,9 +696,21 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
             boundary.prepared_snapshot(operation, step)?
         };
         let projection = serde_json::json!({
+            "$version": 1,
+            "header": {
+                "version": 1,
+                "summary": request.request().summary,
+                "compose_tools": request.request().compose_tools,
+                "model": request.request().model,
+                "tools": request.request().tools,
+                "sampling": request.request().sampling,
+                "max_output_tokens": request.request().max_output_tokens,
+            },
+            "projection": {
             "context": {"messages": request.request().messages, "metadata": {}, "current_input_index": 0},
             "canonical": null, "checkpoint": null, "working": null, "accounting": null,
             "steering": snapshot,
+            },
         });
         let bytes = acyclic_harness_core::contract::canonical_json_bytes(&projection)?;
         let key = format!("prepared:{step}");

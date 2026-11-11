@@ -13,6 +13,7 @@ fn request_file_contracts() -> Result<()> {
         ("test".into(), 21, true),
         ("test".into(), u32::MAX, true),
         ("a".repeat(4097), 1, true),
+        (format!("{}x", " ".repeat(4097)), 1, true),
     ] {
         assert_eq!(
             SearchRequest {
@@ -45,7 +46,7 @@ fn unicode_validation_matches_the_advertised_schema() -> Result<()> {
         ("🦀".repeat(4096), true),
         ("🦀".repeat(4097), true),
     ] {
-        let input = serde_json::json!({"query":query, "max_results":u32::MAX});
+        let input = serde_json::json!({"query":query});
         assert_eq!(validator.is_valid(&input), valid);
         let request: SearchRequest =
             serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;

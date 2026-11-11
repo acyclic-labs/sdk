@@ -116,8 +116,8 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
         }
         // Resume the actual query after both the new input and its actor step.
         // The archive case must re-read the tail after observing closure.
-        let (input, tail, _, closed) = bound
-            .journal_from_input(&observed, cut, cut, 0, 0, true)
+        let (input, tail, _, closed, _) = bound
+            .journal_from_input::<Usage>(&observed, cut, cut, 0, 0, (true, Some(0)))
             .await?;
         assert_eq!(input, cut);
         assert!(
@@ -128,13 +128,13 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
             !closed,
             "settlement was mistaken for an empty closed producer"
         );
-        let (_, page, settled) = bound.usage_page(&root, cut, 0, false).await?;
+        let (_, page, settled, _) = bound.usage_page(&root, cut, 0, false, None).await?;
         assert!(page.is_some() && settled);
         let (_, _, page, settled) = bound.event_page(&root, cut, 0, false).await?;
         assert!(page.is_some() && settled);
         if archive {
             let tail = crate::agent::inbox_tail(&**agents.provider(), &root).await?;
-            let (_, page, closed) = bound.usage_page(&root, tail, 0, true).await?;
+            let (_, page, closed, _) = bound.usage_page(&root, tail, 0, true, Some(0)).await?;
             assert!(page.is_none() && closed);
         }
     }

@@ -24,27 +24,30 @@ impl LocalWorkspace {
         scratch: VolumeRef,
         owner: &dyn super::owner::ViewOwner,
         authority: &crate::filesystem::NativeMountAuthority,
-    ) -> Result<(Arc<LocalWorkspace>, Arc<Mounts>)> {
+    ) -> Result<Arc<LocalWorkspace>> {
         let mut state = crate::sync::owned::lock_owned(StateArc::clone(&self.state)).await;
         let key = project.storage_name(&mut None)?;
-        let mounts = if let Some(mounts) = state
-            .allocated_mounts
+        if let Some(workspace) = state
+            .allocated_workspaces
             .get(&key)
             .and_then(std::sync::Weak::upgrade)
         {
-            mounts
-        } else {
-            state
-                .allocated_mounts
-                .retain(|_, mounts| mounts.strong_count() != 0);
-            let mounts = self.bound_mounts(project, scratch, authority).await?;
-            state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
-            mounts
-        };
+            owner.verify().await?;
+            return Ok(workspace);
+        }
+        state
+            .allocated_workspaces
+            .retain(|_, workspace| workspace.strong_count() != 0);
+        let mounts = self.bound_mounts(project, scratch, authority).await?;
         let workspace = self
-            .mount_task_view(view, owner, Some(Arc::clone(&mounts)), authority)
+            .mount_task_view(view, owner, Some(mounts), authority)
             .await?;
-        Ok((workspace, mounts))
+        // Every turn and background command of this binding shares its primary
+        // view, capture cursor and auxiliary projections through one owner.
+        state
+            .allocated_workspaces
+            .insert(key, Arc::downgrade(&workspace));
+        Ok(workspace)
     }
 
     /// All task views enter the filesystem's shared instance. The host may

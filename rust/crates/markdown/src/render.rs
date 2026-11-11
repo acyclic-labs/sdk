@@ -50,6 +50,8 @@ pub(crate) struct Renderer {
     code_text: String,
     table: Option<crate::table::Table>,
     width: u16,
+    pub(super) deferred_code: bool,
+    pub(super) code_cache: Option<code::CodeCache>,
 }
 
 impl Renderer {
@@ -104,6 +106,8 @@ impl Renderer {
             lists: self.lists.clone(),
             prefixes: self.prefixes.clone(),
             width: self.width,
+            deferred_code: self.deferred_code,
+            code_cache: self.code_cache.clone(),
             ..Self::default()
         }
     }
@@ -272,7 +276,11 @@ impl Renderer {
                     CodeBlockKind::Indented => "",
                 };
                 self.block_line(code::header(language));
-                self.code = Some(code::highlighter(language));
+                self.code = Some(code::highlighter(
+                    language,
+                    self.deferred_code,
+                    self.code_cache.clone(),
+                ));
             }
             Tag::Table(alignments) => {
                 self.flush();
