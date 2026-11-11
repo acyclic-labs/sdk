@@ -1,8 +1,12 @@
 //! Pure UI files over pinned stream and volume data. Shared by cached clients and filesystem sources.
 pub mod blocks;
+#[cfg(feature = "filesystem")]
+mod filesystem;
 mod project;
 use crate::command_request::CommandFileRoot;
-pub use project::{Affected, Children, Cut, Node, Page, View};
+#[cfg(feature = "filesystem")]
+pub use filesystem::{FilesystemCut, FilesystemView};
+pub use project::{Affected, Children, Cut, Node, NodeRef, Page, View};
 
 /// Projection or untrusted document failure.
 #[derive(Debug, thiserror::Error)]
@@ -32,6 +36,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Canonical relative path beneath the bound agent's private `ui/` root.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UiPath(String);
+impl AsRef<str> for UiPath {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
 impl From<UiPath> for String {
     fn from(path: UiPath) -> Self {
         path.0

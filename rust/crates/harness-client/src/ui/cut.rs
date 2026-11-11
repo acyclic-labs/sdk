@@ -41,7 +41,7 @@ impl Cut for ReaderCut<'_> {
         let output: TurnOutput = serde_json::from_str(&output)?;
         Ok(Cow::Owned(output.text))
     }
-    fn children(&self, page: u32) -> Option<Children<'_>> {
+    fn children(&self, page: u32) -> Result<Option<Children<'_>>> {
         self.agent
             .children()
             .ok()
@@ -50,5 +50,7 @@ impl Cut for ReaderCut<'_> {
                 children: &listing.children,
                 more: listing.next.is_some(),
             })
+            .map(Some)
+            .ok_or(Error::Pending)
     }
 }

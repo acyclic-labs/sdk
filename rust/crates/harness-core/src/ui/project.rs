@@ -22,7 +22,17 @@ pub trait Cut {
     /// One conversation entry's rendered text, from pinned file bytes.
     fn turn(&self, sequence: u64) -> Result<Cow<'_, str>>;
     /// Exactly one cached `children_page`, never a flattened subtree.
-    fn children(&self, page: u32) -> Option<Children<'_>>;
+    fn children(&self, page: u32) -> Result<Option<Children<'_>>>;
+}
+
+/// One borrowed directory entry, valid only during its emission callback.
+pub struct NodeRef<'a> {
+    /// Name within the selected directory.
+    pub name: &'a str,
+    /// Directory navigation rather than a markdown file.
+    pub directory: bool,
+    /// Agent navigation target, represented by the backend's namespace link.
+    pub agent: Option<&'a StreamPath>,
 }
 
 /// One directory entry; a child directory is an explicit navigation link.
@@ -68,6 +78,14 @@ impl View {
         }
         Ok(Self { page_size })
     }
+    /// Stable algorithm/configuration identity for content-addressed projections.
+    pub fn identity(&self) -> [u8; 32] {
+        let mut identity = [0; 32];
+        let domain = b"acyclic:harness:ui:v1";
+        identity[..domain.len()].copy_from_slice(domain);
+        identity[28..].copy_from_slice(&self.page_size.to_le_bytes());
+        identity
+    }
     /// Explicit demands only. Callers plan these at the visible priority and
     /// follow the selected status/conversation streams using the same reader.
     /// For directory reads, pass the cursor returned by `nodes` unchanged.
@@ -100,6 +118,12 @@ impl View {
                 tail: None,
                 witness: Some(agent.status()?),
             }),
+            "children/pages" => wants.push(Want::Listing {
+                parent: agent.children()?,
+                index: u32::try_from(cursor).map_err(|_| Error::Invalid("child cursor"))?,
+                tail: None,
+                witness: Some(agent.status()?),
+            }),
             path if path.starts_with("children/pages/") => wants.push(Want::Listing {
                 parent: agent.children()?,
                 index: page_number(path, "children/pages/")?,
@@ -129,11 +153,41 @@ impl View {
     }
     /// Directory listing at a cut. Children cursors encode (provider page,
     /// offset); requesting the continuation never visits another child subtree.
-    pub fn nodes(&self, cut: &impl Cut, dir: &UiPath, cursor: u64, max: u32) -> Result<Page> {
+    pub fn nodes(
+        &self,
+        cut: &impl Cut,
+        dir: &impl AsRef<str>,
+        cursor: u64,
+        max: u32,
+    ) -> Result<Page> {
+        let mut nodes = Vec::new();
+        let next = self.visit_nodes(cut, dir, cursor, max, |node| {
+            nodes.push(Node {
+                name: node.name.to_owned(),
+                directory: node.directory,
+                agent: node
+                    .agent
+                    .map(|path| AgentPath::try_from(path.as_str().to_owned()))
+                    .transpose()?,
+            });
+            Ok::<_, Error>(())
+        })?;
+        Ok(Page { nodes, next })
+    }
+    /// Emit the same directory page into a caller-owned sink. Names are borrowed
+    /// for each callback; native callers fund their retained copies directly.
+    pub fn visit_nodes<E: From<Error>>(
+        &self,
+        cut: &impl Cut,
+        dir: &impl AsRef<str>,
+        cursor: u64,
+        max: u32,
+        mut emit: impl FnMut(NodeRef<'_>) -> std::result::Result<(), E>,
+    ) -> std::result::Result<Option<u64>, E> {
         if max == 0 {
-            return Err(Error::Invalid("zero page size"));
+            return Err(Error::Invalid("zero page size").into());
         }
-        match dir.as_str() {
+        match dir.as_ref() {
             "" => {
                 let names = [
                     ("index.md", false),
@@ -141,86 +195,124 @@ impl View {
                     ("children", true),
                     ("turns", true),
                 ];
-                let nodes = names
+                let mut end = cursor;
+                for (name, directory) in names
                     .into_iter()
                     .skip(usize::try_from(cursor).unwrap_or(usize::MAX))
                     .take(max as usize)
-                    .map(|(name, directory)| Node {
-                        name: name.into(),
+                {
+                    emit(NodeRef {
+                        name,
                         directory,
                         agent: None,
-                    })
-                    .collect::<Vec<_>>();
-                let end = cursor.saturating_add(nodes.len() as u64);
-                Ok(Page {
-                    nodes,
-                    next: (end < 4).then_some(end),
-                })
+                    })?;
+                    end += 1;
+                }
+                Ok((end < 4).then_some(end))
             }
             "children" => {
                 let page =
                     u32::try_from(cursor >> 32).map_err(|_| Error::Invalid("child cursor"))?;
                 let offset = (cursor & u64::from(u32::MAX)) as usize;
-                let listing = cut.children(page).ok_or(Error::Pending)?;
-                let nodes = listing
-                    .children
-                    .iter()
-                    .skip(offset)
-                    .take(max as usize)
-                    .map(|path| {
-                        let agent = AgentPath::try_from(path.as_str().to_owned())?;
-                        Ok(Node {
-                            name: agent.id().to_string(),
-                            directory: true,
-                            agent: Some(agent),
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                let end = offset.saturating_add(nodes.len());
-                let next = if end < listing.children.len() {
+                let listing = cut
+                    .children(page)?
+                    .ok_or(Error::Invalid("unknown child page"))?;
+                let mut end = offset;
+                for path in listing.children.iter().skip(offset).take(max as usize) {
+                    let name = AgentPath::parse_id(path.as_str()).map_err(Error::from)?;
+                    emit(NodeRef {
+                        name,
+                        directory: true,
+                        agent: Some(path),
+                    })?;
+                    end += 1;
+                }
+                if !listing.more && end == listing.children.len() && end - offset < max as usize {
+                    emit(NodeRef {
+                        name: "pages",
+                        directory: true,
+                        agent: None,
+                    })?;
+                    end += 1;
+                }
+                Ok(if end < listing.children.len() {
                     Some((u64::from(page) << 32) | end as u64)
                 } else if listing.more {
                     page.checked_add(1).map(|n| u64::from(n) << 32)
+                } else if end == listing.children.len() {
+                    Some((u64::from(page) << 32) | end as u64)
                 } else {
                     None
+                })
+            }
+            "children/pages" => {
+                let page = u32::try_from(cursor).map_err(|_| Error::Invalid("child cursor"))?;
+                let Some(listing) = cut.children(page)? else {
+                    return Ok(None);
                 };
-                Ok(Page { nodes, next })
+                let mut buffer = [0; 23];
+                let mut name = std::io::Cursor::new(buffer.as_mut_slice());
+                write!(name, "{page}.md").map_err(Error::from)?;
+                let length = name.position() as usize;
+                let name = std::str::from_utf8(&buffer[..length])
+                    .map_err(|_| Error::Invalid("generated page name"))?;
+                emit(NodeRef {
+                    name,
+                    directory: false,
+                    agent: None,
+                })?;
+                Ok(listing.more.then_some(cursor + 1))
             }
             "turns" => {
                 let tail = cut.tail().ok_or(Error::Pending)?;
                 let pages = tail.div_ceil(u64::from(self.page_size));
                 let end = cursor.saturating_add(u64::from(max)).min(pages);
-                Ok(Page {
-                    nodes: (cursor..end)
-                        .map(|n| Node {
-                            name: format!("{n}.md"),
-                            directory: false,
-                            agent: None,
-                        })
-                        .collect(),
-                    next: (end < pages).then_some(end),
-                })
+                for n in cursor..end {
+                    // All u64 decimal digits plus `.md`, without heap backing.
+                    let mut buffer = [0; 23];
+                    let mut name = std::io::Cursor::new(buffer.as_mut_slice());
+                    write!(name, "{n}.md").map_err(Error::from)?;
+                    let length = name.position() as usize;
+                    let name = std::str::from_utf8(&buffer[..length])
+                        .map_err(|_| Error::Invalid("generated page name"))?;
+                    emit(NodeRef {
+                        name,
+                        directory: false,
+                        agent: None,
+                    })?;
+                }
+                Ok((end < pages).then_some(end))
             }
-            _ => Err(Error::Invalid("unknown default directory")),
+            _ => Err(Error::Invalid("unknown default directory").into()),
         }
     }
     /// Generate only the selected page and return the requested byte range.
     /// Range offsets are bytes (UTF-8 boundaries need not align).
-    pub fn bytes(&self, cut: &impl Cut, path: &UiPath, range: Range<usize>) -> Result<Vec<u8>> {
+    pub fn bytes(
+        &self,
+        cut: &impl Cut,
+        path: &impl AsRef<str>,
+        range: Range<usize>,
+    ) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         self.write_range(cut, path, range, &mut bytes)?;
         Ok(bytes)
     }
     /// Pure markdown generation; authored-over-default resolution wraps this.
-    pub fn project(&self, cut: &impl Cut, path: &UiPath) -> Result<String> {
+    pub fn project(&self, cut: &impl Cut, path: &impl AsRef<str>) -> Result<String> {
         let mut bytes = Vec::new();
         self.write(cut, path, &mut bytes)?;
         String::from_utf8(bytes).map_err(|_| Error::Invalid("non-UTF-8 projection"))
     }
     /// Emit directly into the caller's writer. Native callers can admit each
     /// output growth on their original ledger without an intermediate String.
-    pub fn write(&self, cut: &impl Cut, path: &UiPath, sink: &mut impl Write) -> Result<()> {
-        match path.as_str() {
+    pub fn write(
+        &self,
+        cut: &impl Cut,
+        path: &impl AsRef<str>,
+        sink: &mut impl Write,
+    ) -> Result<()> {
+        match path.as_ref() {
             "status.md" => status(cut, sink),
             "index.md" => {
                 let tail = cut.tail().ok_or(Error::Pending)?;
@@ -246,7 +338,7 @@ impl View {
     pub fn write_range(
         &self,
         cut: &impl Cut,
-        path: &UiPath,
+        path: &impl AsRef<str>,
         range: Range<usize>,
         sink: &mut impl Write,
     ) -> Result<()> {
@@ -272,6 +364,9 @@ impl View {
             .checked_mul(u64::from(self.page_size))
             .ok_or(Error::Invalid("page overflow"))?;
         let end = start.saturating_add(u64::from(self.page_size)).min(tail);
+        if !index && start >= tail {
+            return Err(Error::Invalid("page beyond conversation"));
+        }
         sink.write_all(b"# Conversation\n\n")?;
         status(cut, sink)?;
         sink.write_all(b"\n")?;
@@ -295,7 +390,9 @@ impl View {
         index: bool,
         sink: &mut impl Write,
     ) -> Result<()> {
-        let listing = cut.children(page).ok_or(Error::Pending)?;
+        let listing = cut
+            .children(page)?
+            .ok_or(Error::Invalid("unknown child page"))?;
         sink.write_all(b"# Children\n\n")?;
         for path in listing.children {
             let id = AgentPath::parse_id(path.as_str())?;

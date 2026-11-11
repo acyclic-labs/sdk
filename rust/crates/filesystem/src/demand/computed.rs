@@ -126,6 +126,17 @@ pub trait View: Send + Sync + 'static {
         length: u64,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, DemandError>;
+    /// Immutable link bytes. Ordinary file-only views refuse this operation.
+    fn link(
+        &self,
+        _cut: ViewCut,
+        _snapshot: &Self::Snapshot,
+        _path: &NamespacePath,
+        _maximum_bytes: u64,
+        _accounting: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, DemandError> {
+        Err(DemandError::InvalidRequest)
+    }
     /// Emit invalidations directly into the existing filesystem sink.
     fn affected(
         &self,
@@ -423,15 +434,34 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
 
     async fn read_link<W: FsWork + Send>(
         &self,
-        _: SourceReference,
-        _: &NamespacePath,
-        _: SourceVersion,
-        _: u64,
+        source: SourceReference,
+        path: &NamespacePath,
+        expected: SourceVersion,
+        maximum_bytes: u64,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<OwnedSourceChunk, DemandError> {
-        let ctx = work.accounting(cancellation);
-        work.finish(Err(DemandError::InvalidRequest), &ctx)
+        let mut ctx = work.accounting(cancellation);
+        let result = async {
+            ctx.check()?;
+            let (cut, snapshot) = self
+                .selected(
+                    &source,
+                    path,
+                    expected,
+                    ViewQuery::Range {
+                        path,
+                        offset: 0,
+                        length: maximum_bytes,
+                    },
+                    &mut ctx,
+                )
+                .await?;
+            self.view
+                .link(cut, &snapshot, path, maximum_bytes, &mut ctx)
+        }
+        .await;
+        work.finish(result, &ctx)
     }
 
     fn watch<W: FsWork + Send>(

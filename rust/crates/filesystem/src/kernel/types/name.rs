@@ -128,7 +128,7 @@ impl LogicalName {
         finish_owned(owned, result)
     }
 
-    fn validate_bytes(
+    pub(crate) fn validate_bytes(
         encoding: NameEncoding,
         bytes: &[u8],
         maximum_bytes: u32,

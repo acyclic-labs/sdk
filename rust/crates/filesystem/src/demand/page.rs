@@ -1,6 +1,67 @@
 use super::*;
 use std::sync::Arc;
 
+/// Builds one generated page without allocating unaccounted names or a
+/// temporary collection in a view. Growth is admitted before each emission.
+pub struct SourceDirectoryPageBuilder {
+    entries: crate::kernel::Owned<Vec<SourceDirectoryEntry>>,
+}
+impl SourceDirectoryPageBuilder {
+    /// Start an empty page on the caller's original ledger.
+    pub fn new(ctx: &mut crate::kernel::KernelAccounting<'_>) -> Result<Self, DemandError> {
+        Ok(Self {
+            entries: crate::kernel::Owned::allocate(0, ctx)?,
+        })
+    }
+
+    /// Emit one portable name directly into its retained page backing.
+    pub fn push_utf8(
+        &mut self,
+        name: &str,
+        node: SourceNode,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), DemandError> {
+        let maximum = u32::try_from(name.len()).map_err(|_| DemandError::InvalidRequest)?;
+        crate::kernel::LogicalName::validate_bytes(
+            crate::kernel::NameEncoding::Utf8,
+            name.as_bytes(),
+            maximum,
+        )
+        .map_err(|_| DemandError::InvalidRequest)?;
+        self.entries.ensure_for_push(usize::MAX, ctx)?;
+        let owned = crate::kernel::allocation::writer::ImageWriter::produce(
+            ctx,
+            name.len(),
+            |writer| writer.append(name.as_bytes()),
+            DemandError::from,
+        )?;
+        let crate::kernel::Owned {
+            value,
+            bytes,
+            mut allocation,
+        } = owned;
+        let name = crate::kernel::LogicalName::from_validated_bytes(
+            crate::kernel::NameEncoding::Utf8,
+            value,
+        );
+        self.entries.allocation.absorb(&mut allocation)?;
+        self.entries.bytes += bytes;
+        self.entries
+            .push(SourceDirectoryEntry { name, node }, ctx)?;
+        Ok(())
+    }
+
+    /// Publish the entries with their original allocation owners.
+    pub fn finish(
+        self,
+        next: Option<SourceCursor>,
+        version: SourceVersion,
+        ctx: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<SourceDirectoryPage, DemandError> {
+        SourceDirectoryPage::stateless(self.entries, next, version, ctx)
+    }
+}
+
 /// A bounded directory page awaiting consumer publication.
 #[derive(Debug)]
 pub struct SourceDirectoryPage {
