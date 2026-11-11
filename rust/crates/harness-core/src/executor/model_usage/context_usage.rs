@@ -133,6 +133,19 @@ impl Header {
                         }
                     }
                     SpanEvent::End {
+                        depth: 3,
+                        kind: SpanKind::Scalar,
+                        start,
+                        end,
+                    } if fields.projection
+                        && fields.accounting
+                        && fields.capacity_section == Some(false)
+                        && token(start, end) == Some(b"null") =>
+                    {
+                        fields.result = Some(ContextUsage::Unavailable);
+                        return Ok(true);
+                    }
+                    SpanEvent::End {
                         depth: 4,
                         kind: SpanKind::Scalar,
                         start,
@@ -233,7 +246,11 @@ mod tests {
                     context_tokens: 65_536,
                     output_tokens: None,
                 },
-                count: ModelTokenCount::from_upper_bounds(prepared.request_digest(), 7, vec![1]),
+                count: Some(ModelTokenCount::from_upper_bounds(
+                    prepared.request_digest(),
+                    7,
+                    vec![1],
+                )),
             };
             let reference = transcript::stage_projection(
                 journal.as_ref(),
@@ -277,11 +294,11 @@ mod tests {
         #[test]
         fn accounting_header_is_independent_of_the_unread_context(
             input_tokens in any::<u64>(), capacity_tokens in 1..=u32::MAX,
-            header_bytes in 0..8192usize, page in 1..128usize, counted in any::<bool>(),
+            header_bytes in 0..8192usize, page in 1..128usize, accounting_mode in 0u8..3,
         ) {
-            let accounting = counted.then(|| serde_json::json!({
+            let accounting = (accounting_mode != 0).then(|| serde_json::json!({
                 "capacity": {"context_tokens": capacity_tokens, "output_tokens": null},
-                "count": {"fixed_tokens": 0, "input_tokens": input_tokens, "message_tokens": []},
+                "count": (accounting_mode == 1).then(|| serde_json::json!({"fixed_tokens": 0, "input_tokens": input_tokens, "message_tokens": []})),
             }));
             let record = serde_json::json!({
                 "$version": 1,
@@ -298,7 +315,7 @@ mod tests {
                 result = header.feed(&bytes[origin..end], origin as u64, offset as u64, bytes.len() as u64).unwrap();
                 offset = end;
             }
-            prop_assert_eq!(result, Some(if counted {
+            prop_assert_eq!(result, Some(if accounting_mode == 1 {
                 ContextUsage::Counted { input_tokens, capacity_tokens }
             } else {
                 ContextUsage::Unavailable

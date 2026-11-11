@@ -249,7 +249,11 @@ impl StockExecution<'_> {
             if policy.needs_compaction(
                 final_accounting.capacity,
                 with_history_io(self.io, |work| {
-                    final_accounting.count.validate(&request, work)
+                    final_accounting
+                        .count
+                        .as_ref()
+                        .ok_or(Error::ModelContextOverflow)?
+                        .validate(&request, work)
                 })?,
                 self.output_tokens(),
             )? {
@@ -261,7 +265,11 @@ impl StockExecution<'_> {
             }
             let mut request = request;
             request.retain_context_window(crate::context::ContextWindow {
-                input_tokens: final_accounting.count.input_tokens,
+                input_tokens: final_accounting
+                    .count
+                    .as_ref()
+                    .ok_or(Error::ModelContextOverflow)?
+                    .input_tokens,
                 capacity_tokens: final_accounting.capacity.context_tokens,
             })?;
             return Ok(Some(request));
@@ -308,9 +316,13 @@ impl StockExecution<'_> {
                 "selected capacity differs from captured accounting",
             ));
         }
-        let input_tokens =
-            with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+        let input_tokens = accounting
+            .count
+            .as_ref()
+            .map(|count| with_history_io(self.io, |work| count.validate(&prepared, work)))
+            .transpose()?;
         if self.single_request {
+            let input_tokens = input_tokens.ok_or(Error::ModelContextOverflow)?;
             let output = accounting
                 .capacity
                 .output_reservation(self.output_tokens())?;
@@ -356,12 +368,17 @@ impl StockExecution<'_> {
         {
             return Ok(retained);
         }
-        let token_pressure =
-            policy.needs_compaction(accounting.capacity, input_tokens, self.output_tokens())?;
+        let token_pressure = match input_tokens {
+            Some(tokens) => {
+                policy.needs_compaction(accounting.capacity, tokens, self.output_tokens())?
+            }
+            None => true,
+        };
         let selected_base = step == 0 && input.selected_context.is_some();
         let possible_message_pressure = selected_base
             && prepared.request().messages.len() > self.compaction_message_limit(true, 0);
         if !possible_message_pressure && !token_pressure {
+            let input_tokens = input_tokens.ok_or(Error::ModelContextOverflow)?;
             // Preparation borrows the next response's capacity credit. It does
             // not rewrite the current request, or impose a retention threshold.
             let reserve = accounting
@@ -443,6 +460,7 @@ impl StockExecution<'_> {
             && source_context.messages.len() > 1
             && source_context.messages.len() > self.compaction_message_limit(true, stage_messages);
         if !message_pressure && !token_pressure {
+            let input_tokens = input_tokens.ok_or(Error::ModelContextOverflow)?;
             let mut prepared = prepared;
             prepared.retain_context_window(crate::context::ContextWindow {
                 input_tokens,

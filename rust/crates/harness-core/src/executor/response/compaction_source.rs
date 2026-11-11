@@ -31,8 +31,15 @@ impl StockExecution<'_> {
             )?;
             let ceiling = policy.input_ceiling(accounting.capacity, self.output_tokens())?;
             let count =
-                stock_count_tokens(self.stock.provider.as_ref(), &request, ceiling, self.io)
-                    .await?;
+                match stock_count_tokens(self.stock.provider.as_ref(), &request, ceiling, self.io)
+                    .await
+                {
+                    Ok(count) => count,
+                    Err(Error::ModelContextOverflow) => {
+                        return Ok(CompactionSource::Base { context: base });
+                    }
+                    Err(error) => return Err(error),
+                };
             let tokens = with_history_io(self.io, |work| count.validate(&request, work))?;
             if policy.needs_compaction(accounting.capacity, tokens, self.output_tokens())? {
                 return Ok(CompactionSource::Base { context: base });

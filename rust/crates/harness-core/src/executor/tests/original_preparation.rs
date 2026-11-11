@@ -98,7 +98,10 @@ impl StockExecution<'_> {
             if self.io.is_none() {
                 projection.messages = prepared.into_messages();
             }
-            Some(ContextAccounting { capacity, count })
+            Some(ContextAccounting {
+                capacity,
+                count: Some(count),
+            })
         } else {
             None
         };
@@ -255,8 +258,13 @@ impl StockExecution<'_> {
                         "selected capacity differs from captured accounting",
                     ));
                 }
-                let input_tokens =
-                    with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
+                let input_tokens = with_history_io(self.io, |work| {
+                    accounting
+                        .count
+                        .as_ref()
+                        .ok_or(Error::ModelContextOverflow)?
+                        .validate(&prepared, work)
+                })?;
                 if let Some(retained) = self
                     .retained_compacted_response(
                         journal,

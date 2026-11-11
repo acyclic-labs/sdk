@@ -20,7 +20,7 @@ proptest! {
             let names = crate::tool_names::Names::new(prepared.request());
             let origin = provider.reasoning_origin(provider.key.as_deref(), None);
             let projected = projection::body_named(&provider, prepared.request(), &names, &origin, &mut crate::files::FileText::default()).unwrap();
-            let counted = wire::body(projected, &provider.model.name, adapter).unwrap();
+            let counted = wire::body(projected, &provider.model.name, crate::counting::specification(&provider.config, None).unwrap()).unwrap();
             let actual = counted.len() as u64 + 512;
             let first = futures::executor::block_on(provider.count_tokens(&prepared, 0)).unwrap();
             prop_assert_eq!(first.input_tokens, actual + u64::from(framing));
@@ -268,7 +268,12 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
             &origin,
             &mut crate::files::FileText::default(),
         )?;
-        let body = wire::body(projected, &provider.model.name, adapter)?.len() as u64;
+        let body = wire::body(
+            projected,
+            &provider.model.name,
+            crate::counting::specification(&provider.config, None).unwrap(),
+        )?
+        .len() as u64;
         // Unanchored: the exact body bounds every counted token.
         let bound = provider.count_tokens(&prepared, u64::MAX).await?;
         assert_eq!((bound.input_tokens, sent()), (body + u64::from(framing), 0));
@@ -322,7 +327,11 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
                     &origin,
                     &mut crate::files::FileText::default(),
                 )?;
-                let rendered = wire::body(projected, &provider.model.name, adapter)?;
+                let rendered = wire::body(
+                    projected,
+                    &provider.model.name,
+                    crate::counting::specification(&provider.config, None).unwrap(),
+                )?;
                 let expanded_bound = rendered.len() as u64 + u64::from(framing);
                 assert!(expanded_bound > old_bound);
                 let before = sent();
@@ -372,7 +381,11 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
                     &origin,
                     &mut crate::files::FileText::default(),
                 )?;
-                let old_body = wire::body(projected, &provider.model.name, adapter)?;
+                let old_body = wire::body(
+                    projected,
+                    &provider.model.name,
+                    crate::counting::specification(&provider.config, None).unwrap(),
+                )?;
                 provider.accounting.usage.observe(
                     adapter,
                     &observed,
@@ -396,7 +409,11 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
                     &origin,
                     &mut crate::files::FileText::default(),
                 )?;
-                let rendered = wire::body(projected, &provider.model.name, adapter)?;
+                let rendered = wire::body(
+                    projected,
+                    &provider.model.name,
+                    crate::counting::specification(&provider.config, None).unwrap(),
+                )?;
                 assert!(rendered.len() > old_body.len() + whitespace.len());
                 let rendered_bound = rendered.len() as u64 + u64::from(framing);
                 assert!(rendered_bound > old_bound);

@@ -698,7 +698,9 @@ pub(crate) struct ResponseProjection {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ContextAccounting {
     pub(crate) capacity: crate::context::ModelContextCapacity,
-    pub(crate) count: crate::context::ModelTokenCount,
+    /// `None` records a typed provider context-overflow refusal for this projection.
+    /// It never supplies an estimated admission count.
+    pub(crate) count: Option<crate::context::ModelTokenCount>,
 }
 
 /// Validated retained model artifacts without provider dispatch.

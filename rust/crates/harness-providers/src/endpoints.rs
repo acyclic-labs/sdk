@@ -1,6 +1,6 @@
 //! First-party OpenAI-compatible routes use the shared Chat adapter and request pipeline.
 //! Register exact model capacities before resolving. Automatic context admission still
-//! requires a verified token counter; generation itself does not require a count endpoint.
+//! uses provider-reported Chat prompt usage unless a tokenizer route is configured.
 
 use crate::{Adapter, Authentication, ProviderSpec, Result, RetrySpec, TimeoutSpec, invalid};
 use std::collections::BTreeMap;

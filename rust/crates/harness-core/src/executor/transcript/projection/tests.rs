@@ -32,17 +32,19 @@ async fn inline_projection_recovers_accounting_and_checkpoint_with_original_cust
         Limits::default(),
         None,
     )?;
-    for compacted in [false, true] {
+    for (compacted, counted) in [(false, false), (false, true), (true, false), (true, true)] {
         let accounting = ContextAccounting {
             capacity: crate::context::ModelContextCapacity {
                 context_tokens: 65_536,
                 output_tokens: Some(4_096),
             },
-            count: crate::context::ModelTokenCount::from_upper_bounds(
-                prepared.request_digest(),
-                0,
-                vec![128],
-            ),
+            count: counted.then(|| {
+                crate::context::ModelTokenCount::from_upper_bounds(
+                    prepared.request_digest(),
+                    0,
+                    vec![128],
+                )
+            }),
         };
         let expected_accounting =
             serde_json::to_value(&accounting).map_err(|error| Error::Invalid(error.to_string()))?;
