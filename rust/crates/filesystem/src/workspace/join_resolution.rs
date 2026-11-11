@@ -187,11 +187,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 && let Some(view) = self
                     .regular_conflict_view(
                         file_id,
-                        replaced.records,
+                        replaced.records.map(Some),
                         contents,
                         accounting,
                         cancellation,
                     )
+                    .await?
+            {
+                return Ok(view);
+            }
+            if base.is_none()
+                && ours.zip(theirs).is_some_and(|(ours, theirs)| {
+                    ours.link_count == theirs.link_count
+                        && (self.git_metadata || ours.metadata == theirs.metadata)
+                })
+                && let Some(view) = self
+                    .regular_conflict_view(file_id, records, contents, accounting, cancellation)
                     .await?
             {
                 return Ok(view);
@@ -220,7 +231,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             && let Some(view) = self
                 .regular_conflict_view(
                     file_id,
-                    [base_record, ours_record, theirs_record],
+                    [base_record, ours_record, theirs_record].map(Some),
                     contents,
                     accounting,
                     cancellation,
@@ -249,7 +260,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         if let Some(view) = self
             .regular_conflict_view(
                 file_id,
-                [base_record, ours_record, theirs_record],
+                [base_record, ours_record, theirs_record].map(Some),
                 contents,
                 accounting,
                 cancellation,
@@ -386,14 +397,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     async fn regular_conflict_view(
         &self,
         file_id: FileId,
-        records: [crate::kernel::FileRecord; 3],
+        records: [Option<crate::kernel::FileRecord>; 3],
         contents: ConflictContents,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<Owned<crate::ConflictView>>, WorkspaceError> {
-        if records
-            .iter()
-            .any(|record| record.kind != FileKind::Regular)
+        if records[1].is_none()
+            || records[2].is_none()
+            || records
+                .iter()
+                .flatten()
+                .any(|record| record.kind != FileKind::Regular)
         {
             return Ok(None);
         }
@@ -407,9 +421,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let reference = || {
             let mut view = record_conflict_view(self, file_id, None, ConflictKind::Binary);
             [view.base, view.ours, view.theirs] =
-                std::array::from_fn(|index| ConflictValue::Record {
-                    generation: [self.base.id, self.target_head.id, self.source_head.id][index],
-                    file_id: records[index].file_id,
+                std::array::from_fn(|index| match records[index] {
+                    Some(record) => ConflictValue::Record {
+                        generation: [self.base.id, self.target_head.id, self.source_head.id][index],
+                        file_id: record.file_id,
+                    },
+                    None => ConflictValue::Absent,
                 });
             view
         };
@@ -423,6 +440,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 .maximum_read_bytes,
         };
         for (index, (record, body)) in records.into_iter().zip(&mut bodies).enumerate() {
+            let Some(record) = record else {
+                texts[index] = Some("");
+                continue;
+            };
             let Some(bytes) = self
                 .target_head
                 .workspace
@@ -453,7 +474,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         match texts {
             [Some(base), Some(ours), Some(theirs)] => {
                 view.value.kind = ConflictKind::Text;
-                for (slot, text) in values.iter_mut().zip([base, ours, theirs]) {
+                for (index, (slot, text)) in values.iter_mut().zip([base, ours, theirs]).enumerate()
+                {
+                    if records[index].is_none() {
+                        continue;
+                    }
                     let text = Owned::<String>::copy_from_str(text, accounting)?;
                     *slot = ConflictValue::Text(text.transfer_to(
                         &mut view.allocation,
@@ -464,9 +489,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             }
             _ => {
                 for (slot, body) in values.iter_mut().zip(&bodies) {
-                    let body = body
-                        .as_ref()
-                        .ok_or(WorkspaceError::InvalidMergeResolution)?;
+                    let Some(body) = body.as_ref() else { continue };
                     let bytes = Owned::<Vec<u8>>::copy_from_slice(&body.bytes, accounting)?;
                     *slot = ConflictValue::Binary(bytes.transfer_to(
                         &mut view.allocation,

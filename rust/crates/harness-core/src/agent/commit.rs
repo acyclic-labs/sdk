@@ -227,28 +227,10 @@ pub(super) fn spawn_at(
         },
     ];
     if let Some(history) = history {
-        for (source, destination, relative) in [
-            (
-                parent.conversation()?,
-                child.conversation()?,
-                "conversation",
-            ),
-            (parent.history()?, child.history()?, "history"),
-        ] {
+        for relative in ["conversation", "history"] {
             exclude.push(StreamPath::new(relative).map_err(Error::Stream)?);
-            if history.conversation > 0 {
-                conditions.push(CommitCondition::Absent {
-                    path: destination.clone(),
-                });
-                selected.push(CommitMutation::Fork {
-                    source,
-                    destination,
-                    exclude: Vec::new(),
-                    at_tail: history.conversation,
-                    records: Vec::new(),
-                });
-            }
         }
+        select_history(parent, &child, history, &mut conditions, &mut selected)?;
     }
     let mut mutations = vec![
         CommitMutation::Fork {
@@ -276,6 +258,34 @@ pub(super) fn spawn_at(
     })
 }
 
+/// Both root and child branches select the same coupled stream prefixes.
+fn select_history(
+    parent: &AgentPath,
+    child: &AgentPath,
+    history: &super::HistorySelection,
+    conditions: &mut Vec<CommitCondition>,
+    selected: &mut Vec<CommitMutation>,
+) -> Result<(), Error> {
+    for (source, destination) in [
+        (parent.conversation()?, child.conversation()?),
+        (parent.history()?, child.history()?),
+    ] {
+        if history.conversation > 0 {
+            conditions.push(CommitCondition::Absent {
+                path: destination.clone(),
+            });
+            selected.push(CommitMutation::Fork {
+                source,
+                destination,
+                exclude: Vec::new(),
+                at_tail: history.conversation,
+                records: Vec::new(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// An agent's first status rides with its membership (its subtree's creation),
 /// so every listed agent has a status: `Idle` at its `ForkAdopted` sequence,
 /// with the `conversation` it inherits.
@@ -288,7 +298,8 @@ fn first_status(
         path: agent.status()?,
         records: vec![
             StatusRecord {
-                child_wakes: Vec::new(),
+                child_settlement: None,
+                child_wakes: None,
                 phase: Phase::Idle,
                 cursor: forked_at,
                 conversation,
@@ -312,35 +323,46 @@ fn membership(path: &StreamPath, agent: &AgentPath) -> Result<CommitMutation, Er
 
 /// Creates a root agent. Its volumes and actor state join the same request.
 pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn, Error> {
+    adopted.conversation_tail = 0;
+    create_root_at(intent, adopted, None)
+}
+
+pub(super) fn create_root_at(
+    intent: &IntentId,
+    mut adopted: ForkAdopted,
+    history: Option<(&AgentPath, &super::HistorySelection)>,
+) -> Result<Spawn, Error> {
     let child = AgentPath::root(&adopted.agent);
     adopted.parent = None;
     adopted.forked_at = 0;
-    adopted.conversation_tail = 0;
+    let conversation = adopted.conversation_tail;
     let inbox = child.inbox()?;
+    let mut conditions = vec![
+        CommitCondition::Absent {
+            path: inbox.clone(),
+        },
+        CommitCondition::Absent {
+            path: child.status()?,
+        },
+        CommitCondition::Absent {
+            path: child.membership()?,
+        },
+    ];
+    let mut mutations = vec![
+        CommitMutation::Append {
+            path: inbox,
+            records: vec![InboxRecord::ForkAdopted(Box::new(adopted)).encode()?.into()],
+        },
+        first_status(&child, 0, conversation)?,
+        membership(&child.membership()?, &child)?,
+    ];
+    if let Some((source, history)) = history {
+        select_history(source, &child, history, &mut conditions, &mut mutations)?;
+    }
     Ok(Spawn {
         request: CommitRequest {
             deadline_unix_millis: None,
-            effects: vec![CommitEffect::hard(
-                vec![
-                    CommitCondition::Absent {
-                        path: inbox.clone(),
-                    },
-                    CommitCondition::Absent {
-                        path: child.status()?,
-                    },
-                    CommitCondition::Absent {
-                        path: child.membership()?,
-                    },
-                ],
-                vec![
-                    CommitMutation::Append {
-                        path: inbox,
-                        records: vec![InboxRecord::ForkAdopted(Box::new(adopted)).encode()?.into()],
-                    },
-                    first_status(&child, 0, 0)?,
-                    membership(&child.membership()?, &child)?,
-                ],
-            )],
+            effects: vec![CommitEffect::hard(conditions, mutations)],
             idempotency_key: intent_key("create", &[child.as_str(), intent.as_str()])?,
         },
         child,

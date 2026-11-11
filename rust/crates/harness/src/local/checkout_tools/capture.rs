@@ -455,6 +455,7 @@ pub(in crate::local) fn configuration(
 ) -> Result<(CaptureOptions, CapturePolicy)> {
     let config = workspace.view().workspace().volume_config();
     let options = CaptureOptions {
+        source_namespace: Some(workspace.view().source_reference().identity),
         source_root: workspace.path.clone(),
         expected_root_identity: workspace.identity,
         maximum_paths: MAXIMUM_PATHS,

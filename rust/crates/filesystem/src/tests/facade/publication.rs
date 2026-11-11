@@ -268,6 +268,7 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     let mut owner = open_checkout(&volume, writable_pinned(), &cancellation).await?;
     (displaced.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("displaced")?,
             bytes: OwnedBytes::from_static(b"stale"),
             metadata: FileMetadata::default(),
@@ -293,6 +294,7 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     ));
     (owner.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("owner")?,
             bytes: OwnedBytes::from_static(b"current"),
             metadata: FileMetadata::default(),
@@ -503,6 +505,7 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     for index in 0..20 {
         (local.create(
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: path(&format!("local{index}"))?,
                 bytes: OwnedBytes::from_static(b"local"),
                 metadata: FileMetadata::default(),
@@ -514,6 +517,7 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     }
     (remote.create(
         AuthoredMutation::CreateFile {
+            file_id: None,
             path: path("remote")?,
             bytes: OwnedBytes::from_static(b"remote"),
             metadata: FileMetadata::default(),

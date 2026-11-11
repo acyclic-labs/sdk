@@ -553,9 +553,11 @@ async fn session_children_page_equals_the_provider_page() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     tree(&provider).await?;
     let client = local(&provider)?;
+    let adapted = client.read_provider();
     for limit in [1, 2, 10] {
         let direct = provider.children_page(page("tree", limit)?).await?;
         assert_eq!(client.children_page(page("tree", limit)?, 0).await?, direct);
+        assert_eq!(adapted.children_page(page("tree", limit)?).await?, direct);
         if let Some(after) = direct.next_after.clone() {
             let next = crate::ChildrenPageRequest {
                 after: Some(after),

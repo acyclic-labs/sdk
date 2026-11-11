@@ -56,6 +56,7 @@ pub(super) fn kernel_bench(args: &[String]) -> Result<(), Failure> {
         checkout
             .apply_authored_transaction(
                 vec![AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path: NamespacePath::new(vec![name("d".to_owned())?], config.limits)?,
                     metadata: FileMetadata::default(),
                 }],
@@ -73,6 +74,7 @@ pub(super) fn kernel_bench(args: &[String]) -> Result<(), Failure> {
             let created = checkout
                 .apply_authored_transaction(
                     vec![AuthoredMutation::CreateFile {
+                        file_id: None,
                         path: file_path(index)?,
                         bytes: acyclic_stream::OwnedBytes::new(),
                         metadata: FileMetadata::default(),

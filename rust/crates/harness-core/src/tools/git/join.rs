@@ -23,7 +23,7 @@ where
             idempotency_key: IdempotencyKey::from_bytes(operation.into_bytes()),
         };
         let (plan, initial) = self.apply_on_exact_base(plan, &source, options).await?;
-        let mut unresolved = false;
+        let mut unresolved = Vec::new();
         let outcome = if let JoinOutcome::Conflicted {
             conflicts,
             truncated,
@@ -35,7 +35,7 @@ where
             }
             let paths = conflict_paths(&typed)?;
             let (candidate, unresolved_here) = self.merge_candidate(typed).await?;
-            unresolved |= unresolved_here;
+            unresolved.extend(unresolved_here);
             let resolutions = super::helpers::prepared(
                 async {
                     plan.prepare_candidate(&candidate)
@@ -80,10 +80,11 @@ where
                 return Err(Self::error("Git join retry identity was reused"));
             }
         };
-        if unresolved {
-            return Err(Self::error(
-                "Git join has unresolved conflicts. Edit the conflicted paths, then repeat the same merge to finish it",
-            ));
+        if !unresolved.is_empty() {
+            return Err(Self::error(&format!(
+                "Git join has unresolved conflicts at {}. Edit the conflicted paths, then repeat the same merge to finish it",
+                unresolved.join(", "),
+            )));
         }
         let tracked_paths = self
             .joined_tracked_paths(operation, target_tree, &generation, tracked)
@@ -100,13 +101,14 @@ where
     async fn merge_candidate(
         &self,
         typed: acyclic_fs::MergePlan,
-    ) -> crate::Result<(acyclic_fs::UnpublishedMergeCandidate, bool)> {
-        let mut unresolved = false;
+    ) -> crate::Result<(acyclic_fs::UnpublishedMergeCandidate, Vec<String>)> {
+        let mut unresolved = Vec::new();
         let candidate = super::helpers::prepared(
             async {
                 let mut cache = self.merge_cache.lock().await;
                 let mut resolutions = BTreeMap::new();
                 for conflict in &typed.conflicts {
+                    let mut needs_resolution = false;
                     let resolution = match acyclic_fs::resolve_merge_conflict(
                         &typed,
                         conflict,
@@ -126,7 +128,7 @@ where
                                 acyclic_fs::DriverError::Unsupported,
                             ),
                         ) => {
-                            unresolved = true;
+                            needs_resolution = true;
                             acyclic_fs::MergeResolution::Select(
                                 if matches!(conflict.ours, acyclic_fs::ConflictValue::Absent) {
                                     acyclic_fs::ConflictSide::Theirs
@@ -141,8 +143,11 @@ where
                             )));
                         }
                     };
-                    unresolved |= matches!(&resolution, acyclic_fs::MergeResolution::Text(text)
+                    needs_resolution |= matches!(&resolution, acyclic_fs::MergeResolution::Text(text)
                         if acyclic_fs::text_merge::has_conflict_markers(text));
+                    if needs_resolution {
+                        unresolved.push(format!("{} ({:?})", conflict.path.as_deref().unwrap_or("/"), conflict.key));
+                    }
                     resolutions.insert(conflict.key.clone(), resolution);
                 }
                 Ok(acyclic_fs::UnpublishedMergeCandidate {

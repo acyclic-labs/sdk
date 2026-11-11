@@ -121,6 +121,7 @@ pub(super) fn original_authored_creates(
             .ok_or(WorkError::Overflow)?;
         input.allocation.absorb(&mut path.allocation)?;
         input.value.push(AuthoredMutation::CreateFile {
+            file_id: None,
             path: path.value,
             bytes: content.clone(),
             metadata,

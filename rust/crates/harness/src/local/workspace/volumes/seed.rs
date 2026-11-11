@@ -99,6 +99,7 @@ pub(in crate::local::workspace) async fn adopt_home(
     acyclic_fs::capture_baseline(
         &mut checkout,
         &CaptureOptions {
+            source_namespace: None,
             source_root: source.path().to_path_buf(),
             expected_root_identity: source.identity(),
             maximum_paths: u32::MAX,

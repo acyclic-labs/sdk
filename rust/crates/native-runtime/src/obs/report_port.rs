@@ -69,6 +69,14 @@ pub struct ReportAdmission {
     channel: std::os::windows::io::OwnedHandle,
 }
 
+// These identify one original launch's endpoint, never a descendant launch.
+pub(crate) const LAUNCH_ENVIRONMENT: &[&str] = &[
+    "ACYCLIC_REPORT_FD",
+    "ACYCLIC_REPORT_PIPE",
+    "ACYCLIC_REPORT_GENERATION",
+    "ACYCLIC_REPORT_OWNER_PID",
+];
+
 impl ReportAdmission {
     /// Takes the selected launch's inherited endpoint exactly once.
     pub fn from_environment() -> io::Result<Option<Self>> {

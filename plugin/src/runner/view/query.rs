@@ -1,6 +1,9 @@
 //! Visible query selection over the connection's original authenticated pool.
 use super::{Conversation, Failure, Line, diff};
-use acyclic_harness::{agent::IntentId, interaction::ApprovalBinding};
+use acyclic_harness::{
+    agent::{AgentPath, IntentId},
+    interaction::ApprovalBinding,
+};
 use acyclic_harness::{
     client::AgentPageRequest,
     tui::{QueryController, QueryPage, display_text, display_text_prefix},
@@ -12,6 +15,10 @@ pub(super) enum Source {
     Cost,
     Diff(Option<String>),
     History(Option<String>),
+    AgentDiff(AgentPath, Option<String>),
+    Wait(AgentPath),
+    Merge(AgentPath, String),
+    Discard(AgentPath, String),
     Approval {
         request: IntentId,
         binding: ApprovalBinding,
@@ -24,7 +31,10 @@ impl Source {
     pub(super) fn title(&self) -> &'static str {
         match self {
             Self::Cost => "Subtree cost",
-            Self::Diff(_) => "Diff",
+            Self::Diff(_) | Self::AgentDiff(..) => "Diff",
+            Self::Wait(_) => "Wait",
+            Self::Merge(..) => "Merge",
+            Self::Discard(..) => "Discard",
             Self::History(_) => "History",
             Self::Approval { .. } => "Approval request",
         }
@@ -34,6 +44,10 @@ impl Source {
         match self {
             Self::Cost => Self::Cost,
             Self::Diff(_) => Self::Diff(None),
+            Self::AgentDiff(agent, _) => Self::AgentDiff(agent.clone(), None),
+            Self::Wait(agent) => Self::Wait(agent.clone()),
+            Self::Merge(agent, operation) => Self::Merge(agent.clone(), operation.clone()),
+            Self::Discard(agent, operation) => Self::Discard(agent.clone(), operation.clone()),
             Self::History(_) => Self::History(None),
             Self::Approval {
                 request,
@@ -50,7 +64,10 @@ impl Source {
     }
 
     pub(super) fn follows_tail(&self) -> bool {
-        matches!(self, Self::Cost | Self::Diff(None) | Self::History(None))
+        matches!(
+            self,
+            Self::Cost | Self::Diff(None) | Self::AgentDiff(_, None) | Self::History(None)
+        )
     }
 }
 
@@ -92,6 +109,7 @@ pub(super) fn reviewed(
 
 pub(super) async fn load(
     conversation: Arc<Conversation>,
+    root: Arc<Conversation>,
     rows: u32,
     source: Source,
     prices: Arc<acyclic_harness::executor::ModelPrices>,
@@ -120,9 +138,59 @@ pub(super) async fn load(
             .with_context(Context::default()))
         }
 
-        Source::Diff(cursor) => Ok(diff::query(conversation, rows, cursor)
+        Source::Diff(cursor) => Ok(diff::query(conversation, rows, cursor, None)
             .await?
             .with_context(Context::default())),
+        Source::AgentDiff(agent, cursor) => {
+            let selected = root.select(agent.clone()).await?;
+            Ok(diff::query(selected, rows, cursor, Some(agent))
+                .await?
+                .with_context(Context::default()))
+        }
+        Source::Discard(agent, operation) => {
+            let selected = root.select(agent).await?;
+            acyclic_harness::local::sessions::archive(selected.connection(), &operation).await?;
+            selected.wait_current_input().await?;
+            Ok(QueryPage::new(
+                vec![
+                    Line::raw("Discarded · agent archived without merging"),
+                    Line::raw("Esc: close"),
+                ],
+                None,
+                false,
+            )
+            .with_context(Context::default()))
+        }
+        Source::Merge(agent, operation) => {
+            let selected = root.select(agent).await?;
+            let commit =
+                acyclic_harness::local::sessions::merge(selected.connection(), &operation).await?;
+            Ok(QueryPage::new(
+                vec![
+                    Line::raw(match commit {
+                        Some(commit) => format!("Merged · {commit}"),
+                        None => "No changes to merge".into(),
+                    }),
+                    Line::raw("Esc: close"),
+                ],
+                None,
+                false,
+            )
+            .with_context(Context::default()))
+        }
+        Source::Wait(agent) => {
+            let selected = root.select(agent).await?;
+            let phase = selected.wait_current_input().await?;
+            Ok(QueryPage::new(
+                vec![
+                    Line::raw(format!("Captured inputs settled · {phase:?}")),
+                    Line::raw("Esc: close"),
+                ],
+                None,
+                false,
+            )
+            .with_context(Context::default()))
+        }
         Source::History(cursor) => {
             let continued = cursor.is_some();
             let history = conversation
@@ -316,6 +384,12 @@ mod tests {
             Source::Cost => Source::Cost,
             Source::Diff(_) => Source::Diff(Some("original-diff-cut".into())),
             Source::History(_) => Source::History(Some("original-history-cut".into())),
+            Source::AgentDiff(agent, _) => {
+                Source::AgentDiff(agent.clone(), Some("original-diff-cut".into()))
+            }
+            Source::Wait(_) | Source::Merge(..) | Source::Discard(..) => {
+                return QueryPage::new(vec![], None, false).with_context(Context::default());
+            }
             Source::Approval { .. } => source.clone(),
         };
         QueryPage::new(vec![Line::raw("original source row")], Some(next), false)

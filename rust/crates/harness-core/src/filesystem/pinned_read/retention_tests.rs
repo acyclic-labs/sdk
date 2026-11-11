@@ -76,6 +76,7 @@ impl Fixture {
             checkout
                 .create(
                     acyclic_fs::AuthoredMutation::CreateFile {
+                        file_id: None,
                         path,
                         bytes: bytes::Bytes::copy_from_slice(bytes).into(),
                         metadata: acyclic_fs::kernel::FileMetadata::default(),

@@ -65,6 +65,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             }
         } else {
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: path.value,
                 bytes: bytes.into(),
                 metadata: FileMetadata::default(),
@@ -179,6 +180,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                     continue;
                 }
                 AuthoredMutation::CreateDirectory {
+                    file_id: None,
                     path: path.value,
                     metadata: FileMetadata::default(),
                 }
@@ -211,6 +213,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                     }
                 } else {
                     AuthoredMutation::CreateFile {
+                        file_id: None,
                         path: path.value,
                         bytes: content.clone(),
                         metadata: FileMetadata::default(),
@@ -396,6 +399,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
                         &mut operations,
                         crate::kernel::Owned::new(
                             AuthoredMutation::CreateDirectory {
+                                file_id: None,
                                 path: path.value,
                                 metadata: FileMetadata::default(),
                             },
@@ -631,6 +635,7 @@ impl BatchFileMode for CreateFiles {
             path,
             |path| {
                 Ok(AuthoredMutation::CreateFile {
+                    file_id: None,
                     path,
                     bytes: bytes.clone(),
                     metadata: FileMetadata::default(),

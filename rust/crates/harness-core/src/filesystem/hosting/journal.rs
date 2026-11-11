@@ -104,6 +104,46 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Page completion measurements referenced by an exact original status.
+    /// Rechecks tree admission before reading the original completion range.
+    pub async fn child_wakes(
+        &self,
+        agent: &AgentPath,
+        status: u64,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<crate::agent::ChildWake>, Error> {
+        use crate::agent::AgentRecord as _;
+        use futures::TryStreamExt as _;
+        self.admit_path(agent)?;
+        let provider = self.agents.provider();
+        let mut records = provider
+            .read(acyclic_stream::ReadRequest {
+                path: agent.status()?,
+                from: status,
+                limit: 1,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let record = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .filter(|record| record.sequence == status)
+            .ok_or(Error::Record("status measurement cut is missing"))?;
+        match crate::agent::StatusRecord::decode(&record.value)?.child_wakes {
+            Some(wakes) if status.checked_add(1).is_some_and(|end| wakes.until <= end) => {
+                wakes.page(provider.clone(), agent, after, limit).await
+            }
+            Some(_) => Err(Error::Record(
+                "completion range exceeds its original status",
+            )),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Bounded call admissions and completions from the original private journal.
     /// Quiet pages wait on the same inbox, journal and actor producers as events.
     pub async fn usage_page(

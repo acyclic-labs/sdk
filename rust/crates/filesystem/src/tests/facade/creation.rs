@@ -352,6 +352,7 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> Te
         checkout
             .create(
                 AuthoredMutation::CreateFile {
+                    file_id: None,
                     path: path("cancelled-new-file")?,
                     bytes: OwnedBytes::from_static(b"must-not-be-encoded"),
                     metadata: FileMetadata::default(),

@@ -58,7 +58,6 @@ impl TurnDriver for Replying {
             };
             if id.as_str() == "hold" {
                 return Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: Some(Vec::new()),
                     outs: Vec::new(),
                     wait: Wait::Approval {
@@ -72,7 +71,6 @@ impl TurnDriver for Replying {
                 let checkpoint = serde_json::to_vec(&queued)
                     .map_err(|_| Error::Record("conformance checkpoint does not encode"))?;
                 return Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: Some(checkpoint),
                     outs: Vec::new(),
                     wait: Wait::Host(HOST.into()),
@@ -104,7 +102,6 @@ fn settle(inbox: u64, input: TurnInput) -> std::result::Result<TurnStep, Error> 
     }
     .with_observed_prefix(0);
     Ok(TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: vec![Out::Conversation(entry.encode()?)],
         wait: Wait::Input,

@@ -40,6 +40,7 @@ async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
     checkout
         .create(
             AuthoredMutation::CreateFile {
+                file_id: None,
                 path: file.clone(),
                 bytes: OwnedBytes::from_static(b"original"),
                 metadata,

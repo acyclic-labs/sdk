@@ -78,7 +78,7 @@ impl ObservedConversation {
 }
 
 /// Inspect the immutable text bodies delivered through the real content reader.
-async fn request_text(
+pub(super) async fn request_text(
     harness: &LocalHarness,
     request: &crate::model::ModelRequest,
 ) -> Result<String> {
@@ -155,14 +155,14 @@ fn checkout_config(
         .compaction(crate::context::CompactionPolicy::Disabled))
 }
 
-mod checked_commands {
+pub(super) mod checked_commands {
     use crate::{
         model::{ModelEvent, ToolCall},
         test_support::{ScriptedEvent, ScriptedTurn},
     };
 
     /// One scripted command call on the named shell tool.
-    pub(super) fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
+    pub(in crate::local) fn call(index: usize, name: &str, command: &str) -> ScriptedTurn {
         ScriptedTurn::Events(vec![
             ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
                 format!("checkout-{index}"),

@@ -98,6 +98,7 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
     let rescan = watch.begin_rescan().map_err(engine_err("begin_rescan"))?;
 
     let options = CaptureOptions {
+        source_namespace: None,
         source_root: source.to_path_buf(),
         expected_root_identity: capture_root_identity(source).map_err(engine_err("identity"))?,
         maximum_paths: 4_000_000,
@@ -353,6 +354,7 @@ pub(super) async fn capture_and_commit(
     println!("volume + checkout: {:?}", started.elapsed());
 
     let options = CaptureOptions {
+        source_namespace: None,
         source_root: source.to_path_buf(),
         expected_root_identity: capture_root_identity(source)
             .map_err(engine_err("root identity"))?,

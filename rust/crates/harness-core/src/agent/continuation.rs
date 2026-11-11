@@ -61,6 +61,40 @@ pub struct Continuation {
     pub non_replay_manifest: Vec<String>,
 }
 
+impl Continuation {
+    /// Provenance of the coupled cut selected by an ordinary history fork.
+    pub fn at(
+        source: &AgentPath,
+        offset: u64,
+        saved: &super::HistoryCheckpoint,
+        override_item: Option<crate::conversation::FileRef>,
+    ) -> Self {
+        Self {
+            version: 1,
+            parent_run_id: source.clone(),
+            stream_offset: offset,
+            workspace_generations: saved
+                .volumes
+                .iter()
+                .map(|volume| HistoryVolume {
+                    binding: volume.binding.clone(),
+                    generation: volume.generation,
+                })
+                .collect(),
+            override_item,
+            live_children_at_cut: saved.live_children,
+            non_replay_manifest: [
+                "wall_clocks",
+                "web_network",
+                "external_machine_state",
+                "model_sampling",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        }
+    }
+}
+
 impl ContinuationOverride {
     pub(crate) fn events(&self) -> Option<Vec<crate::model::ModelEvent>> {
         let Self::Assistant { text, calls } = self else {

@@ -5,7 +5,7 @@ use crate::{conversation::VolumeRef, core::AuthorityRoot, resources::ProviderRef
 async fn wait_selection_survives_reopening_and_reference_replacement() -> Result<()> {
     use crate::agent::{AgentId, TurnChildren};
     let mut agent = AgentPath::root(&AgentId::from_bytes([201; 16]));
-    for _ in 1..crate::agent::MAX_DEPTH {
+    for _ in 1..128 {
         agent = agent
             .child(&AgentId::from_bytes([201; 16]))
             .map_err(agent_error)?;

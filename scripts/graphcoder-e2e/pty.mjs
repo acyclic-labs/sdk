@@ -36,12 +36,12 @@ export function matches(screen, raw, condition, visible, diagnostic = visible, l
 export async function pty(processes, binary, fixture, input, capture) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const failures = new FailureHistory();
-  let unsubscribe, frames;
+  let unsubscribe, unsubscribeSignals, frames;
   let firstPaint;
   const launchStarted = performance.now();
   try {
     frames = new TerminalFrames(screen, frame);
-    const running = await processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
+    const running = await processes.startTerminal(binary, [...fixture.args, ...(input.args ?? []), ...(input.resume ? ["--continue"] : [])],
       { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
     screen.onData(data => running.child.stdin.write(data));
     const raw = new OutputWatch(rawNeedles(input.actions));
@@ -79,6 +79,7 @@ export async function pty(processes, binary, fixture, input, capture) {
           throw error;
         }
         if (action.after_request && !fixture.requested(action.after_request)) return;
+        if (action.after_signal && !fixture.signalled?.(action.after_signal)) return;
         if (action.when.delta !== undefined && requests <= prompted) return;
         if (!matches(screen, raw, action.when, visible, diagnostic, logical)) return;
         if (action.when.delta !== undefined) {
@@ -99,9 +100,11 @@ export async function pty(processes, binary, fixture, input, capture) {
           running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
         }
         if (action.send !== undefined) running.child.stdin.write(action.send);
+        if (action.signal !== undefined) fixture.signal(action.signal);
         if (action.kill) running.killExecutable();
       } catch (error) { failure = error; running.killExecutable(); }
     }
+    unsubscribeSignals = fixture.onSignal?.(() => frame());
     unsubscribe = fixture.onRequest(event => {
       trace({ event: "request", path: event.path, step: event.step });
       // Token counts precede a turn's model request; they are not its start.
@@ -122,6 +125,8 @@ export async function pty(processes, binary, fixture, input, capture) {
     try { result = await running.closed; }
     catch (error) { (errors ??= []).push(error); }
     finally {
+      unsubscribeSignals?.();
+      unsubscribeSignals = undefined;
       unsubscribe();
       unsubscribe = undefined;
       await new Promise(resolve => screen.write("", () => resolve(undefined)));
@@ -156,6 +161,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     }
     return result;
   } finally {
+    unsubscribeSignals?.();
     unsubscribe?.();
     frames?.dispose();
     screen.dispose();
