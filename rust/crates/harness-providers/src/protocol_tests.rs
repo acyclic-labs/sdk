@@ -127,6 +127,8 @@ async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> R
     use std::time::Duration;
     struct RateLimited {
         success: &'static str,
+        mixed: bool,
+        count: bool,
         sent: Mutex<Vec<HttpRequest>>,
         waits: Mutex<Vec<Duration>>,
     }
@@ -146,8 +148,33 @@ async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> R
                     sent.push(request);
                     index
                 };
+                if self.mixed && index == 301 {
+                    return Err(crate::transport_failure(
+                        false,
+                        acyclic_harness_core::ModelTransportFailure::Connect,
+                        "fixture",
+                    ));
+                }
+                if self.mixed && self.count && index == 302 {
+                    return Ok(HttpResponse {
+                        status: 200,
+                        request_id: None,
+                        retry_after: None,
+                        body: Box::pin(futures::stream::iter([Err(crate::transport_failure(
+                            false,
+                            acyclic_harness_core::ModelTransportFailure::Interrupted,
+                            "fixture",
+                        ))])),
+                    });
+                }
                 Ok(HttpResponse {
-                    status: if index < 300 { 429 } else { 200 },
+                    status: if index < 300 {
+                        429
+                    } else if self.mixed && index == 300 {
+                        503
+                    } else {
+                        200
+                    },
                     request_id: None,
                     // No hint in the recorded failure. Also cover a provider wait
                     // longer than max_delay_ms, before and after the former cap.
@@ -165,51 +192,72 @@ async fn recon_rate_limit_backpressure_preserves_the_turn_until_admission() -> R
         }
     }
     for (adapter, success) in fixtures() {
-        let transport = Arc::new(RateLimited {
-            success,
-            sent: Mutex::new(Vec::new()),
-            waits: Mutex::new(Vec::new()),
-        });
-        let mut provider = provider_with(adapter, "https://recorded.invalid/v1", transport.clone());
-        Arc::make_mut(&mut provider.config).retry.attempts = 0;
-        let (request, mut dispatch) = request(&provider)?;
-        dispatch.operation_id = acyclic_harness_core::OperationId::from_bytes([31; 16]);
-        let events = provider
-            .generate(&request, dispatch)
-            .try_collect::<Vec<_>>()
-            .await?;
-        let sent = transport.sent.lock().unwrap();
-        assert_eq!(sent.len(), 301);
-        for request in sent.iter().skip(1) {
-            assert_eq!(request.url, sent[0].url);
-            assert_eq!(request.headers, sent[0].headers);
-            assert_eq!(request.body, sent[0].body);
+        for (mixed, count) in [(false, false), (true, false), (true, true)] {
+            let transport = Arc::new(RateLimited {
+                success: if count {
+                    r#"{"input_tokens":7}"#
+                } else {
+                    success
+                },
+                mixed,
+                count,
+                sent: Mutex::new(Vec::new()),
+                waits: Mutex::new(Vec::new()),
+            });
+            let mut provider =
+                provider_with(adapter, "https://recorded.invalid/v1", transport.clone());
+            Arc::make_mut(&mut provider.config).retry.attempts = if mixed { 3 } else { 0 };
+            let (request, mut dispatch) = request(&provider)?;
+            dispatch.operation_id = acyclic_harness_core::OperationId::from_bytes([31; 16]);
+            let events = if count {
+                assert_eq!(provider.count_tokens(&request, 0).await?.input_tokens, 7);
+                Vec::new()
+            } else {
+                provider
+                    .generate(&request, dispatch)
+                    .try_collect::<Vec<_>>()
+                    .await?
+            };
+            let exchanges = if mixed {
+                if count { 304 } else { 303 }
+            } else {
+                301
+            };
+            let sent = transport.sent.lock().unwrap();
+            assert_eq!(sent.len(), exchanges);
+            for request in sent.iter().skip(1) {
+                assert_eq!(request.url, sent[0].url);
+                assert_eq!(request.headers, sent[0].headers);
+                assert_eq!(request.body, sent[0].body);
+            }
+            let waits = transport.waits.lock().unwrap();
+            assert_eq!(waits.len(), exchanges - 1);
+            assert_eq!(waits[0], Duration::from_secs(60));
+            assert_eq!(waits[299], Duration::from_secs(60));
+            assert!(
+                waits[1..299]
+                    .iter()
+                    .all(|wait| !wait.is_zero() && *wait <= Duration::from_secs(8))
+            );
+            let calls: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    ModelEvent::ToolCall(call) => Some(call),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(calls.len(), usize::from(!count));
+            if let Some(call) = calls.first() {
+                assert_eq!(call.call_id, dispatch.tool_call_id(0));
+            }
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, ModelEvent::Completed { .. }))
+                    .count(),
+                usize::from(!count)
+            );
         }
-        let waits = transport.waits.lock().unwrap();
-        assert_eq!(waits.len(), 300);
-        assert_eq!(waits[0], Duration::from_secs(60));
-        assert_eq!(waits[299], Duration::from_secs(60));
-        assert!(
-            waits[1..299]
-                .iter()
-                .all(|wait| !wait.is_zero() && *wait <= Duration::from_secs(8))
-        );
-        let calls: Vec<_> = events
-            .iter()
-            .filter_map(|event| match event {
-                ModelEvent::ToolCall(call) => Some(call),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].call_id, dispatch.tool_call_id(0));
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event, ModelEvent::Completed { .. }))
-                .count(),
-            1
-        );
     }
     Ok(())
 }

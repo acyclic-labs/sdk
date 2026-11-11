@@ -79,7 +79,7 @@ export function modelRefusalFixture(data, status, code) {
         } else if (code) {
           controller.error(Object.assign(new Error('private diagnostic'), {code}));
         } else controller.close();
-      }}, {highWaterMark:0}), {status: !code && status === 429 && state.calls % 2 === 0 ? 503 : status}));
+      }}, {highWaterMark:0}), {status: !code && status === 429 && state.calls % 3 !== 1 ? 503 : status}));
     }});
   return state;
 }
@@ -222,7 +222,13 @@ async fn refusal_body_failures_keep_their_class_without_generation_or_count_retr
                     .message()
                     .includes("private diagnostic", 0)
             );
-            let attempts = if code.is_some() { 1.0 } else { 2.0 };
+            let attempts = if code.is_some() {
+                1.0
+            } else if status == 429 {
+                3.0
+            } else {
+                2.0
+            };
             assert_eq!(field(&fixture, "calls")?.as_f64(), Some(attempts));
             let failure = prepared.count_tokens().await.unwrap_err();
             assert_eq!(field(&failure, "code")?.as_f64(), Some(f64::from(expected)));

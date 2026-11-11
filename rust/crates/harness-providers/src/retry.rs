@@ -110,6 +110,7 @@ struct Redelivery {
     seed: [u8; 32],
     // Saturation bounds the backoff exponent, never the number of 429 waits.
     attempt: u8,
+    failures: u8,
 }
 
 impl Redelivery {
@@ -128,6 +129,7 @@ impl Redelivery {
             spec,
             seed,
             attempt: 0,
+            failures: 0,
         }
     }
 
@@ -139,7 +141,7 @@ impl Redelivery {
         backpressure: bool,
     ) -> Option<Duration> {
         if error.code() != ErrorCode::Unavailable
-            || (!backpressure && self.attempt >= self.spec.attempts)
+            || (!backpressure && self.failures >= self.spec.attempts)
         {
             return None;
         }
@@ -164,6 +166,9 @@ impl Redelivery {
             }
         };
         self.attempt = self.attempt.saturating_add(1);
+        if !backpressure {
+            self.failures += 1;
+        }
         Some(wait)
     }
 }
@@ -349,7 +354,7 @@ mod tests {
                     let allocations = acyclic_test_support::measure(|| { actual = owner.next(&error, None); });
                     proptest::prop_assert_eq!(allocations.count_total, 0);
                     proptest::prop_assert_eq!(actual.is_some(), expected);
-                    if expected { spent = spent.saturating_add(1); observed = None; }
+                    if expected { if observed != Some(429) { spent += 1; } observed = None; }
                     if accepted && !count {
                         // Negative control: the old schedule alone has no acceptance fence.
                         let mut unfenced = Redelivery::new(spec, dispatch());
