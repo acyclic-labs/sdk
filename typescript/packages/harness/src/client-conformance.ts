@@ -89,7 +89,9 @@ export async function verifyClientObservation(stream: WasmStream, credential: nu
     const before = client.agentWindow(fixture.agent);
     select(fixture.agent, fixture.conversation_from, fixture.status_from);
     const retained = client.agentWindow(fixture.agent);
-    if (retained.nextSequence !== before.nextSequence || retained.revision !== before.revision || retained.recordCount !== 1n) {
+    if (retained.firstSequence !== before.firstSequence || retained.nextSequence !== before.nextSequence
+      || retained.recordCount !== before.recordCount || retained.retainedBytes !== before.retainedBytes
+      || retained.revision <= before.revision) {
       throw new Error("CLIENT_CONFORMANCE retain_selection: unchanged demand reset the fold or cursor");
     }
     // Repeated selections beyond the former default retain one original fold.
@@ -97,7 +99,8 @@ export async function verifyClientObservation(stream: WasmStream, credential: nu
     client.setView(repeated, new BigUint64Array(repeated.length).fill(fixture.conversation_from),
       new BigUint64Array(repeated.length).fill(fixture.status_from));
     const unchanged = client.agentWindow(fixture.agent);
-    if (unchanged.nextSequence !== before.nextSequence || unchanged.revision !== before.revision
+    if (unchanged.firstSequence !== before.firstSequence || unchanged.nextSequence !== before.nextSequence
+      || unchanged.retainedBytes !== before.retainedBytes || unchanged.revision <= retained.revision
       || unchanged.recordCount !== before.recordCount
       || exactJson(client.selectedAgents()) !== exactJson([fixture.agent])) {
       throw new Error("CLIENT_CONFORMANCE retain_repeated_selection: repeated selection changed admitted records");
