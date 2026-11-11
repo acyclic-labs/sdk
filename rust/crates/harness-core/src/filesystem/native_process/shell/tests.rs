@@ -8,6 +8,10 @@ use acyclic_fs::access::*;
 use std::{collections::BTreeMap, fs::OpenOptions, io::Write, path::PathBuf};
 
 fn table(root: PathBuf) -> Result<MountTable<()>> {
+    table_with_auxiliary(root, "data")
+}
+
+fn table_with_auxiliary(root: PathBuf, auxiliary: &str) -> Result<MountTable<()>> {
     let resource = ResourcePattern {
         lineage_root: None,
         volume: None,
@@ -76,7 +80,7 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
             approvals: 0,
         },
         volume("project")?,
-        [volume("data")?],
+        [volume(auxiliary)?],
     )
 }
 
@@ -553,5 +557,35 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
     assert_eq!(output.exit_code, Some(0));
     assert_eq!(output.stdout, format!("{literal}\n\n").as_bytes());
     assert!(!root.join("injected").exists());
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn gc66_saved_call_reproduces_missing_shared_on_e2434495() -> Result<()> {
+    let root = PathBuf::from("/mnt/bb/recon/runs/20261111T211431050Z/cloud/workspace");
+    let missing = root.join(".volumes/shared");
+    assert!(root.is_dir());
+    assert!(!missing.try_exists().map_err(Error::process_io)?);
+    let mounts = table_with_auxiliary(root.clone(), "shared")?;
+    let result = prepare(ShellInput {
+        command: crate::tools::ShellCommand::Source("pwd && git rev-parse HEAD && git status --short && ls -la && if [ -f RECON-COVERAGE.json ]; then cat RECON-COVERAGE.json; fi".into()),
+        cwd: Some(".".into()), timeout_ms: Some(20000), background: false, target: None,
+    }, &mounts, invocation(&root), 1);
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("pinned SDK unexpectedly admitted saved call"),
+    };
+    assert!(matches!(error, Error::Unauthorized(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("No such file or directory"),
+        "{error}"
+    );
+    let canonical = std::fs::canonicalize(&missing).unwrap_err();
+    assert_eq!(canonical.kind(), std::io::ErrorKind::NotFound);
+    println!(
+        "GC66_BASELINE sdk=e2434495036db175ebef8c88137ab78dfae7d129 missing={} error={error}",
+        missing.display()
+    );
     Ok(())
 }
