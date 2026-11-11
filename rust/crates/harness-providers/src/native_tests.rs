@@ -91,7 +91,7 @@ impl HttpTransport for Fixture {
             if let Some(response) = fixture_count(&request) {
                 return HttpResponse::with_native_body(response.status, response.body, work);
             }
-            self.sent.fetch_add(1, Ordering::SeqCst);
+            let attempt = self.sent.fetch_add(1, Ordering::SeqCst);
             assert!(
                 request.headers.contains_key("authorization")
                     || request.headers.contains_key("x-api-key")
