@@ -15,50 +15,21 @@ import { runCommand } from "./run-command.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const fs = ["-p", "acyclic-fs"];
-const fsOnly = features => [...fs, "--no-default-features", ...(features ? ["--features", features] : [])];
+const native = ["acyclic-fs", "acyclic-objects", "acyclic-stream", "acyclic-harness",
+  "acyclic-harness-core", "acyclic-harness-search"].map(name => ["-p", name, "--no-default-features"]);
 
 // Library and tests.
 const withTests = [
-  // The crates.io default, which the plugin and the Node addon build on.
-  fs,
-  // The browser build and the Filesystem Harness adapter.
-  fsOnly("memory"),
-  // The local Filesystem Harness adapter.
-  fsOnly("memory,local"),
-  // The Windows portable test set.
-  fsOnly("local,memory,native-watch"),
-  // Objects and Stream with and without their default gRPC client, as
-  // acyclic-fs and the browser build use them, and with `local`.
-  ["-p", "acyclic-objects"],
-  ["-p", "acyclic-objects", "--no-default-features"],
-  ["-p", "acyclic-objects", "--no-default-features", "--features", "local"],
-  ["-p", "acyclic-stream"],
-  ["-p", "acyclic-stream", "--no-default-features"],
-  ["-p", "acyclic-stream", "--no-default-features", "--features", "local"],
+  ...native,
   // Inference without its gRPC host, as the browser build uses it.
   ["-p", "acyclic-inference", "--no-default-features"],
-  // Harness host runtime alone, then each provider adapter feature alone.
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search"],
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "filesystem"],
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "filesystem-local"],
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "objects"],
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "machines"],
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "grpc"],
   // The conformance runner and its native-mount qualification binaries.
   ["-p", "acyclic-conformance"],
   ["-p", "acyclic-conformance", "--features", "local-runner"],
 ];
 
 // Library only: each acyclic-fs capability on its own.
-const libraryOnly = [
-  fsOnly(),
-  fsOnly("memory"),
-  fsOnly("local"),
-  fsOnly("native-watch"),
-  fsOnly("native-mount"),
-  fsOnly("s3-http"),
-];
+const libraryOnly = native;
 
 // Explicit shipped combinations share defining-package admission with the
 // generated matrix. They remain independent compiler invocations.

@@ -348,7 +348,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work.record(authority_read_work(1))?;
         work.remaining()?;
         match self.provider.tail(root).await {
-            Err(acyclic_stream::StreamError::NotFound) => return Ok(()),
+            Err(error) if error.category() == acyclic_stream::StreamError::NotFound => {
+                return Ok(());
+            }
             Ok(_) => {}
             Err(error) => return Err(map_stream_error(error)),
         }

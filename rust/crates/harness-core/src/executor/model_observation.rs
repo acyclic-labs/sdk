@@ -57,7 +57,6 @@ pub(crate) async fn append(
         let key = with_history_io(original, |work| {
             preparation_format(format_args!("{key}:usage"), work)
         })?;
-        #[cfg(feature = "filesystem")]
         let _key_hold = original
             .map(|io| io.guard_owned(key.capacity() as u64))
             .transpose()?;
@@ -82,16 +81,10 @@ pub(crate) async fn append(
         )
         .await;
     }
-    #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(original)?;
-    #[cfg(feature = "filesystem")]
     let io = scope.io();
-    #[cfg(not(feature = "filesystem"))]
-    let io = original;
-    #[cfg(feature = "filesystem")]
     let _hold;
     let bytes: acyclic_stream::OwnedBytes = match io {
-        #[cfg(feature = "filesystem")]
         Some(io) => {
             let bytes = io.encode(model, io.remaining()?.bytes_encoded, true)?;
             _hold = io.guard_bytes(&bytes)?;

@@ -177,7 +177,7 @@ pub struct AgentMachines<P: ?Sized> {
     stream: Arc<P>,
     targets: acyclic_collections::CompiledPrefixIndex<
         ProvisionedTarget,
-        crate::NativeCustody,
+        acyclic_fs::NativeCustody,
         fn(&ProvisionedTarget) -> &[u8],
     >,
 }
@@ -285,7 +285,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         };
         let mut records = match self.stream.read(request).await {
             Ok(records) => records,
-            Err(StreamError::NotFound) => return Ok(None),
+            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         Ok(records.try_next().await?)
@@ -663,7 +663,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     async fn closed(&self, agent: &AgentPath) -> Result<bool> {
         match self.stream.tail(agent.closed().map_err(agent_error)?).await {
             Ok(_) => Ok(true),
-            Err(StreamError::NotFound) => Ok(false),
+            Err(error) if error.category() == StreamError::NotFound => Ok(false),
             Err(error) => Err(error.into()),
         }
     }
@@ -771,14 +771,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> ToolExecutor for OnFir
         scope: Option<&crate::runtime::RuntimeScope>,
         context: Option<&crate::runtime::ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
         if let Some(bound) = self.bound.get() {
             return bound.authorize(scope, context, invocation, work);
         }
         // Before its first use the Machine's executor authorizes inside
         // `execute`, ahead of any command; a Machine runs no native work.
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,

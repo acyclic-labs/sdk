@@ -81,21 +81,14 @@ impl Connection {
         exchanged(&self.controls, command).await
     }
 
-    /// Select an existing descendant: a connection that drives and observes
-    /// it. A remote endpoint's credential already reaches the tree, so this
-    /// rebinds the same session. A local credential observes exactly the
-    /// agent it was minted for, so the in-process harness mints the
-    /// descendant's own instead of handing back a binding it cannot follow.
+    /// Select an existing descendant on the same authenticated session.
+    /// Commands retain the original caller; a native host may enroll read-only
+    /// access to the selected child's private output on that same session.
     pub async fn select(&self, agent: AgentPath) -> Result<Self> {
-        if let Some(host) = &self._host {
-            if !self.root.contains(&agent) {
-                return Err(Error::Unauthorized(
-                    "a selected agent must be the root or its descendant".into(),
-                ));
-            }
-            // Boxed: the in-process connection is a deep future, and select
-            // sits inside every frontend's own future.
-            return Box::pin(host.connect_agent(Some(agent))).await;
+        if !self.root.contains(&agent) {
+            return Err(Error::Unauthorized(
+                "a selected agent must be the root or its descendant".into(),
+            ));
         }
         let (controls, tools) = self
             .controls
@@ -142,7 +135,6 @@ impl Connection {
     /// # Errors
     /// The policy's refusal by its stable code, such as
     /// `client_invalid_endpoint`, or as [`Self::connect`].
-    #[cfg(feature = "grpc")]
     pub async fn connect_endpoint(endpoint: Option<&str>) -> Result<Self> {
         let options = acyclic_harness_client::ConnectionOptions::from_env(endpoint, None)
             .map_err(|error| Error::Invalid(error.code().into()))?;
@@ -155,7 +147,6 @@ impl Connection {
     /// # Errors
     /// When the endpoint cannot be reached, the credential is not one, or the
     /// endpoint binds it to no tree.
-    #[cfg(feature = "grpc")]
     pub async fn connect(options: &acyclic_harness_client::ConnectionOptions) -> Result<Self> {
         use acyclic_harness_client::EndpointTransport;
         let credential = options
@@ -236,13 +227,7 @@ impl LocalHarness {
     /// # Errors
     /// Fails for an embedded harness or when the tree cannot be hosted.
     pub async fn connect(self: &Arc<Self>) -> Result<Connection> {
-        self.connect_agent(None).await
-    }
-
-    /// [`Self::connect`] under a credential minted for `agent`, the root when
-    /// `None`: the one credential that drives and observes that agent.
-    async fn connect_agent(self: &Arc<Self>, agent: Option<AgentPath>) -> Result<Connection> {
-        self.attach(agent, true).await
+        self.attach(None, true).await
     }
 
     /// One connection to `agent`'s tree. A `live` session closes with the
@@ -267,11 +252,7 @@ impl LocalHarness {
             })?;
             let bound = server.bound();
             let observation = bound
-                .client_credential(
-                    agent.as_ref().unwrap_or(server.root()),
-                    server.resource(),
-                    Arc::clone(&self.clock),
-                )
+                .client_credential(server.root(), server.resource(), Arc::clone(&self.clock))
                 .await
                 .map_err(storage)?;
             let changes = bound.changes().map_err(storage)?;
@@ -285,21 +266,10 @@ impl LocalHarness {
             );
             let connection =
                 Connection::bind(session, observation.credential, Some(Arc::clone(self))).await?;
-            let Some(agent) = agent else {
-                return Ok(connection);
-            };
-            let (controls, tools) = connection
-                .controls
-                .select(agent.clone())
-                .await
-                .map_err(exchange)?;
-            Ok(Connection {
-                session: connection.session,
-                controls: Arc::new(controls),
-                root: agent,
-                tools,
-                _host: connection._host,
-            })
+            match agent {
+                Some(agent) => connection.select(agent).await,
+                None => Ok(connection),
+            }
         };
         if live {
             hosted.runtime.admit(admission).await

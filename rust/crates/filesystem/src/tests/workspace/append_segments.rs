@@ -417,7 +417,7 @@ async fn append_segments_fence_same_length_alias_edits_and_delete_recreate()
     Ok(())
 }
 
-#[cfg(all(feature = "local", any(unix, windows)))]
+#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn append_segments_lost_reply_reopens_with_the_original_range_and_identity()
 -> Result<(), Box<dyn Error>> {

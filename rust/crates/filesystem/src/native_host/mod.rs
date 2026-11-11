@@ -1,13 +1,13 @@
 //! Capability-rooted native filesystem access.
 #![allow(unsafe_code, reason = "isolates native filesystem calls")]
 use crate::NativeRootIdentity;
-#[cfg(any(test, feature = "local"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::NativeWorkReservation;
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork};
 use crate::materializer::{
     NativeAllocation, NativeCleanupWrite, NativeMaterializationWork, NativeTreeMaterializationError,
 };
-#[cfg(any(test, feature = "local", feature = "native-watch"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::performance::WorkBudget;
 use crate::performance::WorkCounters;
 use cap_std::fs::Dir;
@@ -19,7 +19,7 @@ use std::{
     io,
     path::Path,
 };
-#[cfg(all(windows, any(feature = "native-mount", test)))]
+#[cfg(all(windows, any(not(target_arch = "wasm32"), test)))]
 use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 #[cfg(windows)]
 use windows::{
@@ -59,7 +59,7 @@ type NativeLeaf = std::ffi::CStr;
 #[cfg(windows)]
 type NativeLeaf = [u16];
 mod record;
-#[cfg(any(test, feature = "local"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) use record::PreparedMaterializationRecord;
 #[cfg(unix)]
 use record::rename_unix_names_once;
@@ -71,7 +71,7 @@ pub(crate) use work::*;
 mod cwd;
 #[cfg(unix)]
 pub(crate) use cwd::canonical_directory_path_held;
-#[cfg(all(unix, any(test, feature = "native-watch")))]
+#[cfg(all(unix, any(test, not(target_arch = "wasm32"))))]
 pub(crate) use cwd::normalize_root_path;
 #[cfg(all(test, windows))]
 pub(crate) use cwd::short_path;
@@ -91,10 +91,10 @@ mod mutation;
 pub(crate) use mutation::*;
 mod leaf;
 pub(crate) use leaf::require_leaf;
-#[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
+#[cfg(all(target_os = "macos", any(not(target_arch = "wasm32"), test)))]
 mod macos_metadata;
 mod metadata;
-#[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
+#[cfg(all(target_os = "macos", any(not(target_arch = "wasm32"), test)))]
 pub(crate) use macos_metadata::*;
 #[cfg(unix)]
 pub(crate) use metadata::set_posix_mode_held;
@@ -118,15 +118,15 @@ mod root;
 pub(crate) use root::*;
 mod held_files;
 pub use held_files::NativeDurability;
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub use held_files::PublishedPair;
 #[cfg(all(
     feature = "test-support",
-    feature = "native-mount",
+    not(target_arch = "wasm32"),
     target_os = "linux"
 ))]
 pub use held_files::publication_test_support;
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 mod search;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", loom))]
@@ -134,15 +134,15 @@ pub(crate) use held_files::models as held_record_models;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 pub(crate) use held_files::publish_probe;
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use search::file_identity;
-#[cfg(all(unix, any(test, feature = "native-mount")))]
+#[cfg(all(unix, any(test, not(target_arch = "wasm32"))))]
 mod unix_metadata;
-#[cfg(all(unix, any(test, feature = "native-mount")))]
+#[cfg(all(unix, any(test, not(target_arch = "wasm32"))))]
 pub(crate) use unix_metadata::*;
 mod links;
 mod unix_stat;
-#[cfg(any(test, feature = "native-watch"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) use unix_stat::root_path_identity;
 use unix_stat::*;
 #[cfg(windows)]
@@ -151,16 +151,16 @@ mod root_path;
 use root_path::*;
 mod identity;
 pub(crate) use identity::*;
-#[cfg(all(windows, any(feature = "native-mount", test)))]
+#[cfg(all(windows, any(not(target_arch = "wasm32"), test)))]
 mod windows_metadata;
-#[cfg(all(windows, any(feature = "native-mount", test)))]
+#[cfg(all(windows, any(not(target_arch = "wasm32"), test)))]
 pub(crate) use windows_metadata::*;
 #[cfg(any(
     windows,
     target_os = "macos",
     test,
-    any(test, feature = "local"),
-    feature = "native-watch"
+    any(test, not(target_arch = "wasm32")),
+    not(target_arch = "wasm32")
 ))]
 mod sparse;
 mod tree;
@@ -168,20 +168,20 @@ mod tree;
     windows,
     target_os = "macos",
     test,
-    any(test, feature = "local"),
-    feature = "native-watch"
+    any(test, not(target_arch = "wasm32")),
+    not(target_arch = "wasm32")
 ))]
 pub(crate) use sparse::*;
-#[cfg(any(windows, test, feature = "native-watch"))]
+#[cfg(any(windows, test, not(target_arch = "wasm32")))]
 mod ranges;
 #[cfg(windows)]
 mod yielding;
 #[cfg(all(
     any(target_os = "linux", target_os = "macos", windows),
-    any(feature = "native-mount", test)
+    any(not(target_arch = "wasm32"), test)
 ))]
 pub use metadata::NativeMetadataError;
-#[cfg(any(windows, test, feature = "native-watch"))]
+#[cfg(any(windows, test, not(target_arch = "wasm32")))]
 pub(crate) use ranges::*;
 pub use reader::HostStatReader;
 pub use root::{CachedRoot, HostRoot};

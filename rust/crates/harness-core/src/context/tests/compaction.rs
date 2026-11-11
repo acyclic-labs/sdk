@@ -209,7 +209,6 @@ fn compaction_always_preserves_native_tool_exchanges() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[test]
 fn owned_compaction_proof_reconstructs_exactly_and_releases_actual_fields() -> Result<()> {
     let source = Context {

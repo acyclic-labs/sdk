@@ -3,12 +3,14 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { credentialTlsFixture } from "../../../test/credential-tls.js";
 import { NativeStreamProvider } from "../src/native.js";
+import { GrpcStreamProvider } from "../src/grpc.js";
 import { StreamError } from "../src/types.js";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
+import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 import { producer as originalRefusal } from "../../objects/test/refusal.fuzz.mjs";
 
-test("native Session rejection preserves original diagnostic bytes through the public provider", async () => {
+test.each(["native", "gRPC"] as const)("%s Session rejection preserves original diagnostic bytes through the public provider", async transport => {
   const original = (await originalRefusal()).refusal;
   const encoded = Buffer.from(original.details).toString("base64");
   let sessions = 0;
@@ -24,9 +26,11 @@ test("native Session rejection preserves original diagnostic bytes through the p
     } });
   });
   try {
-    const provider = await NativeStreamProvider.connect(host.endpoint, "fixture", Buffer.from(host.certificate));
+    const provider = transport === "native"
+      ? await NativeStreamProvider.connect(host.endpoint, "fixture", Buffer.from(host.certificate))
+      : new GrpcStreamProvider({ endpoint: host.endpoint, token: "fixture", caCertificate: host.certificate });
     let actual: unknown;
-    try { await provider.tail("observed"); }
+    try { await provider.heads({ paths: ["observed"], projection: "tail", limit: 1 }); }
     catch (error) { actual = error; }
     expect(actual).toBeInstanceOf(StreamError);
     if (!(actual instanceof StreamError)) throw new Error("missing native Stream error");
@@ -39,6 +43,47 @@ test("native Session rejection preserves original diagnostic bytes through the p
       .toEqual([["acyclic-native-bin", Array.from(new TextEncoder().encode(encoded))]]);
     expect(actual.cause).toBeUndefined();
     expect(sessions).toBe(1);
+    expect(host.connections).toBe(1);
+  } finally { await host.close(); }
+});
+
+test.each([Code.Unknown, Code.PermissionDenied])("gRPC Session and unary refusals retain repeated original metadata bytes for status %s", async status => {
+  const original = (await originalRefusal()).refusal;
+  const encoded = Buffer.from(original.details).toString("base64");
+  const repeated = [encoded, encoded];
+  const byte = 0x80 | original.details[0]!;
+  let sessions = 0, unary = 0;
+  const host = await credentialTlsFixture(router => {
+    router.service(wire.StreamSessionService, { async *session() {
+      sessions++;
+      throw new ConnectError(original.message, status);
+    } });
+    router.service(StreamService, { tail() {
+      unary++;
+      throw new ConnectError(original.message, status);
+    } });
+  }, { "grpc-status-details-bin": encoded, "acyclic-original": repeated,
+    "acyclic-byte": String.fromCharCode(byte) });
+  try {
+    const provider = new GrpcStreamProvider({ endpoint: host.endpoint, token: "fixture", caCertificate: host.certificate });
+    for (const call of [() => provider.heads({ paths: ["observed"], projection: "tail", limit: 1 }),
+      () => provider.tail("observed")]) {
+      let actual: unknown;
+      try { await call(); } catch (error) { actual = error; }
+      expect(actual).toBeInstanceOf(StreamError);
+      if (!(actual instanceof StreamError)) throw new Error("missing original refusal");
+      expect(actual.code).toBe(status === Code.Unknown ? "unavailable" : "access_denied");
+      expect(actual.refusal?.status).toBe(status);
+      expect(actual.refusal?.message).toBe(original.message);
+      expect(Array.from(actual.refusal?.details ?? [])).toEqual(Array.from(original.details));
+      expect(actual.refusal?.metadata.filter(([name]) => name === "acyclic-original")
+        .map(([, bytes]) => Array.from(bytes))).toEqual(repeated.map(value => Array.from(Buffer.from(value, "latin1"))));
+      expect(actual.refusal?.metadata.filter(([name]) => name === "acyclic-byte")
+        .map(([, bytes]) => Array.from(bytes))).toEqual([[byte]]);
+      expect(actual.refusal?.metadata.length).toBe(3);
+    }
+    expect(sessions).toBe(1);
+    expect(unary).toBe(1);
     expect(host.connections).toBe(1);
   } finally { await host.close(); }
 });

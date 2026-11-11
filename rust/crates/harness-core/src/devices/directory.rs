@@ -236,7 +236,7 @@ impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P>
         &'a self,
         path: &'a str,
         kind: crate::tool::ReadPathKind,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
@@ -410,7 +410,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         tokio::pin!(opening);
         let mut events = tokio::select! {
             result = &mut opening => result.map_err(|error| match error {
-                acyclic_stream::StreamError::NotFound if reconcile => Error::Indeterminate(invocation.operation_id),
+                cause if cause.category() == acyclic_stream::StreamError::NotFound && reconcile => Error::Indeterminate(invocation.operation_id),
                 cause => cause.into(),
             })?,
             _ = futures::future::OptionFuture::from(socket_end.as_mut()), if socket_end.is_some() => {
@@ -541,7 +541,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
     async fn accepted_tail(&self, call: &CallPath, operation: crate::OperationId) -> Result<u64> {
         match self.provider.head(call.log().clone()).await {
             Ok(head) => Ok(head.tail),
-            Err(acyclic_stream::StreamError::NotFound) => Ok(0),
+            Err(error) if error.category() == acyclic_stream::StreamError::NotFound => Ok(0),
             Err(_) => Err(Error::Indeterminate(operation)),
         }
     }
@@ -601,7 +601,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<BoxProviderFuture<'static, Result<()>>>> {
         self.authorize(None, context, invocation, work)?;
         let (agent, _) = self.agent(context)?;
@@ -618,9 +618,8 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         _scope: Option<&RuntimeScope>,
         context: Option<&ToolContext>,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
         if work.is_some() {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported,
@@ -659,12 +658,11 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<Option<Dispatch>> {
         let Some(context) = context else {
             return Ok(None);
         };
-        #[cfg(feature = "filesystem")]
         if work.is_some() {
             self.authorize(None, Some(context), invocation, work)?;
         }

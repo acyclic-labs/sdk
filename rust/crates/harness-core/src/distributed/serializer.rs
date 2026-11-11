@@ -31,7 +31,6 @@ pub(crate) fn digest_key(
     ))
 }
 
-#[cfg(feature = "filesystem")]
 pub(crate) fn execution_path(
     operation: OperationId,
     work: &mut Option<&mut dyn HistoryIo>,

@@ -246,7 +246,6 @@ impl<S> CachedObjectStore<S> {
         }
     }
 
-    #[cfg(any(test, feature = "distributed"))]
     pub(crate) fn with_default_options(inner: S) -> Self {
         Self::with_options(inner, ObjectCacheOptions::default())
     }
@@ -759,11 +758,11 @@ mod tests;
 #[path = "cache/decoded_model.rs"]
 mod decoded_model;
 #[cfg(test)]
-#[cfg(all(not(loom), feature = "memory"))]
+#[cfg(not(loom))]
 #[path = "cache/decoded_properties.rs"]
 mod decoded_properties;
 
-#[cfg(all(any(test, feature = "fuzzing"), not(loom), feature = "memory"))]
+#[cfg(all(any(test, feature = "fuzzing"), not(loom)))]
 #[doc(hidden)]
 pub mod decoded_fuzz;
 

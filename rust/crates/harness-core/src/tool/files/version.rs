@@ -3,11 +3,7 @@ use super::*;
 const AUTHORED: &str = "authored-path-v2:";
 
 /// Exercises both real decoders and the original native result custody.
-#[cfg(all(
-    any(test, feature = "test-support"),
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 pub fn check_version(input: &[u8]) {
     let Ok(version) = std::str::from_utf8(input) else {
         return;
@@ -70,7 +66,6 @@ impl SelectedVersion {
             Self::Authored(path) => path.validate(work),
         }
     }
-    #[cfg(feature = "filesystem")]
     fn logical_owned_bytes(&self) -> Result<u64> {
         match self {
             Self::Content(file) => file.logical_owned_bytes(),
@@ -98,18 +93,18 @@ pub(super) fn decode_tool_version(
     context: Option<&ToolContext>,
     path: &str,
     version: &str,
-    work: crate::NativeWork<'_>,
-) -> Result<(SelectedVersion, crate::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(SelectedVersion, acyclic_fs::NativeCustody)> {
     let Some(context) = context else {
         return decode_version(path, version, work);
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let owned_io = work
         .map(crate::executor::PreparationIo::from_native_work)
         .transpose()?;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     let io = owned_io.as_ref();
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    #[cfg(target_arch = "wasm32")]
     let io = None;
     if path.starts_with(crate::layers::EFFECTIVE_PATH) {
         let (file, custody) = decode_selection(version, work)?;
@@ -134,8 +129,8 @@ pub(super) fn decode_tool_version(
 pub(super) fn decode_version(
     path: &str,
     version: &str,
-    work: crate::NativeWork<'_>,
-) -> Result<(SelectedVersion, crate::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(SelectedVersion, acyclic_fs::NativeCustody)> {
     let (selected, custody) = decode_selection(version, work)?;
     if selected.path() != path {
         return Err(super::executor::rejection(
@@ -148,9 +143,9 @@ pub(super) fn decode_version(
 
 pub(super) fn decode_selection(
     version: &str,
-    work: crate::NativeWork<'_>,
-) -> Result<(SelectedVersion, crate::NativeCustody)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(SelectedVersion, acyclic_fs::NativeCustody)> {
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let (file, mut reservation) = if let Some(selected) = version.strip_prefix(AUTHORED) {
@@ -192,15 +187,15 @@ pub(super) fn decode_selection(
 
 pub(crate) fn encode_version(
     file: &FileRef,
-    work: crate::NativeWork<'_>,
-) -> Result<(String, crate::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(String, acyclic_fs::NativeCustody)> {
     encode_token(file, "", work)
 }
 
 pub(super) fn encode_source(
     file: &FileReadSource,
-    work: crate::NativeWork<'_>,
-) -> Result<(String, crate::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(String, acyclic_fs::NativeCustody)> {
     match file {
         FileReadSource::Content(file) => encode_version(file, work),
         FileReadSource::Authored(file) => {
@@ -215,8 +210,8 @@ pub(crate) fn encode_path_version(
     volume: &crate::conversation::VolumeRef,
     path: &str,
     generation: &crate::resources::GenerationRef,
-    work: crate::NativeWork<'_>,
-) -> Result<(String, crate::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(String, acyclic_fs::NativeCustody)> {
     encode_token(
         &crate::conversation::PathSelectionView {
             volume,
@@ -231,9 +226,9 @@ pub(crate) fn encode_path_version(
 fn encode_token<T: Serialize>(
     file: &T,
     prefix: &str,
-    work: crate::NativeWork<'_>,
-) -> Result<(String, crate::NativeCustody)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(String, acyclic_fs::NativeCustody)> {
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let bytes = io.encode(file, work.remaining()?.bytes_encoded, false)?;

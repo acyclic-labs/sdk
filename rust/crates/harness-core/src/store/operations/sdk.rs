@@ -1,6 +1,5 @@
 use super::*;
 use acyclic_stream::StreamProviderExt as _;
-#[cfg(feature = "filesystem")]
 use futures::Stream as _;
 use futures::TryStreamExt as _;
 
@@ -8,9 +7,9 @@ pub(crate) fn stream_error_with_work(
     source: StreamError,
     work: &Option<&mut dyn HistoryIo>,
 ) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if work.as_deref().is_some_and(original_native_decode_mode) {
-        let code = if matches!(&source, StreamError::IdempotencyMismatch) {
+        let code = if source.category() == StreamError::IdempotencyMismatch {
             crate::wire::ErrorCode::Conflict
         } else {
             Storage
@@ -37,7 +36,7 @@ pub(crate) fn sdk_record_retained_bytes(record: &Record, work: &Option<&mut dyn 
 /// The original finite producer; the native cursor guard follows its box.
 pub(crate) enum ObservedRecords {
     Ordinary(RecordStream),
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Native(NativeStreamOutput<NativeRecordStream>),
 }
 
@@ -45,7 +44,7 @@ pub(crate) enum ObservedRecords {
 #[derive(Debug)]
 pub(crate) struct ObservedRecord {
     record: Record,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 
@@ -56,7 +55,7 @@ impl std::ops::Deref for ObservedRecord {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn original_sdk_metadata_output<T>(
     original: &acyclic_fs::NativeMaterializationWork,
     output: NativeStreamOutput<T>,
@@ -71,11 +70,10 @@ pub(super) fn original_sdk_metadata_output<T>(
 }
 
 impl ObservedRecords {
-    #[cfg(feature = "filesystem")]
     pub(crate) fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Ordinary(records) => records.size_hint(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native(records) => records.value().size_hint(),
         }
     }
@@ -97,11 +95,11 @@ impl ObservedRecords {
                 }
                 Ok(record.map(|record| ObservedRecord {
                     record,
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    #[cfg(not(target_arch = "wasm32"))]
                     _allocation: None,
                 }))
             }
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Native(records) => {
                 let observer = work.as_deref_mut().ok_or(Error::NativeBoundary {
                     code: Storage,
@@ -149,7 +147,7 @@ pub(crate) async fn read_records<P: crate::store::JournalProvider + ?Sized>(
         limit: count,
         at_least: Default::default(),
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
         let result = client.native_read(request, original.runtime_meter()).await;
         return match crate::distributed::native_call_result(original, result)? {
@@ -171,7 +169,7 @@ async fn tail_result_with_work<P: crate::store::JournalProvider + ?Sized>(
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::result::Result<u64, StreamError>> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = work
         .as_deref()
         .and_then(|observer| observer.original_native_work())
@@ -196,7 +194,7 @@ pub(crate) async fn tail_optional_with_work<P: crate::store::JournalProvider + ?
     let result = tail_result_with_work(client, path, work).await?;
     match result {
         Ok(tail) => Ok(Some(tail)),
-        Err(StreamError::NotFound) => Ok(None),
+        Err(error) if error.category() == StreamError::NotFound => Ok(None),
         Err(error) => Err(stream_error_with_work(error, work)),
     }
 }
@@ -211,7 +209,7 @@ pub(crate) async fn one_record<P: crate::store::JournalProvider + ?Sized>(
     let mut quota = CodecQuota::new(work, 0)?;
     let mut records = match read_records(client, path, from, 1, quota.work()).await? {
         Ok(records) => records,
-        Err(StreamError::NotFound) => {
+        Err(error) if error.category() == StreamError::NotFound => {
             return Ok(None);
         }
         Err(error) => {

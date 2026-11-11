@@ -3,7 +3,7 @@
     clippy::too_many_lines,
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
-#![cfg(feature = "filesystem-local")]
+#![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::{CancellationToken, Fs, LocalOptions};
 use acyclic_harness::conversation::{

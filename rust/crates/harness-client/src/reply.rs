@@ -62,6 +62,10 @@ pub enum AgentReply {
         binding: String,
         /// The `fs:/` resource whose follow announces the root's tool output.
         tools: String,
+        /// Optional sealed read-only observation enrollment, base64 standard
+        /// alphabet. Commands retain the original caller's credential. A host
+        /// whose platform credential already covers observation returns None.
+        observation: Option<String>,
     },
     /// The root admitted by the verified credential.
     Root {
@@ -421,6 +425,14 @@ pub fn decode_agent_reply(
     }
 }
 
+fn base64_length(data: &str) -> Result<u64, CommandError> {
+    let mut decoder = base64::read::DecoderReader::new(
+        data.as_bytes(),
+        &base64::engine::general_purpose::STANDARD,
+    );
+    std::io::copy(&mut decoder, &mut std::io::sink()).map_err(|_| CommandError::Invalid)
+}
+
 fn validate_reply(
     reply: &AgentReply,
     command: &AgentCommand,
@@ -459,8 +471,15 @@ fn validate_reply(
                 Err(CommandError::Invalid)
             };
         }
+        (AgentReply::Bound { observation, .. }, AgentCommand::Bind { .. }) => {
+            if let Some(credential) = observation {
+                if base64_length(credential)? == 0 {
+                    return Err(CommandError::Invalid);
+                }
+            }
+            return Ok(());
+        }
         (AgentReply::Root { .. }, AgentCommand::Root {})
-        | (AgentReply::Bound { .. }, AgentCommand::Bind { .. })
         | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })
         | (AgentReply::Staged {}, AgentCommand::Stage { .. })
         | (
@@ -515,12 +534,7 @@ fn validate_reply(
             };
         }
         (AgentReply::Content { data, length }, AgentCommand::Read { offset, .. }) => {
-            let mut decoder = base64::read::DecoderReader::new(
-                data.as_bytes(),
-                &base64::engine::general_purpose::STANDARD,
-            );
-            let bytes = std::io::copy(&mut decoder, &mut std::io::sink())
-                .map_err(|_| CommandError::Invalid)?;
+            let bytes = base64_length(data)?;
             return if bytes <= MAX_READ_BYTES
                 && offset.checked_add(bytes).is_some_and(|end| end <= *length)
                 && (bytes != 0 || *offset == *length)

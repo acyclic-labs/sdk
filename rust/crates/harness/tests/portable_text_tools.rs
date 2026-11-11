@@ -1,5 +1,4 @@
 //! Portable text effects use owner grants, pinned generations and retained receipts.
-#![cfg(feature = "filesystem")]
 
 use acyclic_fs::Fs;
 use acyclic_harness::{

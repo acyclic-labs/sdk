@@ -239,7 +239,7 @@ fn collection_hold_retirement_preserves_the_original_accounting_credit()
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn file_table_replacement_rejects_a_missing_checkout_registration()
 -> Result<(), Box<dyn std::error::Error>> {

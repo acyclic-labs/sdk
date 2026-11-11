@@ -89,13 +89,13 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 struct PendingTool {
     calls: AtomicUsize,
     result: Mutex<Option<ToolResult>>,
     accepted: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl crate::tool::ToolExecutor for PendingTool {
     fn execute<'a>(
         &'a self,
@@ -118,7 +118,7 @@ impl crate::tool::ToolExecutor for PendingTool {
 }
 
 #[tokio::test]
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
     let (journal, _issuer) = super::publication_observation::journal().await?;
     let provider = Arc::new(scripted_model());

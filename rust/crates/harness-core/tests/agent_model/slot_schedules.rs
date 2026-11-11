@@ -3,34 +3,104 @@
 use super::*;
 
 #[tokio::test]
-async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
-    let invalid = [String::new(), "x".repeat(MAX_INTENT_BYTES + 1), "\0".into()]
+async fn an_invalid_turn_fails_before_publishing_status_or_effects() -> Result {
+    #[cfg(feature = "test-support")]
+    for length in [129, 255, MAX_RECORD_BYTES] {
+        acyclic_harness_core::agent::codec_fuzz::check(&vec![b'a'; length]);
+    }
+    // Derive the last approval ID the empty-wake writer admits. A retained
+    // child receipt must still fit beside it when that wait actually returns.
+    let approval = |length| StatusRecord {
+        child_wakes: Vec::new(),
+        phase: Phase::WaitingApproval {
+            id: intent(&"a".repeat(length)),
+            binding: None,
+        },
+        cursor: u64::MAX,
+        conversation: u64::MAX,
+    };
+    let (mut fits, mut refuses) = (0, MAX_RECORD_BYTES);
+    while fits + 1 < refuses {
+        let length = fits + (refuses - fits) / 2;
+        if approval(length).encode().is_ok() {
+            fits = length;
+        } else {
+            refuses = length;
+        }
+    }
+    approval(fits).encode()?;
+    let invalid = [String::new(), "x".repeat(MAX_NAME_BYTES + 1), "\0".into()]
         .into_iter()
         .map(Wait::Host)
-        .chain([Wait::Approval {
-            id: intent("invalid-action"),
-            binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
-                operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
-                action_digest: [0; 32],
+        .chain([
+            Wait::Approval {
+                id: intent("invalid-action"),
+                binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
+                    operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
+                    action_digest: [0; 32],
+                }),
+            },
+            Wait::Approval {
+                id: intent(&"a".repeat(MAX_RECORD_BYTES)),
+                binding: None,
+            },
+        ])
+        .map(|wait| (wait, None))
+        .chain([(
+            Wait::Input,
+            Some(Out::Archive {
+                target: AgentPath::root(&id(9)),
+                id: intent(&"a".repeat(MAX_RECORD_BYTES)),
             }),
-        }]);
-    for wait in invalid {
+        )]);
+    let invalid = invalid.map(|(wait, extra)| (wait, extra, false)).chain([(
+        Wait::Approval {
+            id: intent(&"a".repeat(fits)),
+            binding: None,
+        },
+        None,
+        true,
+    )]);
+    for (wait, extra, child_settled) in invalid {
         let (root, mut state) = one_below_the_child_limit()?;
         state.turn = Some(Progress {
             inbox: 0,
             checkpoint: Vec::new(),
         });
-        state.phase = Phase::Running;
+        let wake = if child_settled {
+            let mut children = state.open_children.iter();
+            let child = children.next().ok_or("missing awaited child")?.clone();
+            let settled = children.next().ok_or("missing settled child")?.id();
+            state.open_children.clear();
+            state.open_children.insert(child.clone());
+            state.child_settlements.push((settled, 0));
+            state.awaiting.insert(child.clone());
+            state.need = 1;
+            state.phase = Phase::Waiting {
+                deadline_unix_ms: None,
+                input: false,
+            };
+            Wake::Inbox {
+                sequence: 1,
+                record: InboxRecord::ChildSettled(ChildSettled { child }),
+            }
+        } else {
+            state.phase = Phase::Running;
+            Wake::Alarm
+        };
+        let cursor = if child_settled { 2 } else { 1 };
         let driver = script(vec![TurnStep {
             checkpoint: Some(vec![]),
             reserved_children: 0,
-            outs: vec![Out::Spawn {
+            outs: std::iter::once(Out::Spawn {
                 profile: None,
                 history: None,
                 intent: intent("spawn:invalid-host"),
                 brief: None,
                 volumes: vec![],
-            }],
+            })
+            .chain(extra)
+            .collect(),
             wait,
             drops: None,
         }]);
@@ -38,8 +108,8 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
             &driver,
             &root,
             Some(state),
-            (1, 0),
-            Wake::Alarm,
+            (cursor, 0),
+            wake,
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
@@ -56,13 +126,14 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
             spawns(&result.outs).is_empty(),
             "invalid wait published unchecked effects"
         );
-        StatusRecord {
-            child_wakes: Vec::new(),
-            phase: result.state.phase,
-            cursor: u64::MAX,
-            conversation: u64::MAX,
-        }
-        .encode()?;
+        let status = result.status.as_ref().ok_or("missing terminal status")?;
+        assert_eq!(status.child_wakes.len(), usize::from(child_settled));
+        status.encode()?;
+        lower(
+            &result,
+            cursor,
+            acyclic_stream::IdempotencyKey::new("invalid-turn")?,
+        )?;
     }
     Ok(())
 }

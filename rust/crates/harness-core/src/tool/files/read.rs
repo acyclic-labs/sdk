@@ -7,9 +7,9 @@ impl FileTool {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let mut input = decode::<ReadFileInput>(&invocation.arguments, work)?;
         if input.0.wait && input.0.version.is_some() {
@@ -89,9 +89,9 @@ impl FileTool {
         context: &ToolContext,
         input: &ReadFileInput,
         source: super::source::ReadSource,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let start = input.range.map_or(0, |range| range.start);
         let count = input
@@ -132,16 +132,12 @@ impl FileTool {
                 })
                 .or_else(|| bytes.starts_with(b"%PDF-").then_some(ReadSelection::Pdf));
             if media.is_some() {
-                let selected = match window.source {
-                    FileReadSource::Authored(selected) => selected,
-                    FileReadSource::Content(file) => return self.media_result(file, media, work),
-                };
-                // Native input needs complete bytes. Resolve only this already
-                // selected generation; a concurrent head cannot substitute it.
-                let source = super::executor::Source::read(
+                // Native input needs complete bytes from this same selected generation.
+                let source = super::executor::Source::selected(
                     context,
                     &input.path,
-                    Some(&selected.generation),
+                    window.into_source(),
+                    work,
                     io,
                 )
                 .await?;
@@ -169,8 +165,8 @@ impl FileTool {
         &self,
         file: FileRef,
         selection: Option<ReadSelection>,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
         let valid = match &selection {
             Some(ReadSelection::Image { .. }) => matches!(
                 file.descriptor().media_type(),
@@ -206,9 +202,9 @@ fn text_result(
     path: &str,
     interval: (u64, u64),
     maximum: u64,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<(ToolResult, crate::NativeCustody)> {
+) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
     let (start, end) = interval;
     let _version_hold;
     let (version, version_hold) = super::version::encode_source(&file, work)?;
@@ -262,7 +258,7 @@ pub(super) fn encoded_text_budget(
     version: &str,
     path: &str,
     maximum: u64,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
     let empty = FileView {
@@ -290,7 +286,7 @@ pub(super) fn page_text<'a>(
     bytes: &'a [u8],
     empty: bool,
     truncated: bool,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<&'a str> {
     if !empty && truncated {
         match std::str::from_utf8(bytes) {

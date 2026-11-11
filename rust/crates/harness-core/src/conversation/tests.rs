@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn native_conversation_budget() -> acyclic_fs::WorkBudget {
     acyclic_fs::WorkBudget {
         allocation_operations: 100_000,
@@ -50,7 +50,6 @@ pub(super) fn file(agent: AgentId, path: &str) -> Result<FileRef> {
 }
 
 mod history;
-#[cfg(feature = "filesystem")]
 mod native;
 mod security;
 mod wire;

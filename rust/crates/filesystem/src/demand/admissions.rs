@@ -1,5 +1,5 @@
 use super::*;
-#[cfg(any(test, windows, feature = "native-mount"))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::cancellation::{CancellationWaitError, Cancelled};
 use crate::kernel::ProofDataCustody;
 use crate::sync::atomic::{AtomicU64, Ordering, fence};
@@ -8,12 +8,12 @@ use std::sync::Arc;
 #[path = "admissions_accounting.rs"]
 mod accounting;
 pub(crate) use accounting::NativeAllocationAccounting;
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "admissions_view_reads.rs"]
 mod view_reads;
-#[cfg(feature = "native-mount")]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use view_reads::ViewReadCompletion;
-#[cfg(all(test, feature = "memory"))]
+#[cfg(test)]
 const SCAN: WorkCounters = WorkCounters {
     items_examined: 1,
     ..WorkCounters::UNCHARGED
@@ -68,7 +68,7 @@ impl DemandWork {
         if owners == 1 {
             fence(Ordering::Acquire);
         }
-        #[cfg(feature = "native-mount")]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let (completed, unused, failed) = shared.take_view_reads();
             let settled = completed
@@ -126,7 +126,7 @@ impl DemandWork {
         }
         failure.map_or(Ok(()), Err)
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn owns_native_allocation_accounting(
         &self,
         shared: &Arc<NativeAllocationAccounting>,
@@ -168,7 +168,7 @@ impl DemandWork {
             .as_ref()
             .is_some_and(|shared| token.is_registered_native_accounting(shared))
     }
-    #[cfg(any(test, windows, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn prepare_cancelled(
         &mut self,
         token: &CancellationToken,
@@ -176,7 +176,7 @@ impl DemandWork {
         self.reconcile_cancellation_registry()?;
         token.prepare_cancelled_measured(&mut self.allocations, &mut self.work, self.budget)
     }
-    #[cfg(any(test, windows, feature = "native-mount"))]
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn finish_cancelled(
         &mut self,
         prepared: Cancelled<'static>,
@@ -230,12 +230,11 @@ impl NativeDemandReadMeter {
 }
 
 #[cfg(test)]
-#[cfg(feature = "native-watch")]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "admissions_custody_tests.rs"]
 mod custody_tests;
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "admissions_tests.rs"]
 mod tests;
 

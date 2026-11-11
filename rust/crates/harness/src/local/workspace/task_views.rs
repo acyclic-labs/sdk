@@ -4,6 +4,9 @@ use super::*;
 use acyclic_fs::{CancellationToken, MountOptions, WorkBudget};
 use acyclic_stream::BoxProviderFuture;
 
+#[cfg(all(test, not(loom)))]
+mod tests;
+
 pub(super) fn view_options(
     admission: &std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>,
     options: MountOptions,
@@ -25,28 +28,65 @@ impl LocalWorkspace {
         owner: &dyn super::owner::ViewOwner,
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<LocalWorkspace>> {
-        let mut state = crate::sync::owned::lock_owned(StateArc::clone(&self.state)).await;
-        let key = project.storage_name(&mut None)?;
-        if let Some(workspace) = state
-            .allocated_workspaces
-            .get(&key)
-            .and_then(std::sync::Weak::upgrade)
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let key = bindings::volume_key(project)?;
+        let scratch_key = bindings::volume_key(&scratch)?;
+        let (selection, producer) =
+            bindings::Bindings::select(&self.bindings, key, scratch_key, &work, &cancellation)?;
+        let binding_owner = selection.binding.clone();
+        let mounts = if let Some(producer) = producer {
+            let mounts = self
+                .bound_mounts(project, scratch, authority, &selection.binding)
+                .await?;
+            selection.publish(&mounts)?;
+            producer.release();
+            mounts
+        } else {
+            let mounts = selection.mounts().await?;
+            // A retained result is physical custody, never fresh authority.
+            // Recheck the actual caller against each retained auxiliary source.
+            for (_, mount) in mounts.mounts() {
+                if let Some(source) = &mount.view.source {
+                    authority
+                        .mount_options(
+                            source.workspace.workspace(),
+                            Some(&mount.view.volume),
+                            !mount.mode.read_only(),
+                            &work,
+                        )
+                        .await?;
+                }
+            }
+            mounts
+        };
         {
+            let cached = binding_owner.workspace.lock().await;
+            if let Some(workspace) = cached.upgrade() {
+                drop(cached);
+                owner.verify().await?;
+                return Ok(workspace);
+            }
+        }
+        // Verify without the per-binding guard: another verified caller may
+        // finish the primary view while this owner's verification is pending.
+        owner.verify().await?;
+        let mut cached = binding_owner.workspace.lock().await;
+        if let Some(workspace) = cached.upgrade() {
+            drop(cached);
             owner.verify().await?;
             return Ok(workspace);
         }
-        state
-            .allocated_workspaces
-            .retain(|_, workspace| workspace.strong_count() != 0);
-        let mounts = self.bound_mounts(project, scratch, authority).await?;
         let workspace = self
-            .mount_task_view(view, owner, Some(mounts), authority)
+            .mount_task_view(
+                view,
+                owner,
+                Some((mounts, binding_owner.clone())),
+                authority,
+            )
             .await?;
-        // Every turn and background command of this binding shares its primary
-        // view, capture cursor and auxiliary projections through one owner.
-        state
-            .allocated_workspaces
-            .insert(key, Arc::downgrade(&workspace));
+        *cached = Arc::downgrade(&workspace);
         Ok(workspace)
     }
 
@@ -166,7 +206,10 @@ impl LocalWorkspace {
         &'a self,
         view: workspace::View,
         owner: &'a dyn super::owner::ViewOwner,
-        mounts: Option<Arc<workspace::Mounts>>,
+        mounts: Option<(
+            Arc<workspace::Mounts>,
+            acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>,
+        )>,
         authority: &'a crate::filesystem::NativeMountAuthority,
     ) -> BoxProviderFuture<'a, Result<Arc<LocalWorkspace>>> {
         Box::pin(async move {
@@ -174,6 +217,7 @@ impl LocalWorkspace {
             // live mount needs its own namespace so retiring it cannot
             // detach a replacement owner's mount at the same path.
             owner.verify().await?;
+            let (mounts, binding_owner) = mounts.unzip();
             let mut workspace = LocalWorkspace {
                 shutdown: self.shutdown.clone(),
                 native_mount_probe: self.native_mount_probe.clone(),
@@ -185,6 +229,9 @@ impl LocalWorkspace {
                     view.workspace().id(),
                     Arc::clone(&self.mounts),
                 ))),
+                binding: mounts.clone(),
+                binding_owner,
+                bindings: self.bindings.clone(),
                 mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
                 context_line: self.context_line().into(),
                 processes: self.processes.clone(),
@@ -301,6 +348,9 @@ impl LocalWorkspace {
             context_line: mounts.context_line(),
             processes: self.processes.clone(),
             mounts: Arc::clone(&mounts),
+            binding: self.binding.clone(),
+            binding_owner: self.binding_owner.clone(),
+            bindings: self.bindings.clone(),
             // This cached physical handle must not retain its owning cache.
             state: StateArc::new(AsyncMutex::new(State::new(
                 view.workspace().id(),

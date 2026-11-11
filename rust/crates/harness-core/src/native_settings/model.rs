@@ -3,7 +3,7 @@ use super::*;
 impl SettingsConfig {
     /// Persist the selected model at the one user model setting. Preserve
     /// other settings and atomically replace the document after a full write.
-    #[cfg(feature = "filesystem-local")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn set_model(&self, selection: &str) -> Result<()> {
         use std::io::Write as _;
         let path = self.codex_home.join("config.toml");
@@ -94,11 +94,11 @@ mod tests {
                 if let Some(provider) = selected_provider { value.insert("model_provider", provider); }
                 let encoded = toml::to_string(&value).unwrap();
                 std::fs::write(config.codex_home.join("config.toml"), &encoded).unwrap();
-                #[cfg(feature = "hooks")]
+                #[cfg(not(target_arch = "wasm32"))]
                 crate::native_settings::codec_fuzz::check(encoded.as_bytes()).unwrap();
                 let provider = selected_provider.unwrap_or("openai");
                 prop_assert_eq!(config.configured_model().unwrap(), Some(format!("{provider}/{model}")));
-                #[cfg(feature = "filesystem-local")]
+                #[cfg(not(target_arch = "wasm32"))]
                 {
                     let path = config.codex_home.join("config.toml");
                     std::fs::write(&path, format!("{encoded}\n[unrelated]\nkeep = true\n")).unwrap();

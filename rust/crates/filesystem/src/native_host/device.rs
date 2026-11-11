@@ -27,7 +27,7 @@ pub(crate) fn split_device(device: u64) -> (u32, u32) {
 /// Joins `(major, minor)` into a host `dev_t`, failing with `EOVERFLOW` when
 /// the pair cannot be represented on this platform.
 #[cfg(target_os = "linux")]
-#[cfg(any(test, feature = "native-mount", feature = "fuzzing"))]
+#[cfg(any(test, not(target_arch = "wasm32"), feature = "fuzzing"))]
 pub(crate) fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
     let device = libc::makedev(major, minor);
     if libc::major(device) != major || libc::minor(device) != minor {
@@ -42,7 +42,7 @@ pub(crate) fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
 /// Darwin packs the major number into 8 bits and the minor number into 24;
 /// out-of-range components are rejected instead of silently aliasing.
 #[cfg(target_os = "macos")]
-#[cfg(any(test, feature = "native-mount", feature = "fuzzing"))]
+#[cfg(any(test, not(target_arch = "wasm32"), feature = "fuzzing"))]
 pub(crate) fn join_device(major: u32, minor: u32) -> Result<libc::dev_t, i32> {
     if major > 0xFF || minor > 0xFF_FFFF {
         return Err(libc::EOVERFLOW);

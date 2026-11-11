@@ -218,5 +218,5 @@ where
     }
 }
 
-#[cfg(all(test, feature = "memory", not(loom)))]
+#[cfg(all(test, not(loom)))]
 mod tests;

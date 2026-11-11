@@ -72,9 +72,9 @@ typed_reference!(
             provider: &ProviderRef,
             key: &[u8],
             version: Option<&str>,
-            work: crate::NativeWork<'_>,
-        ) -> Result<(Self, crate::NativeCustody)> {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            work: acyclic_fs::NativeWork<'_>,
+        ) -> Result<(Self, acyclic_fs::NativeCustody)> {
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = work {
                 let mut io = crate::filesystem::PreparationIo::from_native_work(work)
                     .map(crate::store::HistoryWork::new)?;
@@ -155,20 +155,10 @@ macro_rules! resource_conversion {
         }
     };
 }
-#[cfg(feature = "filesystem")]
 resource_conversion!(WorkspaceRef, Workspace);
 resource_conversion!(GenerationRef, Generation);
-#[cfg(feature = "filesystem")]
 resource_conversion!(StreamRef, Stream);
 
-#[cfg(feature = "filesystem")]
-impl WorkspaceRef {
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.0.logical_owned_bytes()
-    }
-}
-
-#[cfg(feature = "filesystem")]
 impl GenerationRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.0.logical_owned_bytes()

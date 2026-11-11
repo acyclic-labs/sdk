@@ -37,7 +37,7 @@ git apply -R rust/proofs/terminal-source-ownership/omit-source-ownership.patch
 cargo test --locked -p acyclic-native-runtime --doc terminal::Readiness
 
 cargo nextest run --locked -p acyclic-native-runtime --lib -E 'test(=terminal::tests::waits_at_descriptors_beyond_fd_setsize)'
-cargo nextest run --locked -p acyclic-harness-tui --features tui --lib -E 'test(=term::tty::tests::real_pty_waits_only_until_writable) | test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
+cargo nextest run --locked -p acyclic-harness-tui --lib -E 'test(=term::tty::tests::real_pty_waits_only_until_writable) | test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
 ```
 
 The native property covers repeated high-descriptor waits, suspension masks,
@@ -63,12 +63,12 @@ control; it must print `skipped: RLIMIT_NOFILE` without exercising the PTY.
 ```sh
 git apply rust/proofs/terminal-source-ownership/original-descriptor-skips.patch
 # Original bug: exits successfully and prints skipped: RLIMIT_NOFILE.
-prlimit --nofile=1500:1500 cargo nextest run --locked -p acyclic-harness-tui --features tui --lib --success-output final -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
+prlimit --nofile=1500:1500 cargo nextest run --locked -p acyclic-harness-tui --lib --success-output final -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
 git apply -R rust/proofs/terminal-source-ownership/original-descriptor-skips.patch
 # Require test failure with Unsupported and the descriptor-capacity recovery command.
-prlimit --nofile=1500:1500 cargo nextest run --locked -p acyclic-harness-tui --features tui --lib -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
+prlimit --nofile=1500:1500 cargo nextest run --locked -p acyclic-harness-tui --lib -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
 # Require a pass with the original offered capacity restored.
-cargo nextest run --locked -p acyclic-harness-tui --features tui --lib -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
+cargo nextest run --locked -p acyclic-harness-tui --lib -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
 ```
 
 This control exercises the hard-limit refusal. The security-policy-dependent

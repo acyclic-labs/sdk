@@ -6,9 +6,9 @@ mod native;
 mod shared;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::NativeAccounting;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use shared::{ErasedRetainedArc, ErasedRetainedWeak};
-pub(crate) use shared::{RetainedArc, RetainedWeak};
+pub use shared::{RetainedArc, RetainedWeak};
 
 /// A handoff keeps the same counters, budget and live-byte owner. The caller
 /// must stop charging this accounting branch until its completion is returned.

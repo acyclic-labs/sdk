@@ -29,10 +29,10 @@ pub use routed::Routed;
 mod computed_tests;
 
 /// Native provider backed by a held, no-follow directory capability.
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 #[cfg(test)]
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -68,7 +68,7 @@ pub use accounting::DemandWork;
 use admissions::Admissions;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use admissions::NativeAllocationAccounting;
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use admissions::ViewReadCompletion;
 #[cfg(target_os = "macos")]
 pub(crate) use context::native_demand_read_error;
@@ -76,14 +76,14 @@ pub(crate) use context::native_demand_read_error;
 pub(crate) use context::{CaptureTransientCustody, NativeDemandReadMeter, native_demand_error};
 #[cfg(not(target_arch = "wasm32"))]
 pub use ownership::NativeMountAllocationCustody;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use ownership::SourcePayloadOwnership;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use source_work::SourceDemandReadWork;
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod paths;
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use paths::*;
 
 #[cfg(test)]

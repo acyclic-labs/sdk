@@ -42,7 +42,7 @@ pub(super) fn shared_runtime() -> std::io::Result<&'static tokio::runtime::Runti
         .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
 }
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl ViewObserver for Recorded {
     fn view_changed(&self, position: ViewStamp, _origin: crate::native_mount::ViewOrigin) {
         self.0
@@ -51,7 +51,7 @@ impl ViewObserver for Recorded {
             .push(position);
     }
 }
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn recorded_view(
     source_root: &Path,
 ) -> Result<

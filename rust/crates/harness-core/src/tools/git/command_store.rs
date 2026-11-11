@@ -21,18 +21,10 @@ pub trait CommandStore:
     fn capture_error(error: GitCaptureAuthenticationError<Self::StoreError>) -> Error;
 }
 
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::{LocalCoreStateStore, LocalCoreStateStoreError};
 
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(not(target_arch = "wasm32"))]
 impl CommandStore for LocalCoreStateStore {
     type StoreError = LocalCoreStateStoreError;
 

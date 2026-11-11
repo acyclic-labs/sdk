@@ -17,14 +17,13 @@ pub struct RecordedInvocation<I = ToolInvocation, M = Value> {
     pub filesystem: Option<[u8; 32]>,
 }
 
-#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for RecordedInvocation {
     fn diagnostic_label_bytes() -> u64 {
         TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl crate::filesystem::UploadRecord for RecordedInvocation {
     fn diagnostic_label_bytes() -> u64 {
         TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES

@@ -31,8 +31,9 @@ impl ToolPolicy for ObservedPolicy {
         invocation: &'a ToolInvocation,
         scope: &'a RuntimeScope,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
-    {
+    ) -> Result<
+        crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
+    > {
         self.evaluations.fetch_add(1, Ordering::SeqCst);
         self.fixed.evaluate(invocation, scope, io)
     }

@@ -3,7 +3,7 @@
 mod agent_control_mapping;
 #[cfg(not(loom))]
 mod agent_model;
-#[cfg(all(not(loom), feature = "filesystem-local", feature = "native-execution"))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod git_executor;
 
 pub use acyclic_harness_core::Error;
@@ -30,13 +30,8 @@ use sync::{
 #[cfg(all(loom, feature = "model-checking"))]
 mod skill_materializer_loom;
 
-#[cfg(all(
-    not(loom),
-    feature = "filesystem-local",
-    feature = "native-execution",
-    feature = "machines"
-))]
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod machine_workspace;
 
-#[cfg(all(not(loom), feature = "machines"))]
+#[cfg(not(loom))]
 mod target_lifecycle;

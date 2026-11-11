@@ -28,7 +28,7 @@ before constructing either cancellation waiter.
 Run the two controls with:
 
 ```sh
-cargo nextest run --locked -p acyclic-fs --no-default-features --features local,memory --lib -E 'test(=staged_objects::tests::native_read::native_spill_denial_corruption_and_abandoned_frame_preserve_original_prefix) | test(=staged_objects::tests::native_write::native_flush_caller_cancellation_refuses_before_admission)' --no-tests=fail
+cargo nextest run --locked -p acyclic-fs --no-default-features --lib -E 'test(=staged_objects::tests::native_read::native_spill_denial_corruption_and_abandoned_frame_preserve_original_prefix) | test(=staged_objects::tests::native_write::native_flush_caller_cancellation_refuses_before_admission)' --no-tests=fail
 ```
 
 Apply one kept mutation with `git apply`, run the read property, then restore

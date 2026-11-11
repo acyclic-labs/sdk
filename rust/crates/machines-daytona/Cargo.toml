@@ -22,7 +22,7 @@ url = "2.5.7"
 time = { workspace = true, features = ["parsing"] }
 
 [dev-dependencies]
-acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["machines"] }
+acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false }
 acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0", default-features = false }
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 acyclic-machines = { path = "../machines", version = "=0.2.0", default-features = false, features = ["conformance"] }

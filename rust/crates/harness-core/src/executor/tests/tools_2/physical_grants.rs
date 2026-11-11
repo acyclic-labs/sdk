@@ -19,7 +19,7 @@ impl ToolExecutor for NativeTool {
         invocation: &'a ToolInvocation,
         _: &'a ToolContext,
         grant: &'a ExecutionGrant,
-        _: crate::NativeWork<'a>,
+        _: acyclic_fs::NativeWork<'a>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             assert_eq!(invocation.name, "shell");
@@ -128,8 +128,9 @@ impl ToolPolicy for PhysicalPolicy {
         _: &'a ToolInvocation,
         _: &'a RuntimeScope,
         _: Option<&'a PreparationIo>,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
-    {
+    ) -> Result<
+        crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, acyclic_fs::NativeCustody)>,
+    > {
         Ok(crate::store::HistoryContentFuture::Ordinary {
             future: Box::pin(async move {
                 Ok((

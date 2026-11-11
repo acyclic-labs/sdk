@@ -9,6 +9,14 @@ const stdout = capture("shipping-output").captures["jsonl-reopen"].stdout;
 const reply = JSON.parse(stdout);
 const reads = capture("live-file-read-results").cases.map(({ event }) => event);
 const shells = capture("live-shell-results").cases.map(({ event }) => event.tool_response);
+// Derive diagnostic mutations from the shipped enum's rendering, rather than
+// inventing a parallel list of tool failures or another provider capture.
+const executor = readFileSync(new URL("../../rust/crates/harness-core/src/executor/mod.rs", import.meta.url), "utf8");
+const kinds = /pub enum ToolFailureKind \{([^]*?)\n\}/.exec(executor)[1];
+const rendering = executor.slice(executor.indexOf("pub const fn message(self)"), executor.indexOf("pub const fn precedes_dispatch(self)"));
+const failures = [...rendering.matchAll(/"(tool [^"]*)"/g)].map(match => match[1]);
+assert.equal(failures.length, [...kinds.matchAll(/^\s+\w+,$/gm)].length,
+  "each shipped tool failure kind needs its original rendering");
 
 function rejectedReply(value, id) {
   assert.throws(() => messageReply(value, id), { code: "ERR_ASSERTION" });
@@ -24,6 +32,12 @@ export function fuzz(data) {
   try { value = JSON.parse(text); }
   catch (error) { if (!(error instanceof SyntaxError)) throw error; value = text; }
   toolOutcome({ version: 2, context: [], output: { value } });
+  for (const message of failures) for (const failure of [message, message + ": " + vm.output.error + text]) {
+    for (const allowed of [undefined, [""], [null]])
+      assert.throws(() => toolOutcome(failure, allowed), { code: "ERR_ASSERTION" });
+    toolOutcome(failure, [message]);
+    toolOutcome("ordinary output: " + failure);
+  }
   const selected = { ...reply, id: reply.id + ":" + bytes.toString("hex"), text };
   assert.equal(messageReply(selected, selected.id), selected);
   assert.deepEqual(jsonlReply(JSON.stringify(selected) + "\n", selected.id), selected);

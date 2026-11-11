@@ -15,7 +15,7 @@ fn original_ledger_admission_tracks_its_actual_arc_at_every_ceiling() {
     // Process-global framework custody is established through the public host
     // boundary before measuring finite ledger ownership. Repeated constructors
     // still cross that same boundary and must not allocate another invocation.
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     acyclic_fs::watch::initialize_native_watch_services().unwrap();
     let cancellation = CancellationToken::new();
     let (probe, allocations) = measured(|| {

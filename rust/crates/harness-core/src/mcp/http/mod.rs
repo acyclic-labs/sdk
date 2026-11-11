@@ -17,11 +17,11 @@ pub use body::ResponseByteFrontier;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod codec_fuzz;
-#[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod response;
 mod sse;
-#[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use native::NativeMcpHttpProvider;
 
 /// One portable HTTP request with finite I/O bounds.
@@ -78,13 +78,13 @@ pub struct HttpMcpTransport {
     timeout_ms: u32,
     callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
     tools_generation: Arc<std::sync::atomic::AtomicU64>,
-    #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     notifications: Option<Arc<NotificationWatch>>,
 }
 
-#[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 struct NotificationWatch(tokio::task::JoinHandle<()>);
-#[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for NotificationWatch {
     fn drop(&mut self) {
         self.0.abort();
@@ -160,13 +160,13 @@ impl HttpMcpTransport {
             timeout_ms,
             callbacks,
             tools_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             notifications: None,
         })
     }
 
     /// One GET event stream per connection, shared by every installed tool.
-    #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn watch_tools(&mut self) -> Result<()> {
         let request = self.request("GET", Vec::new())?;
         let provider = self.provider.clone();

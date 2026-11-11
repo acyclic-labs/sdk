@@ -104,7 +104,7 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
     fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value>;
     /// Validates a replacement before installation.
     fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if io
             .and_then(crate::executor::PreparationIo::original_native_work)
             .is_some()
@@ -155,7 +155,7 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
         Ok(None)
     }
     /// Reports original-ledger support before constructing a future.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     fn supports_native(&self) -> bool {
         false
     }
@@ -187,7 +187,7 @@ impl ContextPipeline {
 
     /// Validates stage identities on the optional preparation ledger.
     pub fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             work.remaining()?;
             if self.0.iter().any(|stage| !stage.supports_native()) {
@@ -204,7 +204,7 @@ impl ContextPipeline {
     }
 
     /// Appends to a caller-guarded native pipeline, returning only its actual backing-capacity delta.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn append_with_native_work(
         &mut self,
         stage: Arc<dyn ContextStage>,
@@ -449,7 +449,7 @@ impl ContextPipeline {
 
     /// Returns immutable stage contracts on the optional preparation ledger.
     pub fn contracts(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<Value>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if io
             .and_then(crate::executor::PreparationIo::original_native_work)
             .is_some()

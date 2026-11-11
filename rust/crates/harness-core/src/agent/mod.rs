@@ -16,7 +16,6 @@ mod commit;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod control_trace;
-#[cfg(feature = "filesystem")]
 pub(crate) use commit::sender_text;
 mod driver;
 mod effects;
@@ -97,7 +96,7 @@ pub use machine::{
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, ChildWake,
     Closed, ContextAction, ContextRequest, Control, CreationConfig, ForkAdopted, Hook, InboxRecord,
-    IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Membership,
+    IntentId, MAX_MESSAGE_BYTES, MAX_NAME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Membership,
     Message, NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext, SpawnRequest,
     SpawnTemplates, StatusRecord, UnsupportedRecordVersion, VolumeBinding, decode_record,
 };

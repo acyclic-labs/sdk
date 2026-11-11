@@ -13,24 +13,16 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod adapter;
-#[cfg(all(
-    feature = "filesystem",
-    any(test, feature = "test-support"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 mod allocation;
 mod arguments;
 /// Exercises production native declarations with hostile argument values.
-#[cfg(all(
-    feature = "filesystem",
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub use allocation::check as check_native_arguments;
-#[cfg(all(feature = "filesystem", test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod arguments_tests;
-#[cfg(all(feature = "filesystem", test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
 /// Exact source declarations in the profile's registration order: the
@@ -106,7 +98,6 @@ pub struct NativeTools(Vec<Mapped>);
 
 /// Model-specific declarations. The fallible initializer owns the
 /// reservation before it reads the profile or decodes any declarations.
-#[cfg(any(feature = "filesystem", test))]
 #[derive(Default)]
 pub(crate) struct Cache(
     std::sync::Mutex<
@@ -114,7 +105,6 @@ pub(crate) struct Cache(
     >,
 );
 
-#[cfg(any(feature = "filesystem", test))]
 impl Cache {
     pub(crate) fn get(
         &self,

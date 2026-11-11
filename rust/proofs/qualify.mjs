@@ -6,7 +6,9 @@ import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "nod
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const nativeHarness = ["--features", "filesystem-local,native-execution,test-support,grpc,search-http"];
+const nativeHarness = ["--features", "test-support"];
+const bindingFeatures = ["--features", "test-support"];
+const bindingNextest = ["--profile", "ci", "--retries", "0", "--no-tests=fail", "--no-fail-fast", "--failure-output", "final"];
 const cleanupTests = [
   "local::workspace::volumes::publication_tests::cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head",
   "local::tests::agents::a_shell_call_stages_its_output_on_the_private_volume",
@@ -18,7 +20,7 @@ const claims = {
   "filesystem-lineage-canonical": [
     "rust/crates/filesystem/src/workspace/identity.rs", "acyclic-fs",
     "lineage::tests::persisted_lineage_names_require_exact_canonical_bytes",
-    "noncanonical lineage registration was accepted", ["--features", "local,memory,test-support,native-watch"],
+    "noncanonical lineage registration was accepted", ["--features", "test-support"],
     { oracle: "rust/crates/filesystem/src/lineage/tests.rs",
       mutations: [{ patch: "rust/crates/filesystem/fuzz/mutations/lineage_noncanonical_name.patch",
         label: "noncanonical-lineage-name", diagnostic: "noncanonical lineage registration was accepted" }] },
@@ -37,7 +39,7 @@ const claims = {
   "settings-read-producer": [
     "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "plugin composition cached an operational read failure", ["--features", "filesystem-local,test-support,hooks"],
+    "plugin composition cached an operational read failure", ["--features", "test-support"],
     { oracle: "rust/crates/harness-core/src/config/evaluate/model/plugins.rs",
       nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"],
       mutations: [
@@ -48,13 +50,13 @@ const claims = {
   "settings-admission-producer": [
     "rust/crates/harness/src/local/agent_settings.rs", "acyclic-harness",
     "local::agent_settings::tests::imported_settings_keep_the_original_directory_read_refusal",
-    "settings admission lost its original read producer", ["--features", "filesystem-local,test-support,hooks"],
+    "settings admission lost its original read producer", ["--features", "test-support"],
     { nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"] },
   ],
   "plugin-input-cut": [
     "rust/crates/harness-core/src/plugins.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "plugin decision lost an original manifest or hook observation", ["--features", "filesystem-local,test-support,hooks"],
+    "plugin decision lost an original manifest or hook observation", ["--features", "test-support"],
     { oracle: "rust/crates/harness-core/src/config/evaluate/model/plugins.rs",
       nextest: ["--profile", "ci", "--no-fail-fast", "--failure-output", "immediate-final", "--retries", "0", "--no-tests=fail"],
       mutations: [
@@ -67,7 +69,7 @@ const claims = {
     "rust/crates/filesystem/src/native_mount/fuse/lookup.rs", "acyclic-fs",
     "native_mount::fuse::tests::detach::unlink_completion_retains_copy_credit_after_source_acceptance",
     "unlink refused after its source was accepted",
-    ["--no-default-features", "--features", "memory,native-mount"],
+    ["--no-default-features", ],
     { mutations: [
       { patch: "rust/proofs/native-unlink-completion-credit/late-preparation.patch", label: "late-preparation", diagnostic: "unlink refused after its source was accepted" },
       { source: "rust/crates/filesystem/src/demand/reservations.rs", patch: "rust/proofs/native-unlink-completion-credit/early-refund.patch", label: "early-refund", diagnostic: "completion corrupted its original ledger" },
@@ -82,7 +84,7 @@ const claims = {
     "rust/crates/filesystem/src/native_mount/fuse/identity.rs", "acyclic-fs",
     "native_mount::fuse::tests::cache::rename_completion_preserves_only_current_bindings",
     "rename certified a replaced descendant",
-    ["--no-default-features", "--features", "memory,native-mount"],
+    ["--no-default-features", ],
     { mutations: [
       { patch: "rust/proofs/native-rename-reviewed-completion/stale-identity.patch", label: "stale-identity", diagnostic: "rename certified a replaced descendant" },
       { source: "rust/crates/filesystem/src/native_mount/adapter/installation.rs", patch: "rust/proofs/native-rename-reviewed-completion/non-directory.patch", label: "non-directory", diagnostic: "path traversal encountered a non-directory" },
@@ -92,7 +94,7 @@ const claims = {
     "rust/crates/filesystem/src/native_mount/fuse/lookup.rs", "acyclic-fs",
     "native_mount::fuse::tests::detach::rename_completion_retains_credit_after_source_acceptance",
     "rename refused after its source was accepted",
-    ["--no-default-features", "--features", "memory,native-mount"],
+    ["--no-default-features", ],
     { mutations: [
       { patch: "rust/proofs/native-rename-reviewed-completion/completion-credit.patch", label: "completion-credit", diagnostic: "rename refused after its source was accepted" },
     ], positive: [
@@ -104,7 +106,7 @@ const claims = {
     "rust/crates/filesystem/src/native_mount/fuse/identity.rs", "acyclic-fs",
     "native_mount::fuse::tests::cache::node_changes_preserve_cached_name_bindings",
     "a node change must not detach its unchanged name: RenamedFile",
-    ["--no-default-features", "--features", "memory,native-mount"],
+    ["--no-default-features", ],
     { positive: [
       "native_mount::fuse::tests::cache::node_changes_preserve_cached_name_bindings",
       "native_mount::fuse::tests::detach::prepared_rename_cannot_resurrect_a_concurrent_forget",
@@ -115,18 +117,18 @@ const claims = {
     "rust/crates/filesystem/src/kernel/closure/walk.rs", "acyclic-fs",
     "facade::tests::detached::metadata_reads_preserve_the_original_decoder_work",
     "metadata closure discarded its original decoder work",
-    ["--no-default-features", "--features", "memory"],
+    ["--no-default-features", ],
   ],
   "metadata-reader-work": [
     "rust/crates/filesystem/src/kernel/metadata.rs", "acyclic-fs",
     "facade::tests::detached::metadata_reads_preserve_the_original_decoder_work",
     "metadata decoder bypassed its original copy admission",
-    ["--no-default-features", "--features", "memory"],
+    ["--no-default-features", ],
   ],
   "native-error-custody": [
     "rust/crates/stream/src/local/local_inner.rs", "acyclic-stream",
     "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
-    "failure watch replaced the original native I/O error", ["--no-default-features", "--features", "local,test-support"],
+    "failure watch replaced the original native I/O error", ["--no-default-features", "--features", "test-support"],
     { oracle: "rust/crates/stream/src/local/tests/failure.rs", mutations: [
       { patch: "rust/proofs/native-error-custody/watch.patch", label: "watch", diagnostic: "failure watch replaced the original native I/O error" },
       { source: "rust/crates/stream/src/native/work.rs", patch: "rust/proofs/native-error-custody/delivered.patch", label: "delivered", diagnostic: "failure watch replaced the original native I/O error" },
@@ -137,7 +139,7 @@ const claims = {
   "policy-time-interval": [
     "rust/crates/filesystem/src/access/trie.rs", "acyclic-fs",
     "access::review::policy_fence_and_native_custody_preserve_pinned_views",
-    "saved view must reject a revived deny or expired capability", ["--no-default-features", "--features", "local,memory,test-support"],
+    "saved view must reject a revived deny or expired capability", ["--no-default-features", "--features", "test-support"],
     { target: ["--test", "main"], oracle: "rust/crates/filesystem/tests/access_review.rs", mutations: [
       { patch: "rust/proofs/policy-time-interval/view.patch", label: "revived-deny-view", diagnostic: "saved view must reject a revived deny or expired capability" },
       { source: "rust/crates/filesystem/src/access/policy_fence.rs", patch: "rust/proofs/policy-time-interval/fence.patch", label: "revived-deny-fence", diagnostic: "publication fence must reject a revived deny or expired capability" },
@@ -154,7 +156,7 @@ const claims = {
   "recovered-metadata-custody": [
     "rust/crates/filesystem/src/kernel/serde_decode/original.rs", "acyclic-fs",
     "core_state::codec_fuzz::production_metadata_corpus_preserves_original_decode_custody",
-    "metadata decoder replaced original accounting ledger", ["--no-default-features", "--features", "local,memory,test-support"],
+    "metadata decoder replaced original accounting ledger", ["--no-default-features", "--features", "test-support"],
     { oracle: "rust/crates/filesystem/src/core_state/codec_fuzz.rs", mutations: [
       { patch: "rust/crates/filesystem/fuzz/mutations/metadata_decode_detached_frame.patch", label: "detached-decoder", diagnostic: "metadata decoder replaced original accounting ledger" },
       { source: "rust/crates/filesystem/src/kernel/serde_decode.rs", patch: "rust/crates/filesystem/fuzz/mutations/metadata_decode_unfunded_bytes.patch", label: "unfunded-bytes", diagnostic: "metadata decoder omitted owned byte payload funding" },
@@ -163,14 +165,14 @@ const claims = {
   "recovered-record-retirement": [
     "rust/crates/filesystem/src/record_store.rs", "acyclic-fs",
     "record_store::tests::record_retirement_never_holds_the_record_lock",
-    "record backing retired while its record lock was held", ["--no-default-features", "--features", "local,memory,test-support"],
+    "record backing retired while its record lock was held", ["--no-default-features", "--features", "test-support"],
     { mutations: [{ patch: "rust/crates/filesystem/fuzz/mutations/record_retirement_lock.patch", label: "locked-retirement", diagnostic: "record backing retired while its record lock was held" }] },
   ],
 
   "query-navigation": [
     "rust/crates/harness-tui/src/query_controller.rs", "acyclic-harness-tui",
     "query_page::tests::wrapped_query_pages_reveal_every_row_before_the_source_continuation",
-    "pending refresh must leave every admitted row reachable", ["--features", "tui"],
+    "pending refresh must leave every admitted row reachable", [],
     { mutations: [
       { patch: "rust/proofs/query-navigation/progress.patch", label: "progress", diagnostic: "pending refresh must leave every admitted row reachable" },
       { patch: "rust/proofs/query-navigation/safety.patch", label: "safety", diagnostic: "pending navigation must preserve the admitted page" },
@@ -180,19 +182,19 @@ const claims = {
   "objects-explicit-close": [
     "rust/crates/objects/src/local.rs", "acyclic-objects",
     "local::outcome_tests::owned_close_reports_physical_completion_and_failure",
-    "implicit Drop performed unobserved durability", ["--no-default-features", "--features", "local,test-support"],
+    "implicit Drop performed unobserved durability", ["--no-default-features", "--features", "test-support"],
     { mutations: [{ patch: "rust/codec-fuzz/mutations/objects-implicit-close.patch", label: "implicit-close", diagnostic: "implicit Drop performed unobserved durability" }] },
   ],
   "objects-cost-observation": [
     "rust/crates/objects/src/tests.rs", "acyclic-objects",
     "tests::a_repeat_put_observes_metadata_and_probes_presence_without_writes",
-    "version observations must remain distinct from payload reads", ["--no-default-features", "--features", "local,test-support"],
+    "version observations must remain distinct from payload reads", ["--no-default-features", "--features", "test-support"],
     { mutations: [{ patch: "rust/codec-fuzz/mutations/objects-conflated-observations.patch", label: "conflated-observations", diagnostic: "version observations must remain distinct from payload reads" }] },
   ],
   "objects-cost-forwarding": [
     "rust/crates/objects/src/tests.rs", "acyclic-objects",
     "tests::a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once",
-    "cost recorder suppressed the original local flush", ["--no-default-features", "--features", "local,test-support"],
+    "cost recorder suppressed the original local flush", ["--no-default-features", "--features", "test-support"],
     { mutations: [{ patch: "rust/codec-fuzz/mutations/objects-recorder-skipped-flush.patch", label: "skipped-flush", diagnostic: "cost recorder suppressed the original local flush" }] },
   ],
   "fixed-index-read-admission": [
@@ -212,7 +214,7 @@ const claims = {
   "persistence-cut-boundary": [
     "rust/crates/stream/src/local/persistence_cut.rs", "acyclic-stream",
     "local::tests::journal_batch::cuts::a_batch_cut_recovers_only_its_flushed_prefix",
-    "a frame written before the cut is not flushed", ["--no-default-features", "--features", "local,test-support"],
+    "a frame written before the cut is not flushed", ["--no-default-features", "--features", "test-support"],
     { oracle: "rust/crates/stream/src/local/tests/journal_batch.rs",
       nextest: ["--profile", "ci", "--no-tests=fail", "--retries", "0"],
       mutations: [
@@ -224,7 +226,7 @@ const claims = {
   "stream-codec-path-admission": [
     "rust/crates/stream/src/codec_fuzz.rs", "acyclic-stream",
     "codec_fuzz::emitted_persistence_seeds_satisfy_shared_oracle",
-    "shared persistence oracle rejected", ["--no-default-features", "--features", "local,test-support"],
+    "shared persistence oracle rejected", ["--no-default-features", "--features", "test-support"],
     { mutations: [
       { patch: "rust/proofs/stream-codec-path-admission/followed.patch", label: "refused-follow-context", diagnostic: "shared persistence oracle rejected" },
       { patch: "rust/proofs/stream-codec-path-admission/foreign.patch", label: "refused-foreign-context", diagnostic: "shared persistence oracle rejected" },
@@ -243,17 +245,17 @@ const claims = {
   "merge-json-refusal": [
     "rust/crates/filesystem/src/kernel/allocation/writer.rs", "acyclic-fs",
     "workspace::tests::merge_drivers::merge_directory_json_admission_precedes_output_allocation",
-    "refused JSON allocated private serializer backing", ["--no-default-features", "--features", "memory,native-mount"],
+    "refused JSON allocated private serializer backing", ["--no-default-features", ],
   ],
   "merge-json-admission": [
     "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs",
     "workspace::tests::merge_drivers::merge_directory_json_admission_precedes_output_allocation",
-    "serializer allocated before original admission", ["--no-default-features", "--features", "memory,native-mount"],
+    "serializer allocated before original admission", ["--no-default-features", ],
   ],
   "merge-text-admission": [
     "rust/crates/filesystem/src/kernel/allocation/writer.rs", "acyclic-fs",
     "workspace::tests::merge_drivers::merge_directory_pages_preserve_pins_and_non_text_conflicts",
-    "text allocated before original admission", ["--no-default-features", "--features", "memory,native-mount"],
+    "text allocated before original admission", ["--no-default-features", ],
   ],
   "allocation-first-event": [
     "rust/crates/test-support/src/lib.rs", "acyclic-test-support",
@@ -298,6 +300,68 @@ const claims = {
     "filesystem::execution_journal::summary::tests::turn_cost::append_work_is_bounded_per_invocation_across_history",
     "append inherited prior invocation work", ["--features", "filesystem-local,native-execution,test-support"],
   ],
+  "effective-read-selection": [
+    "rust/crates/harness-core/src/tool/files/read.rs", "acyclic-harness-core",
+    "filesystem::memory::tests::layered_reads::every_effective_projection_keeps_the_original_probe_generation",
+    "projection reselected head after its original home probe", ["--features", "filesystem"],
+    {
+      oracle: "rust/crates/harness-core/src/filesystem/memory/tests/layered_reads.rs",
+      mutations: [
+        { source: "rust/crates/harness-core/src/tool/files/executor.rs", patch: "rust/proofs/effective-read-selection/preflight.patch", label: "physical-preflight-before-layer-selection", diagnostic: "projection reselected head after its original home probe" },
+        { patch: "rust/proofs/effective-read-selection/selection.patch", label: "discarded-original-layer-selection", diagnostic: "projection reselected head after its original home probe" },
+        { source: "rust/crates/harness-core/src/tool/files/read.rs", patch: "rust/proofs/effective-read-selection/token.patch", label: "bypassed-original-content-token-grant", diagnostic: "virtual path lost the original content token grant",
+          command: ["test", "--locked", "-p", "acyclic-harness-core", "--features", "filesystem", "--lib", "filesystem::memory::tests::layered_reads::effective_reads_preserve_the_selected_layers_authority", "--", "--exact", "--nocapture"] },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-harness-core", "--features", "filesystem", "--lib", "--", "--exact", "--nocapture",
+        "filesystem::memory::tests::layered_reads::every_effective_projection_keeps_the_original_probe_generation",
+        "filesystem::memory::tests::layered_reads::explicit_versions_keep_their_selection_without_a_new_home_probe",
+        "filesystem::memory::tests::layered_reads::seed_fallback_and_off_markers_keep_the_original_layer_decision",
+        "filesystem::memory::tests::layered_reads::effective_reads_preserve_the_selected_layers_authority",
+        "filesystem::memory::tests::projections::cached_line_reads_keep_original_receipts_outside_the_source_volume"],
+      positiveCount: 5,
+      completed: ["5 passed; 0 failed"],
+    },
+  ],
+  "task-binding-selection": [
+    "rust/crates/harness/src/local/workspace/bindings.rs", "acyclic-harness",
+    "local::workspace::bindings::tests::original_preparation_has_finite_generation_and_credit",
+    "lost original producer did not finish its observer", bindingFeatures,
+    { nextest: bindingNextest, mutations: [
+      { patch: "fuzz/mutations/task_binding_lost_producer.patch", label: "producer-loss", diagnostic: "lost original producer did not finish its observer" },
+      { patch: "fuzz/mutations/task_binding_late_retirement.patch", label: "late-retirement", diagnostic: "late retirement removed the replacement owner" },
+      { patch: "fuzz/mutations/task_binding_retained_credit.patch", label: "retained-credit", diagnostic: "retired binding generations retained original allocation credit" },
+      { patch: "fuzz/mutations/task_binding_lookup_cost.patch", label: "lookup-cost", diagnostic: "binding lookup grew beyond the fixed-width path" },
+    ] },
+  ],
+  "task-binding-observer": [
+    "rust/crates/harness/src/local/workspace/bindings.rs", "acyclic-harness",
+    "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
+    "registered binding observer lost its successful preparation", bindingFeatures,
+    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+      { patch: "fuzz/mutations/task_binding_observer_result.patch", label: "result-loss", diagnostic: "registered binding observer lost its successful preparation" },
+    ] },
+  ],
+  "task-binding-checkout": [
+    "rust/crates/harness/src/local/workspace/task_views.rs", "acyclic-harness",
+    "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
+    "binding preparation retains the unrelated checkout owner", bindingFeatures,
+    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+      { patch: "fuzz/mutations/task_binding_checkout_owner.patch", label: "checkout-owner", diagnostic: "binding preparation retains the unrelated checkout owner" },
+    ] },
+  ],
+  "task-binding-physical": [
+    "rust/crates/harness/src/local/workspace/projection.rs", "acyclic-harness",
+    "local::workspace::task_views::tests::native_guard_retains_the_original_binding_until_physical_retirement",
+    "physical native guard lost the original binding owner", bindingFeatures,
+    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+      { patch: "fuzz/mutations/task_binding_physical_owner.patch", label: "physical-owner", diagnostic: "physical native guard lost the original binding owner" },
+    ] },
+  ],
+  "inbox-settlement": [
+    "rust/crates/harness-core/src/agent/records.rs", "acyclic-harness-core",
+    "agent::checkpoint::tests::bounded_record_fields_and_settled_checkpoints_fit_their_frames",
+    "a conversation entry fits", ["--features", "filesystem-local,test-support"],
+  ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "acyclic-plugin",
     "runner::lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
@@ -310,7 +374,7 @@ const claims = {
     "rust/crates/filesystem/src/native_mount/lazy/mutations.rs", "acyclic-fs",
     "native_mount::lazy::tests::publication::source_hard_link_open_unlink_write_preserves_surviving_alias",
     "hard-link reply discarded current detached file facts",
-    ["--no-default-features", "--features", "memory,native-mount"],
+    ["--no-default-features", ],
   ],
   "call-dependent-resource": [
     "rust/crates/stream/src/session/resources.rs", "acyclic-stream",
@@ -328,7 +392,7 @@ const claims = {
   "config-composition-cut": [
     "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "composition discarded its original refused module cut", ["--features", "filesystem"],
+    "composition discarded its original refused module cut", [],
     {
       mutations: [
         { patch: "rust/proofs/config-composition-cut/refusal.patch", label: "discarded-original-refused-module-cut", diagnostic: "composition discarded its original refused module cut" },
@@ -339,7 +403,7 @@ const claims = {
   "config-retained-cut": [
     "rust/crates/harness-core/src/config/evaluate/prepared.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "original dependency observation was discarded", ["--features", "filesystem"],
+    "original dependency observation was discarded", [],
     {
       mutations: [
         { patch: "rust/proofs/config-retained-cut/absence.patch", label: "discarded-original-absent-import", diagnostic: "original dependency observation was discarded" },
@@ -356,14 +420,14 @@ const claims = {
   "local-ready-snapshot-allocation": [
     "rust/crates/stream/src/local/local_stream.rs", "acyclic-stream",
     "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
-    "ready snapshots must allocate zero times", ["--no-default-features", "--features", "local,test-support"],
+    "ready snapshots must allocate zero times", ["--no-default-features", "--features", "test-support"],
     {
       mutations: [
         { patch: "rust/proofs/local-ready-snapshot-allocation/mutation.patch", label: "boxed-original-local-snapshot", diagnostic: "ready snapshots must allocate zero times" },
         { patch: "rust/proofs/local-failure-progress/observation.patch", label: "missing-observation-retirement", diagnostic: "failed journal left a public observation parked",
-          command: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "local,test-support", "--lib", "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers", "--", "--exact", "--nocapture"] },
+          command: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "test-support", "--lib", "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers", "--", "--exact", "--nocapture"] },
       ],
-      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "local,test-support", "--lib", "--", "--exact", "--nocapture",
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "test-support", "--lib", "--", "--exact", "--nocapture",
         "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
         "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers"],
       completed: ["2 passed; 0 failed"],
@@ -384,7 +448,7 @@ const claims = {
   "local-prepared-ingress-close": [
     "rust/crates/stream/src/native/prepared.rs", "acyclic-stream",
     "local::tests::native::abandoned_prepared_packet_releases_worker_capacity_without_edit",
-    "abandoned prepared producer did not reach its original completion boundary", ["--no-default-features", "--features", "local"],
+    "abandoned prepared producer did not reach its original completion boundary", ["--no-default-features", ],
     {
       mutations: [
         { patch: "rust/proofs/local-prepared-ingress-close/mutation.patch", label: "omitted-original-ingress-close", diagnostic: "abandoned prepared producer did not reach its original completion boundary" },
@@ -395,7 +459,7 @@ const claims = {
   "local-prepared-producer-loss": [
     "rust/crates/stream/src/local/prepared_commit.rs", "acyclic-stream",
     "local::tests::native::prepared_worker_retirement_ends_original_completion_without_publication",
-    "retired prepared producer left its original completion parked or replaced its cause", ["--no-default-features", "--features", "local"],
+    "retired prepared producer left its original completion parked or replaced its cause", ["--no-default-features", ],
     {
       patchPath: "rust/proofs/local-prepared-producer-loss/mutation.patch",
       negativeLabel: "discarded-original-prepared-producer-error",
@@ -404,7 +468,7 @@ const claims = {
   "local-snapshot-producer-loss": [
     "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
     "local::tests::wakeups::executor_retirement_ends_forked_follows_before_publication_unlocks",
-    "retired local snapshot left its public follow parked", ["--no-default-features", "--features", "local"],
+    "retired local snapshot left its public follow parked", ["--no-default-features", ],
     {
       mutations: [
         { source: "rust/crates/stream/src/snapshot/job.rs", patch: "rust/proofs/snapshot-producer-loss/retirement.patch", label: "omitted-local-producer-retirement", diagnostic: "retired local snapshot did not wake its public follow" },
@@ -565,13 +629,13 @@ const claims = {
   "local-revision-failure-progress": [
     "rust/crates/stream/src/local/local_inner.rs", "acyclic-stream",
     "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
-    "failed journal left a future revision parked", ["--features", "local,test-support"],
+    "failed journal left a future revision parked", ["--features", "test-support"],
     { patch: "retirement.patch" },
   ],
   "local-failure-progress": [
     "rust/crates/stream/src/local/local_stream.rs", "acyclic-stream",
     "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
-    "failed journal left a public observation parked", ["--features", "local,test-support"],
+    "failed journal left a public observation parked", ["--features", "test-support"],
     {
       mutations: [
         { patch: "rust/proofs/local-failure-progress/publication.patch", label: "missing-publication-retirement", diagnostic: "failed journal left a conditional mutation parked" },
@@ -583,7 +647,7 @@ const claims = {
   "local-native-failure-progress": [
     "rust/crates/stream/src/local/native_mutations.rs", "acyclic-stream",
     "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
-    "failed journal left a native guarded commit parked", ["--features", "local,test-support"],
+    "failed journal left a native guarded commit parked", ["--features", "test-support"],
     {
       mutations: [
         { patch: "rust/proofs/local-failure-progress/guarded.patch", label: "missing-guarded-retirement", diagnostic: "failed journal left a native guarded commit parked" },
@@ -601,7 +665,7 @@ const claims = {
   "postgres-refresh-progress": [
     "rust/crates/stream/src/postgres.rs", "acyclic-stream",
     "postgres::capability::refresh_producer_retirement_ends_public_waits",
-    "retired refresh producer left a public revision wait parked", ["--features", "postgres"],
+    "retired refresh producer left a public revision wait parked", [],
     {
       mutations: [
         { patch: "rust/proofs/postgres-refresh-progress/retirement.patch", label: "missing-retirement", diagnostic: "retired refresh producer left a public revision wait parked" },
@@ -676,7 +740,7 @@ const claims = {
   "config-composition-cut": [
     "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "composition discarded its original refused module cut", ["--features", "filesystem"],
+    "composition discarded its original refused module cut", [],
     {
       mutations: [
         { patch: "rust/proofs/config-composition-cut/refusal.patch", label: "discarded-original-refused-module-cut", diagnostic: "composition discarded its original refused module cut" },
@@ -687,7 +751,7 @@ const claims = {
   "config-retained-cut": [
     "rust/crates/harness-core/src/config/evaluate/prepared.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "original dependency observation was discarded", ["--features", "filesystem"],
+    "original dependency observation was discarded", [],
     {
       mutations: [
         { patch: "rust/proofs/config-retained-cut/absence.patch", label: "discarded-original-absent-import", diagnostic: "original dependency observation was discarded" },
@@ -704,14 +768,14 @@ const claims = {
   "local-ready-snapshot-allocation": [
     "rust/crates/stream/src/local/local_stream.rs", "acyclic-stream",
     "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
-    "ready snapshots must allocate zero times", ["--no-default-features", "--features", "local,test-support"],
+    "ready snapshots must allocate zero times", ["--no-default-features", "--features", "test-support"],
     {
       mutations: [
         { patch: "rust/proofs/local-ready-snapshot-allocation/mutation.patch", label: "boxed-original-local-snapshot", diagnostic: "ready snapshots must allocate zero times" },
         { patch: "rust/proofs/local-failure-progress/observation.patch", label: "missing-observation-retirement", diagnostic: "failed journal left a public observation parked",
-          command: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "local,test-support", "--lib", "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers", "--", "--exact", "--nocapture"] },
+          command: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "test-support", "--lib", "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers", "--", "--exact", "--nocapture"] },
       ],
-      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "local,test-support", "--lib", "--", "--exact", "--nocapture",
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "test-support", "--lib", "--", "--exact", "--nocapture",
         "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
         "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers"],
       completed: ["2 passed; 0 failed"],
@@ -732,7 +796,7 @@ const claims = {
   "local-prepared-ingress-close": [
     "rust/crates/stream/src/native/prepared.rs", "acyclic-stream",
     "local::tests::native::abandoned_prepared_packet_releases_worker_capacity_without_edit",
-    "abandoned prepared producer did not reach its original completion boundary", ["--no-default-features", "--features", "local"],
+    "abandoned prepared producer did not reach its original completion boundary", ["--no-default-features", ],
     {
       mutations: [
         { patch: "rust/proofs/local-prepared-ingress-close/mutation.patch", label: "omitted-original-ingress-close", diagnostic: "abandoned prepared producer did not reach its original completion boundary" },
@@ -743,7 +807,7 @@ const claims = {
   "local-prepared-producer-loss": [
     "rust/crates/stream/src/local/prepared_commit.rs", "acyclic-stream",
     "local::tests::native::prepared_worker_retirement_ends_original_completion_without_publication",
-    "retired prepared producer left its original completion parked or replaced its cause", ["--no-default-features", "--features", "local"],
+    "retired prepared producer left its original completion parked or replaced its cause", ["--no-default-features", ],
     {
       patchPath: "rust/proofs/local-prepared-producer-loss/mutation.patch",
       negativeLabel: "discarded-original-prepared-producer-error",
@@ -752,7 +816,7 @@ const claims = {
   "local-snapshot-producer-loss": [
     "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
     "local::tests::wakeups::executor_retirement_ends_forked_follows_before_publication_unlocks",
-    "retired local snapshot left its public follow parked", ["--no-default-features", "--features", "local"],
+    "retired local snapshot left its public follow parked", ["--no-default-features", ],
     {
       mutations: [
         { source: "rust/crates/stream/src/snapshot/job.rs", patch: "rust/proofs/snapshot-producer-loss/retirement.patch", label: "omitted-local-producer-retirement", diagnostic: "retired local snapshot did not wake its public follow" },
@@ -913,13 +977,13 @@ const claims = {
   "local-revision-failure-progress": [
     "rust/crates/stream/src/local/local_inner.rs", "acyclic-stream",
     "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
-    "failed journal left a future revision parked", ["--features", "local,test-support"],
+    "failed journal left a future revision parked", ["--features", "test-support"],
     { patch: "retirement.patch" },
   ],
   "local-failure-progress": [
     "rust/crates/stream/src/local/local_stream.rs", "acyclic-stream",
     "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
-    "failed journal left a public observation parked", ["--features", "local,test-support"],
+    "failed journal left a public observation parked", ["--features", "test-support"],
     {
       mutations: [
         { patch: "rust/proofs/local-failure-progress/publication.patch", label: "missing-publication-retirement", diagnostic: "failed journal left a conditional mutation parked" },
@@ -931,7 +995,7 @@ const claims = {
   "local-native-failure-progress": [
     "rust/crates/stream/src/local/native_mutations.rs", "acyclic-stream",
     "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
-    "failed journal left a native guarded commit parked", ["--features", "local,test-support"],
+    "failed journal left a native guarded commit parked", ["--features", "test-support"],
     {
       mutations: [
         { patch: "rust/proofs/local-failure-progress/guarded.patch", label: "missing-guarded-retirement", diagnostic: "failed journal left a native guarded commit parked" },
@@ -949,7 +1013,7 @@ const claims = {
   "postgres-refresh-progress": [
     "rust/crates/stream/src/postgres.rs", "acyclic-stream",
     "postgres::capability::refresh_producer_retirement_ends_public_waits",
-    "retired refresh producer left a public revision wait parked", ["--features", "postgres"],
+    "retired refresh producer left a public revision wait parked", [],
     {
       mutations: [
         { patch: "rust/proofs/postgres-refresh-progress/retirement.patch", label: "missing-retirement", diagnostic: "retired refresh producer left a public revision wait parked" },
@@ -1067,8 +1131,29 @@ const claims = {
   "approval-wake-uncertainty": [
     "rust/crates/harness-core/src/filesystem/agent_turns.rs", "acyclic-agent-host-conformance",
     "local::local_approval_wake_retries_the_original_uncertain_request",
-    "approval wake uncertainty lost its original request", ["--features", "local"],
+    "approval wake uncertainty lost its original request", [],
     { target: ["--test", "main"] },
+  ],
+  "filesystem-stream-category": [
+    "rust/crates/filesystem/src/wire_service/errors.rs", "acyclic-fs",
+    "wire_service::errors::tests::every_stream_category_survives_the_authority_wrapper",
+    "filesystem retained Stream refusal changed category", ["--no-default-features", "--features", "memory"],
+    { oracle: "rust/crates/filesystem/src/wire_service/errors/tests.rs",
+      nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"] },
+  ],
+  "session-local-refusal": [
+    "rust/crates/stream/src/session/frame.rs", "acyclic-stream",
+    "session::tests::refusals::local_socket_refusals_retain_the_original_error_after_prior_data",
+    "local socket lost its original refusal", ["--features", "serde,test-support"],
+    { oracle: "rust/crates/stream/src/session/tests/refusals.rs",
+      nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"],
+      positive: [
+        "session::tests::refusals::local_socket_refusals_retain_the_original_error_after_prior_data",
+        "session::tests::sockets::receive_refusal_releases_owner_before_uncredited_frames_drain",
+        "session::tests::sockets::host_shutdown_closes_all_channels_without_data_credit",
+        "session::tests::sockets::a_socket_the_host_ends_after_its_final_frame_ends_cleanly_for_the_peer",
+        "session::tests::queue_scaling::credited_tail_selection_visits_one_head_independent_of_stalled_follows",
+      ] },
   ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
@@ -1122,10 +1207,10 @@ const claims = {
     "rust/crates/harness-core/src/agent/reply.rs", "acyclic-harness-core",
     "agent_model::runtime::reply_waits_require_original_committed_requests",
     "reply wait admitted an absent or mismatched original input",
-    ["--features", "filesystem-local,native-execution,machines,test-support"],
+    ["--features", "test-support"],
     { target: ["--test", "main"], positiveCommand: [
       "nextest", "run", "--locked", "-p", "acyclic-harness-core",
-      "--features", "filesystem-local,native-execution,machines,test-support", "--test", "main",
+      "--features", "test-support", "--test", "main",
       "-E", "test(=agent_model::runtime::reply_waits_require_original_committed_requests) | test(=agent_model::reply::committed_reply_search_respects_identity_and_fork_base) | test(=agent_model::reply::admitted_steering_joins_its_settling_turn_and_original_identity)",
       "--no-tests=fail", "--retries", "0",
     ], completed: ["3 tests run: 3 passed"], mutations: [
@@ -1137,7 +1222,7 @@ const claims = {
     "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-core",
     "target_lifecycle::native::abandoned_pause_joins_original_native_retirement",
     "abandoned public pause lost its original native transition",
-    ["--features", "filesystem-local,native-execution,machines,test-support"],
+    ["--features", "test-support"],
     { target: ["--test", "main"] },
   ],
   "public-settlement-source": [
@@ -1189,15 +1274,43 @@ const claims = {
     "settlement bypassed the original runtime terminal event",
     nativeHarness,
   ],
+  "native-eof-refusal": [
+    "rust/crates/harness/src/local/host_process/children.rs", "acyclic-harness",
+    "local::host_process::children::tools::tests::eof_retires_native_children_before_draining_a_held_reply",
+    "original process must retire before reply drain",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_eof_refusal_retirement.patch" },
+  ],
+  "native-child-branch-scope": [
+    "rust/crates/harness/src/local/host_workspace.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "parent-scoped child reference",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_branch_scope.patch" },
+  ],
+  "native-child-merge-custody": [
+    "rust/crates/harness/src/local/host_owner.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "canonical child merge bypassed running-session custody",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_merge_custody.patch" },
+  ],
+  "native-added-metadata": [
+    "rust/crates/filesystem/src/kernel/merge/fields.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "step=codex merge right child",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/filesystem/fuzz/mutations/added_metadata_observation.patch" },
+  ],
   "admission-rebind": [
     "rust/crates/stream/src/session/client/admissions.rs", "acyclic-stream",
     "session::client::admissions::tests::home_rebinding_preserves_pending_memberships_without_allocating",
-    "home rebinding allocated per pending membership", ["--no-default-features", "--features", "session"],
+    "home rebinding allocated per pending membership", ["--no-default-features", ],
   ],
   "objects-empty-dispatch": [
     "rust/crates/objects/src/local.rs", "acyclic-objects",
     "local::outcome_tests::empty_ranges_preserve_native_presence_without_dispatch",
-    "empty range dispatched a physical job for key", ["--no-default-features", "--features", "local,test-support"],
+    "empty range dispatched a physical job for key", ["--no-default-features", "--features", "test-support"],
   ],
   "auth-producer-loss": [
     "rust/crates/auth/src/trust/follower.rs", "acyclic-auth",
@@ -1217,7 +1330,7 @@ const claims = {
   "scalar-charge-cost": [
     "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
     "performance::tests::native::borrowed::item_only_kernel_charge_preserves_exact_errors_receipts_and_cost",
-    "scalar charge performed unrelated counter arithmetic", ["--no-default-features", "--features", "distributed"],
+    "scalar charge performed unrelated counter arithmetic", ["--no-default-features", ],
   ],
   "guest-refusal": [
     "rust/crates/actors/src/guest/state.rs", "acyclic-actors",
@@ -1333,8 +1446,7 @@ const claims = {
     "provider source lost its publication wake",
     [
       "--no-default-features",
-      "--features",
-      "grpc,model-checking"
+      "--features", "model-checking"
     ],
     {
       "patchPath": "rust/proofs/ready-source-parking/mutation.patch",
@@ -1351,8 +1463,7 @@ const claims = {
     "head_tests::trusted_heads_use_the_result_budget_and_wire_heads_enforce_the_byte_bound",
     "child page escaped its original selection",
     [
-      "--features",
-      "local"
+
     ]
   ],
   "ready-source-turn": [
@@ -1580,8 +1691,7 @@ const claims = {
             "-p",
             "acyclic-objects",
             "--no-default-features",
-            "--features",
-            "local,test-support",
+            "--features", "test-support",
             "--lib",
             "local::outcome_tests::owned_close_reports_physical_completion_and_failure",
             "--",
@@ -1687,8 +1797,7 @@ const claims = {
         "acyclic-native-runtime",
         "-p",
         "acyclic-objects",
-        "--features",
-        "acyclic-objects/local,acyclic-objects/test-support",
+        "--features", "acyclic-objects/test-support",
         "--lib",
         "--",
         "--exact",
@@ -1721,9 +1830,10 @@ if (claim === "--help" && extra.length === 0) {
   const environment = { ...process.env, ...options.env };
   const tests = [test, ...(options.additionalTests ?? [])];
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
-  const patch = claim === "work-mixed"
+  const patchRelative = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : options.patchPath ?? `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
+  const patch = fileURLToPath(new URL(patchRelative, new URL("../../", import.meta.url)));
   const target = options.target ?? ["--lib"];
   let fuzzTarget;
   if (options.fuzz) {
@@ -1747,7 +1857,7 @@ if (claim === "--help" && extra.length === 0) {
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", fileURLToPath(new URL("target/projection-fuzz/corpus", new URL("../../", import.meta.url))), "corpus/stream_persistence", "--", "-runs=1000", "-seed=1697"]
     : options.positiveCommand ?? (options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
-      options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
+      options.positive.map(name => `test(=${name})`).join(" | "), ...(options.nextest ?? ["--no-tests=fail"])]
     : command);
   const sources = [...new Set([source, ...(options.mutations ?? []).map(mutation => mutation.source ?? source)])];
   const recovery = `git diff -- ${sources.join(" ")}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}${instrumented ? " --instrumented" : from === undefined ? "" : ` --from ${from}`}`;

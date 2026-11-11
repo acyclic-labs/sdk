@@ -119,7 +119,7 @@ control derives every foreign version byte and its truncated header from
 those same production encoders, for observations and envelopes. Run it with:
 
 ```sh
-cargo nextest run --locked -p acyclic-stream --features local,test-support --lib -E 'test(=persistence::tests::old_and_unknown_fact_versions_refuse_before_payload)'
+cargo nextest run --locked -p acyclic-stream --features test-support --lib -E 'test(=persistence::tests::old_and_unknown_fact_versions_refuse_before_payload)'
 ```
 
 Apply `rust/codec-fuzz/negative-controls/stream-header-truncated-foreign.patch`
@@ -152,6 +152,11 @@ bytes, including refusal and Unknown results, and must reject unknown/duplicate
 protobuf fields and preserve a non-200 Actors status. Its byte source is immediate;
 this exercises response admission without modeling a network or its failures.
 These selectors are not product formats.
+The retained `reply-bind-observation` capture also enters the public reply
+decoder on every input, then changes only its credential's base64 alphabet.
+`negative-controls/agent-observation-base64-admit-invalid.patch` removes that
+production alphabet check; replaying the same target must fail at
+`invalid base64 wire admitted`. Reverse the patch before ordinary validation.
 Every input also requires admission of the retained public `command-root` writer
 capture, so refusing all command frames cannot make the conditional oracles pass.
 The kept `negative-controls/agent-command-reject-all.patch` changes only the
@@ -392,7 +397,7 @@ The history descriptor oracle has a kept production version-admission defect at
 `git apply rust/codec-fuzz/mutations/history-version.patch`, then run:
 
 ```sh
-cargo run --locked -p acyclic-harness-core --no-default-features --features filesystem,test-support --example history-codec-corpus
+cargo run --locked -p acyclic-harness-core --no-default-features --features test-support --example history-codec-corpus
 ```
 
 The unchanged oracle must panic with
@@ -464,7 +469,7 @@ also passes these bytes through that target's shared HTTP/SSE oracle when
 source-poll count through the production byte frontier. From the repository root:
 
 ```sh
-cargo nextest run --locked -p acyclic-harness-core --no-default-features --features filesystem-local,test-support,mcp-http --lib -E 'test(=mcp::http::body::tests::frontier_borrows_prefix_and_settles_without_another_source_poll)'
+cargo nextest run --locked -p acyclic-harness-core --no-default-features --features test-support --lib -E 'test(=mcp::http::body::tests::frontier_borrows_prefix_and_settles_without_another_source_poll)'
 ```
 
 The retained `mutations/mcp-http-discard-prefix.patch`,
@@ -761,7 +766,7 @@ The retained `mutations/machines-call-opening-producer-loss.patch` restores the
 original unguarded finite read before an operation watch opens its follow:
 
 ```sh
-cargo test --locked -p acyclic-machines --no-default-features --features local --lib provider::journal::tests::machines_call_held_read_keeps_admission_and_original_terminal_progress -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --lib provider::journal::tests::machines_call_held_read_keeps_admission_and_original_terminal_progress -- --exact --nocapture
 ```
 
 The existing real-journal control holds its original MemoryStream read response,
@@ -1064,7 +1069,7 @@ nil refusals; `corpus/SOURCES.tsv` retains their producers and hashes.
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-identity-nil.patch
-cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --features test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-identity-nil.patch
 ```
 
@@ -1091,7 +1096,7 @@ zero-digest corpus supplies refusal forms. This subsumes
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-oci-name.patch
-cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --features test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-oci-name.patch
 ```
 
@@ -1114,13 +1119,13 @@ handoff; initial completion decoding still reads the full body.
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-recovery-clone.patch
-cargo test --locked -p acyclic-machines --no-default-features --features grpc,local,test-support --lib provider::journal::tests::machines_call_recovery_transfers_original_decoded_body -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --features test-support --lib provider::journal::tests::machines_call_recovery_transfers_original_decoded_body -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-recovery-clone.patch
 ```
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-observation-state.patch
-cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib grpc::tests::result_pages::machines_call_remote_pages_keep_original_cut_credit_and_observations -- --exact --nocapture
+cargo test --locked -p acyclic-machines --no-default-features --features test-support --lib grpc::tests::result_pages::machines_call_remote_pages_keep_original_cut_credit_and_observations -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-observation-state.patch
 ```
 
@@ -1177,7 +1182,7 @@ Run this control from the repository root (`cd ../..` from `rust/codec-fuzz`):
 
 ```sh
 git apply rust/codec-fuzz/negative-controls/machines-plan-position.patch
-cargo test --locked -p acyclic-harness-core --no-default-features --features machines,test-support,filesystem,wasm --lib machines::lifecycle::first_use_tests::original_binding_positions_precede_allocation_and_recovery -- --exact --nocapture
+cargo test --locked -p acyclic-harness-core --no-default-features --features test-support,wasm --lib machines::lifecycle::first_use_tests::original_binding_positions_precede_allocation_and_recovery -- --exact --nocapture
 git apply -R rust/codec-fuzz/negative-controls/machines-plan-position.patch
 ```
 

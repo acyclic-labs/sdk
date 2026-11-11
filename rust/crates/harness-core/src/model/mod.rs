@@ -13,7 +13,6 @@ mod instructions;
 pub use instruction_identity::{InstructionIdentity, ProjectInstruction};
 pub(crate) use instruction_reads::deduplicate_reads;
 mod inventory;
-#[cfg(feature = "filesystem")]
 mod retained_inventory;
 pub use instructions::InstructionSource;
 pub(crate) use instructions::{project_instruction, reserve_instruction_bodies};
@@ -40,9 +39,7 @@ pub use sampling::ModelSampling;
 /// feature unification cannot enable only part of a capture path. Disabled
 /// branches are constant-folded out of ordinary builds.
 pub const RESEARCH_CAPTURE_ENABLED: bool = cfg!(feature = "research");
-#[cfg(any(feature = "filesystem", feature = "tui"))]
 mod usage;
-#[cfg(any(feature = "filesystem", feature = "tui"))]
 #[doc(hidden)]
 pub use usage::accumulate_usage;
 #[cfg(test)]
@@ -53,7 +50,7 @@ mod instruction_tests;
 mod tests;
 mod tool_call;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::executor::json::json_value_logical_owned_bytes;
 pub use content::{
     ModelContent, ModelContentPart, ModelDataPart, ModelMessage, ModelRole, ToolResultContent,
@@ -63,7 +60,6 @@ pub use media::{
     NativeMediaPolicy,
 };
 pub use prefix::ModelPrefix;
-#[cfg(feature = "filesystem")]
 pub(crate) use preparation::MODEL_DIAGNOSTIC_LABEL_BYTES;
 #[cfg(test)]
 pub(crate) use preparation::clone_request;
@@ -72,7 +68,7 @@ pub(crate) use preparation::{
     clone_value, hash_bytes, vec_with_capacity,
 };
 pub use profile::ModelProfileBinding;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use provider::NativeModelStream;
 pub use provider::{ModelDelivery, ModelDispatch, ModelEvent, ModelProvider, ModelStream};
 pub use reasoning::{NativePart, ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome};
@@ -80,9 +76,8 @@ pub use request::{InputAnchor, ModelRequest, PreparedModelRequest};
 pub use tool_call::ToolCall;
 
 use crate::store::HistoryIo;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::wire::ErrorCode::Invalid;
-#[cfg(feature = "filesystem")]
 use crate::wire::ErrorCode::Storage;
 use crate::wire::ErrorCode::Unsupported;
 use crate::{
@@ -90,10 +85,9 @@ use crate::{
     conversation::{FileRef, Limits},
     executor::{PreparationIo, with_history_io},
 };
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use inventory::slots;
-#[cfg(feature = "filesystem")]
 use inventory::{add, overflow};
 use preparation::{history_step, invalid, value_bound};
 use serde::{Deserialize, Serialize};

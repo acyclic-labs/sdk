@@ -132,6 +132,5 @@ pub enum ExtentCloneError {
 }
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "tests/extent_clone.rs"]
 mod tests;

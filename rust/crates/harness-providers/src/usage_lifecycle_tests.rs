@@ -1,9 +1,9 @@
 //! A catalog proxy's delayed 502, exhausted recovery and JSON/SSE completions
 //! cross the real local host, durable journal, events and usage queries.
 use super::*;
+use acyclic_fs::NativeFutureBundle;
 use acyclic_harness::{LocalHarness, local::agent_conversation::Conversation};
 use acyclic_harness_core::{
-    NativeFutureBundle,
     agent::{IntentId, Phase, Sender},
     context::CompactionPolicy,
     executor::{ModelPriceRecord, ModelUsageProjection, TokenPrice},
@@ -84,7 +84,7 @@ impl HttpTransport for Proxy {
         &'a self,
         request: HttpRequest,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
+    ) -> Result<NativeFutureBundle<'a, HttpResponse, acyclic_harness_core::Error>> {
         NativeFutureBundle::new(work, || async move {
             let response = self.exchange(request).await?;
             HttpResponse::with_native_body(response.status, response.body, work)
@@ -101,7 +101,7 @@ impl HttpTransport for Proxy {
         &self,
         wait: Duration,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'static, ()>> {
+    ) -> Result<NativeFutureBundle<'static, (), acyclic_harness_core::Error>> {
         let timer = self.delay(wait);
         NativeFutureBundle::new(work, || timer)
     }

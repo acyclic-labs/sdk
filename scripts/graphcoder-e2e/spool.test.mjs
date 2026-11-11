@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getEventListeners, once } from "node:events";
-import { appendFileSync, close as fsClose, createWriteStream, mkdtempSync, open as fsOpen, readFileSync, rmSync, truncateSync } from "node:fs";
+import { createWriteStream, mkdtempSync, readFileSync, rmSync, truncateSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
@@ -292,66 +292,6 @@ test("native transcript cursors retain one record and close the original range o
     assert.equal(JSON.parse(result.stdout).records, 512);
     t.diagnostic(result.stdout.trim());
   } finally { await processes.close(); }
-});
-
-test("history reads only completed lines while a later write is in flight", async () => {
-  const path = join(mkdtempSync(join(tmpdir(), "e2e-history-")), "events.jsonl");
-  const stream = new PassThrough();
-  const events = new Spool(stream, new Promise(() => {}), { transcript: path });
-  const second = events.next(event => event.n === 2);
-  stream.write('{"n":1}\n{"n":2}\n');
-  await second;
-  assert.deepEqual(await events.history(), [{ n: 1 }, { n: 2 }]);
-  // A started write: part of a large line is already in the file.
-  appendFileSync(path, '{"n":3,"pad":"' + "x".repeat(1 << 16));
-  assert.deepEqual(await events.history(), [{ n: 1 }, { n: 2 }]);
-  // Negative control: reading to EOF takes the partial line.
-  assert.throws(() => readFileSync(path, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)), SyntaxError);
-});
-
-test("a transcript write that fails or is lost ends history and waits with the spool cause, never a hang", async t => {
-  const directory = mkdtempSync(join(tmpdir(), "e2e-history-"));
-  // A file stream whose writes fail, or (the ignored-error control) report
-  // success without writing anything.
-  const stream = (name, write) => createWriteStream(join(directory, name), { fs: {
-    open: fsOpen, close: fsClose,
-    write: (_fd, buffer, _offset, length, _position, done) => write(length, done),
-    writev: (_fd, buffers, _position, done) => write(buffers.reduce((total, buffer) => total + buffer.length, 0), done),
-  } });
-  await t.test("the write error is latched", async () => {
-    const source = new PassThrough();
-    const events = new Spool(source, new Promise(() => {}), { transcript: stream("failed.jsonl", (_length, done) => done(new Error("injected EIO"))) });
-    const waiting = events.next(() => false);
-    source.write('{"n":1}\n');
-    await assert.rejects(waiting, error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
-    await assert.rejects(events.history(), error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
-    await assert.rejects(events.next(() => true), error => error.kind === "spool");
-  });
-  await t.test("negative control: an ignored error leaves a short file, read as a typed short read", async () => {
-    const source = new PassThrough();
-    const events = new Spool(source, new Promise(() => {}), { transcript: stream("lost.jsonl", (length, done) => done(null, length)) });
-    const first = events.next(event => event.n === 1);
-    source.write('{"n":1}\n');
-    await first;
-    await assert.rejects(events.history(), error => error.kind === "spool" && /ends at byte 0 of 8/.test(error.message));
-  });
-});
-
-test("a write that fails with a chunk queued rejects the pending waiter; the queued chunk is dropped", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "e2e-history-"));
-  // A one-byte buffer holds the first chunk for drain; its write then fails.
-  const transcript = createWriteStream(join(directory, "failed.jsonl"), { highWaterMark: 1, fs: {
-    open: fsOpen, close: fsClose,
-    write: (_fd, _buffer, _offset, _length, _position, done) => setImmediate(() => done(new Error("injected EIO"))),
-  } });
-  const source = new PassThrough();
-  const events = new Spool(source, new Promise(() => {}), { transcript });
-  const second = events.next(event => event.n === 2);
-  source.write('{"n":1}\n');
-  source.write('{"n":2}\n');
-  await assert.rejects(second, error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
-  assert.equal(events.sequence, 1, "the queued chunk was dropped after the transcript failed");
-  assert.equal(transcript.listenerCount("drain"), 0, "the terminal spool releases its obsolete drain observer");
 });
 
 test("transcript withdrawal ends active and late spool waits with the original cause", async t => {

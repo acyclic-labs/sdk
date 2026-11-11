@@ -1,7 +1,7 @@
 //! Versioned projections retain the original admitted request header and context.
 use super::*;
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
+#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 mod tests;
 
 impl ResponseProjection {
@@ -21,12 +21,8 @@ impl ResponseProjection {
         reference: &FileRef,
         original: Option<&PreparationIo>,
     ) -> Result<Self> {
-        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(original)?;
-        #[cfg(feature = "filesystem")]
         let io = scope.io();
-        #[cfg(not(feature = "filesystem"))]
-        let io = original;
         let stored = load_projection_record(journal, reference, io)
             .await?
             .projection;
@@ -49,7 +45,6 @@ impl ResponseProjection {
             stored.checkpoint,
             stored.accounting,
         ));
-        #[cfg(feature = "filesystem")]
         {
             let retained = projection
                 .decoded_owned_bytes()?
@@ -69,28 +64,20 @@ pub(crate) async fn load_projection<'a>(
     ResponseProjection,
     Option<crate::conversation::ContentHold<'a>>,
 )> {
-    #[cfg(feature = "filesystem")]
     let scope = crate::filesystem::PreparationScope::new(original)?;
-    #[cfg(feature = "filesystem")]
     let io = scope.io();
-    #[cfg(not(feature = "filesystem"))]
-    let io = original;
     let projection = load_projection_record(journal, reference, io)
         .await?
         .projection;
-    #[cfg(feature = "filesystem")]
     let retained = projection
         .decoded_owned_bytes()?
         .ok_or_else(|| invalid(io))?;
     crate::context::validate_projected_context(&projection.context, limits, io)?;
-    #[cfg(feature = "filesystem")]
     let hold = {
         // The header is no longer retained by checkpoint readers.
         scope.finish(retained)?;
         original.map(|io| io.guard_owned(retained)).transpose()?
     };
-    #[cfg(not(feature = "filesystem"))]
-    let hold = None;
     Ok((projection, hold))
 }
 
@@ -100,12 +87,8 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         reference: &FileRef,
     ) -> Result<(ResponseProjection, crate::model::PreparedModelRequest)> {
-        #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
-        #[cfg(feature = "filesystem")]
         let io = scope.io();
-        #[cfg(not(feature = "filesystem"))]
-        let io = self.io;
         let ProjectionRecord {
             header,
             mut projection,
@@ -122,7 +105,6 @@ impl StockExecution<'_> {
             messages: std::mem::take(&mut projection.context.messages),
         };
         let prepared = crate::model::PreparedModelRequest::prepare(request, self.stock.limits, io)?;
-        #[cfg(feature = "filesystem")]
         {
             let retained = crate::core::owned_sum([
                 projection

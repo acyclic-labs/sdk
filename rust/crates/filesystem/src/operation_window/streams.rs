@@ -5,7 +5,7 @@ use acyclic_stream::StreamProviderExt as _;
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(feature = "fuzzing", feature = "memory", not(loom)))]
+#[cfg(all(feature = "fuzzing", not(loom)))]
 pub(super) mod fuzzing;
 
 /// Operation-window state stored beside generation authority in one Stream
@@ -13,12 +13,10 @@ pub(super) mod fuzzing;
 /// while close/expiry atomically advances it to tail 2 with the window CAS.
 /// A generation publication conditioned on tail 1 therefore linearizes
 /// exactly against fencing.
-#[cfg(any(test, feature = "distributed"))]
 pub struct StreamOperationWindowStore<P: ?Sized> {
     provider: Arc<P>,
 }
 
-#[cfg(any(test, feature = "distributed"))]
 impl<P: ?Sized> Clone for StreamOperationWindowStore<P> {
     fn clone(&self) -> Self {
         Self {
@@ -27,7 +25,6 @@ impl<P: ?Sized> Clone for StreamOperationWindowStore<P> {
     }
 }
 
-#[cfg(any(test, feature = "distributed"))]
 impl<P: ?Sized> StreamOperationWindowStore<P> {
     /// Binds operation windows to the exact provider used by filesystem
     /// authority publication.
@@ -38,7 +35,6 @@ impl<P: ?Sized> StreamOperationWindowStore<P> {
 }
 
 /// Stream-backed operation-window failure.
-#[cfg(any(test, feature = "distributed"))]
 #[derive(Debug, Error)]
 pub enum StreamOperationWindowStoreError {
     /// The shared Stream provider rejected or could not durably resolve state.
@@ -49,7 +45,6 @@ pub enum StreamOperationWindowStoreError {
     Corrupt(String),
 }
 
-#[cfg(any(test, feature = "distributed"))]
 impl<P: acyclic_stream::StreamProvider + ?Sized> StreamOperationWindowStore<P> {
     // The decoded state and its publication fence come from one atomic head.
     // An empty or corrupt stream must never stand in for authoritative absence.
@@ -66,7 +61,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> StreamOperationWindowStore<P> {
         let path = stream_window_path(workspace_id)?;
         let head = match self.provider.head(path.clone()).await {
             Ok(head) => head,
-            Err(acyclic_stream::StreamError::NotFound) => {
+            Err(error) if error.category() == acyclic_stream::StreamError::NotFound => {
                 return Ok((None, acyclic_stream::CommitCondition::Absent { path }));
             }
             Err(error) => return Err(error.into()),
@@ -97,7 +92,6 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> StreamOperationWindowStore<P> {
     }
 }
 
-#[cfg(any(test, feature = "distributed"))]
 impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
     for StreamOperationWindowStore<P>
 {
@@ -199,7 +193,6 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
     }
 }
 
-#[cfg(any(test, feature = "distributed"))]
 fn phase_leases(phase: &OperationWindowPhase) -> BTreeMap<OperationLeaseId, OperationLease> {
     match phase {
         OperationWindowPhase::Active { leases, .. } => leases.clone(),
@@ -207,7 +200,6 @@ fn phase_leases(phase: &OperationWindowPhase) -> BTreeMap<OperationLeaseId, Oper
     }
 }
 
-#[cfg(any(test, feature = "distributed"))]
 fn stream_window_path(
     workspace_id: WorkspaceId,
 ) -> Result<acyclic_stream::StreamPath, acyclic_stream::StreamError> {
@@ -217,7 +209,6 @@ fn stream_window_path(
     ))
 }
 
-#[cfg(any(test, feature = "distributed"))]
 pub(crate) fn stream_lease_path(
     workspace_id: WorkspaceId,
     lease_id: OperationLeaseId,
