@@ -199,3 +199,74 @@ fn retained_future_self_stop_never_claims_callback_quiescence() -> io::Result<()
     assert_eq!(observed.memory.load(Ordering::Acquire), 0);
     Ok(())
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn retained_future_foreign_wake_keeps_original_scope_and_restores_the_caller() -> io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let (expected, _) = crate::testing::Schedule::seeded(307);
+        let expected = expected
+            .scope(async {
+                let mut bytes = [0; 32];
+                assert!(crate::testing::fill_seeded(&mut bytes));
+                bytes
+            })
+            .await;
+        let (original, _) = crate::testing::Schedule::seeded(307);
+        let (foreign, _) = crate::testing::Schedule::seeded(509);
+        let observed = Arc::new(ReadBudgetMeter::new(0, 0));
+        let meter: Arc<dyn NativeReadMeter> = observed.clone();
+        let records = Arc::new(Mutex::new(Vec::with_capacity(2)));
+        let wake = Arc::new(Mutex::new(None::<Waker>));
+        let output = Arc::clone(&records);
+        let pending = Arc::clone(&wake);
+        let future = std::future::poll_fn(move |cx| {
+            let mut bytes = [0; 16];
+            assert!(crate::testing::fill_seeded(&mut bytes));
+            let mut records = output.lock().unwrap();
+            records.push(bytes);
+            *pending.lock().unwrap() = Some(cx.waker().clone());
+            if records.len() == 2 {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        });
+        let owner = original
+            .scope(async { crate::retain_future(future, &meter) })
+            .await?;
+        let foreign_observed = foreign
+            .scope(async {
+                let pending = wake.lock().unwrap().take().unwrap();
+                pending.wake();
+                let mut bytes = [0; 16];
+                assert!(crate::testing::fill_seeded(&mut bytes));
+                bytes
+            })
+            .await;
+        let (foreign_expected, _) = crate::testing::Schedule::seeded(509);
+        let foreign_expected = foreign_expected
+            .scope(async {
+                let mut bytes = [0; 16];
+                assert!(crate::testing::fill_seeded(&mut bytes));
+                bytes
+            })
+            .await;
+        assert_eq!(foreign_observed, foreign_expected);
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0], expected[..16]);
+        assert_eq!(records[1], expected[16..]);
+        drop(records);
+        assert!(owner.is_stopped());
+        owner.stop()?;
+        drop(owner);
+        drop(wake.lock().unwrap().take());
+        original.drained().await;
+        assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+        Ok(())
+    })
+}
