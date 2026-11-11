@@ -578,18 +578,39 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
 }
 
 #[tokio::test]
-async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it() -> Result {
-    // A turn checkpoint past the record limit would make every retry of this
-    // step fail its commit; the step instead settles a visible failure.
+async fn a_logical_step_retains_its_driver_state_before_host_checkpoint_admission() -> Result {
+    // Model stepping returns the complete logical state; the actual host owns
+    // checkpoint serialization and its publication admission.
     let parent = AgentPath::root(&id(1));
     let (path, mut state) = child_of(&parent, 2)?;
     state.awaited = true;
     let driver = script(vec![TurnStep {
-        checkpoint: Some(vec![7; MAX_CHECKPOINT_BYTES]),
+        checkpoint: Some(vec![7; 2 * acyclic_stream::MAX_RECORD_BYTES]),
         outs: vec![Out::Conversation(b"partial".to_vec()), Out::Checkpoint],
         wait: Wait::Continue,
         drops: None,
     }]);
+    let mut forged = state.clone();
+    forged.parent = Some(AgentPath::root(&id(3)));
+    let rejected = step(
+        &driver,
+        &path,
+        Some(forged),
+        (2, 0),
+        Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Approval(Approval { id: intent("q1") }),
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await;
+    assert!(matches!(
+        rejected,
+        Err(acyclic_harness_core::agent::Error::Record(
+            "agent parent is not its path's parent"
+        ))
+    ));
+    // The rejected lineage must not consume the driver's one original result.
     let stepped = step(
         &driver,
         &path,
@@ -602,37 +623,27 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
         acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
-    let failed = AgentOutcome::Failed {
-        message: OVERSIZED_STATE.into(),
-    };
-    assert_eq!(
-        stepped.state.phase,
-        Phase::Done {
-            outcome: failed.clone()
-        }
-    );
-    assert_eq!(stepped.state.turn, None);
-    assert_eq!(stepped.state.conversation_tail, 1);
-    assert_eq!(stepped.state.status_tail, 2);
-    assert!(stepped.state.reported);
-    assert!(!stepped.state.awaited);
-    assert_eq!(stepped.state.checkpoint, Some(0));
+    assert_eq!(stepped.state.phase, Phase::Running);
     assert_eq!(
         stepped
-            .outs
-            .iter()
-            .filter(|out| matches!(out,
-                Out::Send { to, record: InboxRecord::ChildSettled(settled) }
-                if *to == parent && settled.child == path
-            ))
-            .count(),
-        1
+            .state
+            .turn
+            .as_ref()
+            .map(|turn| turn.checkpoint.as_slice()),
+        Some(vec![7; 2 * acyclic_stream::MAX_RECORD_BYTES].as_slice())
     );
-    assert!(stepped.outs.iter().any(|out| matches!(
+    assert_eq!(stepped.state.conversation_tail, 1);
+    assert_eq!(stepped.state.status_tail, 2);
+    assert!(!stepped.state.reported);
+    assert!(stepped.state.awaited);
+    assert_eq!(stepped.state.checkpoint, Some(0));
+    assert!(!stepped.outs.iter().any(|out| matches!(
         out,
-        Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
+        Out::Send {
+            record: InboxRecord::ChildDone(_) | InboxRecord::ChildSettled(_),
+            ..
+        }
     )));
-    // The turn's own effects still commit with the failure.
     assert!(
         stepped
             .outs
