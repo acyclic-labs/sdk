@@ -253,6 +253,7 @@ async fn ui_default_projection() -> TestResult {
     assert_eq!(view.affected(Affected::Status), &["index.md", "status.md"]);
     // A real followed record supplies multibyte text. Byte ranges may split a
     // scalar, cross formatting writes, be reversed, or extend beyond EOF.
+    reader.set_follow(selected.status()?, true);
     append(
         &memory,
         selected.status()?,
@@ -264,7 +265,8 @@ async fn ui_default_projection() -> TestResult {
     .await?;
     let tail = memory.head(selected.status()?).await?.tail;
     wait(&mut reader, &mut driver, |r| {
-        r.cache().tail(&selected.status().expect("status")) == Some(tail)
+        let stream = selected.status().expect("status");
+        r.cache().tail(&stream) == Some(tail) && r.cache().record(&stream, tail - 1).is_some()
     })
     .await;
     let cut = ReaderCut {
