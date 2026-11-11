@@ -18,6 +18,7 @@ const EXCLUDED: &[&str] = &[
     ".git",
     ".acyclic-sdk",
     ".system",
+    workspace::volumes::IGNORE_PATH,
     crate::local::workspace::HOST_VIEW_ROOT,
 ];
 const MAXIMUM_PATHS: u32 = 262_144;

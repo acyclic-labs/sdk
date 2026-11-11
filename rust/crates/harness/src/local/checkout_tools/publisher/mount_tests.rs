@@ -1,5 +1,132 @@
 use super::*;
 
+#[tokio::test]
+async fn read_only_git_checkout_opens_and_reads_without_repository_exclusions() -> Result<()> {
+    struct ReadOnly(Vec<(PathBuf, std::fs::Permissions)>);
+    impl Drop for ReadOnly {
+        fn drop(&mut self) {
+            for (path, permissions) in self.0.drain(..).rev() {
+                std::fs::set_permissions(path, permissions).unwrap();
+            }
+        }
+    }
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let root = directory.path();
+    let git = |arguments: &[&str]| -> Result<Vec<u8>> {
+        let output = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .output()
+            .map_err(storage)?;
+        assert!(output.status.success(), "{output:?}");
+        Ok(output.stdout)
+    };
+    git(&["init", "-q"])?;
+    let exclude = root.join(".git/info/exclude");
+    let stock = std::fs::read(&exclude).map_err(storage)?;
+    std::fs::write(root.join("README.md"), b"stock source\n").map_err(storage)?;
+    // A project can negate ancestor rules; only the owned names may disappear.
+    let project_ignore = b"!/.volumes/\n!/.volumes/**\n!/.acyclic-sdk/\n!/.acyclic-sdk/**\n";
+    std::fs::write(root.join(".gitignore"), project_ignore).map_err(storage)?;
+    std::fs::create_dir(root.join(".volumes")).map_err(storage)?;
+    std::fs::write(root.join(".volumes/user-owned.txt"), b"authored sibling").map_err(storage)?;
+    let mut read_only = ReadOnly(Vec::new());
+    for path in [
+        exclude.clone(),
+        root.join(".git/info"),
+        root.join(".git"),
+        root.join("README.md"),
+        root.join(".gitignore"),
+    ] {
+        let original = std::fs::metadata(&path).map_err(storage)?.permissions();
+        let mut permissions = original.clone();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).map_err(storage)?;
+        read_only.0.push((path, original));
+    }
+    // The recorded startup used read-only Git metadata. Prove the fixture
+    // really refuses the writer that the former publisher required.
+    assert!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&exclude)
+            .is_err()
+    );
+    let state = tempfile::tempdir().map_err(storage)?;
+    let model = Model::new("scripted".into(), "readonly-checkout".into(), "1".into())?;
+    let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(root, (model, provider))?
+            .state_directory(state.path())
+            .workspace_mounting(crate::local::WorkspaceMounting::Physical),
+    )
+    .await?;
+    let context = crate::runtime::Bindings {
+        scope: RuntimeScope::new(
+            harness.signed.capabilities().clone(),
+            harness.limits.clone(),
+        )?,
+        content: Some(crate::runtime::ContentBindings {
+            volume: harness.project.clone(),
+            reader: harness.client_reader()?,
+            writer: None,
+        }),
+        ..crate::runtime::Bindings::local()
+    }
+    .build()?
+    .agent_context(
+        &Capabilities::default(),
+        crate::runtime::ContentBindings {
+            volume: harness.journal.clone(),
+            reader: harness.client_reader()?,
+            writer: None,
+        },
+    )?;
+    let context = Arc::new(context);
+    let tool = crate::tool::files::read()?;
+    for (path, expected) in [
+        ("README.md", "stock source\n"),
+        (".volumes/user-owned.txt", "authored sibling"),
+    ] {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "read-only-git-replay".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({"path":path}),
+        };
+        let call = ToolContext::new(
+            Arc::clone(&context),
+            invocation.operation_id,
+            &invocation.call_id,
+        )?;
+        let result = tool.executor.execute(invocation, Some(call)).await?;
+        assert_eq!(result.value["text"], expected);
+    }
+    assert_eq!(std::fs::read(&exclude).map_err(storage)?, stock);
+    assert_eq!(
+        std::fs::read(root.join(".gitignore")).map_err(storage)?,
+        project_ignore
+    );
+    let paths = git(&["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let mut paths = paths
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    paths.sort();
+    assert_eq!(
+        paths,
+        [
+            b".gitignore".as_slice(),
+            b".volumes/user-owned.txt",
+            b"README.md"
+        ]
+    );
+    drop(read_only);
+    Ok(())
+}
+
 async fn native_fixture(
     source: &[(&str, &[u8])],
 ) -> Result<(

@@ -1,12 +1,8 @@
-//! Volume setup uses the owner's single held Git metadata publisher.
+//! Volume setup uses the owner's single held metadata exclusion publisher.
 use super::*;
 
 pub(super) fn exclude_mount_paths(root: &acyclic_fs::HeldRoot, paths: &[&Path]) -> Result<()> {
-    if let Some(exclusion) = crate::local::owner::exclusion::Exclusion::capture_paths(root, paths)?
-    {
-        exclusion.publish()?;
-    }
-    Ok(())
+    crate::local::owner::exclusion::Exclusion::capture_paths(root, paths)?.publish()
 }
 #[cfg(test)]
 mod tests {
@@ -49,28 +45,6 @@ mod tests {
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         String::from_utf8(output.stdout).unwrap()
-    }
-
-    #[test]
-    fn a_directory_outside_git_is_left_alone() {
-        let directory = tempfile::tempdir().unwrap();
-        // The temporary root may sit inside a repository on a developer box;
-        // only assert that nothing is created inside the directory itself.
-        exclude_mount_paths(
-            directory.path(),
-            &[directory.path().join(".volumes/scratch")],
-        )
-        .unwrap();
-        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
-        #[cfg(unix)]
-        {
-            let aliases = tempfile::tempdir().unwrap();
-            let alias = aliases.path().join("ancestor");
-            std::os::unix::fs::symlink(directory.path().parent().unwrap(), &alias).unwrap();
-            let root = alias.join(directory.path().file_name().unwrap());
-            exclude_mount_paths(&root, &[root.join(".volumes/scratch")]).unwrap();
-            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
-        }
     }
 
     fn repository() -> impl Strategy<Value = Arc<tempfile::TempDir>> {
@@ -147,10 +121,11 @@ mod tests {
             crlf in any::<bool>(),
         ) {
             let repository = directory.path();
-            let exclude = repository.join(".git/info/exclude");
+            std::fs::create_dir_all(repository.join(".volumes")).unwrap();
+            let exclude = repository.join(".volumes/.gitignore");
             let mut original = vec![b'#', 0xff];
             original.extend(bytes);
-            if crlf { original.extend_from_slice(b"\r\n/.volumes/scratch\r\n"); }
+            if crlf { original.extend_from_slice(b"\r\n/.gitignore\r\n/scratch\r\n"); }
             std::fs::write(&exclude, &original).unwrap();
             // The former UTF-8 read rejects the same input before any mount.
             prop_assert!(std::fs::read_to_string(&exclude).is_err());
@@ -162,7 +137,7 @@ mod tests {
             else {
                 // Arbitrary input can already contain the rule in its middle;
                 // only a newly appended suffix must end with that rule.
-                prop_assert!(updated == original || updated.ends_with(b"/.volumes/scratch\n"));
+                prop_assert!(updated == original || updated.ends_with(b"/scratch\n"));
             }
             exclude_mount_paths(repository, &[mount]).unwrap();
             prop_assert_eq!(std::fs::read(&exclude).unwrap(), updated);
@@ -209,37 +184,22 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn unrepresentable_paths_leave_existing_exclusions_unchanged() {
+    fn checkout_ancestor_names_need_no_git_pattern_encoding() {
         let directory = tempfile::tempdir().unwrap();
         git(directory.path(), &["init", "-q"]);
         let exclude = directory.path().join(".git/info/exclude");
         std::fs::write(&exclude, "user-pattern\n").unwrap();
         for name in ["line\nbreak", "line\rbreak"] {
             let root = directory.path().join(name);
-            std::fs::create_dir_all(&root).unwrap();
-            let error = exclude_mount_paths(&root, &[root.join(".volumes/scratch")]).unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            let mount = root.join(".volumes/scratch");
+            std::fs::create_dir_all(&mount).unwrap();
+            let projected = mount.join("data");
+            std::fs::write(&projected, "volume").unwrap();
+            let authored = root.join(".volumes/user-owned");
+            std::fs::write(&authored, "keep").unwrap();
+            exclude_mount_paths(&root, &[mount]).unwrap();
+            ignores(directory.path(), &[(&projected, true), (&authored, false)]);
             assert_eq!(std::fs::read_to_string(&exclude).unwrap(), "user-pattern\n");
-            if name.contains('\n') {
-                // Restore the old encoder, which escaped whitespace without
-                // rejecting physical line separators. Git must expose the
-                // projected data despite that malformed exclusion.
-                let mount = root.join(".volumes/scratch");
-                std::fs::create_dir_all(&mount).unwrap();
-                let projected = mount.join("data");
-                std::fs::write(&projected, "volume").unwrap();
-                let mut malformed = String::from("/");
-                for character in name.chars() {
-                    if character.is_whitespace() {
-                        malformed.push('\\');
-                    }
-                    malformed.push(character);
-                }
-                malformed.push_str("/.volumes/scratch\n");
-                std::fs::write(&exclude, malformed).unwrap();
-                ignores(directory.path(), &[(&projected, false)]);
-                std::fs::write(&exclude, "user-pattern\n").unwrap();
-            }
         }
     }
 }

@@ -1,10 +1,14 @@
-//! Git metadata is captured once, then every publication uses held directories.
+//! Exclusions belong to SDK-owned directories, never the repository's Git metadata.
 use super::*;
-use acyclic_fs::{DemandError, HeldRoot, SearchRoot};
-use std::io::Read as _;
+use acyclic_fs::{DemandError, HeldRoot};
+use std::{collections::BTreeMap, io::Read as _};
 
 pub(in crate::local) struct Exclusion {
-    common: HeldRoot,
+    directories: Vec<Directory>,
+}
+
+struct Directory {
+    root: HeldRoot,
     patterns: Vec<Vec<u8>>,
 }
 
@@ -19,53 +23,21 @@ fn read_only(error: &DemandError) -> bool {
     ))
 }
 
-/// Flushes a retained rule that a previous publisher may have written but
-/// died before flushing, together with the name that holds it.
-fn settle(info: &HeldRoot, file: &fs::File) -> Result<()> {
-    match info.sync_file(file) {
+fn settle(root: &HeldRoot, file: &fs::File) -> Result<()> {
+    match root.sync_file(file) {
         Ok(()) => {}
-        // Windows flushes only through a writable handle. Read-only metadata
-        // admits no writer on this host whose bytes could still be
-        // unflushed, so there is nothing left to settle.
-        Err(error) if read_only(&error) => match info.open_file(Path::new("exclude"), true) {
-            Ok(writable) => info.sync_file(&writable).map_err(storage)?,
+        // Windows cannot flush through a read-only handle. If no writer can
+        // open the owned record, there is no pending publisher to settle here.
+        Err(error) if read_only(&error) => match root.open_file(Path::new(".gitignore"), true) {
+            Ok(writable) => root.sync_file(&writable).map_err(storage)?,
             Err(error) if read_only(&error) => return Ok(()),
             Err(error) => return Err(storage(error)),
         },
         Err(error) => return Err(storage(error)),
     }
-    info.sync_directory().map_err(storage)
+    root.sync_directory().map_err(storage)
 }
 
-fn bounded(file: fs::File) -> std::result::Result<Vec<u8>, DemandError> {
-    // Pointer records follow the existing local owner-record bound. An opaque
-    // exclude file is streamed separately and never needs a size-based buffer.
-    const MAXIMUM_METADATA_BYTES: u64 = 65_536;
-    if file.metadata()?.len() > MAXIMUM_METADATA_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Git metadata pointer exceeds the local metadata bound",
-        )
-        .into());
-    }
-    // Git writes pointer paths as raw filename bytes, which need not be UTF-8.
-    let mut text = Vec::new();
-    file.take(MAXIMUM_METADATA_BYTES + 1)
-        .read_to_end(&mut text)?;
-    if text.len() as u64 > MAXIMUM_METADATA_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Git metadata pointer grew beyond its admitted bound",
-        )
-        .into());
-    }
-    Ok(text)
-}
-
-/// Whether `pattern` is an exact rule line that no later negation follows, and
-/// whether the file ends at a line boundary. Git applies the last matching
-/// rule and only a negation (`!`) can re-include a path, so a rule followed by
-/// any negation may be undone and is reasserted after it.
 fn contains(mut file: &fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)> {
     let length = file.metadata()?.len();
     let mut remaining = length;
@@ -118,115 +90,8 @@ fn settled(effective: bool, negation: bool, rule: bool) -> bool {
     !negation && (effective || rule)
 }
 
-/// What a Git metadata pointer names.
-enum Target {
-    Directory(HeldRoot),
-    File(fs::File),
-}
-
-/// Resolves every Git metadata pointer hop: the `.git` entry, a gitfile's
-/// `gitdir`, and `commondir` with its target. Git follows links by path, so
-/// the target is named by its canonical path and then held without
-/// following links. It is accepted only if it is the very object the kernel
-/// resolves `pointer` to from the held `base`, so neither a link swap nor a
-/// replaced path between the two steps can redirect a hop. `None` means the
-/// pointer names nothing.
-fn resolve(base: &SearchRoot, pointer: &Path) -> Result<Option<Target>> {
-    let resolved = match base.resolved_identity(pointer) {
-        Ok(identity) => identity,
-        Err(error) if missing(&error) => return Ok(None),
-        Err(error) => return Err(storage(error)),
-    };
-    // An absolute pointer replaces the base when joined.
-    let target = fs::canonicalize(base.path().join(pointer)).map_err(storage)?;
-    let (Some(parent), Some(leaf)) = (target.parent(), target.file_name()) else {
-        return Err(Error::Invalid(
-            "Git metadata pointer names a filesystem root".into(),
-        ));
-    };
-    let (parent, leaf) = (
-        acyclic_fs::hold_search_root(parent).map_err(storage)?,
-        Path::new(leaf),
-    );
-    let replaced = || Error::Unauthorized("Git metadata changed during capture".into());
-    let target = match parent.open_directory(leaf) {
-        Ok(directory) if directory.identity() == resolved => Target::Directory(directory),
-        Ok(_) => return Err(replaced()),
-        Err(_) => {
-            let file = parent.open_file(leaf).map_err(storage)?;
-            if acyclic_fs::file_identity(&file).map_err(storage)? != resolved {
-                return Err(replaced());
-            }
-            Target::File(file)
-        }
-    };
-    Ok(Some(target))
-}
-
-/// The directory a pointer record names.
-fn directory(base: &SearchRoot, pointer: &Path) -> Result<HeldRoot> {
-    match resolve(base, pointer)? {
-        Some(Target::Directory(directory)) => Ok(directory),
-        _ => Err(Error::Invalid(
-            "Git metadata pointer does not name a directory".into(),
-        )),
-    }
-}
-
-fn pointer_line(text: &[u8]) -> Result<&[u8]> {
-    let line = text.strip_suffix(b"\n").unwrap_or(text);
-    let line = line.strip_suffix(b"\r").unwrap_or(line);
-    if line.is_empty() || line.iter().any(|byte| matches!(byte, b'\n' | b'\r' | 0)) {
-        return Err(Error::Invalid("invalid Git metadata pointer record".into()));
-    }
-    Ok(line)
-}
-
-/// The path a pointer record names: raw filename bytes on Unix, and UTF-8 on
-/// Windows, where Git records paths as UTF-8.
-fn pointer_path(line: &[u8]) -> Result<PathBuf> {
-    #[cfg(unix)]
-    let path = Some(PathBuf::from(
-        <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(line),
-    ));
-    #[cfg(not(unix))]
-    let path = std::str::from_utf8(line).ok().map(PathBuf::from);
-    path.ok_or_else(|| Error::Invalid("Git metadata pointer is not a path".into()))
-}
-
-/// The Git directory for `root`, if it has a `.git` entry. A linked worktree
-/// stores a gitfile instead, whose relative pointer Git resolves from the
-/// directory holding `.git`, even when `.git` itself is a link.
-fn metadata(root: &SearchRoot) -> Result<Option<HeldRoot>> {
-    match resolve(root, Path::new(".git"))? {
-        None => Ok(None),
-        Some(Target::Directory(git)) => Ok(Some(git)),
-        Some(Target::File(file)) => {
-            let text = bounded(file).map_err(storage)?;
-            let pointer = pointer_line(&text)?
-                .strip_prefix(b"gitdir: ")
-                .ok_or_else(|| Error::Invalid("checkout .git file has no gitdir pointer".into()))?;
-            directory(root, &pointer_path(pointer)?).map(Some)
-        }
-    }
-}
-
-/// The common Git directory: `git` itself unless its `commondir` record,
-/// resolved from `git`, names another.
-fn common(git: HeldRoot) -> Result<HeldRoot> {
-    let search = git.search().map_err(storage)?;
-    match resolve(&search, Path::new("commondir"))? {
-        None => Ok(git),
-        Some(Target::File(file)) => {
-            let text = bounded(file).map_err(storage)?;
-            directory(&search, &pointer_path(pointer_line(&text)?)?)
-        }
-        Some(Target::Directory(_)) => Err(Error::Invalid("Git commondir is a directory".into())),
-    }
-}
-
 impl Exclusion {
-    pub(super) fn capture(root: &HeldRoot) -> Result<Option<Self>> {
+    pub(super) fn capture(root: &HeldRoot) -> Result<Self> {
         Self::capture_paths(
             root,
             &[Path::new(
@@ -235,71 +100,91 @@ impl Exclusion {
         )
     }
 
-    /// Captures one Git metadata capability for every reserved SDK path.
-    pub(in crate::local) fn capture_paths(
-        root: &HeldRoot,
-        paths: &[&Path],
-    ) -> Result<Option<Self>> {
-        let path = root.canonical_path().map_err(storage)?;
-        let mut top = path.as_path();
-        let mut held = root.search().map_err(storage)?;
-        loop {
-            if let Some(git) = metadata(&held)? {
-                let common = common(git)?;
-                let relative = path.strip_prefix(top).map_err(storage)?;
-                let patterns = paths
-                    .iter()
-                    .map(|path| pattern(&relative.join(path)))
-                    .collect::<Result<Vec<_>>>()?;
-                return Ok(Some(Self { common, patterns }));
-            }
-            let Some(parent) = top.parent() else {
-                return Ok(None);
-            };
-            // Ancestors are held for search only: a checkout below a
-            // directory the process may cross but not list still opens.
-            let ancestor = acyclic_fs::hold_search_root(parent).map_err(storage)?;
-            // Named ancestor discovery is only accepted if its held descendant
-            // is the captured checkout. A replaced path cannot redirect it.
-            let relative = path.strip_prefix(parent).map_err(storage)?;
-            if ancestor
-                .open_search_directory(relative)
-                .map_err(storage)?
-                .identity()
-                != root.identity()
+    /// Reserve only the supplied SDK-owned names. The parent of a nested name
+    /// is SDK metadata; a top-level metadata directory owns all its contents.
+    /// Local ignore files outrank ancestor negations without touching .git or
+    /// the project's .gitignore. Authored siblings remain visible to Git.
+    pub(in crate::local) fn capture_paths(root: &HeldRoot, paths: &[&Path]) -> Result<Self> {
+        let mut groups = BTreeMap::<PathBuf, Vec<Vec<u8>>>::new();
+        for path in paths {
+            if path
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
             {
-                return Err(Error::Unauthorized(
-                    "checkout changed during Git metadata capture".into(),
-                ));
+                return Err(Error::Invalid("checkout exclusion must be relative".into()));
             }
-            held = ancestor;
-            top = parent;
+            let parent = path
+                .parent()
+                .ok_or_else(|| Error::Invalid("checkout exclusion has no parent".into()))?;
+            if parent.as_os_str().is_empty() {
+                groups
+                    .entry(path.to_path_buf())
+                    .or_default()
+                    .push(b"*".to_vec());
+            } else {
+                let name = path
+                    .file_name()
+                    .ok_or_else(|| Error::Invalid("checkout exclusion has no name".into()))?;
+                groups
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .push(pattern(Path::new(name))?);
+            }
         }
+        let directories = groups
+            .into_iter()
+            .map(|(relative, mut patterns)| {
+                patterns.push(b"/.gitignore".to_vec());
+                patterns.sort();
+                patterns.dedup();
+                Ok(Directory {
+                    root: super::super::workspace::volumes::held_directories(root, &relative)?,
+                    patterns,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { directories })
     }
 
     pub(in crate::local) fn publish(&self) -> Result<()> {
-        // Read first through the held Git directory: an effective rule needs
-        // no write access, so read-only metadata that carries it reopens.
+        for directory in &self.directories {
+            directory.publish()?;
+        }
+        Ok(())
+    }
+}
+
+impl Directory {
+    fn effective(&self) -> Result<bool> {
+        let file = match self.root.open_file(Path::new(".gitignore"), false) {
+            Ok(file) => file,
+            Err(error) if missing(&error) => return Ok(false),
+            Err(error) => return Err(storage(error)),
+        };
+        let file = acyclic_native_runtime::FileLock::acquire(
+            file,
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )
+        .map_err(storage)?;
+        for pattern in &self.patterns {
+            use std::io::Seek as _;
+            (&*file).rewind().map_err(storage)?;
+            if !contains(&file, pattern).map_err(storage)?.0 {
+                return Ok(false);
+            }
+        }
+        settle(&self.root, &file)?;
+        Ok(true)
+    }
+
+    fn publish(&self) -> Result<()> {
         if self.effective()? {
             return Ok(());
         }
-        let denied = |error: DemandError| {
-            if read_only(&error) {
-                Error::ReadOnlyGitMetadata {
-                    path: self.common.path().join("info").join("exclude"),
-                }
-            } else {
-                storage(error)
-            }
-        };
-        let info = self
-            .common
-            .create_directories(Path::new("info"), acyclic_fs::NativeDurability::Durable)
-            .map_err(denied)?;
-        // Serialize the read/append pair across processes; retain opaque user
-        // bytes and avoid duplicate records on reopen.
         let file = acyclic_native_runtime::FileLock::acquire(
-            info.open_file(Path::new("exclude"), true).map_err(denied)?,
+            self.root
+                .open_file(Path::new(".gitignore"), true)
+                .map_err(storage)?,
             acyclic_native_runtime::FileLockMode::Exclusive,
         )
         .map_err(storage)?;
@@ -314,48 +199,15 @@ impl Exclusion {
             if !line_ended {
                 appended.push(b'\n');
             }
-            appended.extend_from_slice(b"# acyclic harness checkout incarnation\n");
             appended.extend_from_slice(pattern);
             appended.push(b'\n');
             acyclic_native_runtime::write_file_all(&mut &*file, &appended).map_err(storage)?;
         }
-        info.sync_file(&file).map_err(storage)?;
-        info.sync_directory().map_err(storage)
-    }
-
-    /// Whether the held exclude file already makes the rule effective, read
-    /// without write access. A retained rule is settled before it is trusted.
-    fn effective(&self) -> Result<bool> {
-        let info = match self.common.open_directory(Path::new("info")) {
-            Ok(info) => info,
-            Err(error) if missing(&error) => return Ok(false),
-            Err(error) => return Err(storage(error)),
-        };
-        let file = match info.open_file(Path::new("exclude"), false) {
-            Ok(file) => file,
-            Err(error) if missing(&error) => return Ok(false),
-            Err(error) => return Err(storage(error)),
-        };
-        // Serialize with appenders, which re-check under their own lock.
-        let file = acyclic_native_runtime::FileLock::acquire(
-            file,
-            acyclic_native_runtime::FileLockMode::Exclusive,
-        )
-        .map_err(storage)?;
-        for pattern in &self.patterns {
-            use std::io::Seek as _;
-            (&*file).rewind().map_err(storage)?;
-            if !contains(&file, pattern).map_err(storage)?.0 {
-                return Ok(false);
-            }
-        }
-        settle(&info, &file)?;
-        Ok(true)
+        self.root.sync_file(&file).map_err(storage)?;
+        self.root.sync_directory().map_err(storage)
     }
 }
 
-/// The anchored Git exclusion rule for `path`, as raw filename bytes: Git
-/// matches paths as bytes on Unix, and records them as UTF-8 on Windows.
 pub(in crate::local) fn pattern(path: &Path) -> Result<Vec<u8>> {
     let mut result = Vec::new();
     for part in path.components() {
@@ -391,27 +243,14 @@ mod tests {
     use proptest::prelude::*;
     use std::io::{Seek as _, Write as _};
 
-    #[test]
-    fn pointer_records_preserve_path_spaces_and_reject_extra_records() {
-        assert_eq!(
-            pointer_line(b"dir with trailing space \n").unwrap(),
-            b"dir with trailing space "
-        );
-        assert_eq!(pointer_line(b"dir\r\n").unwrap(), b"dir");
-        for malformed in [&b""[..], b"\n", b"dir\nother", b"dir\0", b"dir\rname"] {
-            assert!(pointer_line(malformed).is_err(), "{malformed:?}");
-        }
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
         fn streamed_matching_preserves_exact_opaque_line_semantics(bytes in prop::collection::vec(any::<u8>(), 0..20_000), present in any::<bool>(), negated in any::<bool>()) {
-            let pattern = b"/.volumes/.incarnation";
+            let pattern = b"/.incarnation";
             let mut bytes = bytes;
-            if present { bytes.extend_from_slice(b"\n/.volumes/.incarnation\r\n"); }
-            if negated { bytes.extend_from_slice(b"!/.volumes/.incarnation/"); }
-            // Model: the last exact rule line follows every negation line.
+            if present { bytes.extend_from_slice(b"\n/.incarnation\r\n"); }
+            if negated { bytes.extend_from_slice(b"!/.incarnation/"); }
             let lines = bytes.split(|byte| *byte == b'\n').collect::<Vec<_>>();
             let rule = lines.iter().rposition(|line| line.strip_suffix(b"\r").unwrap_or(line) == pattern);
             let negation = lines.iter().rposition(|line| line.first() == Some(&b'!'));
@@ -424,592 +263,27 @@ mod tests {
     }
 
     #[test]
-    fn oversized_pointer_records_are_rejected_before_publication() {
-        let temporary = tempfile::tempdir().unwrap();
-        let mut file = fs::File::create(temporary.path().join(".git")).unwrap();
-        file.write_all(b"gitdir: ").unwrap();
-        file.set_len(65_537).unwrap();
-        let held = acyclic_fs::hold_root(temporary.path()).unwrap();
-        assert!(bounded(fs::File::open(temporary.path().join(".git")).unwrap()).is_err());
-        assert!(Exclusion::capture(&held).is_err());
-        assert!(!temporary.path().join(".volumes").exists());
-    }
-
-    fn git(root: &Path, arguments: &[&str]) -> String {
-        let output = std::process::Command::new("git")
-            .args(arguments)
-            .current_dir(root)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("HOME", root)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        String::from_utf8(output.stdout).unwrap()
-    }
-
-    #[test]
-    fn held_metadata_excludes_only_owned_tokens_and_preserves_opaque_user_bytes() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        git(root, &["init", "-q"]);
-        let exclude = root.join(".git/info/exclude");
-        let user = b"# user\xff\n/keep";
-        fs::write(&exclude, user).unwrap();
-        let nested = root.join("nested space");
-        fs::create_dir(&nested).unwrap();
-        for path in [root, nested.as_path()] {
-            let held = acyclic_fs::hold_root(path).unwrap();
-            let exclusion = Exclusion::capture(&held).unwrap().unwrap();
-            exclusion.publish().unwrap();
-            exclusion.publish().unwrap();
-            let token = path.join(".volumes/.incarnation");
-            fs::create_dir_all(&token).unwrap();
-            fs::write(token.join("token"), "owned").unwrap();
-        }
-        fs::create_dir_all(root.join(".volumes/user-owned")).unwrap();
-        fs::write(root.join(".volumes/user-owned/value"), "user").unwrap();
-        let bytes = fs::read(&exclude).unwrap();
-        assert!(bytes.starts_with(user));
-        assert_eq!(
-            bytes
-                .windows(b"# acyclic harness checkout incarnation".len())
-                .filter(|part| *part == b"# acyclic harness checkout incarnation")
-                .count(),
-            2
-        );
-        let status = git(root, &["status", "--porcelain", "--untracked-files=all"]);
-        assert!(status.contains(".volumes/user-owned/value"), "{status}");
-        assert!(!status.contains(".incarnation"), "{status}");
-        // Negative control: the same SDK files are visible without the fix.
-        fs::write(&exclude, user).unwrap();
-        assert!(
-            git(root, &["status", "--porcelain", "--untracked-files=all"])
-                .contains(".incarnation/token")
-        );
-    }
-
-    /// Whether the host filesystem can name a non-UTF-8 directory. APFS and
-    /// HFS+ store only valid UTF-8 names and refuse others with `EILSEQ`, so
-    /// no such checkout can exist there. Every other Unix host must create one.
-    #[cfg(unix)]
-    fn non_utf8_names(directory: &Path) -> bool {
-        use std::os::unix::ffi::OsStrExt as _;
-        let probe = directory.join(std::ffi::OsStr::from_bytes(b"probe\xff"));
-        match fs::create_dir(&probe) {
-            Ok(()) => {
-                fs::remove_dir(probe).unwrap();
-                true
-            }
-            #[cfg(target_os = "macos")]
-            // Darwin's EILSEQ.
-            Err(error) if error.raw_os_error() == Some(92) => false,
-            Err(error) => panic!("{}: {error}", probe.display()),
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn non_utf8_checkout_directories_publish_their_exact_rule() {
-        use std::os::unix::ffi::OsStrExt as _;
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        if !non_utf8_names(root) {
-            return;
-        }
-        git(root, &["init", "-q"]);
-        let nested = root.join(std::ffi::OsStr::from_bytes(b"nested\xff *"));
-        fs::create_dir(&nested).unwrap();
-        let held = acyclic_fs::hold_root(&nested).unwrap();
-        Exclusion::capture(&held)
-            .unwrap()
-            .unwrap()
-            .publish()
-            .unwrap();
-        fs::create_dir_all(nested.join(".volumes/.incarnation")).unwrap();
-        fs::write(nested.join(".volumes/.incarnation/token"), "owned").unwrap();
-        fs::write(nested.join("user"), "user").unwrap();
-        let status = git(root, &["status", "--porcelain", "--untracked-files=all"]);
-        assert!(!status.contains(".incarnation"), "{status}");
-        // Negative control: a sibling user file in the same directory stays visible.
-        assert!(status.contains("user"), "{status}");
-        assert!(
-            fs::read(root.join(".git/info/exclude"))
-                .unwrap()
-                .ends_with(b"/nested\xff\\ \\*/.volumes/.incarnation\n")
-        );
-    }
-
-    #[test]
-    fn later_user_negations_cannot_reinclude_the_token() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        git(root, &["init", "-q"]);
-        let exclude = root.join(".git/info/exclude");
-        let user: &[u8] =
-            b"/.volumes/.incarnation\n!/.volumes/.incarnation/\n!/.volumes/.incarnation/**\n";
-        fs::write(&exclude, user).unwrap();
-        fs::create_dir_all(root.join(".volumes/.incarnation")).unwrap();
-        fs::write(root.join(".volumes/.incarnation/token"), "owned").unwrap();
-        let status = || git(root, &["status", "--porcelain", "--untracked-files=all"]);
-        // Negative control: the exact rule is present but undone, so a
-        // publisher that only looks for the rule leaves the token visible.
-        assert!(status().contains(".incarnation/token"));
-        let held = acyclic_fs::hold_root(root).unwrap();
-        let exclusion = Exclusion::capture(&held).unwrap().unwrap();
-        exclusion.publish().unwrap();
-        exclusion.publish().unwrap();
-        assert!(!status().contains(".incarnation"), "{}", status());
-        let mut expected = user.to_vec();
-        expected
-            .extend_from_slice(b"# acyclic harness checkout incarnation\n/.volumes/.incarnation\n");
-        assert_eq!(fs::read(&exclude).unwrap(), expected);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn linked_worktrees_with_non_utf8_names_publish_through_their_pointer_bytes() {
-        use std::os::unix::ffi::OsStrExt as _;
-        let temporary = tempfile::tempdir().unwrap();
-        if !non_utf8_names(temporary.path()) {
-            return;
-        }
-        let root = temporary.path().join("repo");
-        fs::create_dir(&root).unwrap();
-        git(&root, &["init", "-q"]);
-        git(
-            &root,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "initial",
-            ],
-        );
-        let linked = temporary
-            .path()
-            .join(std::ffi::OsStr::from_bytes(b"linked\xff"));
-        let output = std::process::Command::new("git")
-            .args(["worktree", "add", "-q"])
-            .arg(&linked)
-            .current_dir(&root)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("HOME", &root)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        // Negative control: the pointer is not UTF-8, so a text reader fails.
-        assert!(std::str::from_utf8(&fs::read(linked.join(".git")).unwrap()).is_err());
-        let held = acyclic_fs::hold_root(&linked).unwrap();
-        Exclusion::capture(&held)
-            .unwrap()
-            .unwrap()
-            .publish()
-            .unwrap();
-        fs::create_dir_all(linked.join(".volumes/.incarnation")).unwrap();
-        fs::write(linked.join(".volumes/.incarnation/token"), "owned").unwrap();
-        assert_eq!(git(&linked, &["status", "--porcelain"]), "");
-    }
-
-    #[test]
-    fn checkout_replacement_cannot_redirect_captured_metadata_publication() {
+    fn owned_exclusion_publication_stays_with_the_held_checkout() {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("checkout");
         fs::create_dir(&root).unwrap();
-        git(&root, &["init", "-q"]);
         let held = acyclic_fs::hold_root(&root).unwrap();
-        let paths = [
-            Path::new(".volumes/.incarnation"),
-            Path::new(".volumes/agents"),
-        ];
-        let exclusion = Exclusion::capture_paths(&held, &paths).unwrap().unwrap();
-        let moved = temporary.path().join("original");
-        let renamed = fs::rename(&root, &moved);
-        // Windows refuses to rename a directory below held handles, so the
-        // captured checkout cannot be replaced at all while it is held.
-        if cfg!(windows) {
-            assert_eq!(
-                renamed.unwrap_err().kind(),
-                std::io::ErrorKind::PermissionDenied
-            );
-            exclusion.publish().unwrap();
-            assert!(
-                fs::read_to_string(root.join(".git/info/exclude"))
-                    .unwrap()
-                    .contains("/.volumes/.incarnation")
-            );
-            return;
-        }
-        renamed.unwrap();
-        fs::create_dir(&root).unwrap();
-        git(&root, &["init", "-q"]);
-        let replacement = root.join(".git/info/exclude");
-        fs::write(&replacement, "replacement user bytes").unwrap();
-        exclusion.publish().unwrap();
-        assert_eq!(fs::read(&replacement).unwrap(), b"replacement user bytes");
-        assert!(
-            fs::read_to_string(moved.join(".git/info/exclude"))
-                .unwrap()
-                .contains("/.volumes/.incarnation")
-        );
-        assert!(
-            fs::read_to_string(moved.join(".git/info/exclude"))
-                .unwrap()
-                .contains("/.volumes/agents")
-        );
-        // A path-only publisher would select the replacement's metadata.
-        let named = acyclic_fs::hold_root(&root).unwrap();
-        assert_ne!(named.identity(), held.identity());
-        let redirected = Exclusion::capture_paths(&named, &paths).unwrap().unwrap();
-        redirected.publish().unwrap();
-        assert_ne!(fs::read(&replacement).unwrap(), b"replacement user bytes");
-    }
-
-    #[test]
-    fn linked_worktrees_publish_in_the_held_common_directory() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path().join("repo");
-        fs::create_dir(&root).unwrap();
-        git(&root, &["init", "-q"]);
-        git(
-            &root,
+        let exclusion = Exclusion::capture_paths(
+            &held,
             &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "initial",
+                Path::new(".volumes/home"),
+                Path::new(".volumes/.incarnation"),
             ],
-        );
-        let linked = temporary.path().join("linked");
-        git(&root, &["worktree", "add", "-q", linked.to_str().unwrap()]);
-        let held = acyclic_fs::hold_root(&linked).unwrap();
-        Exclusion::capture(&held)
-            .unwrap()
-            .unwrap()
-            .publish()
-            .unwrap();
-        fs::create_dir_all(linked.join(".volumes/.incarnation")).unwrap();
-        fs::write(linked.join(".volumes/.incarnation/token"), "owned").unwrap();
-        assert_eq!(git(&linked, &["status", "--porcelain"]), "");
-        assert!(
-            fs::read_to_string(root.join(".git/info/exclude"))
-                .unwrap()
-                .contains("/.volumes/.incarnation")
-        );
-    }
-
-    fn commit(root: &Path) {
-        git(
-            root,
-            &[
-                "-c",
-                "user.name=t",
-                "-c",
-                "user.email=t@t",
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "initial",
-            ],
-        );
-    }
-
-    /// Denies listing a directory while keeping traversal, and restores
-    /// listing on drop so the temporary tree can be removed.
-    struct Unlisted(PathBuf);
-
-    /// Every user, so the deny entry applies to the test process itself.
-    #[cfg(windows)]
-    const EVERYONE_LIST: &str = "*S-1-1-0:(RD)";
-
-    impl Unlisted {
-        fn new(path: &Path) -> Self {
-            #[cfg(windows)]
-            let path = fs::canonicalize(path).unwrap();
-            #[cfg(not(windows))]
-            let path = path.to_path_buf();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o311)).unwrap();
-            }
-            #[cfg(windows)]
-            assert!(icacls(&path, &["/deny", EVERYONE_LIST]));
-            Self(path)
-        }
-    }
-
-    impl Drop for Unlisted {
-        fn drop(&mut self) {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
-            }
-            #[cfg(windows)]
-            let _ = icacls(&self.0, &["/remove:d", "*S-1-1-0"]);
-        }
-    }
-
-    #[cfg(windows)]
-    fn icacls(path: &Path, arguments: &[&str]) -> bool {
-        std::process::Command::new("icacls")
-            .arg(path)
-            .args(arguments)
-            .output()
-            .is_ok_and(|output| output.status.success())
-    }
-
-    #[test]
-    fn ancestors_that_can_be_searched_but_not_listed_still_lead_to_metadata() {
-        let temporary = tempfile::tempdir().unwrap();
-        let repo = temporary.path().join("repo");
-        let locked = repo.join("locked");
-        let checkout = locked.join("checkout");
-        fs::create_dir_all(&checkout).unwrap();
-        git(&repo, &["init", "-q"]);
-        commit(&repo);
-        let linked = locked.join("linked");
-        git(&repo, &["worktree", "add", "-q", linked.to_str().unwrap()]);
-        // Git can record a relative pointer; resolving it crosses `locked`.
-        fs::write(linked.join(".git"), "gitdir: ../../.git/worktrees/linked\n").unwrap();
-        let _restore = Unlisted::new(&locked);
-        // The process may cross `locked` but not list it. A process that
-        // overrides access checks could list it, exercising nothing.
-        assert!(
-            fs::read_dir(&locked).is_err(),
-            "test must not run with an access-check override"
-        );
-        for path in [&checkout, &linked] {
-            let held = acyclic_fs::hold_root(path).unwrap();
-            Exclusion::capture(&held)
-                .unwrap()
-                .unwrap()
-                .publish()
-                .unwrap();
-            assert_eq!(
-                git(path, &["check-ignore", ".volumes/.incarnation/token"]),
-                ".volumes/.incarnation/token\n"
-            );
-        }
-        let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
-        assert!(
-            exclude.contains("\n/locked/checkout/.volumes/.incarnation\n"),
-            "{exclude}"
-        );
-        assert!(exclude.contains("\n/.volumes/.incarnation\n"), "{exclude}");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn symlinked_git_metadata_publishes_in_the_git_directory_it_names() {
-        let temporary = tempfile::tempdir().unwrap();
-        let store = temporary.path().join("store");
-        fs::create_dir(&store).unwrap();
-        git(&store, &["init", "-q"]);
-        commit(&store);
-        // `.git` is a link to a Git directory.
-        let checkout = temporary.path().join("checkout");
-        fs::create_dir(&checkout).unwrap();
-        std::os::unix::fs::symlink("../store/.git", checkout.join(".git")).unwrap();
-        // `.git` is a link to a linked worktree's gitfile.
-        let linked = temporary.path().join("linked");
-        git(&store, &["worktree", "add", "-q", linked.to_str().unwrap()]);
-        let gitfile = temporary.path().join("linked.gitfile");
-        fs::rename(linked.join(".git"), &gitfile).unwrap();
-        std::os::unix::fs::symlink(&gitfile, linked.join(".git")).unwrap();
-        for path in [&checkout, &linked] {
-            let held = acyclic_fs::hold_root(path).unwrap();
-            Exclusion::capture(&held)
-                .unwrap()
-                .unwrap()
-                .publish()
-                .unwrap();
-            fs::create_dir_all(path.join(".volumes/.incarnation")).unwrap();
-            fs::write(path.join(".volumes/.incarnation/token"), "owned").unwrap();
-            fs::write(path.join("user"), "user").unwrap();
-            let status = git(path, &["status", "--porcelain", "--untracked-files=all"]);
-            assert!(!status.contains(".incarnation"), "{status}");
-            // Negative control: a user file beside the token stays visible.
-            assert!(status.contains("user"), "{status}");
-        }
-        // Both publish in the real common directory, never through the link.
-        assert!(
-            fs::symlink_metadata(checkout.join(".git"))
-                .unwrap()
-                .is_symlink()
-        );
-        assert!(
-            fs::read_to_string(store.join(".git/info/exclude"))
-                .unwrap()
-                .contains("\n/.volumes/.incarnation\n")
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn every_git_metadata_pointer_hop_follows_links_by_identity() {
-        use std::os::unix::fs::symlink;
-        let temporary = tempfile::tempdir().unwrap();
-        let store = temporary.path().join("store");
-        fs::create_dir(&store).unwrap();
-        git(&store, &["init", "-q"]);
-        commit(&store);
-        let worktree = |name: &str| {
-            let path = temporary.path().join(name);
-            git(&store, &["worktree", "add", "-q", path.to_str().unwrap()]);
-            (path, store.join(".git/worktrees").join(name))
-        };
-        // A gitfile whose gitdir pointer names a link to the Git directory.
-        let (pointed, gitdir) = worktree("pointed");
-        symlink(&gitdir, pointed.join("metadata-link")).unwrap();
-        fs::write(pointed.join(".git"), "gitdir: metadata-link\n").unwrap();
-        // A commondir that names a link to the common directory.
-        let (common, gitdir) = worktree("common");
-        symlink(store.join(".git"), gitdir.join("common-link")).unwrap();
-        fs::write(gitdir.join("commondir"), "common-link\n").unwrap();
-        // A relative gitfile pointer.
-        let (relative, _) = worktree("relative");
-        fs::write(
-            relative.join(".git"),
-            "gitdir: ../store/.git/worktrees/relative\n",
         )
         .unwrap();
-        // `.git` itself is a link to the Git directory.
-        let linked = temporary.path().join("linked");
-        fs::create_dir(&linked).unwrap();
-        symlink("../store/.git", linked.join(".git")).unwrap();
-        let checkouts = [&pointed, &common, &relative, &linked];
-        let status = |path: &Path| git(path, &["status", "--porcelain", "--untracked-files=all"]);
-        for path in checkouts {
-            fs::write(path.join("user"), "user").unwrap();
-            fs::create_dir_all(path.join(".volumes/.incarnation")).unwrap();
-            fs::write(path.join(".volumes/.incarnation/token"), "owned").unwrap();
-            // Negative control: Git accepts each layout and, before any
-            // publication, shows the token.
-            assert!(
-                status(path).contains(".incarnation/token"),
-                "{}",
-                status(path)
-            );
-        }
-        for path in checkouts {
-            let held = acyclic_fs::hold_root(path).unwrap();
-            Exclusion::capture(&held)
-                .unwrap()
-                .unwrap()
-                .publish()
-                .unwrap();
-            let after = status(path);
-            assert!(!after.contains(".incarnation"), "{after}");
-            assert!(after.contains("user"), "{after}");
-        }
-        // Every hop resolved to the one real common directory.
-        assert_eq!(
-            fs::read_to_string(store.join(".git/info/exclude"))
-                .unwrap()
-                .matches("# acyclic harness checkout incarnation")
-                .count(),
-            1
-        );
-    }
-
-    /// Sets read-only permissions on `paths`, restoring them on drop so the
-    /// temporary directory can be removed.
-    struct ReadOnly(Vec<(PathBuf, fs::Permissions)>);
-
-    impl ReadOnly {
-        fn new(paths: &[PathBuf]) -> Self {
-            Self(
-                paths
-                    .iter()
-                    .map(|path| {
-                        let original = fs::metadata(path).unwrap().permissions();
-                        let mut read_only = original.clone();
-                        read_only.set_readonly(true);
-                        fs::set_permissions(path, read_only).unwrap();
-                        (path.clone(), original)
-                    })
-                    .collect(),
-            )
-        }
-    }
-
-    impl Drop for ReadOnly {
-        fn drop(&mut self) {
-            for (path, original) in self.0.drain(..).rev() {
-                let _ = fs::set_permissions(path, original);
-            }
-        }
-    }
-
-    #[test]
-    fn read_only_git_metadata_reopens_with_an_effective_rule_and_names_a_missing_one() {
-        let temporary = tempfile::tempdir().unwrap();
-        let root = temporary.path();
-        git(root, &["init", "-q"]);
-        let info = root.join(".git/info");
-        let exclude = info.join("exclude");
-        // Windows honors the read-only attribute only on files; Unix also
-        // refuses new names in the directory.
-        let guarded = if cfg!(unix) {
-            vec![exclude.clone(), info]
-        } else {
-            vec![exclude.clone()]
-        };
-        let held = acyclic_fs::hold_root(root).unwrap();
-        let exclusion = Exclusion::capture(&held).unwrap().unwrap();
-        // (a) The rule is already effective: reopening needs no write access.
+        let moved = temporary.path().join("moved");
+        fs::rename(&root, &moved).unwrap();
+        fs::create_dir(&root).unwrap();
         exclusion.publish().unwrap();
-        let published = fs::read(&exclude).unwrap();
-        {
-            let _read_only = ReadOnly::new(&guarded);
-            // Negative control: the metadata really refuses a writer, which
-            // is what publication used to open first.
-            assert!(fs::OpenOptions::new().append(true).open(&exclude).is_err());
-            Exclusion::capture(&held)
-                .unwrap()
-                .unwrap()
-                .publish()
-                .unwrap();
-            assert_eq!(fs::read(&exclude).unwrap(), published);
-        }
-        // (b) The rule is missing: the typed error names the file to fix.
-        let user = b"# user\n/keep\n";
-        fs::write(&exclude, user).unwrap();
-        let read_only = ReadOnly::new(&guarded);
-        match exclusion.publish() {
-            Err(Error::ReadOnlyGitMetadata { path }) => assert_eq!(
-                fs::canonicalize(path).unwrap(),
-                fs::canonicalize(&exclude).unwrap()
-            ),
-            other => panic!("expected read-only Git metadata, got {other:?}"),
-        }
-        assert_eq!(fs::read(&exclude).unwrap(), user);
-        drop(read_only);
-        // Negative control: once writable, the same exclusion appends.
+        assert!(!root.join(".volumes").exists());
+        let record = moved.join(".volumes/.gitignore");
+        let published = fs::read(&record).unwrap();
         exclusion.publish().unwrap();
-        let after = git(
-            root,
-            &[
-                "check-ignore",
-                "-q",
-                "--no-index",
-                ".volumes/.incarnation/token",
-            ],
-        );
-        assert!(after.is_empty(), "{after}");
-        assert!(fs::read(&exclude).unwrap().starts_with(user));
-        assert_ne!(fs::read(&exclude).unwrap(), user);
+        assert_eq!(fs::read(&record).unwrap(), published);
     }
 }

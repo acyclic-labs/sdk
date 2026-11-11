@@ -6,6 +6,8 @@ pub(in crate::local) const HOME_PATH: &str = ".volumes/home";
 /// The directory in a checkout holding its incarnation token, outside every
 /// workspace view.
 pub(in crate::local) const INCARNATION_PATH: &str = ".volumes/.incarnation";
+/// SDK-owned exclusion record, outside the user's Git metadata and source.
+pub(in crate::local) const IGNORE_PATH: &str = ".volumes/.gitignore";
 
 mod exclude;
 pub(super) mod parents;
@@ -64,6 +66,7 @@ pub(in crate::local) fn require_available(
 pub(in crate::local) fn owned(root: &Path, relative: &str) -> Result<Vec<String>> {
     let destination = root.join(relative);
     std::iter::once(destination.clone())
+        .chain(std::iter::once(root.join(IGNORE_PATH)))
         .chain(std::iter::once(root.join(".volumes/recovery")))
         .chain(acyclic_fs::native_mount_control_paths(&destination).map_err(Error::from)?)
         .filter(|path| path.starts_with(root))

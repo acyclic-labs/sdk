@@ -188,12 +188,9 @@ const INCARNATION_IGNORE: &[u8; 2] = b"*\n";
 /// recycled object id, has no token and publishes a new one.
 #[cfg(any(test, feature = "native-execution"))]
 fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
-    // Capture Git metadata before publishing the SDK-owned token. Publication
-    // retains those directory handles even if the checkout's name is replaced.
-    let exclusion = exclusion::Exclusion::capture(root)?;
-    if let Some(exclusion) = exclusion {
-        exclusion.publish()?;
-    }
+    // Reserve the SDK-owned name before publishing its token. No repository
+    // metadata or project ignore file needs to be writable.
+    exclusion::Exclusion::capture(root)?.publish()?;
     let incarnation = super::workspace::volumes::held_directories(
         root,
         Path::new(super::workspace::volumes::INCARNATION_PATH),
