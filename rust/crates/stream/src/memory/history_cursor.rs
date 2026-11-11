@@ -1,17 +1,14 @@
 /// Incremental cursor over immutable history.
 pub(crate) struct HistoryCursor {
     end: Option<u64>,
-    records: crate::pages::PinnedCursor<PinnedHistory>,
+    records: FiniteRead,
+    #[cfg(not(target_arch = "wasm32"))]
+    work: Option<Arc<crate::native::Work>>,
     awaiting_creation: bool,
     opening_tail: Option<u64>,
     registration: Option<crate::interest::Interest<StreamPath, Signals>>,
 }
 impl HistoryCursor {
-    const PAGE_BUDGET: std::num::NonZeroU32 = match std::num::NonZeroU32::new(crate::REPLAY_PAGE) {
-        Some(budget) => budget,
-        None => panic!("replay page budget must be nonzero"),
-    };
-
     async fn initial(
         path: Option<&PathState>,
         from: u64,
@@ -41,6 +38,10 @@ impl HistoryCursor {
                 return Ok(false);
             };
             let mut cursor = Self::prepare(path, self.position(), anchor).await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                cursor.work = self.work.clone();
+            }
             cursor.registration = self.registration.take();
             cursor.opening_tail = self.opening_tail.take();
             *self = cursor;
@@ -74,20 +75,41 @@ impl HistoryCursor {
         }
         Ok(cursor)
     }
-    async fn peek_record(&mut self) -> Result<Option<&Record>, StreamError> {
+    async fn peek_record(&mut self) -> Result<Option<&crate::AppendRecord>, StreamError> {
         if self.finished() {
             return Ok(None);
         }
-        self.records.peek().await
+        // A follow renews finite chunks; the chunk never limits its history.
+        if self.records.remaining == 0 {
+            self.records.remaining = self
+                .records
+                .history
+                .tail
+                .saturating_sub(self.records.next)
+                .min(u64::from(u32::MAX)) as u32;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = self.work.clone();
+        self.records.peek(
+            |items| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(work) = &work {
+                    return work.record(work.meter.examine(items, 0));
+                }
+                let _ = items;
+                Ok(())
+            },
+            || StreamError::Unavailable,
+        )
     }
     fn position(&self) -> u64 {
-        self.records.position()
+        self.records.next
     }
     async fn check_anchor(&self, path: &PathState, anchor: CommitId) -> Result<(), StreamError> {
-        if path.tail < self.records.source().tail {
+        if path.tail < self.records.history.tail {
             return Err(StreamError::PrefixNotRetained);
         }
-        if let Some(root) = &self.records.source().root {
+        if let Some(root) = &self.records.history.root {
             if path
                 .history
                 .as_ref()
@@ -116,11 +138,15 @@ impl HistoryCursor {
     }
     pub(crate) fn at(next: u64) -> Self {
         Self {
-            records: crate::pages::PinnedCursor::new(
-                PinnedHistory::empty(next),
+            records: FiniteRead {
+                history: PinnedHistory::empty(next),
+                window: None,
+                key: None,
                 next,
-                Self::PAGE_BUDGET,
-            ),
+                remaining: 0,
+            },
+            #[cfg(not(target_arch = "wasm32"))]
+            work: None,
             end: None,
             awaiting_creation: false,
             opening_tail: None,
@@ -128,17 +154,18 @@ impl HistoryCursor {
         }
     }
     fn new(path: &PathState, tail: u64, next: u64) -> Self {
-        let mut records = crate::pages::PinnedCursor::new(
-            PinnedHistory::new(path, tail),
+        let records = FiniteRead {
+            history: PinnedHistory::new(path, tail),
+            window: path.prefix_window(next, tail),
+            key: None,
             next,
-            Self::PAGE_BUDGET,
-        );
-        if let Some(page) = path.prefix_window(next, tail) {
-            records.seed_page(page);
-        }
+            remaining: 0,
+        };
         Self {
             end: None,
             records,
+            #[cfg(not(target_arch = "wasm32"))]
+            work: None,
             awaiting_creation: false,
             opening_tail: None,
             registration: None,
@@ -147,7 +174,7 @@ impl HistoryCursor {
     fn sync(&mut self, path: &PathState) {
         let root = path.history.as_ref();
         let tail = path.tail;
-        let history = self.records.source();
+        let history = &self.records.history;
         let same = match (&history.root, root) {
             (Some(old), Some(current)) => Arc::ptr_eq(old, current),
             (None, None) => true,
@@ -160,13 +187,45 @@ impl HistoryCursor {
             (Some(old), Some(History::Batch { parent: Some(parent), .. })) if Arc::ptr_eq(old, parent));
         let keep_page = appended && tail >= history.tail;
         let pinned = PinnedHistory::new(path, tail);
-        self.records.repin(pinned, keep_page);
+        self.records.history = pinned;
+        if !keep_page {
+            self.records.window = None;
+        }
+        self.records.remaining = 0;
     }
     async fn next_record(&mut self) -> Result<Option<Record>, StreamError> {
         if self.finished() {
             return Ok(None);
         }
-        self.records.next().await
+        let length = match self.peek_record().await? {
+            Some(record) => record.value.len(),
+            None => return Ok(None),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            return work
+                .record(self.records.take_native_record(&work.meter, length))
+                .map(Some);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = length;
+        self.records
+            .take_record()
+            .map(Some)
+            .ok_or(StreamError::Unavailable)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn with_native_work(mut self, work: Option<Arc<crate::native::Work>>) -> Self {
+        self.work = work;
+        self
+    }
+    fn observe<T>(&self, lookup: impl FnOnce() -> T) -> Result<T, StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = &self.work {
+            return work.record(inspect(&work.meter, lookup));
+        }
+        Ok(lookup())
     }
 
     pub(crate) fn finished(&self) -> bool {
@@ -286,6 +345,35 @@ impl FiniteRead {
         }
         self.remaining -= 1;
         Some(record)
+    }
+
+    /// Finite reads and follows admit the same shared-record delivery before
+    /// cloning metadata or exposing its payload to the consumer.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_native_record(
+        &mut self,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        length: usize,
+    ) -> std::io::Result<Record> {
+        meter.check()?;
+        let mut bytes = acyclic_native_runtime::NativeByteReservation::new(
+            Arc::clone(meter),
+            acyclic_native_runtime::NativeOperationKind::Read,
+            length,
+        )?;
+        let copied = std::mem::size_of::<Record>() as u64;
+        meter.admit_examination(1, copied)?;
+        let record = self.take_record().ok_or(std::io::ErrorKind::InvalidData)?;
+        #[cfg(test)]
+        let read = crate::test_meter::trace::recordings_reordered().then(|| bytes.record(length));
+        let examined = meter.record_examination(1, copied);
+        #[cfg(test)]
+        let read = read.unwrap_or_else(|| bytes.record(length));
+        #[cfg(not(test))]
+        let read = bytes.record(length);
+        examined?;
+        read?;
+        Ok(record)
     }
 }
 

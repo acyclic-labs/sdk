@@ -6,6 +6,8 @@ mod cursor_work;
 mod native_commit;
 #[path = "native_controls.rs"]
 mod native_controls;
+#[path = "native_follow.rs"]
+mod native_follow;
 #[path = "native_read.rs"]
 mod native_read;
 #[path = "native_read_differential.rs"]

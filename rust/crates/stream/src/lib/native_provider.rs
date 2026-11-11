@@ -92,6 +92,24 @@ pub trait NativeStreamProvider: StreamProvider {
             StreamError::code,
         )
     }
+    /// Live record delivery on the original native ledger. Memory and Local
+    /// support unfiltered, unanchored record follows, including initially absent
+    /// paths. Other selections refuse before registration. The cursor directly
+    /// owns pending acquisitions: destroying it retires that read frame rather
+    /// than detaching a replacement snapshot worker. Shared registration
+    /// bookkeeping remains in the provider's observation service.
+    fn native_follow(
+        &self,
+        request: FollowRequest,
+        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, NativeRecordStream> {
+        let _ = request;
+        NativeProviderFuture::ready_observed(
+            crate::native::span!("acyclic.stream.follow"),
+            Ok(Err(StreamError::Unsupported)),
+            StreamError::code,
+        )
+    }
     /// Publishes a genuine request family on its original native work owner.
     /// The Commit request carries its deadline independently of its retry digest.
     fn native_write(

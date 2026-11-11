@@ -718,6 +718,34 @@ impl StreamProvider for MemoryStream {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::NativeStreamProvider for MemoryStream {
+    fn native_follow(
+        &self,
+        request: crate::FollowRequest,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, crate::NativeRecordStream> {
+        if let Err(error) = crate::native::validate_follow(&request) {
+            return crate::NativeProviderFuture::ready_observed(
+                crate::native::span!("acyclic.stream.follow"),
+                Ok(Err(error)),
+                StreamError::code,
+            );
+        }
+        let original = Arc::clone(&meter);
+        crate::NativeProviderFuture::observed(
+            &original,
+            crate::native::span!("acyclic.stream.follow"),
+            async move {
+                let work = Work::new(meter)?;
+                let provider = self.with_context(Arc::clone(&work));
+                let result = provider
+                    .follow_inner(request)
+                    .await
+                    .and_then(|stream| crate::native::follow_records(stream, &work));
+                work.finish(result.map(|stream| (stream, None)))
+            },
+            |result| crate::native::outcome(result, StreamError::code),
+        )
+    }
     fn native_heads(
         &self,
         request: crate::HeadsRequest,
@@ -1123,27 +1151,7 @@ impl MemoryStream {
                     return Ok(None);
                 };
                 let length = record.value.len();
-                meter.check()?;
-                let mut bytes = acyclic_native_runtime::NativeByteReservation::new(
-                    Arc::clone(&meter),
-                    NativeOperationKind::Read,
-                    length,
-                )?;
-                let copied = std::mem::size_of::<Record>() as u64;
-                meter.admit_examination(1, copied)?;
-                let record = cursor
-                    .take_record()
-                    .ok_or(std::io::ErrorKind::InvalidData)?;
-                #[cfg(test)]
-                let read =
-                    crate::test_meter::trace::recordings_reordered().then(|| bytes.record(length));
-                let examined = meter.record_examination(1, copied);
-                #[cfg(test)]
-                let read = read.unwrap_or_else(|| bytes.record(length));
-                #[cfg(not(test))]
-                let read = bytes.record(length);
-                examined?;
-                read?;
+                let record = cursor.take_native_record(&meter, length)?;
                 Ok(Some((
                     Ok(crate::NativeStreamOutput::new(
                         record,

@@ -1,6 +1,7 @@
 use super::*;
 use crate::NativeStreamProviderExt as _;
 
+mod follows;
 mod headers;
 mod heads;
 mod reads;

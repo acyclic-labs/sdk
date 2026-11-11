@@ -205,44 +205,7 @@ impl StreamProvider for LocalStream {
             "acyclic.stream.follow",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
-            async {
-                let crate::FollowRequest {
-                    path,
-                    from,
-                    preceding,
-                    filter,
-                    progress,
-                    when_absent,
-                    at_least,
-                    bootstrap_head,
-                    until,
-                } = request;
-                // Parks before any visibility guard, so no writer waits on a parked read.
-                self.inner.provider.revisions.wait(&at_least).await?;
-                if progress {
-                    self.progress_from(
-                        path,
-                        from,
-                        preceding,
-                        when_absent,
-                        filter,
-                        bootstrap_head,
-                        until,
-                    )
-                    .await
-                } else {
-                    self.follow_from(
-                        path,
-                        from,
-                        preceding,
-                        when_absent,
-                        filter,
-                        bootstrap_head,
-                        until,
-                    )
-                    .await
-                }
-            }
+            async { self.follow_inner(request).await }
         )
     }
 
@@ -271,6 +234,37 @@ impl StreamProvider for LocalStream {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::NativeStreamProvider for LocalStream {
+    fn native_follow(
+        &self,
+        request: crate::FollowRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, crate::NativeRecordStream> {
+        if let Err(error) = crate::native::validate_follow(&request) {
+            return crate::NativeProviderFuture::ready_observed(
+                crate::native::span!("acyclic.stream.follow"),
+                Ok(Err(error)),
+                StreamError::code,
+            );
+        }
+        let original = Arc::clone(&meter);
+        crate::NativeProviderFuture::observed(
+            &original,
+            crate::native::span!("acyclic.stream.follow"),
+            async move {
+                let work = crate::native::Work::new(meter)?;
+                let provider = Self {
+                    work: Some(Arc::clone(&work)),
+                    ..self.clone()
+                };
+                let result = provider
+                    .follow_inner(request)
+                    .await
+                    .and_then(|stream| crate::native::follow_records(stream, &work));
+                work.finish(result.map(|stream| (stream, None)))
+            },
+            |result| crate::native::outcome(result, StreamError::code),
+        )
+    }
     fn native_heads(
         &self,
         request: crate::HeadsRequest,

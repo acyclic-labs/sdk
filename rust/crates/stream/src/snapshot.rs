@@ -17,6 +17,11 @@ pub(crate) trait Snapshot: Send + 'static {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     const OBSERVE: bool = false;
     type Output: Send + 'static;
+    /// The original caller owns the entire pending acquisition and can cancel
+    /// it by destroying this frame. No independently retained producer exists.
+    fn caller_retains_pending(&self) -> bool {
+        false
+    }
     fn read(
         &mut self,
     ) -> impl Future<Output = Result<Self::Output, crate::StreamError>> + crate::ProviderTask;
@@ -46,6 +51,10 @@ async fn read_owned<S: Snapshot>(
     mut state: S,
     #[cfg(loom)] retain_pending: bool,
 ) -> (S, Result<S::Output, crate::StreamError>) {
+    if state.caller_retains_pending() {
+        let result = state.read().await;
+        return (state, result);
+    }
     #[cfg(loom)]
     if retain_pending {
         let result = state.read().await;
