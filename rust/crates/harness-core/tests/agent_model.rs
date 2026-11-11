@@ -491,19 +491,20 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
         };
         let cancel = acyclic_actors::guest::CancellationToken::new;
         let first = step(&driver, &path, Some(state), (2, 0), wake(1), cancel()).await?;
-        // An Idle -> Idle turn must announce creation of its conversation, while
-        // later appends already have the conversation follow as their event.
-        assert_eq!(first.status.is_some(), initial_tail == 0);
-        if let Some(status) = &first.status {
-            assert_eq!(status.conversation, initial_tail + 2);
-            assert_eq!(status.phase, Phase::Idle);
-        }
+        // Same-phase appends still wake observers of the accepted input.
+        let status = first.status.as_ref().expect("conversation acknowledgement");
+        assert_eq!(status.conversation, initial_tail + 2);
+        assert_eq!(status.cursor, 2);
+        assert_eq!(status.phase, Phase::Idle);
         assert_eq!(first.state.checkpoint, Some(initial_tail + 1));
         assert_eq!(first.state.conversation_tail, initial_tail + 2);
         let later = step(&driver, &path, Some(first.state), (3, 0), wake(2), cancel()).await?;
         // Later turns keep the index, however many there are.
         assert_eq!(later.state.checkpoint, Some(initial_tail + 1));
-        assert!(later.status.is_none());
+        let status = later.status.as_ref().expect("conversation acknowledgement");
+        assert_eq!(status.conversation, initial_tail + 3);
+        assert_eq!(status.cursor, 3);
+        assert_eq!(status.phase, Phase::Idle);
         let spawned = spawning(later.state.clone(), "s1");
         let request = lower(&spawned, 3, delivery_key(&spawned.state, "s1")?)?;
         let adopted = request

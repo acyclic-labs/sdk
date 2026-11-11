@@ -52,7 +52,7 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
-async fn same_phase_settlement_advances_the_actor_without_appending_status() -> Result {
+async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Result {
     use acyclic_stream::StreamProvider as _;
     use futures::TryStreamExt as _;
     let provider = Arc::new(MemoryStream::default());
@@ -100,13 +100,6 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
                 phase: Phase::Idle,
                 answer: Some(n),
             }
-        );
-        let statuses = values(provider.as_ref(), root.status()?).await?;
-        assert_eq!(statuses.len(), 1);
-        let stale = StatusRecord::decode(&statuses[0])?;
-        assert!(
-            stale.cursor <= inbox,
-            "the former status-only observer cannot settle this input"
         );
     }
     assert_eq!(host.state(&root).await?.conversation_tail, 3);
@@ -558,7 +551,12 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
             let mut expected = child_state;
             expected.closed = true;
             expected.dropped_before = expected.dropped_before.max(inbox);
+            expected.status_tail += 1;
             assert_eq!(host.state(&child).await?, expected);
+            let statuses = values(provider.as_ref(), child.status()?).await?;
+            let status = StatusRecord::decode(statuses.last().expect("archive acknowledgement"))?;
+            assert_eq!(status.cursor, inbox + 1);
+            assert_eq!(status.phase, expected.phase);
             let archived = host.runtime().store().load(&host.actor(&child)?).await?;
             let archived = archived.state().expect("archived child actor");
             assert_eq!(archived.cursor(INBOX), Some(inbox + 1));
