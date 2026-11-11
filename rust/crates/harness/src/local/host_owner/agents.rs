@@ -482,7 +482,7 @@ impl HostDriver {
             output,
             outcome: Default::default(),
             goal: None,
-            targets: None,
+            announcements: Vec::new(),
             tool_results: None,
             steering: None,
             notices: None,

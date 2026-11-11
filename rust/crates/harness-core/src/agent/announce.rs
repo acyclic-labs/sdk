@@ -1,6 +1,6 @@
 //! Immutable announcement documents selected by the retained history's digest.
 use super::{Error, Roster, WorkspaceEntry, WorkspaceTable};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// One canonical document, admitted once and announced only as a new message.
@@ -20,6 +20,130 @@ impl AnnouncementDocument for Roster {
     fn canonical(&self) -> (&[u8], [u8; 32]) {
         Roster::canonical(self)
     }
+}
+
+/// Independent documents carried by the shared appended-delta mechanism.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "snake_case")]
+pub enum AnnouncementKind {
+    /// Execution targets and their home.
+    Targets,
+    /// Ordered visible workspace entries and their target paths.
+    Workspaces,
+}
+
+/// Instructions discovered for a newly visible user slot, in discovery order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceInstructions {
+    /// Stable slot whose instructions these are.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub entry: super::EntryId,
+    /// Immutable admitted instruction files.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef[]"))]
+    pub files: Vec<crate::conversation::FileRef>,
+}
+
+/// One immutable document announced at this conversation position.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
+pub struct AnnouncedDocument {
+    /// Which independently changing document this replaces.
+    pub kind: AnnouncementKind,
+    /// Semantic identity, including source changes with unchanged visible paths.
+    pub digest: [u8; 32],
+    /// The canonical document in the journal volume.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
+    pub file: crate::conversation::FileRef,
+    /// Newly discovered instructions in this same delta.
+    pub instructions: Vec<WorkspaceInstructions>,
+}
+
+impl AnnouncedDocument {
+    /// Every exact file needed to replay this delta, without granting a directory.
+    pub fn files(&self) -> impl Iterator<Item = &crate::conversation::FileRef> {
+        std::iter::once(&self.file).chain(self.instructions.iter().flat_map(|entry| &entry.files))
+    }
+}
+
+/// One appended message for this turn's changed documents and instructions.
+#[must_use]
+pub fn announcement_message(documents: &[AnnouncedDocument]) -> crate::model::ModelContent {
+    use crate::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
+    let mut parts = Vec::new();
+    let file_part = |file: &crate::conversation::FileRef| ModelContentPart::File {
+        file: file.clone(),
+        policy: FileProjectionPolicy::BoundedFull,
+    };
+    for document in documents {
+        parts.push(file_part(&document.file));
+        for instructions in &document.instructions {
+            if !instructions.files.is_empty() {
+                parts.push(ModelContentPart::text(format!(
+                    "Instructions for workspace {}:",
+                    instructions.entry
+                )));
+                parts.extend(instructions.files.iter().map(file_part));
+            }
+        }
+    }
+    if parts.len() == 1 {
+        ModelContent::Part(parts.remove(0))
+    } else {
+        ModelContent::Parts(parts)
+    }
+}
+
+/// Discover one user entry's instruction files through the shared, pinned
+/// volume discovery primitive. Entry roots are ordinary source directories.
+pub async fn discover_workspace_instructions(
+    entry: &WorkspaceEntry,
+    reader: &dyn crate::conversation::ContentResidencyVerifier,
+    policy: &crate::context::ContextDiscoveryPolicy,
+    work: &mut crate::context::DiscoveryWork,
+) -> crate::Result<WorkspaceInstructions> {
+    if entry.role != super::WorkspaceRole::User {
+        return Err(crate::Error::Invalid(
+            "instructions require a user workspace".into(),
+        ));
+    }
+    let root = crate::context::ContextRoot {
+        volume: entry.volume()?.clone(),
+        directory: entry.root.clone(),
+    };
+    let mut source = crate::context::VolumeDiscovery {
+        reader,
+        root: &root,
+        io: None,
+    };
+    let files = crate::context::capture_instructions(
+        &mut source,
+        "",
+        "",
+        &policy.instruction_names,
+        work,
+        None,
+    )
+    .await?;
+    Ok(WorkspaceInstructions {
+        entry: entry.id,
+        files: files
+            .iter()
+            .map(|instruction| (**instruction).clone())
+            .collect(),
+    })
+}
+
+/// A host's admitted workspace document and the instructions newly discovered
+/// for this conversation. Storage and history selection belong to the shared host.
+pub struct WorkspaceUpdate {
+    /// Immutable canonical workspace document.
+    pub document: WorkspaceAnnouncement,
+    /// Instructions for slots not previously seen in this selected context.
+    pub instructions: Vec<WorkspaceInstructions>,
 }
 
 /// Shared immutable document backing. Reading it never re-encodes or hashes.

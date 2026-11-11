@@ -409,6 +409,18 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         authority: &'a TurnAuthority,
     ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
 
+    /// Admitted workspace exposures and instructions not yet present in this
+    /// selected conversation. Hosts without workspace exposure return none.
+    fn workspaces<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        seen: &'a std::collections::BTreeSet<crate::agent::EntryId>,
+        content: &'a ContentBindings,
+    ) -> BoxFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+        let _ = (agent, seen, content);
+        Box::pin(async { Ok(None) })
+    }
+
     /// Whether these turns use filesystem templates at agent creation.
     fn templates(&self) -> bool {
         false
@@ -1059,8 +1071,8 @@ fn reply_part_id(turn: OperationId, part: usize) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
-/// Stable message identity of the roster announcement leading `turn`'s input.
-fn roster_id(turn: OperationId) -> uuid::Uuid {
+/// Stable message identity of the announcement delta leading the turn input.
+fn announcement_id(turn: OperationId) -> uuid::Uuid {
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.roster.v1");
     hasher.update(&turn.into_bytes());
     let mut bytes = [0; 16];
@@ -1239,8 +1251,6 @@ struct TurnContext<'a> {
     checkpoint: Option<(OperationId, FileRef)>,
     /// Each settled turn, its original input and output, and its decoded transcript.
     settled: Vec<SettledTurn>,
-    /// Latest roster message in `settled`, indexed while selecting history.
-    roster_at: Option<usize>,
     /// Where a spawned agent's own conversation starts: after the summary
     /// and this many settled turns inherited from its parent, or before the
     /// summary when its own checkpoint replaced them. Its role directive sits
@@ -1258,7 +1268,7 @@ struct TurnContext<'a> {
 
 struct SettledTurn {
     turn: OperationId,
-    targets: Option<FileRef>,
+    announcements: Vec<crate::agent::AnnouncedDocument>,
     input: ModelContent,
     output: FileRef,
     steering: Option<FileRef>,
@@ -1298,7 +1308,6 @@ impl<'a> TurnContext<'a> {
             None => None,
         };
         // A cancelled checkpoint selects nothing and is no turn.
-        let mut roster_at = None;
         // Every turn stages its output on its own agent's private volume, so
         // the owner of an inherited output names the ancestor that ran it.
         let lineage: Vec<_> = std::iter::successors(agent.path.parent(), AgentPath::parent)
@@ -1326,12 +1335,9 @@ impl<'a> TurnContext<'a> {
                         previous = Some(owner.clone());
                     }
                 }
-                if entry.targets.is_some() {
-                    roster_at = Some(at);
-                }
                 Ok(SettledTurn {
                     turn: crate::agent::turn_id(agent, &entry.input).map_err(Error::from)?,
-                    targets: entry.targets,
+                    announcements: entry.announcements,
                     input: crate::agent::model_input(&entry.input).map_err(Error::from)?,
                     output: entry.output,
                     steering: entry.steering.map(|steering| steering.file),
@@ -1344,7 +1350,6 @@ impl<'a> TurnContext<'a> {
         Ok(Self {
             checkpoint,
             settled,
-            roster_at,
             fork,
             ancestors,
             turn,
@@ -1377,16 +1382,28 @@ impl<'a> TurnContext<'a> {
         Ok(())
     }
 
-    /// Compare the current bytes with the immutable roster actually rendered,
-    /// rather than an announcement outside this history window or checkpoint.
-    fn contains_roster(&self, bytes: &[u8]) -> Result<bool> {
-        match self
-            .roster_at
-            .and_then(|at| self.settled[at].targets.as_ref())
-        {
-            Some(file) => file.descriptor().matches_bytes(bytes, &mut None),
-            None => Ok(false),
-        }
+    /// Only the latest selected delta of this kind can suppress a new one.
+    /// Compare semantic identities: a reroot can retain the displayed paths.
+    fn contains_announcement(
+        &self,
+        kind: crate::agent::AnnouncementKind,
+        digest: [u8; 32],
+    ) -> bool {
+        self.settled
+            .iter()
+            .rev()
+            .flat_map(|turn| turn.announcements.iter().rev())
+            .find(|document| document.kind == kind)
+            .is_some_and(|document| document.digest == digest)
+    }
+
+    fn instruction_entries(&self) -> std::collections::BTreeSet<crate::agent::EntryId> {
+        self.settled
+            .iter()
+            .flat_map(|turn| &turn.announcements)
+            .flat_map(|document| &document.instructions)
+            .map(|instructions| instructions.entry)
+            .collect()
     }
 
     /// Every file the turn can reach, each by its exact version: the files
@@ -1399,8 +1416,9 @@ impl<'a> TurnContext<'a> {
             .map(|(_, summary)| summary)
             .chain(self.settled.iter().flat_map(|settled| {
                 settled
-                    .targets
+                    .announcements
                     .iter()
+                    .flat_map(crate::agent::AnnouncedDocument::files)
                     .chain(settled.input.file_refs())
                     .chain(std::iter::once(&settled.output))
                     .chain(
@@ -1435,7 +1453,7 @@ impl<'a> TurnContext<'a> {
         agent: &AgentState,
         reader: &dyn ContentResidencyVerifier,
         input: &ModelContent,
-        roster: Option<&FileRef>,
+        announcements: &[crate::agent::AnnouncedDocument],
         render_bytes: Option<u64>,
     ) -> Result<SelectedModelContext> {
         let Self {
@@ -1456,7 +1474,7 @@ impl<'a> TurnContext<'a> {
             + 2
             + usize::from(summary.is_some())
             + usize::from(agent.parent.is_some())
-            + usize::from(roster.is_some());
+            + usize::from(!announcements.is_empty());
         let mut messages = Vec::with_capacity(capacity);
         let mut message_ids = Vec::with_capacity(messages.capacity());
         messages.push(ModelMessage {
@@ -1507,18 +1525,18 @@ impl<'a> TurnContext<'a> {
         let announce = |messages: &mut Vec<ModelMessage>,
                         message_ids: &mut Vec<uuid::Uuid>,
                         turn: OperationId,
-                        roster: &FileRef| {
+                        documents: &[crate::agent::AnnouncedDocument]| {
             messages.push(ModelMessage {
                 role: ModelRole::User,
-                content: crate::agent::roster_message(roster),
+                content: crate::agent::announcement_message(documents),
             });
-            message_ids.push(roster_id(turn));
+            message_ids.push(announcement_id(turn));
         };
         for (
             at,
             SettledTurn {
                 turn: settled,
-                targets: announced,
+                announcements: announced,
                 input: content,
                 transcript,
                 notices,
@@ -1532,8 +1550,8 @@ impl<'a> TurnContext<'a> {
             if let Some((_, ancestor)) = ancestors.iter().find(|(opened, _)| *opened == at) {
                 place(&mut messages, &mut message_ids, ancestor);
             }
-            if let Some(announced) = &announced {
-                announce(&mut messages, &mut message_ids, settled, announced);
+            if !announced.is_empty() {
+                announce(&mut messages, &mut message_ids, settled, &announced);
             }
             let (notices, content) =
                 selected_notices(stream, &agent.path, notices.as_ref(), content, render_bytes)
@@ -1566,8 +1584,8 @@ impl<'a> TurnContext<'a> {
         if fork == Some(forked) {
             directive(&mut messages, &mut message_ids);
         }
-        if let Some(roster) = roster {
-            announce(&mut messages, &mut message_ids, turn, roster);
+        if !announcements.is_empty() {
+            announce(&mut messages, &mut message_ids, turn, announcements);
         }
         let (notices, input) = selected_notices(
             stream,
@@ -1840,25 +1858,61 @@ where
                 let input =
                     std::mem::replace(&mut context.input, ModelContent::Text(String::new()));
                 let input = &input;
-                // Append a roster only when this rendered history lacks it. Losing
-                // its announcing turn or compacting starts a new base; no retained
-                // message is rewritten. Stage once per distinct roster. A
-                // turn decides it once, when it starts: a resumed turn keeps the
-                // announcement its checkpoint holds, so it sends the request it
-                // started with, and a roster change meanwhile is the next turn's.
-                let roster = match crate::agent::turn_roster(agent).map_err(Error::from)? {
+                // Compare with the documents actually retained by this history
+                // selection. Losing their turn or compacting starts a new base;
+                // retained messages are immutable. Pin the complete delta once
+                // so a resumed turn sends the request it originally opened.
+                use crate::agent::{
+                    AnnouncedDocument, AnnouncementDocument as _, AnnouncementKind,
+                };
+                let announcements = match crate::agent::turn_announcements(agent)
+                    .map_err(Error::from)?
+                {
                     Some(kept) => kept,
-                    None => match self.executors.roster(agent) {
-                        Some(roster) => {
+                    None => {
+                        let mut changed = Vec::new();
+                        if let Some(roster) = self.executors.roster(agent) {
                             let (bytes, digest) = roster.canonical();
-                            if context.contains_roster(bytes)? {
-                                None
-                            } else {
-                                Some((files.stage_roster(digest, bytes).await?, digest))
+                            if !context.contains_announcement(AnnouncementKind::Targets, digest) {
+                                changed.push(AnnouncedDocument {
+                                    kind: AnnouncementKind::Targets,
+                                    digest,
+                                    file: files
+                                        .stage_announcement(
+                                            AnnouncementKind::Targets,
+                                            digest,
+                                            bytes,
+                                        )
+                                        .await?,
+                                    instructions: Vec::new(),
+                                });
                             }
                         }
-                        None => None,
-                    },
+                        let seen = context.instruction_entries();
+                        if let Some(update) = self
+                            .executors
+                            .workspaces(agent, &seen, &bindings.content)
+                            .await?
+                        {
+                            let (bytes, digest) = update.document.canonical();
+                            if !context.contains_announcement(AnnouncementKind::Workspaces, digest)
+                            {
+                                changed.push(AnnouncedDocument {
+                                    kind: AnnouncementKind::Workspaces,
+                                    digest,
+                                    file: files
+                                        .stage_announcement(
+                                            AnnouncementKind::Workspaces,
+                                            digest,
+                                            bytes,
+                                        )
+                                        .await?,
+                                    instructions: update.instructions,
+                                });
+                            }
+                        }
+                        changed
+                    }
                 };
                 let segment = crate::agent::turn_segment(agent).map_err(Error::from)?;
                 let effects = Arc::new(FilesystemTurnEffects::new(
@@ -1924,7 +1978,7 @@ where
                         agent,
                         &*bindings.content.reader,
                         input,
-                        roster.as_ref().map(|(file, _)| file),
+                        &announcements,
                         self.executors.render_bytes(),
                     )
                     .await?;
@@ -1967,7 +2021,7 @@ where
                     goal,
                     outputs,
                     input: Some(input),
-                    roster,
+                    announcements,
                 })
             },
         ))

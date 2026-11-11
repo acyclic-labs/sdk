@@ -546,7 +546,12 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                         output: file.clone(),
                         outcome: super::TurnOutcome::RestoreConflict,
                         goal: Some(crate::OperationId::from_bytes([41; 16])),
-                        targets: Some(file.clone()),
+                        announcements: vec![super::AnnouncedDocument {
+                            kind: super::AnnouncementKind::Targets,
+                            digest: [31; 32],
+                            file: file.clone(),
+                            instructions: Vec::new(),
+                        }],
                         tool_results: Some("tools/.results/captured-turn".into()),
                         steering: Some(super::SteeringTranscript {
                             through: 31,

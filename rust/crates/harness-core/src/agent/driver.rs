@@ -47,11 +47,9 @@ pub struct OpenTurn {
     /// The input the executor runs, with its attachment manifests expanded
     /// ([`expand_attachments`]); `None` runs the input as given.
     pub input: Option<ModelContent>,
-    /// The roster this turn announces, staged, and its digest: present only
-    /// when the rendered history does not already contain this roster.
-    /// It is decided once, when the turn starts,
-    /// and `selected` carries it as its own message before the input.
-    pub roster: Option<(FileRef, [u8; 32])>,
+    /// Changed documents and newly discovered instructions announced in one
+    /// appended message before the input. A resumed turn retains this selection.
+    pub announcements: Vec<super::AnnouncedDocument>,
 }
 
 /// Media type of a version-one ordered user input, staged on the original
@@ -345,12 +343,10 @@ pub struct ConversationEntry {
     #[cfg_attr(feature = "wasm", tsify(type = "string", optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<OperationId>,
-    /// The execution-target roster this turn announced before its input,
-    /// staged on the agent's private volume; absent while the same roster
-    /// remains in the selected history.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef", optional))]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub targets: Option<FileRef>,
+    /// Immutable announcement delta originally rendered before this input.
+    /// Empty when the selected history already contains the current documents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub announcements: Vec<super::AnnouncedDocument>,
     /// Directory of this turn's original validated tool-result files, below
     /// the agent's tool-output resource. Follow/list it lazily and use the
     /// ordinary ToolOutput read with `at: Some(output)` to pin the complete
@@ -372,7 +368,11 @@ impl ConversationEntry {
     /// to one grants no directory, later version or unselected turn.
     pub fn references_file(&self, file: &FileRef) -> bool {
         self.output == *file
-            || self.targets.as_ref() == Some(file)
+            || self
+                .announcements
+                .iter()
+                .flat_map(super::AnnouncedDocument::files)
+                .any(|announced| announced == file)
             || match &self.input {
                 TurnInput::Message {
                     body, attachments, ..
@@ -418,6 +418,27 @@ impl ConversationEntry {
 
 impl AgentRecord for ConversationEntry {
     fn check(&self) -> Result<(), Error> {
+        let mut kinds = std::collections::BTreeSet::new();
+        for document in &self.announcements {
+            if !kinds.insert(document.kind) {
+                return Err(Error::Record("announcement kind repeats"));
+            }
+            if document.kind == super::AnnouncementKind::Targets
+                && !document.instructions.is_empty()
+            {
+                return Err(Error::Record(
+                    "target announcement carries workspace instructions",
+                ));
+            }
+            let mut entries = std::collections::BTreeSet::new();
+            if document
+                .instructions
+                .iter()
+                .any(|instructions| !entries.insert(instructions.entry))
+            {
+                return Err(Error::Record("workspace instructions repeat a slot"));
+            }
+        }
         match &self.outcome {
             TurnOutcome::Failed { message } if message.len() > super::MAX_MESSAGE_BYTES => {
                 Err(Error::Record("failure message exceeds MAX_MESSAGE_BYTES"))
@@ -460,7 +481,7 @@ fn encode(input: &impl Serialize) -> Result<Vec<u8>, Error> {
 }
 
 /// The driver's checkpoint of a turn in progress: the input that started it,
-/// the roster it announced, and how many of its effect segments already
+/// the documents it announced, and how many of its effect segments already
 /// committed. A turn commits its recorded effects whenever a later call waits
 /// on them (see [`super::TurnEffects::holds`]) and continues in the next
 /// segment.
@@ -472,9 +493,9 @@ struct Checkpoint {
     #[serde(default)]
     segment: u32,
     /// Kept for the whole turn, so a resumed turn sends the request it
-    /// started with; a roster change meanwhile is the next turn's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    roster: Option<(FileRef, [u8; 32])>,
+    /// started with; a document change meanwhile belongs to the next turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    announcements: Vec<super::AnnouncedDocument>,
     /// False only at the durable Notice selection cut, before opening the host.
     opened: bool,
     notices: Option<super::NoticeSelection>,
@@ -533,16 +554,17 @@ pub fn turn_segment(agent: &AgentState) -> Result<u32, Error> {
     Ok(checkpoint(agent)?.map_or(0, |checkpoint| checkpoint.segment))
 }
 
-/// The roster announcement of `agent`'s turn in progress, decided when it
-/// started (`Some(None)`: it announced none); `None` when a new turn starts
-/// and decides its own.
+/// The turn's pinned announcement delta, including an empty selection.
+/// A new turn returns `None` and chooses its own documents.
 ///
 /// # Errors
 /// When the turn's checkpoint is malformed.
-pub fn turn_roster(agent: &AgentState) -> Result<Option<Option<(FileRef, [u8; 32])>>, Error> {
+pub fn turn_announcements(
+    agent: &AgentState,
+) -> Result<Option<Vec<super::AnnouncedDocument>>, Error> {
     Ok(checkpoint(agent)?
         .filter(|checkpoint| checkpoint.opened)
-        .map(|checkpoint| checkpoint.roster))
+        .map(|checkpoint| checkpoint.announcements))
 }
 
 /// The original Notice range frozen by the actor before opening this turn.
@@ -653,18 +675,6 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
     })
 }
 
-/// The model message announcing the roster staged as `roster`: one file and
-/// nothing else, its own message before the announcing turn's input. So it
-/// takes nothing from any input's attachment or render budget; the static
-/// `shell` description says how to read it.
-#[must_use]
-pub fn roster_message(roster: &FileRef) -> ModelContent {
-    ModelContent::Part(ModelContentPart::File {
-        file: roster.clone(),
-        policy: FileProjectionPolicy::BoundedFull,
-    })
-}
-
 fn host_error(error: crate::Error) -> Error {
     Error::Turn(Box::new(error))
 }
@@ -751,7 +761,7 @@ async fn settle_selection(
         output,
         outcome,
         goal: None,
-        targets: None,
+        announcements: Vec::new(),
         tool_results: None,
         steering: None,
         notices: None,
@@ -759,17 +769,14 @@ async fn settle_selection(
     .with_observed_prefix(agent.steered_through);
     Ok(TurnStep {
         checkpoint: None,
-        outs: settled(&entry, None)?,
+        outs: settled(&entry)?,
         wait: Wait::Input,
         drops: None,
     })
 }
 
-/// An entry's append, recording the roster it announced.
-fn appended(
-    entry: &ConversationEntry,
-    roster: Option<&(FileRef, [u8; 32])>,
-) -> Result<Vec<Out>, Error> {
+/// An entry's append, retaining the documents it announced.
+fn appended(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
     let mut outs = vec![Out::Conversation(entry.encode()?)];
     if let Some(selection) = &entry.notices {
         outs.push(Out::Notices(selection.clone()));
@@ -777,19 +784,22 @@ fn appended(
     if let Some(steering) = &entry.steering {
         outs.push(Out::Steered(steering.through));
     }
-    if let (Some(_), Some((_, digest))) = (&entry.targets, roster) {
-        outs.push(Out::Roster(*digest));
+    if !entry.announcements.is_empty() {
+        outs.push(Out::Announced(
+            entry
+                .announcements
+                .iter()
+                .map(|document| (document.kind, document.digest))
+                .collect(),
+        ));
     }
     Ok(outs)
 }
 
 /// A settled entry's appends: the entry, indexed as the agent's latest
 /// checkpoint when it is one.
-fn settled(
-    entry: &ConversationEntry,
-    roster: Option<&(FileRef, [u8; 32])>,
-) -> Result<Vec<Out>, Error> {
-    let mut outs = appended(entry, roster)?;
+fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
+    let mut outs = appended(entry)?;
     if entry.checkpoint().is_some() {
         outs.push(Out::Checkpoint);
     }
@@ -799,9 +809,9 @@ fn settled(
     Ok(outs)
 }
 
-/// The roster file a turn's entry names: the one it announced.
-fn announced(open: &OpenTurn) -> Option<FileRef> {
-    open.roster.as_ref().map(|(file, _)| file.clone())
+/// The exact immutable delta originally selected by this turn.
+fn announced(open: &OpenTurn) -> Vec<super::AnnouncedDocument> {
+    open.announcements.clone()
 }
 
 /// A turn stopped before its executor finished, settled as `outcome`: its
@@ -824,7 +834,7 @@ async fn interrupted(
         input,
         output: stage_text(&*open.outputs, turn, partial).await?,
         outcome,
-        targets: announced(open),
+        announcements: announced(open),
         tool_results: open.outputs.tool_results(turn),
         steering: match open.journal.model_boundary() {
             Some(boundary) => {
@@ -867,7 +877,7 @@ async fn failed(
     let entry = interrupted(agent, open, turn, inbox, input, notices, outcome).await?;
     let step = TurnStep {
         checkpoint: None,
-        outs: settled(&entry, open.roster.as_ref())?,
+        outs: settled(&entry)?,
         wait: Wait::Input,
         drops: None,
     };
@@ -957,7 +967,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         inbox,
                         input,
                         segment,
-                        roster: None,
+                        announcements: Vec::new(),
                         opened: false,
                         notices: Some(notices),
                     })?),
@@ -1008,7 +1018,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 .await?;
                 return Ok(TurnStep {
                     checkpoint: None,
-                    outs: settled(&entry, open.roster.as_ref())?,
+                    outs: settled(&entry)?,
                     wait: Wait::Input,
                     drops: None,
                 });
@@ -1045,7 +1055,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                                             inbox,
                                             input,
                                             segment,
-                                            roster: open.roster.clone(),
+                                            announcements: open.announcements.clone(),
                                             opened: true,
                                             notices: notices.clone(),
                                         })?),
@@ -1076,7 +1086,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         output,
                         outcome: TurnOutcome::Completed,
                         goal: run,
-                        targets: announced(&open),
+                        announcements: announced(&open),
                         tool_results: open.outputs.tool_results(turn),
                         steering: match open.journal.model_boundary() {
                             Some(boundary) => {
@@ -1089,9 +1099,9 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     .with_observed_prefix(agent.steered_through);
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = if goal.continuation.is_some() {
-                        appended(&entry, open.roster.as_ref())?
+                        appended(&entry)?
                     } else {
-                        settled(&entry, open.roster.as_ref())?
+                        settled(&entry)?
                     };
                     outs.extend(goal.continuation);
                     outs.extend(goal.notice);
@@ -1136,7 +1146,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             inbox,
                             input,
                             segment,
-                            roster: open.roster.clone(),
+                            announcements: open.announcements.clone(),
                             opened: true,
                             notices: notices.clone(),
                         })?),
@@ -1171,7 +1181,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             inbox,
                             input,
                             segment,
-                            roster: open.roster.clone(),
+                            announcements: open.announcements.clone(),
                             opened: true,
                             notices: notices.clone(),
                         })?),
@@ -1213,7 +1223,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             inbox,
                             input,
                             segment,
-                            roster: open.roster.clone(),
+                            announcements: open.announcements.clone(),
                             opened: true,
                             notices: notices.clone(),
                         })?),

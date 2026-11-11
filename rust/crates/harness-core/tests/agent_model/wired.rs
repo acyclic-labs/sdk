@@ -23,6 +23,9 @@ use acyclic_stream::{
 };
 use std::sync::Arc;
 
+#[path = "wired/workspace_announcements.rs"]
+mod workspace_announcements;
+
 #[path = "wired/input_wait.rs"]
 mod input_wait;
 #[path = "wired/preparation.rs"]
@@ -1478,11 +1481,15 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
             assert_eq!(settled.conversation_tail, n + 1);
             let entries = super::values(stream.as_ref(), path.conversation()?).await?;
             let entry = ConversationEntry::decode(entries.last().ok_or("turn did not settle")?)?;
-            announced.push(entry.targets.is_some());
+            let document = entry
+                .announcements
+                .iter()
+                .find(|document| document.kind == AnnouncementKind::Targets);
+            announced.push(document.is_some());
             if roster_file.is_none() {
-                roster_file = entry.targets.clone();
+                roster_file = document.map(|document| document.file.clone());
             }
-            if let Some(file) = &entry.targets {
+            if let Some(file) = document.map(|document| &document.file) {
                 assert_eq!(
                     Some(file),
                     roster_file.as_ref(),

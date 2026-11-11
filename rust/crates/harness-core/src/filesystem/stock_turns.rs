@@ -40,6 +40,17 @@ pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<StockExecutor>>;
 
+    /// Workspace exposures and newly discovered instructions for this context.
+    fn workspaces<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        seen: &'a std::collections::BTreeSet<crate::agent::EntryId>,
+        content: &'a crate::runtime::ContentBindings,
+    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+        let _ = (agent, seen, content);
+        Box::pin(async { Ok(None) })
+    }
+
     /// The execution targets `agent`'s turns run on
     /// ([`TurnExecutors::roster`]); `None` binds no targets.
     fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
@@ -291,6 +302,15 @@ impl TurnExecutors for StockExecutors {
 
     fn templates(&self) -> bool {
         self.templates
+    }
+
+    fn workspaces<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        seen: &'a std::collections::BTreeSet<crate::agent::EntryId>,
+        content: &'a crate::runtime::ContentBindings,
+    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+        self.context.workspaces(agent, seen, content)
     }
 
     fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {

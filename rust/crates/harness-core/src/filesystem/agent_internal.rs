@@ -208,18 +208,23 @@ where
         }
     }
 
-    /// Stages the canonical roster `bytes` whose digest is `digest`, once per
-    /// distinct roster: the file a conversation entry announces it by.
-    pub(in crate::filesystem) async fn stage_roster(
+    /// Stages one canonical document once per semantic identity. Its immutable
+    /// file is shared by conversation deltas across history windows and forks.
+    pub(in crate::filesystem) async fn stage_announcement(
         &self,
+        kind: crate::agent::AnnouncementKind,
         digest: [u8; 32],
         bytes: &[u8],
     ) -> Result<FileRef> {
+        let (family, name) = match kind {
+            crate::agent::AnnouncementKind::Targets => ("targets", "targets.json"),
+            crate::agent::AnnouncementKind::Workspaces => ("workspaces", "workspaces.json"),
+        };
         let digest = blake3::Hash::from(digest).to_hex();
         self.conversation_file(
-            format!("targets/{digest}.json"),
-            "targets.json",
-            IdempotencyKey(format!("targets:{digest}")),
+            format!("{family}/{digest}.json"),
+            name,
+            IdempotencyKey(format!("{family}:{digest}")),
             bytes,
         )
         .await

@@ -396,7 +396,7 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
         output: file.as_ref().clone(),
         outcome: TurnOutcome::Completed,
         goal: None,
-        targets: None,
+        announcements: Vec::new(),
         tool_results: None,
         steering: None,
         notices: None,

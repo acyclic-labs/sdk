@@ -233,7 +233,7 @@ impl TurnHost for Host {
             effects: Some(self.0.clone()),
             outputs: Arc::new(Unused),
             input: None,
-            roster: None,
+            announcements: Vec::new(),
             goal: self
                 .1
                 .clone()
@@ -272,11 +272,16 @@ impl TurnHost for Announcing {
                 .1
                 .lock()
                 .expect("lock")
-                .announcement(agent.roster)
+                .announcement(agent.announcements.get(&AnnouncementKind::Targets).copied())
                 .map(|(_, digest)| digest);
-            open.roster = match announced {
-                Some(digest) => Some((file("targets.json")?, digest)),
-                None => None,
+            open.announcements = match announced {
+                Some(digest) => vec![AnnouncedDocument {
+                    kind: AnnouncementKind::Targets,
+                    digest,
+                    file: file("targets.json")?,
+                    instructions: Vec::new(),
+                }],
+                None => Vec::new(),
             };
             Ok(open)
         })
@@ -333,9 +338,20 @@ async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Resu
             })
             .collect::<std::result::Result<_, _>>()?;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].targets.is_some(), announced, "turn {sequence}");
+        assert_eq!(
+            !entries[0].announcements.is_empty(),
+            announced,
+            "turn {sequence}"
+        );
         let digest = Some(roster(os).canonical().1);
-        assert_eq!(settled.state.roster, digest);
+        assert_eq!(
+            settled
+                .state
+                .announcements
+                .get(&AnnouncementKind::Targets)
+                .copied(),
+            digest
+        );
         state = settled.state;
     }
     Ok(())
