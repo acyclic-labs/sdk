@@ -845,23 +845,17 @@ impl<'io> StockExecution<'io> {
         // A selected revision retains its journal spelling, while every policy
         // judges the registered capability. Temporary copies share the original
         // ledger and retire after their invocation, including failed copies.
-        #[cfg(feature = "filesystem")]
         let temporary = if normalize {
             PreparationIo::temporary(self.io)?
         } else {
             None
         };
-        #[cfg(feature = "filesystem")]
         let normalization_io = temporary.as_ref().or(self.io);
-        #[cfg(not(feature = "filesystem"))]
-        let normalization_io = self.io;
-        #[cfg(feature = "filesystem")]
         let mut _normalization_hold = None;
         let mut canonical = original_canonical;
         if let Some(canonical) = &mut canonical {
             if normalize {
                 let name = stock_string_copy(&judged_tool.definition.name, normalization_io)?;
-                #[cfg(feature = "filesystem")]
                 {
                     _normalization_hold = normalization_io
                         .map(|io| io.guard_owned(name.capacity() as u64))
@@ -870,11 +864,11 @@ impl<'io> StockExecution<'io> {
                 let old = std::mem::replace(&mut canonical.invocation.name, name);
                 let old_bytes = old.capacity() as u64;
                 drop(old);
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 if let Some(hold) = &mut canonical.custody[1] {
                     hold.release(old_bytes)?;
                 }
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let _ = old_bytes;
             }
         } else if normalize {
@@ -884,7 +878,6 @@ impl<'io> StockExecution<'io> {
                 name: stock_string_copy(&judged_tool.definition.name, normalization_io)?,
                 arguments: crate::model::clone_value(&invocation.arguments, normalization_io)?,
             };
-            #[cfg(feature = "filesystem")]
             {
                 _normalization_hold = normalization_io
                     .map(|io| io.guard_owned(normalized.retained_payload_bytes()?))

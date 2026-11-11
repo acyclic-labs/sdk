@@ -144,9 +144,9 @@ impl FileTool {
                 let (receipt, retained) = context
                     .stage_tool_changes(invocation.operation_id, volume, &[change], io)
                     .await?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let _receipt_custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let _ = retained;
                 return self.batch_result(receipt, &path, work);
             }
@@ -720,9 +720,9 @@ impl FileTool {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(Option<ToolResult>, crate::NativeCustody)> {
+    ) -> Result<(Option<ToolResult>, acyclic_fs::NativeCustody)> {
         let path = invocation
             .arguments
             .get("path")
@@ -732,18 +732,18 @@ impl FileTool {
         let (receipt, retained) = context
             .observe_tool_changes(invocation.operation_id, volume, io)
             .await?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let _hold = io.map(|io| io.take_native_custody(retained)).transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let _ = retained;
         match receipt {
             Some(receipt) => self
                 .batch_result(receipt, &relative, work)
                 .map(|(result, custody)| (Some(result), custody)),
             None => {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let custody = io.map(|io| io.take_native_custody(0)).transpose()?;
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let custody = None;
                 Ok((None, custody))
             }
@@ -754,8 +754,8 @@ impl FileTool {
         &self,
         mut receipt: crate::conversation::ContentChanges,
         path: &str,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(ToolResult, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
         let encoded = if matches!(self, Self::Remove) {
             if receipt.members.len() != 1
                 || !matches!(receipt.members.pop(),
@@ -778,7 +778,7 @@ impl FileTool {
 fn created_file(
     mut receipt: crate::conversation::ContentChanges,
     path: &str,
-    work: crate::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Result<FileRef> {
     if receipt.members.len() == 1
         && let Some(crate::conversation::ContentChangeResult::Created(file)) = receipt.members.pop()

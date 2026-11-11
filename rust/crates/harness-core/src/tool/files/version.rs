@@ -3,11 +3,7 @@ use super::*;
 const AUTHORED: &str = "authored-path-v2:";
 
 /// Exercises both real decoders and the original native result custody.
-#[cfg(all(
-    any(test, feature = "test-support"),
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 pub fn check_version(input: &[u8]) {
     let Ok(version) = std::str::from_utf8(input) else {
         return;

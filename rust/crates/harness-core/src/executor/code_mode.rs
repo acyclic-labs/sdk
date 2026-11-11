@@ -438,8 +438,6 @@ impl StockExecution<'_> {
                     if let Some(io) = self.io {
                         io.retain_owned(slots)?;
                     }
-                    #[cfg(not(feature = "filesystem"))]
-                    let _ = slots;
                     let key = stock_string_copy("value", self.io)?;
                     let mut fields = serde_json::Map::new();
                     fields.insert(key, result.value);

@@ -710,7 +710,6 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> Result<()> {
     use crate::conversation::VolumeOperation;
@@ -863,7 +862,6 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn console_values_are_readable_from_the_original_tool_output_directory() -> Result<()> {
     use crate::{conversation::VolumeOperation, runtime::Bindings};

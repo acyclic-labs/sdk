@@ -137,14 +137,14 @@ impl<T> MountTable<T> {
     }
 
     /// Resolves file bytes or directory names through the same mount table.
-    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn path_with_work<'a>(
         &'a self,
         volume: Option<&VolumeRef>,
         path: &'a str,
         kind: crate::tool::ReadPathKind,
-        work: crate::NativeWork<'_>,
+        work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
         if volume.is_none() {
             #[cfg(not(target_arch = "wasm32"))]

@@ -65,11 +65,7 @@ mod executor;
 mod version;
 pub(crate) use executor::FileTool;
 pub(crate) use version::SelectedVersion;
-#[cfg(all(
-    feature = "test-support",
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub use version::check_version;
 pub(crate) use version::{encode_path_version, encode_version};
@@ -79,8 +75,8 @@ pub(crate) use version::{encode_path_version, encode_version};
 pub(crate) fn result_version(
     name: &str,
     result: &Value,
-    work: crate::NativeWork<'_>,
-) -> Result<Option<(String, crate::NativeCustody)>> {
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<Option<(String, acyclic_fs::NativeCustody)>> {
     let Some(file) = result.get("file") else {
         return Ok(None);
     };
