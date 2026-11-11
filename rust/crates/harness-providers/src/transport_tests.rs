@@ -235,7 +235,13 @@ async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_t
                 429,
                 "x-ratelimit-remaining-requests: 0\r\nx-ratelimit-reset-requests: 1s\r\nx-ratelimit-remaining-tokens: 10000\r\nx-ratelimit-reset-tokens: 65s\r\n",
                 "provider rate limit",
-                1,
+                65,
+            ),
+            (
+                429,
+                "x-ratelimit-remaining-requests: 1000\r\nx-ratelimit-reset-requests: 1s\r\nx-ratelimit-remaining-tokens: 100\r\nx-ratelimit-reset-tokens: 65s\r\n",
+                "provider rate limit",
+                65,
             ),
             (503, "Retry-After: 60\r\n", "provider transport", 60),
         ] {

@@ -89,12 +89,10 @@ impl ReqwestTransport {
             .map_err(|error| reqwest_failure(native, &error))?;
         let status = response.status().as_u16();
         let retry_after = acyclic_harness_core::http::response_retry_after(
-            || {
-                response
-                    .headers()
-                    .iter()
-                    .filter_map(|(name, value)| Some((name.as_str(), value.to_str().ok()?)))
-            },
+            response
+                .headers()
+                .iter()
+                .filter_map(|(name, value)| Some((name.as_str(), value.to_str().ok()?))),
             std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.unix_ms()?),
         );
         let request_id = if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
