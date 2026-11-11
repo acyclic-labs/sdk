@@ -17,7 +17,9 @@ const file = {
 // Adapter fixtures only: these are canonical settled records, not an AgentHost
 // submission, authorization, tool execution or durable outbox qualification.
 export function conversation(id: string, inbox: bigint): string {
-  return `{"observed_through":${inbox + 1n},"inbox":${inbox},"input":{"message":{"from":{"user":{"principal":"fixture"}},"id":${JSON.stringify(id)},"body":${JSON.stringify(file)}}},"output":${JSON.stringify(file)}}`;
+  // The production entry builder saturates its exclusive frontier at u64::MAX.
+  const through = inbox === 18446744073709551615n ? inbox : inbox + 1n;
+  return `{"observed_through":${through},"inbox":${inbox},"input":{"message":{"from":{"user":{"principal":"fixture"}},"id":${JSON.stringify(id)},"body":${JSON.stringify(file)}}},"output":${JSON.stringify(file)}}`;
 }
 
 // The production Rust writer supplies current record bytes and indexed status headers.
