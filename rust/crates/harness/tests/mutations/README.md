@@ -156,3 +156,18 @@ actor settlement, archives one child and checks its exact directory is gone.
 The idle sibling and root retain their bytes, and the archived child's actual
 conversation content remains readable. Repeating release is idempotent.
 Reverse the patch afterward; restored production must pass this same control.
+
+`input-preview-unadmitted-follow-up.patch` substitutes an inbox-prefix test
+for the committed conversation's message-admission proof. Run:
+
+```sh
+cargo nextest run --locked -p acyclic-harness --lib --features serve,test-support,native-execution -E 'test(=local::tests::agents::historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_steering_cut)' --no-tests=fail --success-output immediate
+```
+
+The real actor accepts an initial message, steering message and reserved
+follow-up before a two-step model turn. The selected turn's boundary passes
+the reserved follow-up without admitting it. A real historical session fork
+must preview the admitted steering message; the originating session can still
+preview its own accepted follow-up. The mutation must fail `an inherited
+preview must not disclose an unadmitted follow-up`. A compilation or setup
+failure does not qualify. Reverse the patch and rerun the same control.
