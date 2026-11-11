@@ -407,7 +407,7 @@ controls cannot certify them.
 The ingestion checkpoint implements the versioned token stream, fixed-counter
 shape decoder, private commit/key/family binding and large-field references.
 The content uploader now delegates to the same incremental Writer. A real-file
-cancellation control waits on the stored-page channel event and proves the
+cancellation control waits on the stored-page channel event and checks the
 writer cannot resume or seal after its write future is dropped. A production
 patch removing that guard is retained as its negative control. Additional
 controls ingest 100k effects with two ordered records each, a 64 MiB addressed
@@ -456,3 +456,11 @@ and cooperate at leaf delivery through the existing runtime scheduler. A real
 file read gated by a channel event must demonstrate that cancellation refuses
 reuse. This is a content-transfer guarantee, not the still-outstanding atomic
 publication/crash proof.
+
+Current ingestion validation remains unrun because the build target was
+terminated before compilation. The old validation client has now exited after
+cancellation; no second submission has been made. The existing recovery process
+was confirmed live. Once capacity returns, run the prepared source-specific
+compile-first command for the current head, followed by the ten content/staged
+controls and the paired writer/reader guard-removal negative controls. No pass
+is inferred from rustfmt, source inspection, or an earlier source's checks.
