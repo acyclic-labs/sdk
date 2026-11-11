@@ -116,6 +116,7 @@ async fn cached_read_withdrawal_retains_original_admission_before_provider_compl
 #[tokio::test]
 async fn cached_reads_keep_only_returned_owned_storage_on_the_original_ledger()
 -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
     crate::initialize_test_native_io();
     let cancellation = CancellationToken::new();
     let budget = WorkBudget {

@@ -345,7 +345,8 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
     let failure = generation
         .lookup_paths(&paths, budget, &cancelled)
         .await
-        .unwrap_err();
+        .err()
+        .expect("cancelled path lookup must fail");
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
 
     for withdraw in [false, true] {
