@@ -190,7 +190,7 @@ impl HostWorkspace {
     pub async fn fs(
         &self,
         operation: OperationId,
-        command: &str,
+        command: crate::tools::FsCommand,
         request: Option<acyclic_fs::GitRequest>,
     ) -> Result<acyclic_fs::GitCommandOutput> {
         self.verify().await?;

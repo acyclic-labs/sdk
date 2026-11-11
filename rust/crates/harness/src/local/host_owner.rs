@@ -418,7 +418,7 @@ impl HostWorkspaceOwner {
                     }
                 }),
             });
-        serde_json::to_value(view.fs(operation, command, request).await?).map_err(storage)
+        serde_json::to_value(view.fs(operation, parsed, request).await?).map_err(storage)
     }
 
     fn views(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<AgentPath, View>>> {

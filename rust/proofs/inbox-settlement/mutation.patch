@@ -1,8 +1,16 @@
 diff --git a/rust/crates/harness-core/src/agent/records.rs b/rust/crates/harness-core/src/agent/records.rs
+index b9bfa33cb96..cec3d9846e6 100644
 --- a/rust/crates/harness-core/src/agent/records.rs
 +++ b/rust/crates/harness-core/src/agent/records.rs
-@@ -799,3 +799,3 @@
--    (*LIMIT).map_err(Error::Record)
-+    (*LIMIT).map(|_| MAX_RECORD_BYTES).map_err(Error::Record)
- }
- 
+@@ -1023,8 +1023,9 @@ fn input_frame_limit(source: Option<&AgentPath>) -> Result<usize, Error> {
+         });
+     let (limit, root_size) = (*LIMIT).map_err(Error::Record)?;
+     let source_size = source.map(encoded_size).transpose()?.unwrap_or(root_size);
+-    limit
+-        .checked_sub(source_size.saturating_sub(root_size))
++    let _ = (limit, source_size);
++    MAX_RECORD_BYTES
++        .checked_sub(0)
+         .ok_or(Error::Record(
+             "settlement envelope exceeds MAX_RECORD_BYTES",
+         ))

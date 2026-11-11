@@ -106,15 +106,10 @@ impl Connection {
         exchanged(&self.controls, command).await
     }
 
-    /// Select an existing descendant on the same authenticated session.
+    /// Select an existing agent authorized by the same authenticated session.
     /// Commands retain the original caller; a native host may enroll read-only
     /// access to the selected child's private output on that same session.
     pub async fn select(&self, agent: AgentPath) -> Result<Self> {
-        if !self.directory && !self.root.contains(&agent) {
-            return Err(Error::Unauthorized(
-                "a selected agent must be the root or its descendant".into(),
-            ));
-        }
         let (controls, tools) = self
             .controls
             .select(agent.clone())

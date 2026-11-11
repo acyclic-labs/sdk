@@ -61,6 +61,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         )
         .await?;
         let root = connection.root().clone();
+        eprintln!("remote tree: authenticated {root}");
         let mut parent = root.clone();
         for intent in ["child", "grandchild"] {
             let AgentReply::Spawned { agent: child, .. } = connection
@@ -90,6 +91,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             assert_eq!(page.children.len(), 1);
             assert_eq!(page.children[0].path, child.inbox().map_err(exchange)?);
             let selected = connection.select(child.clone()).await?;
+            eprintln!("remote tree: selected {intent} {child}");
             assert_eq!(selected.root(), &child);
             let observation = selected.controls.observation_credential();
             assert_ne!(observation, CREDENTIAL);
@@ -108,6 +110,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 Err(AgentExchangeError::Session(StreamError::AccessDenied))
             ));
             for all in [false, true] {
+                eprintln!("remote tree: observing {intent}, all={all}");
                 let selection = acyclic_harness_client::AgentSelection::new(child.clone(), 0, 0);
                 let mut observer = if all {
                     selected.controls.observe_all(selection)
@@ -130,7 +133,9 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 let mut status_seen = false;
                 let mut turn_seen = false;
                 while !status_seen || !turn_seen {
-                    match observer.next().await.map_err(exchange)? {
+                    let event = observer.next().await.map_err(exchange)?;
+                    eprintln!("remote tree: {intent}, all={all}: {event:?}");
+                    match event {
                         acyclic_harness_client::AgentEvent::Status { agent, .. } => {
                             assert_eq!(agent, child);
                             status_seen = true;
@@ -214,6 +219,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 AgentReply::Content { .. }
             ));
             parent = child;
+            eprintln!("remote tree: verified {intent}");
         }
         let foreign = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16]));
         assert!(matches!(
@@ -248,6 +254,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         checked = checked => checked,
     };
     let _ = stop.send(());
+    eprintln!("remote tree: stopping server, result={checked:?}");
     serving.await.map_err(exchange)??;
     checked
 }

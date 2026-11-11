@@ -1,17 +1,17 @@
 diff --git a/rust/crates/harness-core/src/agent/machine.rs b/rust/crates/harness-core/src/agent/machine.rs
-index 7133b83462c..bb81d6640cc 100644
+index 6578ed50403..4829cdaa54f 100644
 --- a/rust/crates/harness-core/src/agent/machine.rs
 +++ b/rust/crates/harness-core/src/agent/machine.rs
-@@ -1155,7 +1155,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
+@@ -1183,7 +1183,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
  }
  
  /// Whether a driver's effect fits the record that carries it.
 -fn admissible(out: &Out, path: &AgentPath) -> bool {
 +fn admissible(out: &Out, _path: &AgentPath) -> bool {
      match out {
-         Out::Steered(_) => true,
+         Out::Steered(_) | Out::PendingSpawns(_) => true,
          Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
-@@ -1165,15 +1165,7 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
+@@ -1193,15 +1193,7 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
                  InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
              ) && record.encode_for(to).is_ok()
          }
