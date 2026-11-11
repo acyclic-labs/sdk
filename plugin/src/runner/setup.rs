@@ -2,7 +2,7 @@
 use super::*;
 use acyclic_harness::tui::onboarding;
 use acyclic_harness::tui::term::Tty;
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
 
 type Failure = Box<dyn std::error::Error>;
 
@@ -134,13 +134,14 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
 }
 
 pub(super) async fn doctor(args: &Args) -> Result<(), Failure> {
+    let headless = !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal();
     let mut refusals = Vec::new();
     let mut notes = Vec::new();
     let registry = doctor_registry(args, &mut refusals)?;
     let selected = selection(args, &registry);
     let needs_key =
         doctor_provider(&registry, selected.as_deref(), &mut notes, &mut refusals).await;
-    doctor_facilities(args, needs_key, &mut notes, &mut refusals);
+    doctor_facilities(args, needs_key, headless, &mut notes, &mut refusals);
     let local = match configure(args, registry) {
         Ok(config) => LocalHarness::doctor(config).await,
         Err(_) => {
@@ -161,17 +162,32 @@ pub(super) async fn doctor(args: &Args) -> Result<(), Failure> {
     notes.push("filesystem mode: --workspace-mounting selects native mounts or physical directories; auto probes native availability".into());
     notes.push("shell and state directory: checked by shared native host preflight".into());
     let mut output = std::io::stdout().lock();
-    for note in notes {
-        writeln!(output, "check: {note}")?;
-    }
-    for refusal in &refusals {
-        writeln!(output, "refused: {refusal}")?;
-    }
-    if refusals.is_empty() {
-        writeln!(
-            output,
-            "ok: local prerequisites checked; state and signing authority unopened"
+    if headless {
+        serde_json::to_writer(
+            &mut output,
+            &serde_json::json!({
+                "version": 1,
+                "kind": "doctor",
+                "mode": "headless",
+                "ready": refusals.is_empty(),
+                "checks": &notes,
+                "refusals": &refusals,
+            }),
         )?;
+        writeln!(output)?;
+    } else {
+        for note in notes {
+            writeln!(output, "check: {note}")?;
+        }
+        for refusal in &refusals {
+            writeln!(output, "refused: {refusal}")?;
+        }
+        if refusals.is_empty() {
+            writeln!(
+                output,
+                "ok: local prerequisites checked; state and signing authority unopened"
+            )?;
+        }
     }
     output.flush()?;
     if refusals.is_empty() {
@@ -229,6 +245,7 @@ async fn doctor_provider(
 fn doctor_facilities(
     args: &Args,
     needs_key: bool,
+    headless: bool,
     notes: &mut Vec<String>,
     refusals: &mut Vec<String>,
 ) {
@@ -244,7 +261,8 @@ fn doctor_facilities(
             notes.push(format!("{message} (optional for this run)"));
         }
     }
-    let terminal_required = args.prompt.is_none()
+    let terminal_required = !headless
+        && args.prompt.is_none()
         && args.input_format == InputFormat::Text
         && args.output_format == OutputFormat::Text;
     if terminal_required
