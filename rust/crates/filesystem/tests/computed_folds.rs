@@ -2,11 +2,12 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::{
-    CancellationToken, MemoryObjectStore, NativeMaterializationWork, WorkBudget,
+    CancellationToken, NativeMaterializationWork, WorkBudget,
     demand::{
         DemandError, Fold, FoldCheckpoint, FoldCheckpointObject, FoldCursor, FoldObjectError,
     },
     kernel::{KernelAccounting, Retained},
+    memory::MemoryObjectStore,
 };
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
@@ -33,8 +34,8 @@ impl Fold for Sum {
         _: u64,
         record: &u64,
         ctx: &mut KernelAccounting<'_>,
-    ) -> Result<(), DemandError> {
-        ctx.check()?;
+    ) -> std::result::Result<(), DemandError> {
+        ctx.remaining()?;
         state.value = state
             .value
             .checked_add(*record)
@@ -75,7 +76,7 @@ async fn objects_checkpoint_reopens_and_resumes_on_original_credit() -> Result {
     // The cache descriptor is persistent data, independent of either cursor.
     let encoded = serde_json::to_vec(&descriptor)?;
     drop(folded);
-    ctx.check()?;
+    ctx.remaining()?;
     let reopened: FoldCheckpointObject = serde_json::from_slice(&encoded)?;
     let loaded = reopened.load::<_, Total>(&store, &mut ctx).await?;
     assert_eq!(loaded.sequence, 2);
@@ -84,10 +85,10 @@ async fn objects_checkpoint_reopens_and_resumes_on_original_credit() -> Result {
     assert_eq!(tail.checkpoint().state.value, 81);
     assert_eq!(tail.checkpoint().state.label, "the original retained state");
     drop(store);
-    ctx.check()?;
+    ctx.remaining()?;
     assert_eq!(tail.checkpoint().state.value, 81);
     drop(tail);
-    ctx.check()?;
+    ctx.remaining()?;
     Ok(())
 }
 
@@ -157,7 +158,7 @@ impl Fold for CountedSum {
         record: &Self::Record,
         ctx: &mut KernelAccounting<'_>,
     ) -> std::result::Result<(), DemandError> {
-        ctx.check()?;
+        ctx.remaining()?;
         let value = u64::from_le_bytes(
             record
                 .value
@@ -274,6 +275,6 @@ async fn checkpoint_catalog_reopens_nearest_prefix_and_reads_only_new_events() -
         assert_eq!(state.state, 78);
         assert_eq!(calls.load(Ordering::Relaxed), 12);
     }
-    ctx.check()?;
+    ctx.remaining()?;
     Ok(())
 }
