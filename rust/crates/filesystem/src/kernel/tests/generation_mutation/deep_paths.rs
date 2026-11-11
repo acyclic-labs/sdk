@@ -153,32 +153,26 @@ async fn deep_directory_lookup_and_mutation_keep_exact_component_counts()
         &cancellation,
     )
     .await?;
-    for path in [&deepest, &renamed] {
-        let removed = lookup_path(
-            &store,
-            &receipt.root,
-            path,
-            config,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-        assert!(removed.record.is_none());
-        assert_eq!(removed.resolved_components, usize_to_u64(depth - 1));
+    // Both absent endpoints share the same authenticated parent walk.
+    let removed = lookup_path_refs(
+        &store,
+        &receipt.root,
+        &[&deepest, &renamed],
+        config,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(removed.entries.len(), 2);
+    for entry in removed.entries {
+        assert!(entry.record.is_none());
+        assert_eq!(entry.resolved_components, usize_to_u64(depth - 1));
     }
-    // Candidate edits leave the pinned original generation intact.
-    assert!(
-        lookup_path(
-            &store,
-            &generation,
-            &deepest,
-            config,
-            WorkBudget::UNBOUNDED,
-            &cancellation
-        )
-        .await?
-        .record
-        .is_some()
+    // Check the pinned original record through its immutable file-table root,
+    // without repeating the complete 65,536-component namespace walk.
+    assert_eq!(
+        Some(candidate_record(&store, &generation, identity(depth)?).await?),
+        lookup.record,
     );
     Ok(())
 }
