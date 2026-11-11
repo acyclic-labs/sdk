@@ -34,10 +34,17 @@ struct Canonical {
 
 impl Announcement {
     /// Canonicalise an admitted document using its format's digest domain.
-    pub fn new(document: &impl Serialize, domain: &'static str) -> Result<Self, Error> {
+    /// A fixed-width state identity distinguishes re-roots whose displayed paths
+    /// stay unchanged. Targets pass an empty identity to retain their v1 digest.
+    pub fn new(
+        document: &impl Serialize,
+        domain: &'static str,
+        identity: &[u8],
+    ) -> Result<Self, Error> {
         let bytes = crate::contract::canonical_json_bytes(document)
             .map_err(|_| Error::Record("announcement does not encode"))?;
         let mut hasher = blake3::Hasher::new_derive_key(domain);
+        hasher.update(identity);
         hasher.update(&bytes);
         Ok(Self(std::sync::Arc::new(Canonical {
             bytes,
@@ -56,9 +63,9 @@ impl AnnouncementDocument for Announcement {
 /// An absent target means the workspace is not exposed on that target.
 pub struct WorkspaceExposure {
     /// Original table identity, never a lookup by its model-facing name.
-    pub source: super::WorkspaceSource,
+    pub entry: super::EntryId,
     /// Absolute path by roster target name.
-    pub paths: BTreeMap<String, String>,
+    pub paths: BTreeMap<String, Option<String>>,
 }
 
 #[derive(Serialize)]
@@ -70,10 +77,11 @@ struct WorkspaceDocument<'a> {
 #[derive(Serialize)]
 struct AnnouncedWorkspace<'a> {
     name: &'a str,
-    kind: super::WorkspaceKind,
+    id: super::EntryId,
+    role: super::WorkspaceRole,
     mode: super::WorkspaceMode,
     inherit: super::WorkspaceInherit,
-    paths: &'a BTreeMap<String, String>,
+    paths: &'a BTreeMap<String, Option<String>>,
 }
 
 /// The version-one workspace announcement; source identities stay out of it.
@@ -88,50 +96,53 @@ impl WorkspaceAnnouncement {
         roster: &Roster,
         exposures: Vec<WorkspaceExposure>,
     ) -> Result<Self, Error> {
-        let mut by_source = BTreeMap::new();
+        let mut by_entry = BTreeMap::new();
+        let targets = roster
+            .targets()
+            .iter()
+            .map(|target| (target.name.as_str(), target.path_style))
+            .collect::<BTreeMap<_, _>>();
         for exposure in &exposures {
-            if by_source
-                .insert(&exposure.source, &exposure.paths)
-                .is_some()
-            {
+            if by_entry.insert(exposure.entry, &exposure.paths).is_some() {
                 return Err(Error::Record("workspace exposure repeats"));
             }
             for (target, path) in &exposure.paths {
-                let target = roster
-                    .targets()
-                    .iter()
-                    .find(|entry| &entry.name == target)
+                let style = targets
+                    .get(target.as_str())
                     .ok_or(Error::Record("workspace target is not in the roster"))?;
-                if !absolute(path, target.path_style) {
+                if path.as_ref().is_some_and(|path| !absolute(path, *style)) {
                     return Err(Error::Record("workspace target path is not absolute"));
                 }
             }
         }
-        if by_source.len() != table.entries().len() {
+        if by_entry.len() != table.entries().len() {
             return Err(Error::Record("workspace exposure does not match table"));
         }
         let workspaces = table
             .entries()
             .iter()
             .map(|entry: &WorkspaceEntry| {
-                let paths = by_source
-                    .get(&entry.source)
+                let paths = by_entry
+                    .get(&entry.id)
                     .ok_or(Error::Record("workspace source is not exposed"))?;
                 Ok(AnnouncedWorkspace {
                     name: &entry.name,
-                    kind: entry.kind,
+                    id: entry.id,
+                    role: entry.role,
                     mode: entry.mode,
                     inherit: entry.inherit,
                     paths,
                 })
             })
             .collect::<Result<Vec<_>, Error>>()?;
+        let table_state = Announcement::new(table, "acyclic.harness.workspace-table.v1", &[])?;
         Ok(Self(Announcement::new(
             &WorkspaceDocument {
-                default: table.entries().first().map(|entry| entry.name.as_str()),
+                default: table.primary().map(|entry| entry.name.as_str()),
                 workspaces,
             },
             "acyclic.harness.workspaces.v1",
+            &table_state.canonical().1,
         )?))
     }
 }
