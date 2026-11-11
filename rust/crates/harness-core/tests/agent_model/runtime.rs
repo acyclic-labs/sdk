@@ -1606,7 +1606,7 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
     };
     assert_eq!(text, &expected);
     assert_eq!(diagnostic.bytes, expected.len() as u64);
-    let before = values(&provider, root.inbox()?).await?;
+    let before = values(provider.as_ref(), root.inbox()?).await?;
     // Neither an absent payload nor an incomplete prefix may publish the status
     // or notify the parent. A failed conditional leaves the same key unspent.
     let request = lower(
@@ -1634,7 +1634,7 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
             submit(provider.as_ref(), request.clone()).await?,
             Submitted::Conflict(_)
         ));
-        assert_eq!(values(&provider, root.inbox()?).await?, before);
+        assert_eq!(values(provider.as_ref(), root.inbox()?).await?, before);
     }
     host.host(&child)?;
     let failures = host.runtime().drain().await;
