@@ -3,6 +3,7 @@ use super::*;
 use acyclic_harness_core::{
     agent::WorkspaceUpdate,
     conversation::{ContentAccess, ContentGrant},
+    filesystem::FilesystemContentVerifier,
     runtime::ContentBindings,
 };
 use std::collections::BTreeMap;
