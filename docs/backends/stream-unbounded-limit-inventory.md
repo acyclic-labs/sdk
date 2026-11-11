@@ -36,6 +36,27 @@ ceilings with the shared atomic staged cases; retain malformed frame and
 arithmetic controls. This classification is a removal plan, not evidence that
 the production logical limits have already been removed.
 
+## Downstream cutover sites
+
+These inspected callers must change with the shared API. They are not permission
+to move the primitive's staging back into a consumer. This list is an inventory
+of located mechanisms, not a claim that all downstream references are removed.
+
+| Caller | Current dependency on Stream ceilings | Cutover |
+| --- | --- | --- |
+| `harness-core/src/filesystem/execution_journal/indexed_publication/pages.rs::stage/publish` | Separately commits a prefix of page records, halves candidates until their wire size fits, and reserves a final page for journal/head publication. | Submit the logical publication once through shared staging. Preserve the journal's index format and authority conditions; delete the consumer's separate Stream commits and wire-size search. Include failure between the former prefix/final boundaries in conformance. |
+| `filesystem/src/async_storage/authority.rs`, `authority/cost.rs`, `distributed/append/group.rs` | Caps groups at `MAX_ITEMS / 12` for policy fences and refuses additive quoted groups above command/record limits. | Remove provider-size admission from group formation; retain actual caller work/reservation custody and atomic policy fences. A large group remains one commit, including every member's conditions. |
+| `filesystem/src/distributed/state_record.rs`, `distributed/append/quotation.rs`, `distributed/mod.rs` | Rejects encoded authority state or proposals at the Stream record ceiling and derives a public payload allowance from it. | Address large logical record content in the shared primitive; keep semantic state validation and configured user reservations. |
+| `harness-client/src/reply.rs` | Rejects append wire bytes and coordinated replies by command bytes and total conditions/mutations, before the provider sees them. | Use paged shared request/result envelopes; preserve malformed/empty operation validation independently of size. |
+| `harness-client/src/{command,control,session,reader}.rs`, `harness/src/wasm/*`, `stream-napi/src/lib.rs` | Derives command/reply/subscription/read/credential maxima from public Stream constants. | Separate physical frame decoding and user configuration from logical commands. No unchanged wrapper may reintroduce a removed primitive limit. |
+| `actors/src/sockets.rs`, `actors/src/local/sockets.rs` | Uses record bytes for logical socket frames and `MAX_ITEMS` for inbound admission/channel sizing. | Preserve socket message boundaries with shared framing; keep event-driven channel credit, remove logical message and waiter refusal. |
+| `harness-core/src/filesystem/execution_journal/persistent_index/{node,value}.rs`, checkpoint and bounded-IO codecs | Uses Stream record size to choose durable node/value chunks. | Audit each as actual format paging versus an inline logical-value refusal. Retain useful index paging, decouple its page size from the deleted public limit, and use the one content mechanism for large values. |
+| `filesystem/src/distributed/{authority,replay,append/recovery}.rs`, harness filesystem history readers, `machines/src/results.rs` | Uses `MAX_ITEMS` to request the next read page. | Preserve lazy reading with an internal page-size hint, without a public logical-count maximum. These read loops are not independently committing write chunks. |
+
+Paths in this table are relative to `rust/crates`. Tests tied to these ceilings
+must follow the API change; do not delete unrelated application format or
+configured-capacity tests merely because they mention a constant.
+
 ```text
 rust/crates/stream/proto\stream\v1\stream.proto:12:  STREAM_LIMIT_MAX_RECORD_BYTES = 65536;
 rust/crates/stream/proto\stream\v1\stream.proto:13:  STREAM_LIMIT_MAX_ITEMS = 1024;
