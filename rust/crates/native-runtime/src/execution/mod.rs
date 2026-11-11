@@ -12,14 +12,13 @@ use std::{
     sync::Arc,
 };
 
+mod defaults;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
 pub(crate) mod windows;
-#[cfg(windows)]
-pub use windows::ambient_read_roots;
 
 /// Filesystem authority of an execution, including all its descendants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +35,10 @@ pub enum ExecutionAccess {
 pub enum ExecutionNetwork {
     /// No sockets, including local IPC sockets, can be created or connected.
     Off,
+    /// No network traffic may cross the execution boundary. Communication
+    /// between confined descendants may remain available. Unlike `Off`, this
+    /// does not promise to prohibit socket creation inside that boundary.
+    Isolated,
     /// Ordinary networking, subject to inherited host restrictions.
     On,
     /// Outbound TCP connections to these destination ports only. No listening,
@@ -47,6 +50,8 @@ impl ExecutionNetwork {
     fn permits(&self, requested: &Self) -> bool {
         match (self, requested) {
             (Self::On, _) | (_, Self::Off) => true,
+            (Self::Isolated, Self::Isolated) => true,
+            (Self::Isolated, Self::TcpPorts(ports)) => ports.is_empty(),
             (Self::Off, Self::TcpPorts(ports)) => ports.is_empty(),
             (Self::TcpPorts(ceiling), Self::TcpPorts(ports)) => ports.is_subset(ceiling),
             _ => false,
@@ -388,6 +393,25 @@ fn bind_roots(
 }
 
 impl ExecutionGrant {
+    /// The default workspace boundary: only the composed paths and native
+    /// runtime dependencies are readable, and network traffic cannot cross
+    /// the execution boundary. Explicit authenticated grants can select
+    /// additional filesystem or network authority through `composed`.
+    pub fn workspace_default(
+        workspace: &Path,
+        access: ExecutionAccess,
+        write: impl IntoIterator<Item = PathBuf>,
+        read: impl IntoIterator<Item = PathBuf>,
+    ) -> io::Result<Self> {
+        Self::composed(
+            workspace,
+            access,
+            write,
+            defaults::runtime_read_roots()?.into_iter().chain(read),
+            ExecutionNetwork::Isolated,
+        )
+    }
+
     /// Binds existing, absolute workspace and read-only roots. Symlinks are
     /// resolved here; the adapter binds native objects again at active launch.
     /// No ambient home, temporary directory or filesystem root is added.

@@ -12,7 +12,7 @@ command; there is no unconfined fallback. The adapter translates the same grant
 into Microsoft's PSEC specification and attaches it to the existing suspended
 process launch. The original Job owner retains policy lifetime and descendant
 custody. It changes no host ACLs and scans no directories. Workspace defaults
-read configured drive roots and set `TEMP` and `TMP` to the writable view as well
+read the Windows runtime directory and set `TEMP` and `TMP` to the writable view as well
 as `TMPDIR`. Windows native execution tests require a host exposing this API.
 The named qualification requirement is `windows-psec-1.1`: the actual Windows
 execution host must expose the native API and report support for major version
@@ -24,7 +24,11 @@ the leg must still execute the real outside-write regression.
 PSEC cannot represent the shared socket-free `Off` or outbound-only `TcpPorts`
 contracts: its egress filters leave intra-container loopback available, and
 private-network capability also enables inbound traffic. Those explicit grants
-refuse as unsupported on Windows. The workspace default uses `On`.
+refuse as unsupported on Windows. The workspace default uses `Isolated`:
+no traffic crosses the execution boundary, while communication between
+confined descendants may remain available. PSEC receives no network
+capabilities and deny-default ingress, host-loopback and egress policies.
+Linux and macOS enforce this boundary with their existing network-off rules.
 
 The default binds the selected primary workspace and its visible volume roots.
 Writable volumes can live outside the primary directory; read-only volume roots
@@ -32,9 +36,18 @@ receive no additional write authority. Native volume callbacks still enforce
 path-level permissions. Landlock's additive rules do not subtract permissions
 from a read-only alias inside an otherwise writable primary tree; such a binding
 requires the native volume provider's existing checks.
-The default preserves host filesystem reads, so installed tools and dependencies
-outside the checkout remain usable. It confines writes; it does not promise
-filesystem confidentiality. Explicit host grants can restrict reads as before.
+The default denies filesystem reads and writes outside its granted roots.
+`ExecutionGrant::workspace_default` selects the composed workspace, visible
+volumes and explicit read-only runtime dependencies in one shared policy core.
+Linux runtime grants are `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` and
+`/etc/ld.so.cache`; macOS grants are `/System/Library`, `/usr`, `/bin`, `/sbin`
+`/Library/Apple/System/Library` and the null device `/dev/null`; Windows grants
+its `SystemRoot`. All three also grant the host's once-selected shell installation
+directory, including runtime files beside the shell executable. Model arguments
+and per-command PATH values cannot select that directory.
+Missing optional directories are omitted. Every selected root is bound by the
+same immutable grant machinery. Tools needing other paths or network access
+require an explicit authenticated grant; command arguments cannot add authority.
 The command still receives only the host's ordinary environment, excluding secret
 variables and startup hooks. The default TMPDIR names the primary workspace, so standard temporary-file APIs
 remain inside the writable view without a separate mount or directory.
@@ -371,14 +384,13 @@ The trusted process-tree warden runs before this final exec. The native test
 exercises an actual non-CLOEXEC outside-file descriptor as an escape control.
 Read-only attenuation removes mutation rules for every writable root together.
 Networking translates to no rules, all networking, or outbound TCP port rules.
-The macOS default preserves host reads and uses the primary workspace as TMPDIR.
+The macOS default uses explicit runtime reads and the primary workspace as TMPDIR.
 Windows compiles filesystem grants into a native PSEC 1.1 environment and
 attaches it to the existing suspended launch, retaining its lifetime with the
 original Job owner. Bound handles fence root identity and reparse traversal;
 inherited standard streams must be pipes or the null device. Stock workspace
 commands receive this boundary by default, independently of approval mode.
-Unavailable ambient drive roots are omitted from optional host reads; explicitly
-selected grant roots retain strict binding and failure semantics. Explicit
+Explicitly selected grant roots retain strict binding and failure semantics. Explicit
 `Off` and `TcpPorts` network grants refuse because PSEC cannot represent their
 socket-free and outbound-only contracts.
 

@@ -156,7 +156,7 @@ impl Prepared {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<Self> {
         let mut profile = String::from(
-            "(version 1)(deny default)(allow process-exec process-fork sysctl-read file-read-metadata)(allow file-write-data (literal \"/dev/null\"))",
+            "(version 1)(deny default)(allow process-exec process-fork sysctl-read)(allow file-write-data (literal \"/dev/null\"))",
         );
         for root in std::iter::once(&grant.workspace)
             .chain(grant.write.entries())
@@ -177,7 +177,7 @@ impl Prepared {
         }
         match &grant.network {
             ExecutionNetwork::On => profile.push_str("(allow network*)"),
-            ExecutionNetwork::Off => {}
+            ExecutionNetwork::Off | ExecutionNetwork::Isolated => {}
             ExecutionNetwork::TcpPorts(ports) => {
                 use std::fmt::Write;
                 for port in ports {
