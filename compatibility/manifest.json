@@ -18,9 +18,9 @@
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:28a79433948148e7e2f03807367c17b049e2e70eaf8c8d143454051ec520114f",
+      "schemaDigest": "sha256:ccffaa741493513d56cfd1b9fa9ae4a18707167ca6d9818a5cec43b24c7cdfd3",
       "conformanceDigest": "sha256:3da8cc65b19c2b710c3922b621fc28afd75268a7b7c66959cbb3a24472e95340",
-      "descriptorDigest": "sha256:53db9b56b8d175d2f14796328ad569e2ff0172e03fc0c69e0faec32b956ff5c6"
+      "descriptorDigest": "sha256:e67594452d2f4484488e5ade10e000ef5a00532d4200bbb0df425cbfa7ca148e"
     },
     "filesystem": {
       "version": "0.2.0",

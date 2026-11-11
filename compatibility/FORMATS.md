@@ -149,19 +149,26 @@ The new table appends its 84
 messages after the original 403, preserving the captured selectors.
 
 Harness v2 `RuntimeLimits.model_events_per_step` (field 6) and
-`tool_calls_per_step` (field 7) now have explicit protobuf presence. Absence
+`tool_calls_per_step` (field 7), `context_messages` (field 8), and `attachments`
+(field 3) have explicit
+protobuf presence. Absence
 means unbounded; a supplied limit must be positive. This is an intentional
 contract change, bound by the generated negotiated descriptor identity and
 the Harness schema digest in `manifest.json`.
 
 The segmented model request manifest persists these limits as positive integers
-or JSON `null`. Its canonical JSON now starts with `{"$version":1,`; the reserved
+or JSON `null`. Version 2 also makes context-message and attachment allowances optional;
+`None` is unbounded while finite allowances remain positive. Its canonical JSON
+starts with `{"$version":2,`; the reserved
 version key sorts before all payload keys in both canonical encoding paths.
 The original reader verifies the immutable file descriptor, then admits this header before
 ordinary or funded payload decoding. Headerless and foreign-version manifests
-refuse with `Unsupported`, without migration. Version 1 is also bound into the
-existing manifest attestation. Existing protobuf captures and historical goldens
-are retained; this digest update does not claim a new descriptor/corpus capture.
+refuse with `Unsupported`, without migration. Version 2 is also bound into the
+existing manifest attestation. The Harness descriptor was recaptured by the
+Rust-owned producer. Descriptor semantics change only for attachment/context-message
+presence and their synthetic oneofs; source spans reflect the added keywords.
+Existing protobuf writer captures and historical goldens are
+retained without regeneration.
 
 Fixed-width codecs do constant work. Variable payload codecs necessarily take
 work proportional to the admitted payload; their cost must not depend on retained

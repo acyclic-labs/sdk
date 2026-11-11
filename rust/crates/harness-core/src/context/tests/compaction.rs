@@ -452,21 +452,36 @@ fn compaction_keeps_fragmented_schemas_only_for_retained_exchanges() -> Result<(
         .position(|message| message == &second[0])
         .expect("schema position");
     let mut planned_retained_schema = false;
+    let mut unbounded_retained_schema = false;
     for requested_cut in 1..source.messages.len() {
-        for maximum in 2..=source.messages.len() {
+        let mut finite_plan = false;
+        let mut unbounded_plan = false;
+        for limit in std::iter::once(None).chain((2..=source.messages.len()).map(Some)) {
             if let Ok((through, maximum)) =
-                policy.projection_budget(&source, maximum, requested_cut, &mut None)
+                policy.projection_budget(&source, limit, requested_cut, &mut None)
             {
+                finite_plan |= limit.is_some();
+                unbounded_plan |= limit.is_none();
                 let (retained, proof) = compact(&source, maximum, through)?;
                 validate_compaction(&proof, &source, &retained, None)?;
-                planned_retained_schema |= through > schema_position && has_call(&retained, "d");
+                let retained_schema = through > schema_position && has_call(&retained, "d");
+                planned_retained_schema |= retained_schema;
+                unbounded_retained_schema |= limit.is_none() && retained_schema;
                 prepare(retained.messages, Vec::new())?;
             }
         }
+        assert!(
+            !finite_plan || unbounded_plan,
+            "removing message credit must not reject an otherwise valid projection"
+        );
     }
     assert!(
         planned_retained_schema,
         "automatic planning must retain the original table across its summary cut"
+    );
+    assert!(
+        unbounded_retained_schema,
+        "unbounded planning must retain the original table across its summary cut"
     );
     // Independent, interleaved native and dynamic snapshots. The native table
     // becomes active last; it must neither replace the dynamic schema nor

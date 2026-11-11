@@ -13,12 +13,13 @@ impl StockExecution<'_> {
         &self,
         selected_base: bool,
         stage_messages: usize,
-    ) -> usize {
-        self.stock
-            .limits
-            .context_messages
-            .saturating_sub(if selected_base { 2 } else { 0 })
-            .saturating_sub(stage_messages)
+    ) -> Option<usize> {
+        self.stock.limits.context_messages.map(|maximum| {
+            maximum
+                .get()
+                .saturating_sub(if selected_base { 2 } else { 0 })
+                .saturating_sub(stage_messages)
+        })
     }
 
     pub(super) async fn compact_response(
@@ -71,7 +72,9 @@ impl StockExecution<'_> {
                             "compaction message count overflows",
                         )
                     })?;
-                    if maximum > message_limit || maximum > context.messages.len() {
+                    if message_limit.is_some_and(|limit| maximum > limit)
+                        || maximum > context.messages.len()
+                    {
                         continue;
                     }
                     (summary, maximum)
@@ -203,7 +206,7 @@ impl StockExecution<'_> {
         capacity: crate::context::ModelContextCapacity,
         context: &crate::context::Context,
         policy: &crate::context::CapacityCompaction,
-        message_limit: usize,
+        message_limit: Option<usize>,
     ) -> Result<(usize, usize)> {
         let ceiling = policy.input_ceiling(capacity, self.output_tokens())?;
         let (through, maximum) = crate::context::plan_compaction_budget(

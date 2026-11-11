@@ -75,7 +75,7 @@ pub(super) fn omission_text(count: usize, io: Option<&PreparationIo>) -> Result<
 pub(super) async fn resolve<'a>(
     message: &'a ConversationMessage,
     resolver: &'a dyn ContentResidencyVerifier,
-    maximum: usize,
+    maximum: Option<std::num::NonZeroUsize>,
     io: Option<&'a PreparationIo>,
 ) -> Result<(Cow<'a, [Attachment]>, Option<ContentHold<'a>>)> {
     #[cfg(feature = "filesystem")]
@@ -84,7 +84,7 @@ pub(super) async fn resolve<'a>(
     }
     match &message.attachments {
         ReferencedAttachments::Inline { items } => {
-            if items.len() > maximum {
+            if maximum.is_some_and(|maximum| items.len() > maximum.get()) {
                 return Err(stock_boundary(
                     io,
                     Invalid,
@@ -97,7 +97,7 @@ pub(super) async fn resolve<'a>(
             manifest,
             item_count,
         } => {
-            if *item_count as usize > maximum {
+            if maximum.is_some_and(|maximum| *item_count as usize > maximum.get()) {
                 return Err(stock_boundary(
                     io,
                     Invalid,
