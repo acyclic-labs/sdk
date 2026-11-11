@@ -90,7 +90,7 @@ async fn arriving_descendant_under_a_replaced_directory_is_absent() -> Result<()
     let mut cursor = Cursor::open(&tools.workspace, &tools.capture_policy)?;
     cursor
         .watcher
-        .watch_arrivals(&batch, &tools.capture_policy, MAXIMUM_PATHS)
+        .watch_arrivals(&batch, &tools.capture_policy, None)
         .map_err(storage)?;
     let error = std::fs::symlink_metadata(directory.path().join(relative))
         .err()
