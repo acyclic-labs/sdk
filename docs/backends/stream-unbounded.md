@@ -548,3 +548,14 @@ run. Its controls add dependency-page spill and reference-write cancellation,
 and require the large-record stage to declare its value edge. A third mutation
 removes that declaration and must fail with `staged body omitted content
 dependencies`. Earlier `e7ec6d0a1b3` evidence does not validate this extension.
+
+The reference-edge reader also accepts an empty logical body: its wrapper has
+one zero-length byte part and retained edges. Zero-length parts in a nonempty
+body remain invalid. The existing dependency-spill control covers whole empty
+reads and empty ranges without IO; a mutation restoring the old blanket
+zero-part rejection must fail with `empty referenced content was rejected`.
+The earlier iterator fix at `88b5847a992e59edca4934c1ade93a571dd646c5` passed
+native all-target Stream local/http compilation. Its tests were still waiting
+for the shared target lock when this empty-body fix superseded that source;
+the exact queued Cargo process was stopped before any test or mutation ran.
+The revised source requires its own focused check and all four controls.

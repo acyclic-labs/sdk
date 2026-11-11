@@ -1,0 +1,14 @@
+diff --git b/rust/crates/stream/src/content/tree.rs a/rust/crates/stream/src/content/tree.rs
+index fef7aa938ec..1fbbe3f82f1 100644
+--- b/rust/crates/stream/src/content/tree.rs
++++ a/rust/crates/stream/src/content/tree.rs
+@@ -424,8 +424,7 @@ impl<'a, S: Storage> Reader<'a, S> {
+             if manifest.parts().len() == 0
+                 || manifest.parts().len() > FANOUT
+                 || manifest.edges().len() > EDGE_FANOUT
+-                || (manifest.parts().any(|part| part.length == 0)
+-                    && (root.part.length != 0 || manifest.parts().len() != 1))
++                || manifest.parts().any(|part| part.length == 0)
+                 || manifest
+                     .length()
+                     .map_err(|_| StreamError::InvalidResponse)?

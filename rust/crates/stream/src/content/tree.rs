@@ -424,7 +424,8 @@ impl<'a, S: Storage> Reader<'a, S> {
             if manifest.parts().len() == 0
                 || manifest.parts().len() > FANOUT
                 || manifest.edges().len() > EDGE_FANOUT
-                || manifest.parts().any(|part| part.length == 0)
+                || (manifest.parts().any(|part| part.length == 0)
+                    && (root.part.length != 0 || manifest.parts().len() != 1))
                 || manifest
                     .length()
                     .map_err(|_| StreamError::InvalidResponse)?

@@ -163,6 +163,23 @@ async fn content_dependencies_spill_to_edges_without_changing_byte_reads()
     );
     assert!(reader.next().await?.is_none());
 
+    // Retained references do not require a nonempty logical byte body.
+    let mut writer = Writer::new(&disk)?;
+    writer.reference(value).await?;
+    let empty = writer.finish().await?;
+    assert_eq!(empty.part.length, 0);
+    let mut reader = Reader::new(&disk, empty)?;
+    let body = reader.next().await;
+    assert!(
+        matches!(body, Ok(Some(ref bytes)) if bytes.is_empty()),
+        "empty referenced content was rejected: {body:?}"
+    );
+    assert!(reader.next().await?.is_none());
+    let reads = disk.reads.load(Ordering::Relaxed);
+    let mut range = Reader::range(&disk, empty, 0, 0)?;
+    assert!(range.next().await?.is_none());
+    assert_eq!(disk.reads.load(Ordering::Relaxed), reads);
+
     let mut writer = Writer::new(&disk)?;
     writer.write(b"x").await?;
     for _ in 0..EDGE_FANOUT + 1 {
