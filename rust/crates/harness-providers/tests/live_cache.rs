@@ -251,10 +251,22 @@ async fn real_provider_cache_reads_match_recorded_usage() -> ProbeResult {
             Adapter::Gemini,
         ),
     ];
-    // Admit every credential before making the first paid request. Explicit
+    let selected = std::env::var("ACYCLIC_LIVE_CACHE_PROVIDER").ok();
+    if selected
+        .as_deref()
+        .is_some_and(|selected| !models.iter().any(|(provider, ..)| *provider == selected))
+    {
+        return Err("live provider selection is invalid");
+    }
+    let models = models.into_iter().filter(|(provider, ..)| {
+        selected
+            .as_deref()
+            .is_none_or(|selected| selected == *provider)
+    });
+    // Admit every selected credential before the first paid request. Explicit
     // credentials disable environment/keychain/subscription source discovery.
     let keys = models
-        .iter()
+        .clone()
         .map(|(provider, _, variable, _)| {
             if relay.is_some() {
                 return Ok((provider.to_string(), "live-cache-relay".into()));

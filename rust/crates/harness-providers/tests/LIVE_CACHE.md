@@ -20,6 +20,11 @@ field, including absence. At most nine generation calls run, with no tokenizer
 calls, redelivery, sleeps or readiness polling. Each requests only `OK`, with an
 output ceiling of 512 tokens.
 
+Set `ACYCLIC_LIVE_CACHE_PROVIDER` to `anthropic`, `openai`, or `gemini` to run only
+that provider's three calls. This lets an interrupted acceptance resume with an
+unfinished provider without repeating a completed paid probe. Other values are
+refused before any request. Without the variable, all three providers run.
+
 Inject Infisical `graphcoder` API keys directly into the process environment as
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_API_KEY`. Explicit API credentials
 disable keychain and subscription-login discovery. Never export keys to files,
