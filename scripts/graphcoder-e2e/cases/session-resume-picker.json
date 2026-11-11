@@ -5,9 +5,11 @@
     { "when": { "user": "PICKER_PREVIEW_INPUT" }, "text": ["PICKER_PREVIEW_ANSWER"] }
   ] },
   "inputs": [
-    { "mode": "headless", "args": ["-p", "PICKER_PREVIEW_INPUT"], "answer": "PICKER_PREVIEW_ANSWER" },
+    { "mode": "headless", "args": ["--new-session", "-p", "PICKER_PREVIEW_INPUT"], "answer": "PICKER_PREVIEW_ANSWER" },
     { "mode": "pty", "args": ["-r"], "actions": [
-      { "when": { "contains": ["Session", "Last prompt: PICKER_PREVIEW_INPUT", "Diff:", "Cost: estimated token charge: unknown"] }, "send": "1\r" },
+      { "when": { "contains": ["Session", "Last prompt: PICKER_PREVIEW_INPUT", "Diff:", "This agent cost: estimated token charge: ?"] }, "send": "1\r" },
+      { "when": { "contains": ["GraphCoder", "PICKER_PREVIEW_ANSWER"], "cursor": true }, "send": "\u0013" },
+      { "when": { "contains": ["Session", "Last prompt: PICKER_PREVIEW_INPUT", "Diff:", "This agent cost: estimated token charge: ?"] }, "send": "1\r" },
       { "when": { "contains": ["GraphCoder", "PICKER_PREVIEW_ANSWER"], "cursor": true }, "prompt": "/quit " }
     ] }
   ],

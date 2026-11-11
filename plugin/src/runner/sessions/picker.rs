@@ -89,7 +89,7 @@ fn previews(
                             break;
                         }
                         if query.synchronized() {
-                            yield (2, format!("Cost: {}", acyclic_harness::tui::usage_summary(query.totals())));
+                            yield (2, format!("This agent cost: {}", acyclic_harness::tui::usage_summary(query.totals())));
                         }
                         tokio::task::yield_now().await;
                     }
