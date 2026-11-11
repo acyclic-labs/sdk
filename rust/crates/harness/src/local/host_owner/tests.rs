@@ -197,6 +197,14 @@ async fn claude_native_session_lifecycle() -> Result<()> {
 async fn pi_native_session_lifecycle() -> Result<()> {
     native_session_lifecycle("pi").await
 }
+#[tokio::test]
+async fn opencode_native_session_lifecycle() -> Result<()> {
+    native_session_lifecycle("opencode").await
+}
+#[tokio::test]
+async fn agy_native_session_lifecycle() -> Result<()> {
+    native_session_lifecycle("agy").await
+}
 
 #[tokio::test]
 async fn native_event_log_keeps_late_usage_and_resume_after_recovery() -> Result<()> {
@@ -488,14 +496,42 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         );
         (escaped, "a14f2590-4397-48a1-a076-1f2dac2d5349")
     } else {
-        (
-            "{\"type\":\"thread.started\",\"thread_id\":\"superseded-id\"}
-{\"thread_id\":\"opaque-native-resume-id\"}
-not json naming a session_id
-"
-            .into(),
-            "opaque-native-resume-id",
-        )
+        let (original, id) = match host {
+            "codex" => (
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../plugin/tests/hosts/fixtures/native/codex.jsonl"
+                )),
+                "01a17471-a5c8-7c32-97ee-250d4269b28a",
+            ),
+            "pi" => (
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../plugin/tests/hosts/fixtures/native/pi.jsonl"
+                )),
+                "01a1746a-a22a-77e7-9bba-00097f99a1b9",
+            ),
+            "opencode" => (
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../harness-fuzz/corpus/native_answer/opencode-incomplete.jsonl"
+                )),
+                "ses_e4b5a1b9fffeksLehNjEEeDfZ2",
+            ),
+            "agy" => (
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../harness-fuzz/corpus/native_answer/agy-hook-refusal.jsonl"
+                )),
+                "b12c0707-3dcb-46c3-a39c-b1fee257dca0",
+            ),
+            _ => {
+                return Err(Error::Invalid(
+                    "native lifecycle fixture host absent".into(),
+                ));
+            }
+        };
+        (original.to_owned(), id)
     };
     let captures: Value = serde_json::from_str(include_str!(
         "../../../../../../plugin/tests/hosts/fixtures/native-completion.json"
@@ -504,9 +540,12 @@ not json naming a session_id
     let captured = match host {
         "codex" => captures["records"][0]["stdout"].as_str(),
         "claude-code" => captures["records"][1]["stdout"].as_str(),
-        _ => Some(include_str!(
+        "pi" => Some(include_str!(
             "../host_process/fixtures/pi-assistant-error.jsonl"
         )),
+        // These hosts use their own original captures selected above.
+        "opencode" | "agy" => Some(""),
+        _ => None,
     }
     .ok_or_else(|| Error::Invalid("original native capture has no stdout".into()))?;
     let events = format!("{captured}{events}");
