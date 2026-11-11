@@ -67,10 +67,13 @@ pub fn prepare<T>(
     let io = |cause| Error::from(acyclic_fs::NativeTreeMaterializationError::Io(cause));
     // A volume's root is its binding, which may link to the view projecting
     // it, so the canonical cwd is checked against the canonical root.
+    let exposed = mounts
+        .native_root_for(mount)
+        .ok_or_else(|| Error::Unsupported("shell cwd has no native projection".into()))?;
     let native_root = mount
         .native_root
         .override_path()
-        .map(std::fs::canonicalize)
+        .map(|_| std::fs::canonicalize(exposed))
         .transpose()
         .map_err(io)?;
     let root = native_root.as_deref().unwrap_or(&mounts.root);
@@ -169,15 +172,8 @@ pub fn workspace_grant<T>(
         let mut access = ExecutionAccess::ReadOnly;
         let io = Error::process_io;
         let mut primary = mounts.root.clone();
-        for (relative, mount) in mounts.mounts() {
-            if matches!(mount.native_root, crate::workspace::NativeRoot::Logical) {
-                continue;
-            }
-            let root = mount
-                .native_root
-                .override_path()
-                .cloned()
-                .unwrap_or_else(|| mounts.root.join(relative));
+        for (relative, root, mount) in mounts.native_mounts() {
+            let root = root.to_path_buf();
             if relative.is_empty() {
                 primary = root;
                 if !mount.mode.read_only() {

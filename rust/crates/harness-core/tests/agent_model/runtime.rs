@@ -1234,6 +1234,47 @@ async fn reply_waits_require_original_committed_requests() -> Result {
         host.spawned(&root, inbox, &intent("s")).await,
         Err(Error::Conflict(_))
     ));
+    // Replay the original committed requests through a lineage beyond the
+    // former depth ceiling. Path construction alone cannot prove delivery.
+    let mut deepest = descendant;
+    while deepest.depth() < 128 {
+        let Delivered::Committed { inbox } = host.send(&deepest, &user(), &request).await? else {
+            return Err("deep spawn was not committed".into());
+        };
+        let (spawn, child) = requested_child(&deepest, inbox)?;
+        host.drain(&deepest).await?;
+        assert_eq!(
+            host.spawned(&deepest, inbox, &spawn).await?,
+            SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        );
+        let later = InboxRecord::Approval(Approval {
+            id: intent("after-spawn"),
+        });
+        let Delivered::Committed { inbox: later_inbox } =
+            host.send(&deepest, &user(), &later).await?
+        else {
+            return Err("later deep input was not committed".into());
+        };
+        host.drain(&deepest).await?;
+        assert_eq!(
+            host.spawned(&deepest, inbox, &spawn).await?,
+            SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        );
+        assert!(matches!(
+            host.spawned(
+                &deepest,
+                later_inbox,
+                &intent(&format!("request:{later_inbox}"))
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        deepest = child;
+    }
     Ok(())
 }
 

@@ -89,6 +89,37 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     let mounts = &harness.workspace().unwrap().mounts;
     let scratch = mounts.named(Some("home"))?.1.view.source.as_ref().unwrap();
     native_scope(mounts, async |claims| {
+        // Root checkout bindings carry the same explicit native roots as task
+        // aliases, and expose cwd/discovery only while execution projects them.
+        let prepared = crate::filesystem::native_process::shell::prepare(
+            crate::tools::ShellInput {
+                command: crate::tools::ShellCommand::Source("echo root".into()),
+                cwd: Some(HOME_PATH.into()),
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            mounts,
+            crate::filesystem::native_process::Invocation {
+                executable: std::env::current_exe().map_err(storage)?,
+                argv: Vec::new(),
+                cwd: mounts.root.clone(),
+                environment: Default::default(),
+                inherit_environment: false,
+                execution_grant: None,
+                schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+                maximum_output_bytes: None,
+                standard_input: None,
+                process_custody: None,
+            },
+            0,
+        )?;
+        let native = std::fs::canonicalize(&scratch.destination).map_err(storage)?;
+        assert_eq!(prepared.cwd, native);
+        assert_eq!(
+            prepared.environment.get("ACYCLIC_VOLUME_HOME"),
+            Some(&scratch.destination.to_string_lossy().into_owned())
+        );
         write_projected(&scratch.destination.join("data"), b"acknowledged")?;
         Ok(((), claims))
     })

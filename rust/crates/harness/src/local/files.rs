@@ -64,7 +64,7 @@ impl LocalHarness {
                 return self
                     .merge_checkout(
                         &bound,
-                        &signed,
+                        (&signed, &verifier),
                         parent,
                         operation,
                         (branch, source.workspace().id()),
@@ -128,7 +128,7 @@ impl LocalHarness {
         let signed = self.signed.copy(&mut None)?;
         self.merge_checkout(
             workspace,
-            &signed,
+            (&signed, &self.verifier),
             agent.parent().unwrap_or_else(|| agent.clone()),
             operation,
             (branch, source.workspace().id()),
@@ -140,7 +140,7 @@ impl LocalHarness {
     async fn merge_checkout(
         &self,
         workspace: &Arc<super::workspace::LocalWorkspace>,
-        signed: &crate::core::Scope,
+        (signed, verifier): (&crate::core::Scope, &crate::core::AuthorityVerifier),
         owner: crate::agent::AgentPath,
         operation: OperationId,
         (branch, source): (String, acyclic_fs::WorkspaceId),
@@ -153,6 +153,7 @@ impl LocalHarness {
         let commands = super::workspace::git::Commands {
             workspace,
             signed,
+            verifier,
             clock: self.clock.as_ref(),
             capture_options: &configuration.0,
             capture_policy: &configuration.1,

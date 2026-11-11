@@ -4,13 +4,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 impl<T> MountTable<T> {
-    /// Explicit process discovery hints, including a separate mode for each path.
+    /// Explicit native process hints, including each projected path's access mode.
     pub fn environment(&self) -> Result<BTreeMap<String, String>> {
         let mut environment = BTreeMap::new();
-        for (relative, mount) in self.mounts() {
-            if matches!(mount.native_root, super::NativeRoot::Logical) {
-                continue;
-            }
+        for (relative, path, mount) in self.native_mounts() {
             let mut key = String::from("ACYCLIC_VOLUME_");
             let name = if relative.is_empty() {
                 mount.view.name.as_str()
@@ -30,11 +27,6 @@ impl<T> MountTable<T> {
                     }
                 }
             }
-            let path = mount
-                .native_root
-                .override_path()
-                .cloned()
-                .unwrap_or_else(|| self.root.join(relative));
             let path = path
                 .to_str()
                 .ok_or_else(|| Error::Invalid("task mount path is not UTF-8".into()))?;

@@ -18,6 +18,8 @@ pub(in crate::local) struct CommandContext<'a> {
 pub(in crate::local) struct Commands<'a> {
     pub(in crate::local) workspace: &'a Arc<LocalWorkspace>,
     pub(in crate::local) signed: &'a Scope,
+    /// Verifies the caller's scope, independently of a reused view's mount owner.
+    pub(in crate::local) verifier: &'a crate::core::AuthorityVerifier,
     pub(in crate::local) clock: &'a dyn acyclic_stream::UnixMillisClock,
     pub(in crate::local) capture_options: &'a acyclic_fs::CaptureOptions,
     pub(in crate::local) capture_policy: &'a acyclic_fs::CapturePolicy,
@@ -323,20 +325,19 @@ impl Commands<'_> {
             owner.verify().await?;
         }
         let lease = begin_window(workspace, context, volume.id(), parent.id(), now).await?;
-        let access = workspace
-            .mount_authority
-            .as_ref()
-            .ok_or(Error::FilesystemAccessConfiguration("Git authority"))?
-            .workspace_access(
-                self.signed,
-                context.scope.grants(),
+        let access = crate::filesystem::WorkspaceAccess::new(
+            self.verifier,
+            self.signed,
+            context.scope.grants(),
+            Some(
                 &workspace
                     .mounts
                     .named(parsed.volume.as_deref())?
                     .1
                     .view
                     .volume,
-            )?;
+            ),
+        )?;
         let result = self
             .execute(
                 &parsed.arguments,

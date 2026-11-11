@@ -239,6 +239,7 @@ mod tests {
             let commands = super::super::git::Commands {
                 workspace,
                 signed: &local.signed,
+                verifier: &local.verifier,
                 clock: local.clock.as_ref(),
                 capture_options: &configuration.0,
                 capture_policy: &configuration.1,

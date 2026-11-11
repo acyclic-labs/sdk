@@ -25,6 +25,7 @@ mod tests;
 pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
     signed: Scope,
+    verifier: AuthorityVerifier,
     capture_options: acyclic_fs::CaptureOptions,
     capture_policy: acyclic_fs::CapturePolicy,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
@@ -144,6 +145,7 @@ impl CheckoutTools {
             }
             Ok(Self {
                 signed: signed.clone(),
+                verifier: verifier.clone(),
                 capture_options,
                 capture_policy,
                 workspace,

@@ -516,6 +516,7 @@ impl HostWorkspaceOwner {
                 Arc::clone(workspace),
                 agent.clone(),
                 &self.local.signed,
+                &self.local.verifier,
                 root,
             )
             .await?

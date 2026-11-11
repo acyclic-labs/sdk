@@ -126,10 +126,13 @@ pub(super) async fn attach(
         if relative.is_empty() {
             continue;
         }
-        if !native {
-            mount.native_root = crate::workspace::NativeRoot::Logical;
-        }
-        if mount.view.source.is_some() {
+        if let Some(source) = &mount.view.source {
+            mount.native_root = source
+                .options
+                .as_ref()
+                .map_or(crate::workspace::NativeRoot::Logical, |_| {
+                    crate::workspace::NativeRoot::Path(source.destination.clone())
+                });
             continue;
         }
         let source = filesystem
@@ -171,6 +174,13 @@ pub(super) async fn attach(
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source, &work, &cancellation)
             .await?;
+        // A native binding declares the root that execution projects; a
+        // logical-only binding must never acquire an OS path implicitly.
+        mount.native_root = options
+            .as_ref()
+            .map_or(crate::workspace::NativeRoot::Logical, |_| {
+                crate::workspace::NativeRoot::Path(destination.clone())
+            });
         mount.view.source = Some(Arc::new(MountedVolume {
             workspace: crate::tools::git::OwnedView::Volume(source),
             destination,

@@ -68,7 +68,7 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
         })
     };
     let mut mounts = compose(
-        root,
+        root.clone(),
         &principal,
         &capability,
         Context {
@@ -81,6 +81,8 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
     for (relative, mount) in mounts.mounts_mut() {
         if relative == ".volumes/shared" {
             mount.native_root = crate::workspace::NativeRoot::Logical;
+        } else if !relative.is_empty() {
+            mount.native_root = crate::workspace::NativeRoot::Path(root.join(relative));
         }
     }
     Ok(mounts)
@@ -200,6 +202,29 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
     std::os::unix::fs::symlink(&outside, root.join("escape")).map_err(Error::process_io)?;
     std::os::unix::fs::symlink(&volume, root.join(".volumes/data")).map_err(Error::process_io)?;
     let mut mounts = table(root.canonicalize().map_err(Error::process_io)?)?;
+    for (relative, mount) in mounts.mounts_mut() {
+        if !relative.is_empty() {
+            mount.native_root = crate::workspace::NativeRoot::Logical;
+        }
+    }
+    // A logical binding grants file-tool access without fabricating an OS
+    // projection, even when a same-named native directory happens to exist.
+    assert!(!mounts.environment()?.contains_key("ACYCLIC_VOLUME_DATA"));
+    assert!(matches!(
+        prepare(
+            ShellInput {
+                command: crate::tools::ShellCommand::Source("true".into()),
+                cwd: Some(".volumes/data".into()),
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            &mounts,
+            invocation(&mounts.root),
+            1,
+        ),
+        Err(Error::Unsupported(_))
+    ));
     for (relative, mount) in mounts.mounts_mut() {
         if relative == ".volumes/data" {
             mount.native_root = crate::workspace::NativeRoot::Path(volume.clone());

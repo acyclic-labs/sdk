@@ -59,6 +59,7 @@ pub struct Mount<T> {
     /// Maximum access anywhere in this mount; paths may be more restrictive.
     pub mode: MountMode,
     access: PathTrie,
+    /// Host-projected OS root. An absent named root remains logical-only.
     #[doc(hidden)]
     pub native_root: NativeRoot,
 }
@@ -104,6 +105,26 @@ pub struct MountTable<T> {
 }
 
 impl<T> MountTable<T> {
+    /// OS root of an exposed mount; the primary defaults to this task's root.
+    /// Named mounts require an explicit native projection.
+    pub fn native_root_for<'a>(&'a self, mount: &'a Mount<T>) -> Option<&'a Path> {
+        match &mount.native_root {
+            NativeRoot::Path(path) => Some(path),
+            NativeRoot::Logical => None,
+            NativeRoot::Composed => self.mounted.first().and_then(|(_, primary)| {
+                std::ptr::eq(primary, mount).then_some(self.root.as_path())
+            }),
+        }
+    }
+
+    /// The native subset of this composed namespace, retaining its access modes.
+    pub fn native_mounts(&self) -> impl Iterator<Item = (&str, &Path, &Mount<T>)> {
+        self.mounts().filter_map(|(relative, mount)| {
+            self.native_root_for(mount)
+                .map(|root| (relative, root, mount))
+        })
+    }
+
     /// Resolves an admitted volume without scanning the mounted namespace.
     #[doc(hidden)]
     pub fn by_volume(
