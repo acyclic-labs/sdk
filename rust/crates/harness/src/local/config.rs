@@ -515,6 +515,7 @@ impl LocalHarnessConfig {
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     #[must_use]
     pub fn settings(mut self, settings: crate::native_settings::SettingsConfig) -> Self {
+        self.without_user_settings = false;
         self.settings = Some(settings);
         self
     }
