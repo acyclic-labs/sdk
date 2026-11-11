@@ -4,14 +4,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Real immutable files exercise the shared algorithm, including close/reopen.
-struct Disk {
+pub(crate) struct Disk {
     directory: PathBuf,
     reads: AtomicUsize,
-    largest: AtomicUsize,
+    pub(crate) largest: AtomicUsize,
 }
 
 impl Disk {
-    fn open(path: &Path) -> Self {
+    pub(crate) fn open(path: &Path) -> Self {
         Self {
             directory: path.to_owned(),
             reads: AtomicUsize::new(0),

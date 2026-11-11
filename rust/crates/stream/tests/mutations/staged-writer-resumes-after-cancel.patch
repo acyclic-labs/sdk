@@ -1,0 +1,14 @@
+diff --git a/rust/crates/stream/src/content/tree.rs b/rust/crates/stream/src/content/tree.rs
+index e1958249d59..90eb6ebddc1 100644
+--- a/rust/crates/stream/src/content/tree.rs
++++ b/rust/crates/stream/src/content/tree.rs
+@@ -162,9 +162,6 @@ impl<'a, S: Storage> Writer<'a, S> {
+     /// Consumes bytes into canonical pages. Dropping this future during IO
+     /// permanently retires the writer's ability to finish, without polling.
+     pub async fn write(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
+-        if self.interrupted {
+-            return Err(StreamError::Unavailable);
+-        }
+         self.interrupted = true;
+         let result = self.write_inner(bytes).await;
+         if result.is_ok() {

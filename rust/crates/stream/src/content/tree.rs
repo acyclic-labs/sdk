@@ -131,58 +131,103 @@ impl<S: Storage> Builder<'_, S> {
     }
 }
 
-/// Stages content in canonical fixed-size pages, independent of input fragments.
-/// No page becomes visible as a Stream record before the authority publishes
-/// its owning stage. Input custody is held until its bytes have been consumed.
+/// Incremental content writer. Failed or cancelled writes cannot be sealed as
+/// successful prefixes; their pages remain owned by the enclosing stage.
+pub struct Writer<'a, S> {
+    builder: Builder<'a, S>,
+    buffer: Vec<u8>,
+    total: u64,
+    interrupted: bool,
+}
+
+impl<'a, S: Storage> Writer<'a, S> {
+    /// Opens one private content tree without assigning any Stream position.
+    pub fn new(storage: &'a S) -> Result<Self, StreamError> {
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(PAGE_BYTES)
+            .map_err(|_| StreamError::Capacity)?;
+        buffer.extend_from_slice(BLOB_MAGIC);
+        Ok(Self {
+            builder: Builder {
+                storage,
+                levels: Vec::new(),
+            },
+            buffer,
+            total: 0,
+            interrupted: false,
+        })
+    }
+
+    /// Consumes bytes into canonical pages. Dropping this future during IO
+    /// permanently retires the writer's ability to finish, without polling.
+    pub async fn write(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
+        if self.interrupted {
+            return Err(StreamError::Unavailable);
+        }
+        self.interrupted = true;
+        let result = self.write_inner(bytes).await;
+        if result.is_ok() {
+            self.interrupted = false;
+        }
+        result
+    }
+
+    async fn write_inner(&mut self, mut bytes: &[u8]) -> Result<(), StreamError> {
+        self.total = self
+            .total
+            .checked_add(u64::try_from(bytes.len()).map_err(|_| StreamError::Capacity)?)
+            .ok_or(StreamError::Capacity)?;
+        while !bytes.is_empty() {
+            let count = bytes.len().min(PAGE_BYTES - self.buffer.len());
+            self.buffer.extend_from_slice(&bytes[..count]);
+            bytes = &bytes[count..];
+            if self.buffer.len() == PAGE_BYTES {
+                let part = put(
+                    self.builder.storage,
+                    Kind::Blob,
+                    std::mem::take(&mut self.buffer),
+                    LEAF_BYTES as u64,
+                )
+                .await?;
+                self.builder.push(0, part).await?;
+                self.buffer
+                    .try_reserve_exact(PAGE_BYTES)
+                    .map_err(|_| StreamError::Capacity)?;
+                self.buffer.extend_from_slice(BLOB_MAGIC);
+            }
+        }
+        Ok(())
+    }
+
+    /// Seals the complete tree. An interrupted or failed writer has no root.
+    pub async fn finish(mut self) -> Result<Root, StreamError> {
+        if self.interrupted {
+            return Err(StreamError::Unavailable);
+        }
+        if self.buffer.len() > BLOB_MAGIC.len() || self.total == 0 {
+            let length = (self.buffer.len() - BLOB_MAGIC.len()) as u64;
+            let part = put(self.builder.storage, Kind::Blob, self.buffer, length).await?;
+            self.builder.push(0, part).await?;
+        }
+        self.builder.finish().await
+    }
+}
+
+/// Stages a stream through the one incremental content writer, independent of
+/// input fragments. No page is visible as a record before stage publication.
 pub async fn upload(
     storage: &impl Storage,
     input: impl Stream<Item = Result<OwnedBytes, StreamError>>,
 ) -> Result<Root, StreamError> {
     futures::pin_mut!(input);
-    let mut builder = Builder {
-        storage,
-        levels: Vec::new(),
-    };
-    let mut buffer = Vec::new();
-    buffer
-        .try_reserve_exact(PAGE_BYTES)
-        .map_err(|_| StreamError::Capacity)?;
-    buffer.extend_from_slice(BLOB_MAGIC);
-    let mut total = 0_u64;
+    let mut writer = Writer::new(storage)?;
     while let Some(fragment) = input.next().await {
         let fragment = fragment?;
-        total = total
-            .checked_add(u64::try_from(fragment.len()).map_err(|_| StreamError::Capacity)?)
-            .ok_or(StreamError::Capacity)?;
-        let mut bytes = fragment.as_slice();
-        while !bytes.is_empty() {
-            let count = bytes.len().min(PAGE_BYTES - buffer.len());
-            buffer.extend_from_slice(&bytes[..count]);
-            bytes = &bytes[count..];
-            if buffer.len() == PAGE_BYTES {
-                let part = put(
-                    storage,
-                    Kind::Blob,
-                    std::mem::take(&mut buffer),
-                    LEAF_BYTES as u64,
-                )
-                .await?;
-                builder.push(0, part).await?;
-                buffer
-                    .try_reserve_exact(PAGE_BYTES)
-                    .map_err(|_| StreamError::Capacity)?;
-                buffer.extend_from_slice(BLOB_MAGIC);
-            }
-        }
+        writer.write(fragment.as_slice()).await?;
     }
-    if buffer.len() > BLOB_MAGIC.len() || total == 0 {
-        let length = (buffer.len() - BLOB_MAGIC.len()) as u64;
-        let part = put(storage, Kind::Blob, buffer, length).await?;
-        builder.push(0, part).await?;
-    }
-    builder.finish().await
+    writer.finish().await
 }
-
 /// Lazy verified reader. The pending stack contains only bounded manifest pages
 /// along one path, never an index or buffer proportional to total content size.
 pub struct Reader<'a, S> {
@@ -260,4 +305,4 @@ impl<'a, S: Storage> Reader<'a, S> {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests;
+pub(crate) mod tests;

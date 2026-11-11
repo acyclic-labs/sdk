@@ -374,3 +374,48 @@ Retained evidence: Q:/scratch/stream-unbounded/notification-b35862.log.
 A subsequent source cleanup only removes the import the compiler reported
 unused; production code is identical to this validated source. The new staged
 protocol and six complete atomicity proofs remain outstanding.
+
+## Staged ingestion wire layout (before implementation)
+
+Expose the content tree's existing uploader as an incremental Writer, and keep
+upload as its stream adapter. An interrupted/failed write permanently poisons
+that writer; it cannot later seal a truncated prefix. Both use the same builder,
+page codec, storage IO and lazy verified reader.
+
+The staged request v1 byte stream begins with a domain/version, commit identity,
+request family, retry key and optional deadline, then effect count. Its tokens
+are Effect, Condition, Append, Fork, Exclusion, Record, Key and Attribute, with
+wide counts and explicit tags. Caller record order is retained. Each byte field
+has either an inline chunk representation or a content-tree root; large record
+values therefore live in their own content tree and record tokens retain only
+the root. The inline threshold splits physical work and never rejects a value.
+Paths, exclusion lists and header lists use that same field/token representation
+rather than imposing a request-sized frame. The decoder retains only one field,
+one content page and fixed counters for its current effect/mutation/record.
+
+A sealed StagedWrite has private immutable commit id, original request family,
+retry key and content root. Its header is bound inside the hashed bytes. It
+assigns NO stream position or condition outcome. Its decoder verifies the
+binding, token order, declared counts and end of stream. The content root is a
+transport/staging identity, NOT a substitute for the final canonical retry
+digest: deadline and accepted-output selection must preserve existing retry
+semantics. Final apply consumes this cursor rather than rebuilding a huge
+WriteRequest. Backend entrypoints, publication, owner-event collection and the
+six complete atomicity proofs remain separate integration work; ingestion-only
+controls cannot certify them.
+
+The ingestion checkpoint implements the versioned token stream, fixed-counter
+shape decoder, private commit/key/family binding and large-field references.
+The content uploader now delegates to the same incremental Writer. A real-file
+cancellation control waits on the stored-page channel event and proves the
+writer cannot resume or seal after its write future is dropped. A production
+patch removing that guard is retained as its negative control. Additional
+controls ingest 100k effects with two ordered records each, a 64 MiB addressed
+record between ordinary records, fork/exclusion/header tokens, and every byte
+truncation of a complete staged frame. They do not apply a Stream commit.
+
+Current StreamProvider write entrypoints still use their bounded request path.
+This checkpoint is not completion of public-limit removal or any backend's
+atomic staged publication. The native original-work claims, stage lifecycle
+retirement, final-apply cursor planner, transport methods and batch-follow frames
+must be integrated before the conformance/proof completion audit can pass.
