@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 struct Exposed {
     turns: Arc<dyn TurnExecutors>,
     roster: Roster,
+    policy: acyclic_harness_core::context::ContextDiscoveryPolicy,
 }
 
 impl TurnExecutors for Exposed {
@@ -57,7 +58,7 @@ impl TurnExecutors for Exposed {
                 exposures,
                 seen,
                 content.reader.as_ref(),
-                &Default::default(),
+                &self.policy,
                 &mut Default::default(),
             )
             .await
@@ -144,6 +145,7 @@ async fn fixture() -> Result<Fixture> {
 fn exposed(turns: Arc<dyn TurnExecutors>) -> Result<Exposed> {
     Ok(Exposed {
         turns,
+        policy: Default::default(),
         roster: Roster::home(TargetRecord {
             name: "home".into(),
             owner: "user".into(),
@@ -188,7 +190,7 @@ async fn large_instruction_selection(
     files: &Host,
     issuer: &AuthorityRoot,
     source: &WorkspaceEntry,
-) -> Result<Vec<WorkspaceEntry>> {
+) -> Result<(WorkspaceEntry, Vec<String>)> {
     let volume = source.volume()?;
     let grants = Capabilities::new([volume.capability(VolumeOperation::Write, &mut None)?]);
     let scope = issuer.bootstrap_scope("large-instructions", &grants, None, &mut None)?;
@@ -201,14 +203,15 @@ async fn large_instruction_selection(
         &mut None,
     )?;
     let prefix = vec!["r".repeat(240); 9].join("/");
-    let mut entries = Vec::new();
+    let root = format!("{prefix}/instructions");
+    let mut names = Vec::new();
     for n in 0_u8..32 {
-        let root = format!("{prefix}/w{n}");
+        let name = format!("INSTRUCTIONS-{n}.md");
         files
             .put_content(
                 volume,
                 &grant,
-                &format!("{root}/AGENTS.md"),
+                &format!("{root}/{name}"),
                 format!("instruction body {n}").as_bytes(),
                 "text/markdown",
                 "AGENTS.md",
@@ -218,14 +221,17 @@ async fn large_instruction_selection(
                 ContentAccess::default(),
             )
             .await?;
-        entries.push(WorkspaceEntry {
-            id: EntryId::from_bytes([64 + n; 16]),
-            name: format!("extra-{n}"),
+        names.push(name);
+    }
+    Ok((
+        WorkspaceEntry {
+            id: EntryId::from_bytes([64; 16]),
+            name: "extra".into(),
             root,
             ..source.clone()
-        });
-    }
-    Ok(entries)
+        },
+        names,
+    ))
 }
 
 fn tree(source: &WorkspaceEntry, path: &AgentPath) -> WorkspaceEntry {
@@ -353,6 +359,19 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
         if let Some(document) = document {
             let requests = model.requests();
             let request = requests.last().ok_or("missing model request")?;
+            // A removal can return to a document already in the prefix.
+            let prior_occurrences = requests.len().checked_sub(2).map_or(0, |at| {
+                requests[at]
+                    .messages
+                    .iter()
+                    .filter(|message| {
+                        message
+                            .content
+                            .file_refs()
+                            .any(|file| *file == document.file)
+                    })
+                    .count()
+            });
             assert_eq!(
                 request
                     .messages
@@ -362,8 +381,8 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
                         .file_refs()
                         .any(|file| *file == document.file))
                     .count(),
-                if turn == 16 { 2 } else { 1 },
-                "one new delta; restoring instructions retains the earlier document message"
+                prior_occurrences + 1,
+                "turn {turn} must append one delta and retain earlier uses of this document"
             );
             if matches!(turn, 2 | 4 | 16) {
                 let instructions = selected_instructions(&files, document).await?;
@@ -463,7 +482,8 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             users,
             instruction_files: _,
         } = fixture().await?;
-        let extra = large_instruction_selection(&files, &issuer, &users[0]).await?;
+        let (extra, instruction_names) =
+            large_instruction_selection(&files, &issuer, &users[0]).await?;
         let proof_files = files.clone();
         let model = Arc::new(
             ScriptedModelProvider::new([
@@ -491,13 +511,15 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             Arc::new(Grants(vec!["tool:call:wait".into()])),
         )
         .with_agent_tools(&["wait".into()]);
+        let mut turns = exposed(Arc::new(turns))?;
+        turns.policy.instruction_names.extend(instruction_names);
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
             within(),
             files.clone(),
             issuer,
             TurnAdmission::LocalRoot,
-            Arc::new(exposed(Arc::new(turns))?),
+            Arc::new(turns),
             LIMITS,
             acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
         ));
@@ -513,9 +535,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         let mut adoption = adopted(path.id());
         adoption.volumes = vec![tree(&users[0], &path), private, users[0].clone()];
         host.create(&intent("paused-root"), adoption).await?;
-        for entry in &extra {
-            change(&stream, &path, WorkspaceOp::Add, entry.clone(), &entry.name).await?;
-        }
+        change(&stream, &path, WorkspaceOp::Add, extra.clone(), &extra.name).await?;
         host.drain(&path).await?;
         let waiting = deliver(&host, &path, requested("pause-with-instructions", &path)).await?;
         assert_eq!(
@@ -538,8 +558,10 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             selection.manifest.descriptor().byte_length() > MAX_RECORD_BYTES as u64,
             "the reported instruction selection must exceed the record envelope"
         );
+        let entries = selected_instructions(&proof_files, document).await?;
+        assert_eq!(entries.len(), 2);
         assert_eq!(
-            selected_instructions(&proof_files, document).await?.len(),
+            entries.iter().map(|entry| entry.files.len()).sum::<usize>(),
             33
         );
         let mut replacement = users[0].clone();
