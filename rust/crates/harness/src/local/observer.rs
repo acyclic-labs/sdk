@@ -14,7 +14,7 @@ use crate::{
 use acyclic_harness_client::{
     AgentClient, AgentClientError, AgentEvent, AgentSelection, ReadTarget, WireSessionError,
 };
-use acyclic_stream::{StreamError, StreamPath, wire};
+use acyclic_stream::{StreamPath, wire};
 
 /// What an observer sees, in commit order per stream.
 pub enum Event {
@@ -121,7 +121,7 @@ impl Observer {
         .map_err(storage)?;
         client
             .open_resource(wire::SessionSubscription {
-                credential: super::endpoint::CREDENTIAL,
+                credential: connection.controls.observation_credential(),
                 filter: None,
                 channel: None,
                 resume: Some(match projection {
@@ -235,13 +235,16 @@ impl Observer {
     /// classification rather than being treated as another creation wait.
     fn follow_error(&self, error: AgentClientError) -> Error {
         tracing::debug!(%error, "observer follow failed");
-        if matches!(
-            &error,
-            AgentClientError::Session(WireSessionError::Stream(StreamError::Unavailable))
-        ) {
+        if error.code() == "unavailable" {
             self.connection.stream_failure(error)
         } else {
-            storage(error)
+            match error {
+                AgentClientError::Subscription {
+                    resource,
+                    cause: WireSessionError::Stream(source),
+                } => Error::StreamFollow { resource, source },
+                error => storage(error),
+            }
         }
     }
 

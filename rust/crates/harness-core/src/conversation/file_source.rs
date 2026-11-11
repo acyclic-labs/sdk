@@ -90,6 +90,8 @@ impl PathSelectionView<'_> {
         Ok(())
     }
 }
+/// Original allocation ownership for an authored file selection.
+pub(crate) type FileSelectionCustody = Option<crate::filesystem::PreparationCustody>;
 
 /// An immutable authored file selection. This identifies the selected generation
 /// and path; it makes no whole-file digest or native snapshot completeness claim.

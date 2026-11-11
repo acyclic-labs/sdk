@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/agent/machine.rs b/rust/crates/harness-core/src/agent/machine.rs
+index 7133b83462c..5524167da23 100644
+--- a/rust/crates/harness-core/src/agent/machine.rs
++++ b/rust/crates/harness-core/src/agent/machine.rs
+@@ -1258,7 +1258,7 @@ async fn run<T: TurnDriver + ?Sized>(
+                 child: super::AgentId::from_bytes([u8::MAX; 16]),
+                 settled_at_micros: u64::MAX,
+             }),
+-            child_wakes: child_wakes.clone(),
++            child_wakes: None,
+             phase: Phase::WaitingApproval { id: id.clone(), binding: binding.clone() },
+             cursor: u64::MAX,
+             conversation: u64::MAX,

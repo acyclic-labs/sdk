@@ -287,6 +287,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(projection::Users::default()),
         execution: StateArc::new(AsyncMutex::new(())),
+        _binding: None,
     });
     std::fs::write(&blocked.destination, b"authored blocker").map_err(storage)?;
     let table = super::super::mounts::owner(
@@ -350,6 +351,7 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(projection::Users::default()),
         execution: StateArc::new(AsyncMutex::new(())),
+        _binding: None,
     });
     let table = super::super::mounts::owner(
         &mounts.root,
@@ -401,6 +403,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(projection::Users::default()),
         execution: StateArc::new(AsyncMutex::new(())),
+        _binding: None,
     });
     let table = |primary: &Arc<MountedVolume>, named: &Arc<MountedVolume>| {
         super::super::mounts::owner(

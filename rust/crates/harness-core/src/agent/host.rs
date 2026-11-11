@@ -368,7 +368,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         let conversation = agent.conversation()?;
         match self.provider.tail(conversation.clone()).await {
             Ok(_) => return self.conversation_cursor(conversation, from).await,
-            Err(StreamError::NotFound) if from == 0 => {}
+            Err(error) if from == 0 && error.category() == StreamError::NotFound => {}
             Err(error) => return Err(Error::Stream(error)),
         }
         let actor = self.actor(agent)?;
@@ -534,7 +534,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 }
                 return Ok(SpawnOutcome::Spawned { child });
             }
-            Err(StreamError::NotFound) => {}
+            Err(error) if error.category() == StreamError::NotFound => {}
             Err(error) => return Err(Error::Stream(error)),
         }
         let mut state = super::checkpoint_head(checkpoint.ok_or(Error::Record(

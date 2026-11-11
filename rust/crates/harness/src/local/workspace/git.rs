@@ -48,13 +48,13 @@ impl Commands<'_> {
     /// publication window and conflict projection all remain inside it.
     pub(in crate::local) fn invoke<'a>(
         &'a self,
-        command: &'a str,
+        parsed: crate::tools::FsCommand,
         context: CommandContext<'a>,
         before: acyclic_stream::BoxProviderFuture<'a, Result<()>>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_fs::GitCommandOutput>> {
         Box::pin(async move {
             context.owner.verify().await?;
-            let parsed = self.fs_arguments(command, context.scope)?;
+            self.fs_source(self.workspace, &parsed, context.scope)?;
             let mut state =
                 crate::sync::owned::lock_owned(StateArc::clone(&self.workspace.state)).await;
             let selected: acyclic_stream::BoxProviderFuture<'_, _> =

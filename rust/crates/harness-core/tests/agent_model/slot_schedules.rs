@@ -3,18 +3,32 @@
 use super::*;
 
 #[tokio::test]
-async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
-    let invalid = [String::new(), "x".repeat(MAX_INTENT_BYTES + 1), "\0".into()]
+async fn an_invalid_turn_fails_before_publishing_status_or_effects() -> Result {
+    let invalid = [String::new(), "x".repeat(MAX_NAME_BYTES + 1), "\0".into()]
         .into_iter()
         .map(Wait::Host)
-        .chain([Wait::Approval {
-            id: intent("invalid-action"),
-            binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
-                operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
-                action_digest: [0; 32],
+        .chain([
+            Wait::Approval {
+                id: intent("invalid-action"),
+                binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
+                    operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
+                    action_digest: [0; 32],
+                }),
+            },
+            Wait::Approval {
+                id: intent(&"a".repeat(MAX_RECORD_BYTES)),
+                binding: None,
+            },
+        ])
+        .map(|wait| (wait, None))
+        .chain([(
+            Wait::Input,
+            Some(Out::Archive {
+                target: AgentPath::root(&id(9)),
+                id: intent(&"a".repeat(MAX_RECORD_BYTES)),
             }),
-        }]);
-    for wait in invalid {
+        )]);
+    for (wait, extra) in invalid {
         let (root, mut state) = populated_parent(0).await?;
         state.turn = Some(Progress {
             inbox: 0,
@@ -23,13 +37,15 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
         state.phase = Phase::Running;
         let driver = script(vec![TurnStep {
             checkpoint: Some(vec![]),
-            outs: vec![Out::Spawn {
+            outs: std::iter::once(Out::Spawn {
                 profile: None,
                 history: None,
                 intent: intent("spawn:invalid-host"),
                 brief: None,
                 volumes: vec![],
-            }],
+            })
+            .chain(extra)
+            .collect(),
             wait,
             drops: None,
         }]);
@@ -55,14 +71,16 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
             spawns(&result.outs).is_empty(),
             "invalid wait published unchecked effects"
         );
-        StatusRecord {
-            child_settlement: None,
-            child_wakes: None,
-            phase: result.state.phase,
-            cursor: u64::MAX,
-            conversation: u64::MAX,
-        }
-        .encode()?;
+        result
+            .status
+            .as_ref()
+            .ok_or("missing failure status")?
+            .encode()?;
+        lower(
+            &result,
+            1,
+            acyclic_stream::IdempotencyKey::new("invalid-turn")?,
+        )?;
     }
     Ok(())
 }
@@ -149,6 +167,75 @@ async fn a_child_finishing_during_pause_cannot_strand_a_recorded_replay() -> Res
     assert_eq!(spawns(&resumed.outs), [recorded]);
     assert!(resumed.state.open_children.contains(&child).await?);
     assert_eq!(resumed.state.open_children.len(), 4);
+    Ok(())
+}
+
+#[tokio::test]
+async fn inbox_settlement_reserves_the_selected_agents_ancestry() -> Result {
+    let (root, mut state) = populated_parent(0).await?;
+    let sender = Sender::Host {
+        host: "native".into(),
+    };
+    let approval = |length| {
+        InboxRecord::Approval(Approval {
+            id: intent(&"a".repeat(length)),
+        })
+    };
+    let (mut fits, mut refuses) = (1, MAX_RECORD_BYTES);
+    while fits + 1 < refuses {
+        let length = fits + (refuses - fits) / 2;
+        if send(&root, &sender, &approval(length)).is_ok() {
+            fits = length;
+        } else {
+            refuses = length;
+        }
+    }
+    let record = approval(fits);
+    send(&root, &sender, &record)?;
+    let mut destination = root.clone();
+    for _ in 0..128 {
+        destination = destination.child(&id(8))?;
+    }
+    send(&destination, &sender, &approval(1))?;
+    assert!(
+        send(&destination, &sender, &record).is_err(),
+        "deep destination omitted its settlement ancestry"
+    );
+    state.turn = Some(Progress {
+        inbox: 0,
+        checkpoint: Vec::new(),
+    });
+    state.phase = Phase::Running;
+    let driver = script(vec![TurnStep {
+        checkpoint: None,
+        outs: vec![Out::Send {
+            to: destination,
+            record,
+        }],
+        wait: Wait::Input,
+        drops: None,
+    }]);
+    let result = step(
+        &driver,
+        &root,
+        Some(state),
+        (1, 0),
+        Wake::Alarm,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert!(matches!(
+        result.state.phase,
+        Phase::Done {
+            outcome: AgentOutcome::Failed { .. }
+        }
+    ));
+    assert!(
+        !result
+            .outs
+            .iter()
+            .any(|out| matches!(out, Out::Send { .. }))
+    );
     Ok(())
 }
 
