@@ -119,7 +119,8 @@ impl ExecutionJournal for ReplayOnly<'_> {
 
 #[tokio::test]
 async fn a_thousand_records_retain_live_metadata_without_decoder_scratch() -> Result<()> {
-    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let replay_only = ReplayOnly::new(journal.as_ref());
     let journal: &dyn ExecutionJournal = &replay_only;

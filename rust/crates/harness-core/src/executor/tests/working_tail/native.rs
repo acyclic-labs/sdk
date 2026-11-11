@@ -7,7 +7,8 @@ struct CutFixture {
 }
 
 async fn private_cut() -> Result<CutFixture> {
-    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let (provider, _) = counted_model(65_536, None, [], []);
     let executor = StockExecutor::new(

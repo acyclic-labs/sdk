@@ -96,7 +96,7 @@ async fn read(
     file: &acyclic_harness::conversation::FileRef,
     maximum: u64,
 ) -> acyclic_harness::Result<acyclic_stream::OwnedBytes> {
-    store.read(file, maximum, None, None)?.await
+    store.read(file, Some(maximum), None, None)?.await
 }
 
 /// Runs the content scenario in volume `bucket` over `objects`, checks its oracle
@@ -167,7 +167,7 @@ pub(super) async fn run(
         ranged.as_ref(),
         content.expected.get(1..4).unwrap_or_default(),
     )?;
-    owner_store.verify(&file, MAXIMUM, None)?.await?;
+    owner_store.verify(&file, Some(MAXIMUM), None)?.await?;
     // An attachment manifest round-trips through the same volume.
     let items = vec![Attachment {
         file: file.clone(),

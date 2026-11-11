@@ -638,7 +638,7 @@ async fn effective_skill_reads_stay_within_the_reader_allowance() -> Result<()> 
     let project = volume(directory.path()).await?;
     let harness = LocalHarness::open(volume_config(directory.path(), project, text())?.limits(
         crate::conversation::Limits {
-            file_bytes: FILE_BYTES,
+            file_bytes: Some(FILE_BYTES),
             ..Default::default()
         },
     ))

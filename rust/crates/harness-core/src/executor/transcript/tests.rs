@@ -18,7 +18,7 @@ async fn initial_request(
 #[tokio::test]
 async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> Result<()> {
     let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let journal = journal.as_ref();
     let prepared = crate::model::PreparedModelRequest::prepare(
@@ -50,14 +50,15 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
     assert_eq!(file.descriptor().media_type(), REQUEST_MEDIA);
     let manifest_bytes = journal.load(&file, None)?.await?;
     let manifest_text = std::str::from_utf8(&manifest_bytes).unwrap();
-    assert!(manifest_text.starts_with("{\"$version\":3,"));
+    assert!(manifest_text.starts_with("{\"$version\":4,"));
     for (index, bytes) in [
-        manifest_text.replacen("{\"$version\":3,", "{", 1),
-        manifest_text.replacen("{\"$version\":3,", "{\"$version\":0,", 1),
-        manifest_text.replacen("{\"$version\":3,", "{\"$version\":1,", 1),
-        manifest_text.replacen("{\"$version\":3,", "{\"$version\":2,", 1),
-        manifest_text.replacen("{\"$version\":3,", "{\"$version\":4,", 1),
-        "{\"$version\":4,malformed body".into(),
+        manifest_text.replacen("{\"$version\":4,", "{", 1),
+        manifest_text.replacen("{\"$version\":4,", "{\"$version\":0,", 1),
+        manifest_text.replacen("{\"$version\":4,", "{\"$version\":1,", 1),
+        manifest_text.replacen("{\"$version\":4,", "{\"$version\":2,", 1),
+        manifest_text.replacen("{\"$version\":4,", "{\"$version\":3,", 1),
+        manifest_text.replacen("{\"$version\":4,", "{\"$version\":5,", 1),
+        "{\"$version\":5,malformed body".into(),
     ]
     .into_iter()
     .enumerate()
@@ -123,10 +124,10 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         let mut signed = load_manifest(journal, &file, None).await?;
         signed.version = version;
         signed.admitted_limits = Limits {
-            file_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
+            file_bytes: Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             path_bytes: std::num::NonZeroUsize::new(4096),
             attachments: std::num::NonZeroUsize::new(8),
-            render_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
+            render_bytes: Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             context_messages: std::num::NonZeroUsize::new(128),
             ..Limits::default()
         };
@@ -188,7 +189,8 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
         // The actual persisted bytes must admit their version before payload
         // decoding and reopen under the same custody that funded the write.
         let funded_storage =
-            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536))
+                .await?;
         let funded_journal = funded_storage.journal();
         let funded_seed = initial_request(funded_journal.as_ref(), &prepared).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -213,7 +215,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
             funded_journal
                 .load(&funded, None)?
                 .await?
-                .starts_with(b"{\"$version\":3,")
+                .starts_with(b"{\"$version\":4,")
         );
         assert_eq!(
             load_request(
@@ -326,7 +328,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
 #[tokio::test]
 async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> Result<()> {
     let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let journal = journal.as_ref();
     let authority = crate::core::Authority {
@@ -371,7 +373,7 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
     assert!(!manifest.authenticates(
         &verifier,
         Limits {
-            render_bytes: 1,
+            render_bytes: Some(1),
             ..Limits::default()
         },
         digest,
@@ -412,7 +414,7 @@ fn assert_component_proofs(
     let header = serde_json::to_value(&manifest.header)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     for (path, replacement) in [
-        ("/$version", 4.into()),
+        ("/$version", 5.into()),
         ("/header", reference),
         ("/header_digest/0", (manifest.header_digest[0] ^ 1).into()),
         ("/messages/reference", header),

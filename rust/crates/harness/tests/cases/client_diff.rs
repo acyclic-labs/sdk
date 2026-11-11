@@ -272,8 +272,10 @@ impl Fixture {
             u64::MAX,
             &mut None,
         )?;
-        let files = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 1 << 20, None)?;
-        let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
+        let files =
+            FilesystemContentVerifier::new(host.clone(), &verifier, &scope, Some(1 << 20), None)?;
+        let reader =
+            FilesystemContentVerifier::new(host.clone(), &verifier, &scope, Some(32_768), None)?;
         Ok(Self {
             filesystem,
             _issuer: issuer,
@@ -630,7 +632,7 @@ async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> 
         fixture.host.clone(),
         &fixture._issuer.verifier(&mut None).expect("verifier"),
         &scope,
-        1 << 20,
+        Some(1 << 20),
         None,
     )?;
     assert!(matches!(
@@ -878,7 +880,7 @@ impl ContentResidencyVerifier for Reader<'_> {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a acyclic_harness::resources::GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<

@@ -36,7 +36,7 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                 fixture.files.clone(),
                 &fixture.verifier,
                 signed,
-                maximum,
+                Some(maximum),
                 None,
             )?,
             writer: Some(crate::filesystem::FilesystemContentPublisher::new(
@@ -44,7 +44,7 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                 &private,
                 &fixture.verifier,
                 signed,
-                maximum,
+                Some(maximum),
                 None,
             )?),
         },

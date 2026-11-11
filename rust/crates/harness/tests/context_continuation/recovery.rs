@@ -8,7 +8,7 @@ use super::*;
 pub(super) async fn local_journal_compaction_preserves_context_settlement_and_retry_admission()
 -> Result<()> {
     use acyclic_harness::executor::{ExecutionEvent, ModelPurpose};
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(131_072)).await?;
     let journal = storage.journal();
     for summary in [false, true] {
         let operation = OperationId::new();

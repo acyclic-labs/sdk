@@ -278,7 +278,7 @@ impl LocalHarness {
             &self.journal,
             &self.verifier,
             &self.signed,
-            maximum_bytes,
+            Some(maximum_bytes),
             None,
         )
     }

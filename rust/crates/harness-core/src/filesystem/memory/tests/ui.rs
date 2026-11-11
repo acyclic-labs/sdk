@@ -3,7 +3,7 @@ use crate::{agent::TurnOutputs, executor::ExecutionEvent};
 
 #[tokio::test]
 async fn ui_agent_override_and_turn_receipts_ignore_old_asks() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 1_048_576).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(1_048_576)).await?;
     let grant = ContentGrant::verify(
         &storage.issuer.verifier(&mut None)?,
         &storage.scope,

@@ -16,7 +16,7 @@ fn notice_admission_bounds_metadata_and_the_whole_batch() -> Result<()> {
         coalesce_key: Some("files".into()),
     };
     let limits = Limits {
-        render_bytes: 1024,
+        render_bytes: Some(1024),
         ..Limits::default()
     };
     let admit = |notices| {
@@ -117,7 +117,7 @@ impl crate::conversation::ContentResidencyVerifier for PrefixReader {
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
-        _: u64,
+        _: Option<u64>,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
@@ -467,7 +467,7 @@ fn projection_envelopes_enforce_the_render_bound() -> Result<()> {
         let exact = crate::contract::canonical_json_bytes(&content)?.len() as u64;
         content.validate_limits(
             Limits {
-                render_bytes: exact,
+                render_bytes: Some(exact),
                 ..Limits::default()
             },
             &mut None,
@@ -476,7 +476,7 @@ fn projection_envelopes_enforce_the_render_bound() -> Result<()> {
             content
                 .validate_limits(
                     Limits {
-                        render_bytes: exact - 1,
+                        render_bytes: Some(exact - 1),
                         ..Limits::default()
                     },
                     &mut None
@@ -549,7 +549,7 @@ fn continuation_metadata_is_bounded_and_bound_to_the_prepared_request() -> Resul
         PreparedModelRequest::prepare(
             input.clone(),
             Limits {
-                render_bytes: 16,
+                render_bytes: Some(16),
                 ..Limits::default()
             },
             None

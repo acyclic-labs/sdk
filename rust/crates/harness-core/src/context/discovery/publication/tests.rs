@@ -77,7 +77,8 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
+    let reader =
+        FilesystemContentVerifier::new(host.clone(), &verifier, &scope, Some(32_768), None)?;
     let denied_scope = issuer.bootstrap_scope(
         "unrelated-directory",
         &crate::Capabilities::new([volume.directory_read_capability("elsewhere", &mut None)?]),
@@ -85,7 +86,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         &mut None,
     )?;
     let denied_reader =
-        FilesystemContentVerifier::new(host.clone(), &verifier, &denied_scope, 32_768, None)?;
+        FilesystemContentVerifier::new(host.clone(), &verifier, &denied_scope, Some(32_768), None)?;
     let resource = acyclic_fs::session::resource(workspace.id().volume_id(), "")?;
     let credential = signed::root(|block| {
         for certificate in block

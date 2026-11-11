@@ -4,7 +4,7 @@ use super::*;
 async fn segmented_projection_recovers_accounting_and_checkpoint_with_original_custody()
 -> Result<()> {
     let storage =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65_536)).await?;
     let journal = storage.journal();
     let journal = journal.as_ref();
     let mut context = crate::context::Context {

@@ -56,7 +56,8 @@ where
     O: AsyncObjectStore + 'static,
 {
     let storage =
-        MemoryHarnessStorage::from_providers(AgentId::new(), 1_048_576, filesystem, stream).await?;
+        MemoryHarnessStorage::from_providers(AgentId::new(), Some(1_048_576), filesystem, stream)
+            .await?;
     collect_in(recipe, paths, storage).await
 }
 

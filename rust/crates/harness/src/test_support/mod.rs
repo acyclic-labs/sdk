@@ -245,7 +245,7 @@ pub async fn prompt_settled(
     }
     let bytes = harness
         .client_reader()?
-        .read(&entry.output, 1 << 20, None, None)?
+        .read(&entry.output, Some(1 << 20), None, None)?
         .await?;
     let output =
         serde_json::from_slice(&bytes).map_err(|error| crate::Error::Invalid(error.to_string()))?;

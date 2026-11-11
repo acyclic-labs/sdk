@@ -75,7 +75,7 @@ impl ModelRequest {
         &mut self,
         limits: Limits,
         io: Option<&PreparationIo>,
-    ) -> Result<u64> {
+    ) -> Result<Option<u64>> {
         #[cfg(not(target_arch = "wasm32"))]
         let _span = tracing::debug_span!("acyclic.harness.request.validate").entered();
         with_history_io(io, |work| limits.validate(work))?;
@@ -209,7 +209,7 @@ impl ModelRequest {
                     crate::executor::stock_string_push(
                         fragments,
                         fragment,
-                        u64::MAX,
+                        None,
                         "tool notice schema size overflows",
                         io,
                     )?;
@@ -496,7 +496,7 @@ pub struct PreparedModelRequest {
     replay_key: std::sync::OnceLock<[u8; 32]>,
     projection_nodes: AtomicUsize,
     admitted_limits: Limits,
-    instruction_remaining: u64,
+    instruction_remaining: Option<u64>,
     encoding: Vec<encoding::EncodingPrefix>,
     input: encoding::Input,
     content_admission: Option<admission::ContentAdmission>,
@@ -707,7 +707,7 @@ impl PreparedModelRequest {
     fn encode_validated(
         request: ModelRequest,
         limits: Limits,
-        instruction_remaining: u64,
+        instruction_remaining: Option<u64>,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
         request.split_summary_instruction()?;

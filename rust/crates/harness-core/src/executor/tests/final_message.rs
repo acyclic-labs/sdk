@@ -122,7 +122,7 @@ fn response_collection_retires_consumed_and_ignored_deltas() -> Result<()> {
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    stock.limits.file_bytes = 11;
+    stock.limits.file_bytes = Some(11);
     let input = TurnInput {
         max_steps: None,
         operation_id: OperationId::new(),
@@ -287,7 +287,7 @@ fn response_collection_retires_unpublished_calls_and_metadata() -> Result<()> {
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    stock.limits.render_bytes = 64;
+    stock.limits.render_bytes = Some(64);
     let input = TurnInput {
         max_steps: None,
         operation_id: OperationId::new(),
@@ -461,7 +461,7 @@ fn assistant_part_admission_keeps_existing_history_and_retires_rejected_payload(
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    stock.limits.render_bytes = 4;
+    stock.limits.render_bytes = Some(4);
     for native in [false, true] {
         for (text, reject_storage) in [("ok", false), ("too long", false), ("ok", true)] {
             let observed = crate::test_support::accounted::accounted(native, 65_536, false, |io| {
@@ -790,7 +790,7 @@ async fn usage_times_keep_dispatch_boundaries_across_wall_jumps_and_replay() -> 
 #[test]
 fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
     let limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
     let mut admission = ModelEventAdmission::default();
@@ -827,7 +827,7 @@ fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
 #[test]
 fn completed_message_is_bounded_before_admission() -> Result<()> {
     let limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
     for text in ["", "λ λ"] {

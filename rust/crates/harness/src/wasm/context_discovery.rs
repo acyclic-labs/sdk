@@ -179,7 +179,7 @@ impl ContentResidencyVerifier for BrowserReader {
     fn verify<'a>(
         &'a self,
         _: &'a FileRef,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         _io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, ()>> {
         Err(Error::Unsupported(
@@ -289,7 +289,7 @@ impl ContentResidencyVerifier for BrowserReader {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<

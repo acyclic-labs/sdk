@@ -176,7 +176,7 @@ fn turns() -> Result<Turns> {
     Ok(Turns {
         executors: Arc::new(Never),
         limits: TurnLimits {
-            maximum_bytes: 64 * 1024,
+            maximum_bytes: Some(64 * 1024),
             history_turns: 8,
         },
         actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
@@ -417,7 +417,7 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
         bound.volumes().clone(),
         &authority.verifier,
         &authority.scope,
-        1 << 20,
+        Some(1 << 20),
         None,
     )?;
     let expanded = expand_attachments(model_input(&input)?, reader.as_ref()).await?;

@@ -70,7 +70,7 @@ proptest! {
             discovery: DiscoveredContext { instructions: Vec::new(), skills: vec![declared] },
             ..Default::default()
         };
-        let limits = Limits { render_bytes: 32_768, ..Default::default() };
+        let limits = Limits { render_bytes: Some(32_768), ..Default::default() };
         let encoded = manifest.encode(limits)?;
         let restored = ContextManifest::decode(&encoded, limits)?;
         prop_assert_eq!(&restored, &manifest);
@@ -140,7 +140,7 @@ proptest! {
             "manifest.json".into(), &mut None,
         )?;
         let manifest = ContextManifest { sources: vec![reference.clone()], ..Default::default() };
-        let limits = Limits { render_bytes: 32_768, ..Default::default() };
+        let limits = Limits { render_bytes: Some(32_768), ..Default::default() };
         let bytes = manifest.encode(limits)?;
         prop_assert_eq!(ContextManifest::decode(&bytes, limits)?, manifest.clone());
         let limits = Limits { path_bytes: std::num::NonZeroUsize::new(bound), ..limits };
@@ -168,7 +168,7 @@ proptest! {
             tools: Vec::new(),
             ..Default::default()
         };
-        let limits = Limits { render_bytes: 32_768, ..Default::default() };
+        let limits = Limits { render_bytes: Some(32_768), ..Default::default() };
         let bytes = manifest.encode(limits)?;
         for path_bytes in [Some(bound), Some(length - 1), Some(length), Some(length + 1), None].map(|bound| bound.and_then(std::num::NonZeroUsize::new)) {
             let limits = Limits { path_bytes, ..limits };
@@ -186,13 +186,13 @@ proptest! {
                 .map(|(index, description)| definition(format!("tool{index}"), description)).collect(),
             ..Default::default()
         };
-        let limits = Limits { render_bytes: 32_768, ..Default::default() };
+        let limits = Limits { render_bytes: Some(32_768), ..Default::default() };
         let encoded = manifest.encode(limits)?;
         let decoded = ContextManifest::decode(&encoded, limits)?;
         prop_assert_eq!(&decoded, &manifest);
         prop_assert_eq!(decoded.encode(limits)?, encoded.clone());
         prop_assert!(ContextManifest::decode(&encoded, Limits {
-            render_bytes: encoded.len() as u64 - 1, ..limits
+            render_bytes: Some(encoded.len() as u64 - 1), ..limits
         }).is_err(), "oversized manifest was admitted");
     }
 
@@ -227,7 +227,7 @@ proptest! {
 #[test]
 fn malformed_manifests_fail_before_any_binding() {
     let limits = Limits {
-        render_bytes: 32_768,
+        render_bytes: Some(32_768),
         ..Default::default()
     };
     for input in [
@@ -311,7 +311,8 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> Result<()> {
-    let storage = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(4096)).await?;
     let reader = storage.content_bindings().reader;
     let mut manifest = ContextManifest::default();
     manifest.discovery.skills = vec![

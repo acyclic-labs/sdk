@@ -115,7 +115,7 @@ mod tests {
         for mode in 0..3 {
             let native = mode == 2;
             for case in 0..if mode == 0 { 8 } else { 1 } {
-                let storage = MemoryHarnessStorage::new(AgentId::new(), 1_000_000).await?;
+                let storage = MemoryHarnessStorage::new(AgentId::new(), Some(1_000_000)).await?;
                 let journal = storage.journal();
                 let mut events = vec![ScriptedEvent::Event(ModelEvent::Content {
                     delta: allow.into(),
@@ -215,7 +215,7 @@ mod tests {
                 let model = Model::new("test".into(), "review".into(), "1".into())?;
                 let request = ApprovalRequest::new("original", b"{\"action\":\"exact\"}", 4096)?;
                 let limits = Limits {
-                    render_bytes: if case == 7 { 512 } else { 4096 },
+                    render_bytes: Some(if case == 7 { 512 } else { 4096 }),
                     ..Limits::default()
                 };
                 let first = review_model(

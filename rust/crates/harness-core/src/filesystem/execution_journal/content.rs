@@ -460,7 +460,7 @@ where
                 )
             })?;
             return verifier
-                .verify(reference, super::MAXIMUM_PAYLOAD_BYTES, io)?
+                .verify(reference, Some(super::MAXIMUM_PAYLOAD_BYTES), io)?
                 .await;
         }
         if let Some(io) = io {

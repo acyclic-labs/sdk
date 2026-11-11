@@ -40,7 +40,7 @@ async fn open(
 
 #[tokio::test]
 async fn default_policy_opens_an_approval_that_waits_for_its_decider() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
     assert_eq!(open(&storage).await?.1, None);
     Ok(())
 }
@@ -51,7 +51,7 @@ async fn human_decision_settles_a_waiting_approval() -> Result<()> {
         (true, InteractionOutcome::Approved {}),
         (false, InteractionOutcome::Declined {}),
     ] {
-        let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+        let storage = MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
         let (id, waiting) = open(&storage).await?;
         assert_eq!(waiting, None);
         // Only the policy's own principal may decide.
@@ -140,7 +140,8 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
     }
 
     let agent = crate::agent::AgentId::from_bytes([13; 16]);
-    let storage = MemoryHarnessStorage::new(AgentId::from_bytes(agent.to_bytes()), 65_536).await?;
+    let storage =
+        MemoryHarnessStorage::new(AgentId::from_bytes(agent.to_bytes()), Some(65_536)).await?;
     let files = Arc::new(AgentInternalFiles::new(
         storage.host.clone(),
         storage.volume.clone(),
@@ -178,7 +179,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
         None,
         Default::default(),
         Limits {
-            file_bytes: 65_536,
+            file_bytes: Some(65_536),
             ..Limits::default()
         },
     )?;
@@ -272,7 +273,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
 
 #[tokio::test]
 async fn approval_policy_binds_before_the_journal_is_shared() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
     let _shared = storage.journal();
     assert!(
         storage
@@ -286,7 +287,7 @@ async fn approval_policy_binds_before_the_journal_is_shared() -> Result<()> {
 async fn an_exact_human_rule_replays_and_keeps_agent_policy_and_action_scope() -> Result<()> {
     use crate::interaction::{ApprovalTarget, ApprovalVerdict};
     let owner = AgentId::new();
-    let storage = MemoryHarnessStorage::new(owner.clone(), 65_536).await?;
+    let storage = MemoryHarnessStorage::new(owner.clone(), Some(65_536)).await?;
     let journal = storage.journal();
     let denied = InteractionId::new();
     journal.open_interaction(denied, &approval(), None)?.await?;
@@ -466,7 +467,7 @@ async fn an_exact_human_rule_replays_and_keeps_agent_policy_and_action_scope() -
             None,
             Default::default(),
             Limits {
-                file_bytes: 65_536,
+                file_bytes: Some(65_536),
                 ..Limits::default()
             },
         )?;
@@ -535,7 +536,7 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
         }
     }
     let agent = AgentId::new();
-    let storage = MemoryHarnessStorage::new(agent.clone(), 65_536).await?;
+    let storage = MemoryHarnessStorage::new(agent.clone(), Some(65_536)).await?;
     let files = Arc::new(FailGrantOnce {
         files: storage.internal_files.clone(),
         fail: AtomicBool::new(true),
@@ -546,7 +547,7 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
         None,
         Default::default(),
         Limits {
-            file_bytes: 65_536,
+            file_bytes: Some(65_536),
             ..Limits::default()
         },
     )?;

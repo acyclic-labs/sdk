@@ -332,10 +332,7 @@ impl TurnExecutors for StockExecutors {
             let (model, provider) = self.selected(agent)?;
             let native = self.native.get(&model, || provider.native_tools(&model))?;
             let provider = provider
-                .bind_content(
-                    authority.content.reader.clone(),
-                    Some(self.limits.file_bytes),
-                )
+                .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
                 .unwrap_or(provider);
             let directive = match (self.templates, &agent.profile) {
                 (true, Some(creation)) => Some(
@@ -440,7 +437,7 @@ impl TurnExecutors for StockExecutors {
                     let bytes = authority
                         .content
                         .reader
-                        .read(file, file.descriptor().byte_length(), None, None)?
+                        .read(file, Some(file.descriptor().byte_length()), None, None)?
                         .await?;
                     let request: crate::agent::ContinuationRequest = serde_json::from_slice(&bytes)
                         .map_err(|error| Error::Invalid(error.to_string()))?;

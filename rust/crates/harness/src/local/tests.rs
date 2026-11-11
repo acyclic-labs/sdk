@@ -135,7 +135,7 @@ pub(super) async fn request_text(
                     | crate::model::FileProjectionPolicy::ProjectInstructions(_)
             ) {
                 let bytes = reader
-                    .read(file, file.descriptor().byte_length(), None, None)?
+                    .read(file, Some(file.descriptor().byte_length()), None, None)?
                     .await?;
                 text.push('\n');
                 text.push_str(

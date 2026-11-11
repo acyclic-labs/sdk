@@ -19,7 +19,7 @@ impl ContentResidencyVerifier for Content {
         _prefix: &'a str,
         _path: &'a str,
         _generation: Option<&'a acyclic_harness::resources::GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<

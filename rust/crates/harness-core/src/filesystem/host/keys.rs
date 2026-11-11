@@ -170,7 +170,7 @@ pub(crate) fn content_path(
             crate::executor::stock_string_push(
                 &mut result,
                 part,
-                u64::MAX,
+                None,
                 "context path size overflow",
                 Some(io),
             )?;

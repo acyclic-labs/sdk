@@ -112,7 +112,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
         &harness.scratch,
         &harness.verifier,
         &harness.signed,
-        1 << 20,
+        Some(1 << 20),
         None,
     )?;
     let task = Arc::new(harness.harness.agent_context(

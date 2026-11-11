@@ -304,7 +304,7 @@ pub async fn read_request_files(
             })?;
             policy.projected_bytes(file, maximum)?;
             reader
-                .read(file, file.descriptor().byte_length(), None, None)?
+                .read(file, Some(file.descriptor().byte_length()), None, None)?
                 .await?;
         }
     }

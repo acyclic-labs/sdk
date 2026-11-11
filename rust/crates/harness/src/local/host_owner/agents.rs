@@ -244,7 +244,7 @@ impl HostDriver {
                 Arc::clone(&self.files),
                 &verifier,
                 &scope,
-                bound,
+                Some(bound),
                 None,
             )?,
             writer: FilesystemContentPublisher::new(
@@ -252,7 +252,7 @@ impl HostDriver {
                 private.volume()?,
                 &verifier,
                 &scope,
-                bound,
+                Some(bound),
                 None,
             )?,
         })
@@ -266,7 +266,7 @@ impl HostDriver {
             .await?;
         Ok(content
             .reader
-            .read(file, bound, None, None)?
+            .read(file, Some(bound), None, None)?
             .await?
             .to_vec())
     }
@@ -327,7 +327,7 @@ impl HostDriver {
         {
             let bytes = content
                 .reader
-                .read(&file, MAXIMUM_BYTES, None, None)?
+                .read(&file, Some(MAXIMUM_BYTES), None, None)?
                 .await?;
             let brief = serde_json::from_slice::<Brief>(&bytes).map_err(storage)?;
             if brief.prompt != prompt {

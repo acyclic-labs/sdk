@@ -45,7 +45,7 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
     let narrow = RuntimeScope::new(
         grants,
         Limits {
-            render_bytes: 4,
+            render_bytes: Some(4),
             ..Limits::default()
         },
     )?;
@@ -86,8 +86,9 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
     use crate::{conversation::VolumeOperation, runtime::Bindings};
 
     let project =
-        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
-    let home = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65536)).await?;
+    let home =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), Some(65536)).await?;
     let mut grants = vec!["tool:call:read".into(), "tool:call:write".into()];
     for storage in [&project, &home] {
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
@@ -95,8 +96,8 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
         }
     }
     let limits = Limits {
-        file_bytes: 65536,
-        render_bytes: 4096,
+        file_bytes: Some(65536),
+        render_bytes: Some(4096),
         ..Limits::default()
     };
     let task = Arc::new(

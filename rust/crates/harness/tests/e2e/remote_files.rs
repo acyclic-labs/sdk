@@ -95,7 +95,7 @@ proptest::proptest! {
             let objects = Arc::new(MemoryObjects::memory());
             let files = filesystem(stream.clone(), objects, false).await?;
             let storage = MemoryHarnessStorage::from_providers(
-                AgentId::new(), 1_048_576, files, stream,
+                AgentId::new(), Some(1_048_576), files, stream,
             ).await?;
             execution::publish(&storage, &BTreeMap::from([("src/lib.rs".into(), text.clone())])).await?;
             execution::check_files(

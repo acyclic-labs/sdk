@@ -36,7 +36,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         &fixture.volume,
         &fixture.issuer.verifier(&mut None)?,
         &scope,
-        4096,
+        Some(4096),
         None,
     )?;
     let operation = acyclic_harness::OperationId::from_bytes([52; 16]);
@@ -194,7 +194,7 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
         &fixture.volume,
         &fixture.issuer.verifier(&mut None)?,
         &fixture.scope,
-        4096,
+        Some(4096),
         None,
     )?;
     let operation = acyclic_harness::OperationId::new();

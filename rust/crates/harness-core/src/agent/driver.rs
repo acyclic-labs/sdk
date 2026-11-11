@@ -100,7 +100,7 @@ pub async fn expand_attachments(
         && file.descriptor().media_type() == NOTICE_MEDIA_TYPE
     {
         let bytes = reader
-            .read(file, file.descriptor().byte_length(), None, None)?
+            .read(file, Some(file.descriptor().byte_length()), None, None)?
             .await?;
         file.descriptor().verify(&bytes, &mut None)?;
         let notice: crate::conversation::wire::Notice = crate::contract::json_from_slice(&bytes)
@@ -121,7 +121,7 @@ pub async fn expand_attachments(
         && file.descriptor().media_type() == USER_INPUT_MEDIA_TYPE
     {
         let bytes = reader
-            .read(file, file.descriptor().byte_length(), None, None)?
+            .read(file, Some(file.descriptor().byte_length()), None, None)?
             .await?;
         file.descriptor().verify(&bytes, &mut None)?;
         let input: ModelContent = crate::contract::json_from_slice(&bytes)
@@ -149,7 +149,7 @@ pub async fn expand_attachments(
             continue;
         };
         let bytes = reader
-            .read(&file, file.descriptor().byte_length(), None, None)?
+            .read(&file, Some(file.descriptor().byte_length()), None, None)?
             .await?;
         let items =
             crate::conversation::decode_attachment_manifest(&file, bytes.as_ref(), None, None)?;

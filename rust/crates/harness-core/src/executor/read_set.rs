@@ -408,10 +408,10 @@ mod tests {
         };
         use std::sync::Arc;
 
-        let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+        let storage = MemoryHarnessStorage::new(AgentId::new(), Some(4096)).await?;
         let limits = Limits {
-            file_bytes: 4096,
-            render_bytes: 4096,
+            file_bytes: Some(4096),
+            render_bytes: Some(4096),
             ..Limits::default()
         };
         let task = Arc::new(

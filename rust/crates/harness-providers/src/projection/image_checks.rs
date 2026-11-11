@@ -42,7 +42,7 @@ impl ContentResidencyVerifier for Reader {
     fn read<'a>(
         &'a self,
         file: &'a FileRef,
-        _: u64,
+        _: Option<u64>,
         ceiling: Option<&'a acyclic_harness_core::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {

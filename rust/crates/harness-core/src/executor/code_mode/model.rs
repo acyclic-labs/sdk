@@ -247,7 +247,7 @@ async fn check_programs(input: &[u8], definitions: &OwnedBytes, literal: &str, t
                 definitions.clone(),
                 send,
                 tokio_util::sync::CancellationToken::new(),
-                maximum,
+                Some((maximum) as u64),
                 allocator,
                 16,
             )
@@ -301,7 +301,7 @@ async fn check_progress(definitions: &OwnedBytes) {
             definitions.clone(),
             send,
             tokio_util::sync::CancellationToken::new(),
-            4096,
+            Some((4096) as u64),
             allocator,
             16,
         );
@@ -411,7 +411,7 @@ async fn check_replies(
             definitions.clone(),
             send,
             tokio_util::sync::CancellationToken::new(),
-            maximum,
+            Some((maximum) as u64),
             allocator,
             16,
         );
@@ -484,7 +484,7 @@ async fn canonical_reply(
         definitions.clone(),
         send,
         tokio_util::sync::CancellationToken::new(),
-        maximum,
+        Some((maximum) as u64),
         allocator,
         16,
     )
@@ -531,7 +531,7 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
                 definitions.clone(),
                 send,
                 cancellation.clone(),
-                4096,
+                Some((4096) as u64),
                 allocator,
                 16,
             ));
@@ -614,7 +614,8 @@ fn check_logs(frame: &str) {
             let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
             let mut logs = ProgramLogs::default();
             let before = io.receipt();
-            logs.observe(raw, maximum, Some(&io)).unwrap();
+            logs.observe(raw, Some((maximum) as u64), Some(&io))
+                .unwrap();
             if logs.bytes > 0 {
                 assert!(
                     io.receipt().bytes_copied - before.bytes_copied >= expected.len() as u64,
@@ -633,7 +634,8 @@ fn check_logs(frame: &str) {
                 continue;
             }
             let mut output = json!({"value":42});
-            logs.attach(&mut output, maximum, Some(&io)).unwrap();
+            logs.attach(&mut output, Some((maximum) as u64), Some(&io))
+                .unwrap();
             let receipt = json!({"version":2,"output":output});
             let projected = crate::tools::code_mode::projected(&receipt).unwrap();
             assert!(serde_json::to_vec(projected).unwrap().len() <= maximum);
@@ -694,7 +696,7 @@ async fn repeated_console_logs_release_temporary_decode_credit() {
         b"[]".as_slice().into(),
         send,
         tokio_util::sync::CancellationToken::new(),
-        4096,
+        Some((4096) as u64),
         allocator,
         16,
     ));
@@ -708,7 +710,8 @@ async fn repeated_console_logs_release_temporary_decode_credit() {
             };
             let before = work.live_allocation_bytes();
             let raw = serde_json::from_str(&arguments.value).unwrap();
-            logs.observe(raw, 32 * 1024, Some(&io)).unwrap();
+            logs.observe(raw, Some((32 * 1024) as u64), Some(&io))
+                .unwrap();
             let retained = logs.lines.capacity() * std::mem::size_of::<serde_json::Value>()
                 + logs
                     .lines

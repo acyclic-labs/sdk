@@ -7,7 +7,7 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let storage = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 4096))?;
+    let storage = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), Some(4096)))?;
     let file =
         runtime.block_on(storage.stage(OperationId::new(), "one", b"data", "text/plain", "one"))?;
     let wire: FileRef = serde_json::from_slice(
@@ -34,7 +34,7 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
         other_host,
         &storage.verifier(),
         &storage.scope,
-        4096,
+        Some(4096),
         None,
     )?;
     for (label, reference, reader, expected_reads) in [
@@ -127,7 +127,7 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
         storage.host.clone(),
         &storage.verifier(),
         &denied,
-        4096,
+        Some(4096),
         None,
     )?;
     assert!(
@@ -141,7 +141,7 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_publication_witness_retires_independently_of_host_metadata() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(4096)).await?;
     let file = storage
         .stage(
             OperationId::new(),
@@ -193,7 +193,7 @@ async fn native_publication_witness_retires_independently_of_host_metadata() -> 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn publication_witness_failure_releases_every_allocation_boundary() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(4096)).await?;
     let file = storage
         .stage(OperationId::new(), "proof", b"data", "text/plain", "proof")
         .await?;

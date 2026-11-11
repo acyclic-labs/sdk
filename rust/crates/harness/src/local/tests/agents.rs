@@ -952,7 +952,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     // A client reads the settled output from the root's private volume.
     let output = harness
         .client_reader()?
-        .read(&entry.output, 1 << 20, None, None)?
+        .read(&entry.output, Some(1 << 20), None, None)?
         .await?;
     assert!(!output.is_empty());
     // The same authenticated connection queries an original status cut; a
@@ -1795,7 +1795,7 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         .volume()?;
     let output = harness
         .client_reader()?
-        .read(&entry.output, 1 << 20, None, None)?
+        .read(&entry.output, Some(1 << 20), None, None)?
         .await?;
     let root = names(&harness, private, "").await?;
     assert!(
@@ -2105,7 +2105,12 @@ async fn listed(
 ) -> Result<Vec<crate::conversation::FileRef>> {
     let reader = harness.client_reader()?;
     let bytes = reader
-        .read(manifest, manifest.descriptor().byte_length(), None, None)?
+        .read(
+            manifest,
+            Some(manifest.descriptor().byte_length()),
+            None,
+            None,
+        )?
         .await?;
     Ok(
         crate::conversation::decode_attachment_manifest(manifest, bytes.as_ref(), None, None)?
@@ -2326,7 +2331,10 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
                 .unwrap_or_default()
                 .to_owned(),
             file.descriptor().media_type().to_owned(),
-            reader.read(&file, 1 << 20, None, None)?.await?.to_vec(),
+            reader
+                .read(&file, Some(1 << 20), None, None)?
+                .await?
+                .to_vec(),
         ));
     }
     assert_eq!(
@@ -2375,7 +2383,10 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         .expect("a manifest");
     let fresh = listed(&harness, &fresh).await?;
     assert_eq!(
-        reader.read(&fresh[0], 1 << 20, None, None)?.await?.to_vec(),
+        reader
+            .read(&fresh[0], Some(1 << 20), None, None)?
+            .await?
+            .to_vec(),
         b"CHANGED\n"
     );
     Ok(())
@@ -3345,7 +3356,7 @@ async fn project_mentions_keep_their_volume_and_bounded_copy_paths() -> Result<(
     let reader = harness.client_reader()?;
     for (file, text) in listed.iter().zip(["short\n", "long\n"]) {
         let bytes = reader
-            .read(file, file.descriptor().byte_length(), None, None)?
+            .read(file, Some(file.descriptor().byte_length()), None, None)?
             .await?;
         assert_eq!(bytes.as_ref(), text.as_bytes());
     }
@@ -3373,7 +3384,7 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
             volume_config(directory.path(), project.clone(), provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled)
                 .limits(crate::conversation::Limits {
-                    file_bytes: FILE_BYTES,
+                    file_bytes: Some(FILE_BYTES),
                     ..Default::default()
                 }),
         )

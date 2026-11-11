@@ -183,7 +183,7 @@ async fn run_call(
         .with_compaction_policy(CompactionPolicy::Disabled)
         .with_max_output_tokens(512)
         .map_err(|_| "live output reservation failed")?;
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536)
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(65_536))
         .await
         .map_err(|_| "live journal creation failed")?;
     let journal = storage.journal();

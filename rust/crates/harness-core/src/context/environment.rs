@@ -83,8 +83,7 @@ impl EnvironmentFacts {
         let used = crate::executor::with_history_io(io, |work| {
             crate::executor::json::json_byte_length(context, None, work)
         })?;
-        let mut bodies = u64::MAX;
-        crate::model::reserve_instruction_bodies(&context.messages, &mut bodies, io)?;
+        let bodies = crate::model::reserve_instruction_bodies(&context.messages, &mut None, io)?;
         let wrapper = ModelMessage {
             role: ModelRole::User,
             content: ModelContent::Text(String::new()),
@@ -94,20 +93,35 @@ impl EnvironmentFacts {
         })?;
         // Empty string quotes are already in wrapper. One separator and at
         // most one extra input-index digit accompany the inserted message.
-        let available = limits
-            .render_bytes
-            .saturating_sub(used)
-            .saturating_sub(u64::MAX - bodies)
-            .saturating_sub(wrapper + 2);
+        let available = limits.render_bytes.map(|maximum| {
+            maximum
+                .saturating_sub(used)
+                .saturating_sub(bodies)
+                .saturating_sub(wrapper + 2)
+        });
         let mut encoded = 0_u64;
         let mut raw = 0_u64;
         self.parts(|part| {
             crate::model::charge_items(io, part.len() as u64)?;
-            raw = raw.saturating_add(part.len() as u64);
-            encoded = encoded.saturating_add(json_string_bytes(part));
+            raw = raw.checked_add(part.len() as u64).ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "environment size overflows",
+                )
+            })?;
+            encoded = encoded
+                .checked_add(json_string_bytes(part))
+                .ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "environment encoded size overflows",
+                    )
+                })?;
             Ok(())
         })?;
-        if encoded > available {
+        if available.is_some_and(|maximum| encoded > maximum) {
             return Ok(None);
         }
         let mut text = String::new();
@@ -138,7 +152,7 @@ impl EnvironmentFacts {
             crate::executor::stock_string_push(
                 &mut text,
                 part,
-                raw,
+                Some(raw),
                 "environment section exceeds allowance",
                 io,
             )
@@ -233,7 +247,7 @@ mod tests {
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text("current".into()) }],
                 current_input_index: Some(0), ..Default::default()
             };
-            let limits = Limits { render_bytes: budget, context_messages: messages.and_then(std::num::NonZeroUsize::new), ..Limits::default() };
+            let limits = Limits { render_bytes: Some(budget), context_messages: messages.and_then(std::num::NonZeroUsize::new), ..Limits::default() };
             if let Some(insertion) = facts(cwd).project(&context, limits, None)? {
                 insertion.insert(&mut context, 0, None)?;
                 prop_assert_eq!(context.current_input_index, Some(1));

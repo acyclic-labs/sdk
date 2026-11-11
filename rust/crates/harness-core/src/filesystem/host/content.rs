@@ -11,7 +11,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         key: &IdempotencyKey,
         expected_generation: Option<&GenerationRef>,
         access: crate::conversation::ContentAccess<'_, '_>,
@@ -22,7 +22,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
-        if expected_generation.is_some() {
+        if let Some(maximum_bytes) = maximum_bytes.filter(|_| expected_generation.is_some()) {
             crate::tool::edit::validate_edit_bound(maximum_bytes)?;
         }
         self.put_content_impl(
@@ -49,7 +49,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         key: &IdempotencyKey,
         path: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<Option<FileRef>> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
@@ -84,7 +84,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         key: &IdempotencyKey,
         class: InternalContentClass,
         io: Option<&PreparationIo>,
@@ -117,7 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         path: &str,
         items: &[Attachment],
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         idempotency_key: &IdempotencyKey,
     ) -> Result<ReferencedAttachments>
     where

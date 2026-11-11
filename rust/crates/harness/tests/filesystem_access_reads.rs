@@ -192,7 +192,7 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
             self.host.clone(),
             &self.issuer.verifier(&mut None)?,
             scope,
-            4096,
+            Some(4096),
             None,
         )?)
     }
@@ -403,7 +403,7 @@ async fn legacy_label_cannot_bypass_capability_path_or_expiry() -> Result<(), Bo
         assert_eq!(
             fixture
                 .reader(&scope)?
-                .read(&fixture.file, 4096, None, None)?
+                .read(&fixture.file, Some(4096), None, None)?
                 .await
                 .is_ok(),
             allowed
@@ -418,7 +418,7 @@ async fn content_reads_fail_closed_without_a_persisted_policy() -> Result<(), Bo
     assert!(matches!(
         fixture
             .reader(&fixture.scope)?
-            .read(&fixture.file, 4096, None, None)?
+            .read(&fixture.file, Some(4096), None, None)?
             .await,
         Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized
     ));
@@ -610,7 +610,7 @@ async fn structured_only_reads_and_ambiguous_payloads_use_the_same_gate()
     assert_eq!(
         fixture
             .reader(&only)?
-            .read(&fixture.file, 4096, None, None)?
+            .read(&fixture.file, Some(4096), None, None)?
             .await?
             .as_ref(),
         b"private"
@@ -631,7 +631,7 @@ async fn structured_only_reads_and_ambiguous_payloads_use_the_same_gate()
     assert!(matches!(
         fixture
             .reader(&ambiguous)?
-            .read(&fixture.file, 4096, None, None)?
+            .read(&fixture.file, Some(4096), None, None)?
             .await,
         Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized
     ));
@@ -649,7 +649,7 @@ proptest! {
             let fixture = Fixture::new().await?;
             fixture.policy(deny, 2).await?;
             let scope = fixture.narrowed(grants_path, expired)?;
-            let allowed = fixture.reader(&scope)?.read(&fixture.file, 4096, None, None)?.await.is_ok();
+            let allowed = fixture.reader(&scope)?.read(&fixture.file, Some(4096), None, None)?.await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
             let grant = ContentGrant::verify_read(
                 &fixture.issuer.verifier(&mut None)?, &scope, &fixture.file,
@@ -837,7 +837,7 @@ async fn empty_pinned_reads_keep_zero_byte_bounds_and_current_authority()
             .await?
             .is_empty()
     );
-    reader.verify(&empty, 0, None)?.await?;
+    reader.verify(&empty, Some(0), None)?.await?;
     assert!(
         fixture
             .host
@@ -845,13 +845,13 @@ async fn empty_pinned_reads_keep_zero_byte_bounds_and_current_authority()
             .await
             .is_err()
     );
-    assert!(reader.verify(&fixture.file, 0, None)?.await.is_err());
+    assert!(reader.verify(&fixture.file, Some(0), None)?.await.is_err());
     for (path, expired) in [(false, false), (true, true)] {
         let scoped = fixture.narrowed(path, expired)?;
         assert!(
             fixture
                 .reader(&scoped)?
-                .verify(&empty, 0, None)?
+                .verify(&empty, Some(0), None)?
                 .await
                 .is_err()
         );
@@ -864,6 +864,6 @@ async fn empty_pinned_reads_keep_zero_byte_bounds_and_current_authority()
             .await
             .is_err()
     );
-    assert!(reader.verify(&empty, 0, None)?.await.is_err());
+    assert!(reader.verify(&empty, Some(0), None)?.await.is_err());
     Ok(())
 }

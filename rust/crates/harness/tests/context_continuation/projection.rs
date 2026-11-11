@@ -41,12 +41,12 @@ pub(super) fn typed_payload_source() -> Context {
 pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_exchange()
 -> Result<()> {
     use acyclic_harness::executor::ExecutionEvent;
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 262_144).await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), Some(262_144)).await?;
     let journal = storage.journal();
     let operation = OperationId::new();
     let limits = Limits {
-        file_bytes: 262_144,
-        render_bytes: 262_144,
+        file_bytes: Some(262_144),
+        render_bytes: Some(262_144),
         context_messages: std::num::NonZeroUsize::new(32),
         attachments: std::num::NonZeroUsize::new(32),
         path_bytes: std::num::NonZeroUsize::new(4_096),
@@ -200,7 +200,7 @@ pub(super) async fn checkpoint_envelope_binds_real_published_context_and_admitte
         )
         .await?;
     let reader = StoredContent(storage.clone());
-    let bytes = reader.read(&pinned, 65_536, None, None)?.await?;
+    let bytes = reader.read(&pinned, Some(65_536), None, None)?.await?;
     pinned.descriptor().verify(&bytes, &mut None)?;
     let reopened: acyclic_harness::context::CanonicalContextCheckpoint =
         serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;

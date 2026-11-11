@@ -36,7 +36,7 @@ mod settlement;
 mod spawn_names;
 
 const LIMITS: TurnLimits = TurnLimits {
-    maximum_bytes: 64 * 1024,
+    maximum_bytes: Some(64 * 1024),
     history_turns: 8,
 };
 
@@ -154,7 +154,7 @@ fn executors_with_render_bytes(
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
     let mut base = acyclic_harness_core::conversation::Limits::default();
     if let Some(render_bytes) = render_bytes {
-        base.render_bytes = render_bytes;
+        base.render_bytes = Some(render_bytes);
     }
     let bindings = acyclic_harness_core::runtime::Bindings {
         targets,
@@ -164,7 +164,7 @@ fn executors_with_render_bytes(
                 base
             } else {
                 acyclic_harness_core::conversation::Limits {
-                    file_bytes: 1,
+                    file_bytes: Some(1),
                     ..base
                 }
             },
@@ -911,7 +911,7 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
             )?;
             assert!(
                 reader
-                    .read(&file, file.descriptor().byte_length(), None, None)?
+                    .read(&file, Some(file.descriptor().byte_length()), None, None)?
                     .await
                     .is_err()
             );
@@ -972,7 +972,12 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
             None,
         )?;
         let bytes = reader
-            .read(files[0], files[0].descriptor().byte_length(), None, None)?
+            .read(
+                files[0],
+                Some(files[0].descriptor().byte_length()),
+                None,
+                None,
+            )?
             .await?;
         assert_eq!(bytes.as_ref(), b"peer attachment");
     }
@@ -1039,7 +1044,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         binding.volume()?,
         &notice_authority.verifier,
         &notice_authority.scope,
-        acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
+        Some(acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER),
         None,
     )?;
     drop(notice_authority);
@@ -1241,7 +1246,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     assert_eq!(first.len(), 2, "parts share the original finite allowance");
     let flattened = first.iter().flatten().cloned().collect::<Vec<_>>();
     let limits = acyclic_harness_core::conversation::Limits {
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         ..Default::default()
     };
     assert!(
