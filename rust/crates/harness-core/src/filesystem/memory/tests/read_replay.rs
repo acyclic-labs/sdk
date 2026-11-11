@@ -15,8 +15,10 @@ async fn read(task: &TaskContext, arguments: Value) -> Result<Value> {
         invocation.operation_id,
         &invocation.call_id,
     )?;
+    // Replay the unreserved call, retaining the actual file/render limits.
+    // Finite range-work accounting is covered by the original grant replay.
     let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(1_000_000, 64_000_000),
+        acyclic_fs::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

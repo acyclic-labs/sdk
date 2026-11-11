@@ -670,7 +670,13 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         let range_version = range_projection["value"]["version"].as_str().expect("selected generation");
         assert_eq!(range_result.value["text"], "on");
         assert!(range_result.value["file"]["authored"]["generation"].is_object());
-        assert!(call(&task, &read, json!({"path":"notes/one.txt", "range":{"start":0,"end":4}})).await.is_err());
+        let (clipped_invocation, clipped) = call(&task, &read,
+            json!({"path":"notes/one.txt", "range":{"start":0,"end":4}})).await?;
+        assert_eq!(clipped.value["text"], "one");
+        assert_eq!(clipped.value["page"]["total"], 3);
+        assert_eq!(clipped.value["page"]["eof"], true);
+        assert!(clipped.value["page"].get("next").is_none());
+        read.projection.project(&clipped_invocation, &clipped, None)?;
         let mut corrupt = range_result.clone();
         corrupt.value["text"] = json!("wrong length");
         assert!(read.projection.project(&range_invocation, &corrupt, None).is_err());
