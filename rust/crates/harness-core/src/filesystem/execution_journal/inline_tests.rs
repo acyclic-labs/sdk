@@ -21,8 +21,7 @@ async fn initialize(journal: &Journal, operation: OperationId) -> Result<()> {
         .await?;
     let prepared = request()?;
     let reference =
-        crate::executor::stage_json(journal, operation, "request", prepared.request(), None)
-            .await?;
+        crate::test_support::stage_model_request(journal, operation, "request", &prepared).await?;
     journal
         .append(
             operation,
