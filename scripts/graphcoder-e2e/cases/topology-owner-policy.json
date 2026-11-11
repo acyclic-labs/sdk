@@ -1,0 +1,38 @@
+{
+  "id": "topology-owner-policy",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": {
+    "steps": [
+      { "when": { "user": "OWNER_INITIAL" }, "text": ["SINGLE_OWNER_READY"] },
+      { "when": { "user": "OWNER_RESUME" }, "text": ["SINGLE_OWNER_STILL_READY"] }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "args": ["--topology", "single", "--new-session", "-p", "OWNER_INITIAL"],
+      "stdout_contains": ["SINGLE_OWNER_READY"]
+    },
+    {
+      "mode": "headless",
+      "args": ["--topology", "team:2", "--continue", "-p", "OWNER_INVALID"],
+      "exit": 1,
+      "stderr_contains": ["another topology"]
+    },
+    {
+      "mode": "headless",
+      "args": ["--topology", "single", "--continue", "-p", "OWNER_RESUME"],
+      "stdout_contains": ["SINGLE_OWNER_STILL_READY"]
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "model_tools": [
+      { "step": 0, "absent": ["spawn"] },
+      { "step": 1, "absent": ["spawn"] }
+    ],
+    "model_contains": ["Forced topology: single."]
+  },
+  "physical": true,
+  "adapter": "responses"
+}

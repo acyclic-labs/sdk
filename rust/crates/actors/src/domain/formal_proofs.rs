@@ -90,7 +90,6 @@ fn actor_limits_constructor_accepts_exactly_positive_values() {
 
     match ActorLimits::new(handler_timeout_millis, memory_bytes, checkpoint_bytes) {
         Ok(limits) => {
-            assert_ne!(handler_timeout_millis, 0);
             assert_ne!(memory_bytes, 0);
             assert_ne!(checkpoint_bytes, 0);
             assert_eq!(limits.handler_timeout_millis(), handler_timeout_millis);
@@ -102,7 +101,7 @@ fn actor_limits_constructor_accepts_exactly_positive_values() {
                 error,
                 DomainError::Contract(crate::ContractError::InvalidArgument)
             );
-            assert!(handler_timeout_millis == 0 || memory_bytes == 0 || checkpoint_bytes == 0);
+            assert!(memory_bytes == 0 || checkpoint_bytes == 0);
         }
     }
 }

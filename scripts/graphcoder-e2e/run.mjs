@@ -8,6 +8,8 @@
 // all temporary directories and is mandatory on Windows.
 // E2E_OUTPUT selects the matrix/capture directory; roots are retained on failure.
 // E2E_CASES_ROOT selects an isolated cases/ and coverage.json input tree.
+// E2E_PRIMARY_MOUNTING=auto exercises default capability selection; primary
+// filesystem variants otherwise select native explicitly.
 // E2E_PTY_FRAMES=1 logs observed frames, consumed actions and model requests.
 // Unix requires python3 and a controlling PTY; no alternate GraphCoder runtime.
 import assert from "node:assert/strict";
@@ -26,7 +28,7 @@ import { qualification } from "./qualification.mjs";
 import { failedCase, failureReport, finishCase, publishReport, retainCapture, verifyReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
-import { variants } from "./serial.mjs";
+import { mountingArguments, variants } from "./serial.mjs";
 import { conversation } from "./conversation.mjs";
 import { nativeHostEnvironment } from "../../plugin/tests/hosts/native-host.mjs";
 import { withFileSource } from "./file-source.mjs";
@@ -134,7 +136,7 @@ async function prepare(test, gitOrigin) {
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
   fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog,
     ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`]),
-    ...(test.variant === "physical" ? ["--workspace-mounting", "physical"] : []),
+    ...mountingArguments(test),
     ...expand(test.extra_args ?? [], fixture)];
   // Tracing owns explicit text storage, including through the native PTY host.
   for (const option of ["diagnostic-records", "diagnostic-record-bytes"]) {
@@ -284,6 +286,38 @@ function verify(result, records) {
   const { test, fixture, captures } = contexts.get(result.case);
   try {
     requests(test, records);
+    if (test.assert.trace) {
+      const expected = test.assert.trace;
+      const lines = path => readFileSync(join(fixture.workspace, path), "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+      const agents = lines(join(expected.directory, "agents.jsonl"));
+      assert.equal(agents.length, expected.agents, "trace agent count");
+      const ids = new Set(agents.map(agent => agent.id));
+      assert.equal(ids.size, agents.length, "trace repeats an agent identity");
+      assert.equal(agents.filter(agent => agent.parent === null).length, 1, "trace root count");
+      for (const agent of agents) {
+        assert.equal(agent.version, 1);
+        assert.deepEqual(agent.topology, expected.topology);
+        assert.equal(agent.role, agent.parent === null ? (expected.root_role ?? "orchestrator") : "worker");
+        assert.equal(typeof agent.model, "string");
+        if (agent.parent !== null) assert.ok(ids.has(agent.parent), "trace parent is absent");
+      }
+      const usage = lines(expected.usage);
+      for (const agent of agents) {
+        const calls = usage.filter(row => row.usage.agent_path === agent.agent_path && row.usage.completed);
+        assert.ok(calls.length, "trace has no completed call for an agent");
+        for (const row of calls) {
+          assert.ok(Number.isSafeInteger(row.usage.tokens.input));
+          assert.ok(Number.isSafeInteger(row.usage.tokens.output));
+          assert.ok(Object.hasOwn(row.usage.tokens, "cached"));
+          assert.ok(Object.hasOwn(row, "estimated_cost"), "trace lost cost observation");
+          if (expected.price_revision) {
+            assert.equal(row.estimated_cost.price_revision, expected.price_revision);
+            assert.equal(row.estimated_cost.currency, "USD");
+            assert.ok(Number.isSafeInteger(row.estimated_cost.token_nano_units), "trace lost selected token cost");
+          }
+        }
+      }
+    }
     const client = JSON.stringify(captures);
     for (const text of test.assert.wire_contains ?? []) assert.ok(client.includes(text), `client wire missing ${text}`);
     for (const text of test.assert.wire_absent ?? []) assert.ok(!client.includes(text), "client output exposed forbidden content");

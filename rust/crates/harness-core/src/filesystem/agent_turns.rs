@@ -538,6 +538,15 @@ where
     }
 
     /// The same reader both model and host child creation use.
+    pub fn with_topology(mut self, topology: crate::topology::Topology) -> Self {
+        self.templates = Arc::new(crate::topology::Templates {
+            inner: self.templates,
+            topology,
+        });
+        self
+    }
+
+    /// The same reader both model and host child creation use.
     pub fn templates(&self) -> Option<Arc<dyn crate::agent::SpawnTemplates>> {
         self.executors
             .templates()

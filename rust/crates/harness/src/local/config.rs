@@ -64,6 +64,7 @@ impl WorkspaceMounting {
 
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
+    pub(super) topology: Option<crate::topology::Topology>,
     pub(super) system_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
     pub(super) active_directory: String,
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
@@ -124,6 +125,12 @@ impl LocalProject {
 }
 
 impl LocalHarnessConfig {
+    /// Forces a run's delegation policy before its first model request.
+    pub fn topology(mut self, topology: crate::topology::Topology) -> Result<Self> {
+        topology.validate()?;
+        self.topology = Some(topology);
+        Ok(self)
+    }
     /// Publishes public host metadata under `sys/models/` or `sys/secrets/`.
     /// The caller must project metadata before calling this method: credentials,
     /// secret values and private headers do not belong in this read-only layer.
@@ -219,6 +226,7 @@ impl LocalHarnessConfig {
 
     fn configuration(workspace: PathBuf, model: Option<(Model, Arc<dyn ModelProvider>)>) -> Self {
         Self {
+            topology: None,
             system_files: Default::default(),
             active_directory: String::new(),
             goal_continuations: Some(Default::default()),

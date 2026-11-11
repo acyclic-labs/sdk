@@ -100,7 +100,7 @@ fn positive_u64_is_the_single_limits_admission_predicate() {
 
     let invalid_wire = wire::ActorLimits {
         handler_timeout_millis: 0,
-        memory_bytes: 1,
+        memory_bytes: 0,
         checkpoint_bytes: 1,
     };
     assert_eq!(ActorLimits::try_from(invalid_wire), Err(invalid));

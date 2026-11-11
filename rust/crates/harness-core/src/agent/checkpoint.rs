@@ -18,8 +18,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            // V6 combines persistent child/fact roots with admitted input frontiers.
-            version: "6".into(),
+            // V7 retains paused spawn reservations and original refusal facts.
+            version: "7".into(),
         });
     &IDENTITY
 }
@@ -291,6 +291,7 @@ mod tests {
     fn adoption() -> ForkAdopted {
         ForkAdopted {
             profile: Some(crate::agent::CreationConfig {
+                topology: None,
                 model: None,
                 continuation: None,
                 context: crate::agent::SpawnContext::TopLevel,
@@ -354,6 +355,7 @@ mod tests {
             }));
             records.push(InboxRecord::Spawn(SpawnRequest {
                 profile: crate::agent::CreationConfig {
+                    topology: None,
                     model: None,
                     continuation: None,
                     context: crate::agent::SpawnContext::TopLevel,
@@ -509,9 +511,9 @@ mod tests {
             .encode()
             .expect("a conversation entry fits");
         }
-        // The widest settled checkpoint: deepest agent that can have children,
-        // every child open and to archive, the widest adoption, settled with
-        // the widest outcome, counters at their widest, every child awaited.
+        // Representative deep checkpoints with persistent child roots, the
+        // widest retained adoption/outcome, and full-width counters. Depth
+        // itself has no harness ceiling.
         let adopted = adoption();
         for depth in [FIXTURE_DEPTH - 1, FIXTURE_DEPTH] {
             let path = agent(depth);
@@ -535,6 +537,9 @@ mod tests {
             });
             for outcome in outcomes() {
                 let state = AgentState {
+                    spawned_children: open_children.clone(),
+                    reserved_spawns: u64::MAX,
+                    topology_refusals: open_children.clone(),
                     child_settlements: Some(u64::MAX),
                     profile: adopted.profile.clone(),
                     parent: path.parent(),

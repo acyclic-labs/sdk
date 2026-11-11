@@ -22,7 +22,11 @@ use std::sync::Arc;
 /// compaction are composed: at least the turn's tool authority.
 pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
     /// Publishes the workspace before this turn's terminal record.
-    fn settle(&self, _agent: &AgentState, _turn: OperationId) -> BoxProviderFuture<'_, Result<()>> {
+    fn settle<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        _turn: OperationId,
+    ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
     /// Completes `composed`, the executor and the limits it was composed
@@ -298,6 +302,19 @@ impl TurnExecutors for StockExecutors {
                 )
                 .unwrap_or(provider);
             let mut tools = self.tools.clone();
+            let agent_tools = self
+                .agent_tools
+                .iter()
+                .filter(|name| {
+                    name.as_str() != "spawn"
+                        || agent
+                            .profile
+                            .as_ref()
+                            .and_then(|profile| profile.topology.as_ref())
+                            .is_none_or(|topology| topology.offers_spawn(agent.parent.is_none()))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
             // The agent tools act for this turn: their effects commit with it.
             if let Some(effects) = &authority.effects
                 && !self.agent_tools.is_empty()
@@ -313,7 +330,7 @@ impl TurnExecutors for StockExecutors {
                     (Arc::clone(effects), authority.children.clone()),
                     Arc::clone(writer),
                     self.limits.file_bytes,
-                    (&self.agent_tools, authority.templates.clone()),
+                    (&agent_tools, authority.templates.clone()),
                 )?;
             }
             let executor = StockExecutor::new(model, provider, ContextPipeline::default(), tools)
@@ -347,17 +364,9 @@ impl TurnExecutors for StockExecutors {
                         Some(allowed) => executor.with_tool_ceiling(allowed)?,
                         None => executor,
                     };
-                    let digest = creation.template.as_ref().map_or_else(
-                        || {
-                            blake3::hash(include_bytes!("../seed/templates/orchestrator/AGENT.md"))
-                                .to_hex()
-                                .to_string()
-                        },
-                        |file| hex::encode(file.descriptor().sha256()),
-                    );
                     executor.with_context_stage(Arc::new(crate::context::SourceStage::new(
                         "template",
-                        digest,
+                        directive.digest,
                         directive.context,
                         crate::context::ContextPlacement::Prepend,
                     )))?

@@ -218,6 +218,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             &by,
             &InboxRecord::Spawn(crate::agent::SpawnRequest {
                 profile: crate::agent::CreationConfig {
+                    topology: None,
                     model: None,
                     continuation: None,
                     context: crate::agent::SpawnContext::Fork,

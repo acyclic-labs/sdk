@@ -181,6 +181,8 @@ pub(super) fn check(bytes: &[u8]) {
         let mut actions = vec![
             HostAction::Sessions {
                 parent: task.clone(),
+                after: None,
+                limit: 256,
             },
             HostAction::Hook {
                 host: "caller".into(),
@@ -200,7 +202,11 @@ pub(super) fn check(bytes: &[u8]) {
                 task: task.clone(),
                 command: "caller command".into(),
             },
-            HostAction::Agents { task: task.clone() },
+            HostAction::Agents {
+                task: task.clone(),
+                after: None,
+                limit: 256,
+            },
         ];
         for session in sessions {
             for next in [false, true] {

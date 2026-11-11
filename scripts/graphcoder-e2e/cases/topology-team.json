@@ -1,0 +1,279 @@
+{
+  "id": "topology-team",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "prices.jsonl": "{\"version\":1,\"revision\":\"topology-e2e-v1\",\"provider\":\"e2e\",\"model\":\"tiny\",\"effective_at\":0,\"currency\":\"USD\",\"input_nano_units_per_million\":1000000000,\"output_nano_units_per_million\":2000000000,\"cached\":{\"kind\":\"included\"},\"cache_write\":{\"kind\":\"included\"},\"reasoning\":{\"kind\":\"included\"}}\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "TEAM_FIRST_ROOT"
+        },
+        "tools": [
+          {
+            "id": "first",
+            "name": "spawn",
+            "arguments": {
+              "name": "one",
+              "task": "WORKER_ONE",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_FIRST_ROOT",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "wait-one",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "one"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "WORKER_ONE"
+        },
+        "text": [
+          "ONE_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_FIRST_ROOT",
+          "tool_result": "ONE_DONE"
+        },
+        "tools": [
+          {
+            "id": "archive-one",
+            "name": "archive",
+            "arguments": {
+              "agent": "one"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_FIRST_ROOT",
+          "tool_result": "archived"
+        },
+        "tools": [
+          {
+            "id": "retired-one",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "one"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_FIRST_ROOT",
+          "tool_result": "archived"
+        },
+        "text": [
+          "FIRST_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_SECOND_ROOT"
+        },
+        "tools": [
+          {
+            "id": "second",
+            "name": "spawn",
+            "arguments": {
+              "name": "two",
+              "task": "WORKER_TWO",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_SECOND_ROOT",
+          "tool_result": "agent"
+        },
+        "tools": [
+          {
+            "id": "wait-two",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "two"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "WORKER_TWO"
+        },
+        "text": [
+          "TWO_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_SECOND_ROOT",
+          "tool_result": "TWO_DONE"
+        },
+        "tools": [
+          {
+            "id": "archive-two",
+            "name": "archive",
+            "arguments": {
+              "agent": "two"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_SECOND_ROOT",
+          "tool_result": "archived"
+        },
+        "tools": [
+          {
+            "id": "retired-two",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "two"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_SECOND_ROOT",
+          "tool_result": "archived"
+        },
+        "text": [
+          "SECOND_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_OVERFLOW_ROOT"
+        },
+        "tools": [
+          {
+            "id": "third",
+            "name": "spawn",
+            "arguments": {
+              "name": "three",
+              "task": "WORKER_THREE",
+              "role": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "TEAM_OVERFLOW_ROOT",
+          "tool_result": "tool execution failed: forced topology permits at most 2 total spawns"
+        },
+        "text": [
+          "TOTAL_CAP_PROVED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "conversation",
+      "extra_args": [
+        "--topology",
+        "team:2",
+        "--transcripts",
+        "{{workspace}}/../native-traces",
+        "--usage-jsonl",
+        "{{workspace}}/../usage.jsonl",
+        "--prices",
+        "{{workspace}}/prices.jsonl"
+      ],
+      "turns": [
+        {
+          "id": "one",
+          "text": "TEAM_FIRST_ROOT",
+          "answer": "FIRST_DONE"
+        },
+        {
+          "id": "two",
+          "text": "TEAM_SECOND_ROOT",
+          "answer": "SECOND_DONE"
+        },
+        {
+          "id": "three",
+          "text": "TEAM_OVERFLOW_ROOT",
+          "answer": "TOTAL_CAP_PROVED"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 14,
+    "model_tools": [
+      {
+        "step": 0,
+        "present": [
+          "spawn"
+        ]
+      },
+      {
+        "step": 2,
+        "absent": [
+          "spawn"
+        ]
+      },
+      {
+        "step": 8,
+        "absent": [
+          "spawn"
+        ]
+      },
+      {
+        "step": 12,
+        "present": [
+          "spawn"
+        ]
+      }
+    ],
+    "tool_errors": [
+      "tool execution failed: forced topology permits at most 2 total spawns"
+    ],
+    "trace": {
+      "topology": {
+        "version": 1,
+        "mode": "team",
+        "workers": 2
+      },
+      "usage": "../usage.jsonl",
+      "directory": "../native-traces",
+      "agents": 3,
+      "price_revision": "topology-e2e-v1"
+    }
+  },
+  "physical": true,
+  "adapter": "responses"
+}

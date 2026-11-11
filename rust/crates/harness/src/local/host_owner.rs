@@ -157,10 +157,14 @@ impl HostWorkspaceOwner {
                 };
                 self.release_idle([task], resources).await
             }
-            HostAction::Sessions { parent } => {
+            HostAction::Sessions {
+                parent,
+                after,
+                limit,
+            } => {
                 let sessions = {
                     let _view = self.attach(&parent).await?;
-                    self.sessions(&parent).await
+                    self.sessions(&parent, after.as_ref(), limit).await
                 };
                 self.release_idle([parent], sessions).await
             }
@@ -207,10 +211,10 @@ impl HostWorkspaceOwner {
                 let output = self.native_fs(operation, &task, &command).await;
                 self.release_idle([task], output).await
             }
-            HostAction::Agents { task } => {
+            HostAction::Agents { task, after, limit } => {
                 let agents = {
                     let _view = self.attach(&task).await?;
-                    self.agents(&task).await
+                    self.agents(&task, after.as_ref(), limit).await
                 };
                 self.release_idle([task], agents).await
             }
@@ -223,30 +227,34 @@ impl HostWorkspaceOwner {
         self.native.open(host, session).await
     }
 
-    async fn agents(&self, task: &AgentPath) -> Result<Value> {
+    async fn agents(
+        &self,
+        task: &AgentPath,
+        after: Option<&crate::agent::AgentId>,
+        limit: u32,
+    ) -> Result<Value> {
+        if limit == 0 {
+            return Err(Error::Invalid("agent page size must be positive".into()));
+        }
         let (state, _) = self.native.session(task).await?;
-        let mut agents = Vec::new();
-        let mut after = None;
-        loop {
-            let page = state
-                .open_children
-                .page(after.as_ref(), 256)
-                .await
-                .map_err(storage)?;
-            if page.is_empty() {
-                break;
-            }
-            for id in &page {
-                let child = task.child(id).map_err(storage)?;
-                let (child_state, session) = self.native.session(&child).await?;
-                agents.push(json!({"task":child,"reference":session.reference,
+        let children = state
+            .open_children
+            .page(after, limit as usize)
+            .await
+            .map_err(storage)?;
+        let next = (children.len() == limit as usize)
+            .then(|| children.last().cloned())
+            .flatten();
+        let mut agents = Vec::with_capacity(children.len());
+        for id in children {
+            let child = task.child(&id).map_err(storage)?;
+            let (child_state, session) = self.native.session(&child).await?;
+            agents.push(json!({"task":child,"reference":session.reference,
                 "control":session.control,"settled":session.settled,
                 "running":session.claimed().is_some(),
                 "pending":session.pending(&child_state)}));
-            }
-            after = page.last().cloned();
         }
-        Ok(json!({ "agents": agents }))
+        Ok(json!({ "agents": agents, "next": next }))
     }
 
     /// Retires each resident child view in `agents` whose session neither

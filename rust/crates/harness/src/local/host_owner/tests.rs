@@ -811,6 +811,8 @@ async fn native_cancel_interrupts_the_claim_and_archive_settles_unstarted_inputs
             OperationId::new(),
             HostAction::Agents {
                 task: fixture.parent.clone(),
+                after: None,
+                limit: 256,
             },
         )
         .await?;
@@ -977,6 +979,8 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
     fixture.session("settled", SessionAction::Next {}).await?;
     let agents = HostAction::Agents {
         task: fixture.parent.clone(),
+        after: None,
+        limit: 256,
     };
     fixture.owner.dispatch(OperationId::new(), agents).await?;
     assert_eq!(
@@ -1367,5 +1371,75 @@ async fn concurrent_spawns_from_a_child_both_start() -> Result<()> {
         views.push(cwd(&turn)?);
     }
     assert_ne!(views[0], views[1], "each child runs in its own view");
+    // Traverse the same committed children through the actual public exchanges,
+    // one reference per page. The final seek proves exhaustion without repeats.
+    let mut after = None;
+    let mut references = BTreeSet::new();
+    for index in 0..3 {
+        let page = fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Sessions {
+                    parent: parent.clone(),
+                    after: after.clone(),
+                    limit: 1,
+                },
+            )
+            .await?;
+        let current: Vec<String> =
+            serde_json::from_value(page["references"].clone()).map_err(storage)?;
+        let agents = fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                HostAction::Agents {
+                    task: parent.clone(),
+                    after: after.clone(),
+                    limit: 1,
+                },
+            )
+            .await?;
+        let listed = agents["agents"].as_array().expect("agent page");
+        assert_eq!(listed.len(), current.len());
+        assert_eq!(agents["next"], page["next"]);
+        for (agent, reference) in listed.iter().zip(&current) {
+            assert_eq!(agent["reference"], *reference);
+        }
+        assert_eq!(current.len(), usize::from(index < 2));
+        for reference in current {
+            assert!(references.insert(reference));
+        }
+        let next: Option<crate::agent::AgentId> =
+            serde_json::from_value(page["next"].clone()).map_err(storage)?;
+        if index < 2 {
+            assert!(next.is_some());
+            assert_ne!(next, after);
+        } else {
+            assert!(next.is_none());
+        }
+        after = next;
+    }
+    assert_eq!(
+        references,
+        BTreeSet::from(["left".to_owned(), "right".to_owned()])
+    );
+    for action in [
+        HostAction::Sessions {
+            parent: parent.clone(),
+            after: None,
+            limit: 0,
+        },
+        HostAction::Agents {
+            task: parent,
+            after: None,
+            limit: 0,
+        },
+    ] {
+        assert!(matches!(
+            fixture.owner.dispatch(OperationId::new(), action).await,
+            Err(Error::Invalid(_))
+        ));
+    }
     Ok(())
 }

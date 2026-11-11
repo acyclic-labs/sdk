@@ -159,7 +159,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     /// same cut never share an idempotency key, so only one claim commits.
     instance: uuid::Uuid,
     limits: RuntimeLimits,
-    admission: tokio::sync::Semaphore,
+    admission: Option<tokio::sync::Semaphore>,
     completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
 }
 
@@ -176,7 +176,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             shards: RandomState::new(),
             instance: crate::identity::fresh_uuid(),
             limits: RuntimeLimits::default(),
-            admission: tokio::sync::Semaphore::new(RuntimeLimits::default().active),
+            admission: None,
             completions: OnceLock::new(),
         }
     }
@@ -185,7 +185,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// deliveries and continuous dispatch use the same admission bound.
     #[must_use]
     pub fn with_limits(mut self, limits: RuntimeLimits) -> Self {
-        self.admission = tokio::sync::Semaphore::new(limits.active);
+        self.admission = limits.active.map(tokio::sync::Semaphore::new);
         self.limits = limits;
         self
     }
@@ -365,7 +365,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut running = FuturesUnordered::new();
         let mut steps = 0;
         loop {
-            while running.len() < self.limits.active {
+            while self
+                .limits
+                .active
+                .is_none_or(|active| running.len() < active)
+            {
                 let Some(work) = self.ready.take() else { break };
                 running.push(self.execute(work));
                 steps += 1;
@@ -566,7 +570,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             }
                         }
                         2 => {
-                            if running.len() < self.limits.active
+                            if self
+                                .limits
+                                .active
+                                .is_none_or(|active| running.len() < active)
                                 && let Poll::Ready(work) = self.ready.poll_ready(context)
                             {
                                 return Poll::Ready(Event::Work(work));
@@ -717,11 +724,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
                 let inner = slot.inner.lock().await;
-                let _admission = self
-                    .admission
-                    .acquire()
-                    .await
-                    .map_err(|_| Error::Invalid("runtime admission is closed"))?;
+                let _admission = match &self.admission {
+                    Some(admission) => Some(
+                        admission
+                            .acquire()
+                            .await
+                            .map_err(|_| Error::Invalid("runtime admission is closed"))?,
+                    ),
+                    None => None,
+                };
                 let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
                 let result = self.deliver_retained(actor, slot, inner).await;
                 // Cancellation can interrupt a committed publication before its receipt
@@ -1031,14 +1042,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> Result<T, Error> {
         let interrupted = self.interrupt(inner, cancellation);
         let interrupted = core::pin::pin!(interrupted);
-        match futures::future::select(
-            handled,
-            futures::future::select(
-                sleep(self.handler.manifest().limits.handler_timeout_millis()),
-                interrupted,
-            ),
-        )
-        .await
+        let timeout: BoxProviderFuture<'_, ()> = Box::pin(async {
+            match self.handler.manifest().limits.handler_timeout_millis() {
+                0 => futures::future::pending::<()>().await,
+                milliseconds => sleep(milliseconds).await,
+            }
+        });
+        match futures::future::select(handled, futures::future::select(timeout, interrupted)).await
         {
             futures::future::Either::Left((transition, _)) => transition.map_err(Error::from),
             futures::future::Either::Right((futures::future::Either::Left(_), _)) => {

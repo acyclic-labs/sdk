@@ -120,7 +120,7 @@ impl WasmAgentServer {
                     history_turns: HISTORY_TURNS,
                 },
                 actors: ActorLimits::new(
-                    options.handler_timeout_ms.unwrap_or(TURN_BACKSTOP_MS),
+                    options.handler_timeout_ms.unwrap_or_default(),
                     1 << 20,
                     1 << 16,
                 )

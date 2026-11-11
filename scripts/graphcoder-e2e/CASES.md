@@ -1,5 +1,25 @@
 Cases launch the shipping GraphCoder binary with an ordinary provider catalog and isolated settings. Build GraphCoder and harness-mock-model and install scripts/graphcoder-pty dependencies before timing. Run `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [CASE ...]`.
 
+`node scripts/qualify-topology-modes.mjs GRAPHCODER MOCK_MODEL FRESH_OUTPUT`
+runs forced single and team cases plus a generated swarm with 257 siblings
+and depth 65. Team workers settle and retire across independent root turns before the
+third spawn is refused, proving a total reservation rather than an open-child
+limit. The wire oracle checks absent worker/single spawn declarations and the
+root's unchanged declarations after exhaustion. Each case also runs under a
+different forced topology and must fail the same original assertions.
+
+`child-completion-merge` writes through a worker's real shell, waits for its
+completion, then verifies the file and retained parent content through the
+parent's shell. Neither model calls merge. Its primary and physical variants
+explicitly select native and physical mounting. `topology-owner-policy`
+checks delegation stays disabled in a detached serving owner, rejects a
+different topology on attachment before any model call, and resumes under the
+original policy.
+
+Completed child work is already published into its parent. `child-discard`
+therefore checks that discarding the child's branch reference retains that
+published work; discarding a reference does not reverse a completed merge.
+
 `pty-tree-sidebar` creates a real worker, authors its private `ui/` row files,
 toggles the automatically visible tree, fuzzy-matches its title, attaches,
 and observes a live rename.

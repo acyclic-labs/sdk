@@ -87,12 +87,10 @@ impl NativeMountProbe {
 /// `mount(2)` needs effective `CAP_SYS_ADMIN`; otherwise the setuid helper
 /// mounts, and it holds only what the bounding set keeps and nothing under
 /// `no_new_privs`. Docker's stock `AppArmor` profile denies mount itself. An
-/// unreadable status leaves those facts unknown, never refused. The mount
-/// that follows still reports its own exact failure.
+/// unreadable or incomplete authority facts refuse auto selection. An explicit
+/// native mount still reports its own exact kernel failure.
 #[cfg(target_os = "linux")]
 fn linux_fuse_refusal(root: &Path) -> Option<&'static str> {
-    use std::os::unix::{ffi::OsStrExt as _, fs::MetadataExt as _};
-    const SYS_ADMIN: u64 = 1 << 21;
     if std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -103,6 +101,14 @@ fn linux_fuse_refusal(root: &Path) -> Option<&'static str> {
             "/dev/fuse is not usable; recovery: pass the device (docker run --device /dev/fuse)",
         );
     }
+    linux_mount_authority_refusal(root)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_mount_authority_refusal(root: &Path) -> Option<&'static str> {
+    use std::os::unix::{ffi::OsStrExt as _, fs::MetadataExt as _};
+    const SYS_ADMIN: u64 = 1 << 21;
+    const UNKNOWN: &str = "native mount authority could not be verified from /proc/self/status";
     // Docker's stock `AppArmor` profile denies every mount, whatever the
     // capabilities; another profile's rules are its own and stay unjudged.
     let confinement = std::fs::read_to_string(root.join("proc/self/attr/apparmor/current"))
@@ -113,7 +119,9 @@ fn linux_fuse_refusal(root: &Path) -> Option<&'static str> {
             "no mount authority: the docker-default AppArmor profile denies mount; recovery:              docker run --security-opt apparmor=unconfined (or a profile allowing fuse mounts)",
         );
     }
-    let status = std::fs::read_to_string(root.join("proc/self/status")).ok()?;
+    let Ok(status) = std::fs::read_to_string(root.join("proc/self/status")) else {
+        return Some(UNKNOWN);
+    };
     let field = |name: &str| {
         status
             .lines()
@@ -121,15 +129,21 @@ fn linux_fuse_refusal(root: &Path) -> Option<&'static str> {
             .map(str::trim)
     };
     let capabilities = |name| field(name).and_then(|hex| u64::from_str_radix(hex, 16).ok());
-    if capabilities("CapEff:")? & SYS_ADMIN != 0 {
+    let Some(effective) = capabilities("CapEff:") else {
+        return Some(UNKNOWN);
+    };
+    if effective & SYS_ADMIN != 0 {
         return None;
     }
-    if capabilities("CapBnd:")? & SYS_ADMIN == 0 {
+    let Some(bounding) = capabilities("CapBnd:") else {
+        return Some(UNKNOWN);
+    };
+    if bounding & SYS_ADMIN == 0 {
         return Some(
             "no mount authority: CAP_SYS_ADMIN is outside this process's bounding set, so              neither mount(2) nor the setuid fusermount3 helper can mount FUSE; recovery:              grant it (docker run --cap-add SYS_ADMIN)",
         );
     }
-    if field("NoNewPrivs:") == Some("1") {
+    if field("NoNewPrivs:") != Some("0") {
         return Some(
             "no mount authority: no_new_privs keeps the setuid fusermount3 helper from              mounting FUSE; recovery: run without no-new-privileges or with effective              CAP_SYS_ADMIN",
         );
@@ -144,19 +158,65 @@ fn linux_fuse_refusal(root: &Path) -> Option<&'static str> {
         None => Some(
             "no fusermount3 helper: install fuse3 so /usr/bin/fusermount3 exists, or run              with effective CAP_SYS_ADMIN",
         ),
-        Some(helper) if helper.uid() != 0 || helper.mode() & 0o4000 == 0 => Some(
-            "fusermount3 is not setuid root, so it cannot mount FUSE; recovery: reinstall              fuse3 or run with effective CAP_SYS_ADMIN",
-        ),
+        Some(helper)
+            if helper.uid() != 0 || helper.mode() & 0o4000 == 0 || helper.mode() & 0o111 == 0 =>
+        {
+            Some(
+                "fusermount3 is not setuid root, so it cannot mount FUSE; recovery: reinstall              fuse3 or run with effective CAP_SYS_ADMIN",
+            )
+        }
         Some(_) => None,
+    }
+}
+
+#[cfg(all(test, target_os = "linux", not(loom)))]
+mod capability_tests {
+    #[test]
+    fn native_auto_selection_requires_mount_authority() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let process = root.path().join("proc/self");
+        std::fs::create_dir_all(process.join("attr"))?;
+        // No status is unknown authority, rather than permission inferred from
+        // the presence of a FUSE device. Effective authority is the control.
+        assert!(super::linux_mount_authority_refusal(root.path()).is_some());
+        for (status, available) in [
+            (
+                "CapEff:\t0000000000200000\nCapBnd:\t0000000000200000\nNoNewPrivs:\t0\n",
+                true,
+            ),
+            (
+                "CapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nNoNewPrivs:\t0\n",
+                false,
+            ),
+            (
+                "CapEff:\t0000000000000000\nCapBnd:\t0000000000200000\nNoNewPrivs:\t1\n",
+                false,
+            ),
+            (
+                "CapEff:\t0000000000000000\nCapBnd:\t0000000000200000\nNoNewPrivs:\t0\n",
+                false,
+            ),
+            ("CapEff:\tinvalid\n", false),
+        ] {
+            std::fs::write(process.join("status"), status)?;
+            assert_eq!(
+                super::linux_mount_authority_refusal(root.path()).is_none(),
+                available,
+                "{status}"
+            );
+        }
+        std::fs::write(process.join("status"), "CapEff:\t0000000000200000\n")?;
+        std::fs::write(process.join("attr/current"), "docker-default (enforce)\n")?;
+        assert!(super::linux_mount_authority_refusal(root.path()).is_some());
+        Ok(())
     }
 }
 
 /// Starts a real native projection over the supplied canonical checkout.
 ///
-/// Linux startup requires writable access to the connection's abort control
-/// under `/sys/fs/fuse/connections`. The session retains that control so held
-/// files receive `ENOTCONN` after its last packet reader exits, even if fusectl
-/// subsequently becomes inaccessible.
+/// Linux retains the connection's abort control under `/sys/fs/fuse/connections`
+/// when available. Containers without writable fusectl still mount: closing the
+/// session's last device descriptor disconnects the connection.
 pub fn mount_native(
     request: NativeMountRequest,
     source: Arc<dyn MountFilesystem>,

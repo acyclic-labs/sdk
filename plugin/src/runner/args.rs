@@ -48,6 +48,10 @@ pub enum Template {
     about = "Coding agent on the local harness's agents or an endpoint's"
 )]
 pub struct Args {
+    /// Force delegation: single, team:N (N total workers, depth 1), or unbounded swarm.
+    #[arg(global = true, long, conflicts_with_all = ["host_workspace", "endpoint"])]
+    pub topology: Option<String>,
+
     /// Internal detached owner, started through the shared readiness protocol.
     #[arg(long, hide = true)]
     pub local_service: bool,
@@ -107,7 +111,8 @@ pub struct Args {
     /// Follow every agent's own journal to DIR/<stable-agent-id>.jsonl.
     /// Uses the root event output's version-one execution and payload envelopes.
     /// Also writes DIR/agents.jsonl, appending once on discovery:
-    /// {"version":1,"id":"<file stem>","agent_path":"<usage.agent_path>","parent":null}.
+    /// {"version":1,"id":"<file stem>","agent_path":"<usage.agent_path>","parent":null,
+    /// "role":"<role>","model":"<provider/model>","topology":{"version":1,"mode":"swarm"}}.
     /// parent is the parent file-stem id, or null for a root; agent_path is
     /// byte-identical to --usage-jsonl's usage.agent_path. Files are replaced on replay.
     #[arg(global = true, long, value_name = "DIR")]

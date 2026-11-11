@@ -41,6 +41,7 @@
       "owner": "children-controller",
       "cases": [
         "child-fork-message-merge",
+        "child-completion-merge",
         "child-result",
         "child-discard",
         "nested-children",
@@ -49,6 +50,9 @@
         "topology-group-chat",
         "topology-blackboard",
         "topology-hierarchy",
+        "topology-single",
+        "topology-team",
+        "topology-owner-policy",
         "pty-tree-sidebar"
       ]
     },

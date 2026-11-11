@@ -396,9 +396,13 @@ pub(super) async fn open(
     // there can neither attach this state nor receive its scratch setup.
     let path = root.path().to_path_buf();
     let identity = root.identity();
-    if native_mounts {
-        volumes::exclude_state(&root, attach.auxiliary().map(|(name, _)| name))?;
-    }
+    volumes::exclude_state(
+        &root,
+        attach
+            .auxiliary()
+            .filter(|_| native_mounts)
+            .map(|(name, _)| name),
+    )?;
     let setup = if native_mounts {
         Some(root.try_clone().map_err(storage)?)
     } else {

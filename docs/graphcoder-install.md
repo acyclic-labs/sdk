@@ -40,6 +40,44 @@ uses the same verification path, and a missing local file fails immediately.
 Checksums establish integrity against the selected release inventory. Release
 assets also carry GitHub build provenance attestations.
 
+## Stock Docker and sandboxes without FUSE
+
+GraphCoder defaults to `--workspace-mounting auto`. Before opening a workspace,
+it queries the native mounting capability. If native mounting is unavailable,
+it selects plain directories (`physical`) and prints the capability reason.
+This mode needs neither `/dev/fuse`, a fusectl mount, a FUSE helper nor privileged
+container execution. It uses the same session, stream fork and merge machinery;
+filesystem changes are captured at tool boundaries.
+
+Use `graphcoder --workspace-mounting physical doctor` to inspect an explicitly
+selected no-FUSE deployment, adding the same provider and workspace arguments
+as the session. `--workspace-mounting native` requires native capability and
+refuses when it is unavailable. A failure after native startup begins remains
+an error; it never silently changes an active workspace's mounting mode.
+
+The deterministic stock-container acceptance command is:
+
+```sh
+node scripts/qualify-docker-no-fuse.mjs node:24-trixie \
+  /absolute/path/to/graphcoder /absolute/path/to/harness-mock-model \
+  /absolute/path/to/fresh-evidence
+```
+
+Run this on Linux with Docker available and executables built from the checked
+out source. The qualifier pins the selected image ID, transfers a committed
+acceptance snapshot and runs the shipping session cases with both automatic
+and explicit physical selection. It asserts writes, child fork/message/merge
+back into the parent's files, reopen and crash recovery. Its scripted model
+needs no credentials or external network.
+
+The container runs as the caller's UID/GID with no network, extra capabilities,
+devices or security overrides. Evidence must show Docker's seccomp filter,
+no effective or bounding `CAP_SYS_ADMIN`, no `/dev/fuse`, no FUSE helper and no
+mounted fusectl. PASS is published only after the container is stopped,
+evidence is retrieved and the container is removed. Retain `docker.json`,
+`container.json`, the acceptance matrix and transcripts with the exact source
+SHA and executable digests. An earlier source's PASS does not qualify a new head.
+
 Maintainers build the shipped executable with
 `node scripts/build-product.mjs graphcoder`, using the shared `dist` build
 recipe. The existing release workflow verifies each target's native image,

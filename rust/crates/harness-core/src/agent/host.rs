@@ -523,10 +523,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             Err(StreamError::NotFound) => {}
             Err(error) => return Err(Error::Stream(error)),
         }
-        let state = super::checkpoint_state(checkpoint.ok_or(Error::Record(
+        let mut state = super::checkpoint_state(checkpoint.ok_or(Error::Record(
             "the step consuming the spawn has no checkpoint",
         ))?)?;
-        if !state.closed {
+        state.topology_refusals.bind(Arc::clone(&self.provider));
+        let topology_refusal = state.topology_refusals.contains(&child).await?;
+        if !state.closed && !topology_refusal {
             return Err(Error::Record("consumed spawn has no creation status"));
         }
         // Absence proves a refusal only for an actual Spawn input. A caller
@@ -554,7 +556,11 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             ));
         }
         Ok(SpawnOutcome::Refused {
-            reason: SpawnRefusal::Archived,
+            reason: if topology_refusal {
+                SpawnRefusal::Topology
+            } else {
+                SpawnRefusal::Archived
+            },
         })
     }
 
@@ -578,8 +584,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             ));
         }
         if self.templates.is_some() || self.model.is_some() {
-            let mut profile =
-                crate::templates::root().map_err(|error| Error::Turn(Box::new(error)))?;
+            let mut profile = crate::templates::root_with_topology(
+                self.templates
+                    .as_ref()
+                    .and_then(|templates| templates.topology()),
+            )
+            .map_err(|error| Error::Turn(Box::new(error)))?;
             profile.model.clone_from(&self.model);
             adopted.profile = Some(profile);
         }

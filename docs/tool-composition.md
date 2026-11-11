@@ -50,11 +50,16 @@ including escaping and framing, even when one schema exceeds a part. The batch
 retains its position as later steps append calls/results, preserving that prefix.
 New turns use the latest bound registry; each program binds a fresh table from
 that same snapshot. The turn's admitted tools remain pinned for receipt replay.
-Dynamic schemas stay in the admitted request for validating earlier exchanges;
-only the provider declaration iterator filters them from the native prefix.
+Native schemas remain in `tools.bound` history metadata for validating earlier
+exchanges, including a parent's calls inherited by a worker whose capabilities
+differ. Providers omit these records from model input: current native schemas
+are already in the declaration header. Dynamic schemas remain in model-visible
+`tools.changed` notices. Successor tables revoke only their own bindings for
+later calls without changing the shared prefix.
 The admitted request's explicit `compose_tools` setting controls this projection;
 stock execution sets it from the bound JavaScript executor. A custom tool named
-`code` retains ordinary declarations and does not announce a JavaScript table.
+`code` retains ordinary declarations; its history table does not enable
+JavaScript composition.
 Requests saved without the composition setting require fresh admission under
 the current request schema. Their original bytes and digests remain immutable.
 Use it for multi-step reads, filters and loops, for example:

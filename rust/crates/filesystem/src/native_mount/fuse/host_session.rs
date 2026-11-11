@@ -46,10 +46,11 @@ impl HostSession {
                 .map_err(|error| error.during("start FUSE callback workers", path))?,
         );
         operation.set("acquire initialized FUSE abort control");
-        let connection = Connection::of(path)?;
-        io.connection
-            .set(connection)
-            .map_err(|_| NativeMountError::ControlPending)?;
+        if let Some(connection) = Connection::of(path)? {
+            io.connection
+                .set(connection)
+                .map_err(|_| NativeMountError::ControlPending)?;
+        }
         Ok(())
     }
 

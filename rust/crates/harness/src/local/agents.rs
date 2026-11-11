@@ -27,7 +27,6 @@ pub type LocalTurns = FilesystemTurnHost<LocalStream, LocalAuthorityBackend, Loc
 /// Every agent of one local harness.
 pub type LocalAgents = AgentHost<LocalStream>;
 const HISTORY_TURNS: u32 = 64;
-const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 
 /// The served agent tree: the same [`crate::hosting::Server`] a remote host
 /// serves, and the runtime task that ends with it.
@@ -203,6 +202,24 @@ impl crate::hosting::Platform for LocalUser {
 struct LocalContext(Weak<LocalHarness>);
 
 impl TurnContext for LocalContext {
+    fn settle<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let local = self
+                .0
+                .upgrade()
+                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
+            #[cfg(any(test, feature = "native-execution"))]
+            local.merge_completed_workspace(agent, turn).await?;
+            #[cfg(not(any(test, feature = "native-execution")))]
+            let _ = (local, agent, turn);
+            Ok(())
+        })
+    }
+
     fn prepare<'a>(
         &'a self,
         (executor, _): (StockExecutor, crate::conversation::Limits),
@@ -286,6 +303,101 @@ struct TurnBindings<'a> {
 }
 
 impl LocalHarness {
+    /// Publish a child's fork before its terminal turn becomes observable.
+    /// The shared workspace command engine owns capture, merge, conflict
+    /// projection and physical/native reconciliation under the parent's lock.
+    #[cfg(any(test, feature = "native-execution"))]
+    async fn merge_completed_workspace(&self, agent: &AgentState, turn: OperationId) -> Result<()> {
+        let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
+            return Ok(());
+        };
+        let hosted = self
+            .agents
+            .get()
+            .ok_or_else(|| Error::Unsupported("agent hosting is closed".into()))?;
+        let parent = hosted.agents().state(parent).await.map_err(storage)?;
+        let project = |state: &AgentState| {
+            state
+                .volumes
+                .iter()
+                .find(|binding| binding.name == "project")
+                .map(|binding| binding.volume.clone())
+                .ok_or_else(|| Error::Invalid("agent has no project volume".into()))
+        };
+        let child_project = project(agent)?;
+        let parent_project = project(&parent)?;
+        if child_project == parent_project {
+            return Ok(());
+        }
+        let issuer = self
+            .root_authority
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("agent signing custody is closed".into()))?;
+        let authority = crate::filesystem::agent_authority(
+            &issuer.clone().into(),
+            &crate::filesystem::TurnAdmission::LocalRoot,
+            &parent.path,
+            &parent.volumes,
+            &[],
+        )
+        .await?;
+        let owner = super::workspace::owner::AgentOwner(parent.path.clone());
+        let parent_workspace = self
+            .project_workspace(
+                root,
+                &parent.path,
+                &parent_project,
+                &parent.volumes,
+                &authority.scope,
+                &authority.verifier,
+            )
+            .await?;
+        let child = root.spawned_project_view(&child_project).await?;
+        let branch = format!("agents/{}", agent.path.id());
+        acyclic_fs::GitCompatRepository::new(
+            parent_workspace.view().workspace().id(),
+            parent_workspace.store.clone(),
+        )
+        .register_branch_workspace(branch.clone(), child.workspace().id(), None, false)
+        .await
+        .map_err(storage)?;
+        let (capture_options, capture_policy) =
+            super::checkout_tools::capture::configuration(&parent_workspace)?;
+        let commands = super::workspace::git::Commands {
+            workspace: &parent_workspace,
+            signed: &authority.scope,
+            clock: &*self.clock,
+            capture_options: &capture_options,
+            capture_policy: &capture_policy,
+        };
+        let scope = crate::runtime::RuntimeScope::new(authority.grants, Default::default())?;
+        let parsed = commands.fs_arguments(&format!("merge {branch}"), &scope)?;
+        let mut state = crate::sync::owned::lock_owned(super::workspace::StateArc::clone(
+            &parent_workspace.state,
+        ))
+        .await;
+        let physical = parent_workspace
+            .selected_workspace(&mut state, &owner)
+            .await?;
+        let result = commands
+            .fs(
+                parsed,
+                &super::workspace::git::CommandContext {
+                    owner: &owner,
+                    operation: turn,
+                    scope: &scope,
+                    request: None,
+                },
+                &mut state,
+                &physical,
+            )
+            .await?;
+        match result {
+            super::workspace::git::Outcome::Completed(_) => Ok(()),
+            super::workspace::git::Outcome::Rejected(error) => Err(*error),
+        }
+    }
+
     /// Bind a committed project using the same adapter for turns and human
     /// filesystem actions. Only an action needing native access binds a view.
     #[cfg(any(test, feature = "native-execution"))]
@@ -552,7 +664,7 @@ impl LocalHarness {
                     maximum_bytes: self.limits.file_bytes,
                     history_turns: HISTORY_TURNS,
                 },
-                actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
+                actors: ActorLimits::new(0, 1 << 20, 1 << 16).map_err(storage)?,
                 clock: Arc::new(SystemClock),
                 approval_policy: self.preset.approval_policy.clone(),
             },
@@ -648,11 +760,15 @@ impl LocalHarness {
                 maximum_bytes: self.limits.file_bytes,
                 history_turns: HISTORY_TURNS,
             },
-            actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
+            actors: ActorLimits::new(0, 1 << 20, 1 << 16).map_err(storage)?,
             clock: Arc::new(SystemClock),
             approval_policy: self.preset.approval_policy.clone(),
         };
         let configure = |turns: LocalTurns| {
+            let turns = match &self.topology {
+                Some(topology) => turns.with_topology(topology.clone()),
+                None => turns,
+            };
             turns
                 .with_approvers(self.approval_models.clone())
                 .with_goals(self.goal_continuations)
@@ -709,6 +825,14 @@ impl LocalHarness {
         let configured = self.root_policy(&id).await?;
         let server = match bound.agents().state(&existing).await {
             Ok(state) => {
+                if state
+                    .profile
+                    .as_ref()
+                    .and_then(|profile| profile.topology.as_ref())
+                    != self.topology.as_ref()
+                {
+                    return Err(Error::Invalid("this session has another topology; start with a fresh --host-state-directory".into()));
+                }
                 self.require_shared_binding(&state)?;
                 if state.policy.as_ref() != Some(&configured) {
                     tracing::warn!(
