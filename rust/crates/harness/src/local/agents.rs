@@ -141,6 +141,31 @@ impl crate::hosting::Platform for LocalUser {
         })
     }
 
+    fn input_preview_source<'a>(
+        &'a self,
+        _: &'a acyclic_stream::session::CallAuthorization,
+        agent: &'a AgentPath,
+        maximum: u64,
+    ) -> BoxProviderFuture<'a, Result<crate::hosting::InputPreviewSource>> {
+        Box::pin(async move {
+            use futures::StreamExt as _;
+            let local = self.harness()?;
+            local.agents().await?;
+            let bound = local
+                .agents
+                .get()
+                .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+                .server
+                .bound();
+            let source: crate::hosting::InputPreviewSource = Box::pin(
+                bound
+                    .input_preview_steps(agent.clone(), maximum)
+                    .map(|step| step.map_err(storage)),
+            );
+            Ok(source)
+        })
+    }
+
     /// The local user is the tree's one human: it answers as the default
     /// human approver, the one a tool hook's escalation asks.
     fn approver(&self, _: &Principal) -> String {

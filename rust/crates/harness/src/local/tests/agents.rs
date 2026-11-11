@@ -3910,6 +3910,22 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         source[..1]
     );
     let selected_branch = Conversation::open(connection.select(branch.clone()).await?);
+    let mut input = selected_branch
+        .input_query(crate::client::AgentPageRequest::new(1, 64, None).map_err(agent)?)
+        .await
+        .map_err(agent)?;
+    let preview = loop {
+        match input.next().await.map_err(agent)? {
+            Some(crate::client::InputPreviewStep::Progress) => {}
+            Some(crate::client::InputPreviewStep::Selected(preview)) => break preview,
+            None => return Err(Error::Invalid("historical input query ended early".into())),
+        }
+    };
+    assert_eq!(
+        preview.as_ref().map(|value| value.text.as_str()),
+        Some("first decision")
+    );
+    assert!(input.next().await.map_err(agent)?.is_none());
     let mut baseline = selected_branch
         .diff_query(
             crate::client::AgentPageRequest::new(2, 2048, None).map_err(agent)?,

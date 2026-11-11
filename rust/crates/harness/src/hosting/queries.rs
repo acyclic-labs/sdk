@@ -1,13 +1,13 @@
 //! The same actor-socket query owner for local and remote serving.
 use super::*;
-use acyclic_harness_client::DiffProjection;
+use acyclic_harness_client::QueryProjection;
 use acyclic_stream::session::{PreparedSocketOpen, SocketChannel, SocketInbound, SocketProvider};
 use futures::StreamExt as _;
 
-struct PreparedDiff<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> {
+struct PreparedQuery<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> {
     server: Arc<Server<P, O>>,
     call: AgentCall,
-    projection: DiffProjection,
+    projection: QueryProjection,
 }
 
 struct ReadOnly;
@@ -25,17 +25,22 @@ where
 {
     fn prepare(self: Arc<Self>, open: Bytes) -> Result<Box<dyn PreparedSocketOpen>, StreamError> {
         let (projection, invocation) =
-            DiffProjection::decode_open(&open).map_err(|_| StreamError::InvalidArgument)?;
+            QueryProjection::decode_open(&open).map_err(|_| StreamError::InvalidArgument)?;
         let call = self.admit(invocation)?;
-        let AgentCommand::Diff { agent, page } = call.command() else {
-            return Err(StreamError::InvalidArgument);
+        let (agent, page) = match (projection, call.command()) {
+            (QueryProjection::Diff(_), AgentCommand::Diff { agent, page })
+            | (QueryProjection::Input, AgentCommand::History { agent, page }) => (agent, page),
+            _ => return Err(StreamError::InvalidArgument),
         };
         if page.cursor().is_some() {
             return Err(StreamError::InvalidArgument);
         }
         self.within_tree(agent)
             .map_err(|_| StreamError::AccessDenied)?;
-        Ok(Box::new(PreparedDiff {
+        if projection == QueryProjection::Input && page.bytes() < 8 {
+            return Err(StreamError::Capacity);
+        }
+        Ok(Box::new(PreparedQuery {
             server: self,
             call,
             projection,
@@ -43,7 +48,7 @@ where
     }
 }
 
-impl<P, O> PreparedSocketOpen for PreparedDiff<P, O>
+impl<P, O> PreparedSocketOpen for PreparedQuery<P, O>
 where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
@@ -69,7 +74,7 @@ where
         let outbound = Box::pin(async_stream::try_stream! {
             let command = self.call.command();
             let selected = match command {
-                AgentCommand::Diff { agent, page } => Some((agent, page)),
+                AgentCommand::Diff { agent, page } | AgentCommand::History { agent, page } => Some((agent, page)),
                 _ => None,
             };
             let (agent, page) = selected.ok_or(StreamError::InvalidArgument)?;
@@ -80,18 +85,23 @@ where
             };
             authorize().await?;
             self.server.platform.admitted().await?;
-            let opened = self.server.platform.diff_source(&authorization, agent).await;
+            let opened: crate::Result<acyclic_stream::BoxProviderStream<'static, crate::Result<Bytes>>> = match self.projection {
+                QueryProjection::Diff(projection) => self.server.platform.diff_source(&authorization, agent).await
+                    .map(|source| source.frames(page.clone(), projection)),
+                QueryProjection::Input => self.server.platform.input_preview_source(
+                    &authorization, agent, u64::from(page.bytes() - 8),
+                ).await.map(|source| input_frames(source, page.clone())),
+            };
             // Neither a read's data nor its source error bypasses revocation
             // while admission, endpoint selection or source IO was suspended.
             authorize().await?;
-            let source = match opened {
+            let mut frames = match opened {
                 Ok(source) => source,
                 Err(error) => {
                     yield refusal(command, page, error)?;
                     return;
                 }
             };
-            let mut frames = source.frames(page.clone(), self.projection);
             while let Some(frame) = frames.next().await {
                 authorize().await?;
                 match frame {
@@ -109,6 +119,26 @@ where
             inbound: Box::new(ReadOnly),
         })
     }
+}
+
+fn input_frames(
+    mut source: InputPreviewSource,
+    page: AgentPageRequest,
+) -> acyclic_stream::BoxProviderStream<'static, crate::Result<Bytes>> {
+    Box::pin(async_stream::try_stream! {
+        while let Some(step) = source.next().await {
+            match step? {
+                crate::agent::InputPreviewStep::Progress => yield diff::frame(4, Bytes::new(), &page)?,
+                crate::agent::InputPreviewStep::Selected(None) => yield diff::frame(7, Bytes::new(), &page)?,
+                crate::agent::InputPreviewStep::Selected(Some(preview)) => {
+                    let mut body = Vec::with_capacity(8 + preview.text.len());
+                    body.extend_from_slice(&preview.bytes.to_le_bytes());
+                    body.extend_from_slice(preview.text.as_bytes());
+                    yield diff::frame(6, body.into(), &page)?;
+                }
+            }
+        }
+    })
 }
 
 fn refusal(

@@ -1322,6 +1322,7 @@ dependencies = [
  "acyclic-plugin-identity",
  "acyclic-stream",
  "acyclic-test-support",
+ "async-stream",
  "axum",
  "blake3",
  "clap",

@@ -35,7 +35,9 @@ pub use history::{
     SavedVolume,
 };
 mod input;
+mod input_preview;
 pub(crate) use input::input as turn_input;
+pub use input_preview::{InputPreview, InputPreviewStep};
 pub mod kernel;
 mod layout;
 mod lifecycle;
