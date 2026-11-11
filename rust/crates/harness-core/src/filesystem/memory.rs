@@ -531,7 +531,7 @@ impl<
                 granted_prefix,
                 path,
                 expected_generation,
-                u64::MAX,
+                None,
                 crate::conversation::ContentAccess::default(),
             )?
             .await

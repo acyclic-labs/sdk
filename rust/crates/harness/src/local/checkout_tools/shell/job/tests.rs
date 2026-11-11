@@ -66,7 +66,7 @@ async fn terminal(harness: &LocalHarness, directory: &str) -> Result<serde_json:
                 &grant,
                 &format!("{directory}/result.json"),
                 None,
-                1 << 20,
+                Some(1 << 20),
                 Default::default(),
             )
             .await?
@@ -269,7 +269,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
             &grant,
             spill_path,
             None,
-            1 << 20,
+            Some(1 << 20),
             Default::default(),
         )
         .await?;

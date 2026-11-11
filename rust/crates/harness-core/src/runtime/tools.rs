@@ -802,7 +802,7 @@ impl ToolContext {
             })?;
             content
                 .reader
-                .verify_publication(file, file.descriptor().byte_length(), io)?
+                .verify_publication(file, Some(file.descriptor().byte_length()), io)?
                 .await?;
         }
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
@@ -828,8 +828,7 @@ impl ToolContext {
         super::content_write::authorize_volume_write(volume, self.effective_scope(), io)?;
         let maximum = io
             .map(|io| io.remaining().map(|work| work.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
+            .transpose()?;
         let (files, hold) = writer
             .observe_changes(
                 volume,
@@ -853,7 +852,7 @@ impl ToolContext {
                 }
                 content
                     .reader
-                    .verify_publication(file, file.descriptor().byte_length(), io)?
+                    .verify_publication(file, Some(file.descriptor().byte_length()), io)?
                     .await?;
             }
         }

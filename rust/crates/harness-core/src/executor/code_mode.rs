@@ -435,7 +435,7 @@ impl StockExecution<'_> {
                         let (value, _result_hold, _failure_hold) = match result {
                             Ok((value, hold)) => (value, hold, None),
                             Err(cause) => {
-                                let (value, hold) = crate::tool::value(&cause, u64::MAX, self.native_work())?;
+                                let (value, hold) = crate::tool::value(&cause, None, self.native_work())?;
                                 (value, None, hold)
                             },
                         };

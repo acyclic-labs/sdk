@@ -344,12 +344,13 @@ impl PreparationIo {
     pub(crate) fn check_json_byte_bound(
         &self,
         value: &serde_json::Value,
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> Result<()> {
         if self.original_native_work().is_none() {
             return Err(self.invalid("native JSON sizing requires original work"));
         }
-        let bounds = self.bounds(maximum, 256)?;
+        let mut bounds = self.bounds(self.remaining()?.bytes_encoded, 256)?;
+        bounds.maximum_bytes = maximum;
         crate::executor::json::json_owned_value_shape_bounded(
             value,
             bounds,

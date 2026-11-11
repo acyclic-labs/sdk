@@ -148,7 +148,7 @@ fn output(
     maximum: u64,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
-    let (value, held) = crate::tool::value(value, maximum, work)?;
+    let (value, held) = crate::tool::value(value, Some(maximum), work)?;
     Ok((ToolResult { value }, held))
 }
 

@@ -73,7 +73,10 @@ async fn racing_observation(revoke: bool, range: bool) -> Result<(), Box<dyn Err
                 )?
                 .await
         } else {
-            fixture.host.read_content(&file, &grant, 65536, None).await
+            fixture
+                .host
+                .read_content(&file, &grant, Some(65536), None)
+                .await
         }
     };
     let publication = async {

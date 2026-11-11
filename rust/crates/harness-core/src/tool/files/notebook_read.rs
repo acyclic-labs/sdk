@@ -297,7 +297,9 @@ pub(super) async fn read(
         .effective_scope()
         .limits()
         .file_bytes
-        .min(crate::tool::output::VIEW_BYTES);
+        .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
+            maximum.min(crate::tool::output::VIEW_BYTES)
+        });
     if quantum == 0 {
         return Err(executor::rejection(
             work,
@@ -603,7 +605,7 @@ pub(super) async fn read(
             },
             outputs: &outputs.values,
         },
-        u64::MAX,
+        None,
         work,
     )?;
     Ok((ToolResult { value: result.0 }, result.1))

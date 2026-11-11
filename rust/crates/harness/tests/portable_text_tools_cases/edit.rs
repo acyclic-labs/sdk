@@ -119,11 +119,15 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         .edit_text(&source, &read, &write, &replacement, 64, &key)
         .await?;
     assert_eq!(
-        host.read_content(&edited, &read, 64, None).await?.as_ref(),
+        host.read_content(&edited, &read, Some(64), None)
+            .await?
+            .as_ref(),
         b"one\r\nthree\n"
     );
     assert_eq!(
-        host.read_content(&source, &read, 64, None).await?.as_ref(),
+        host.read_content(&source, &read, Some(64), None)
+            .await?
+            .as_ref(),
         b"one\r\ntwo\n"
     );
     let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
@@ -149,7 +153,9 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         edited
     );
     assert_eq!(
-        host.read_content(&user, &read, 64, None).await?.as_ref(),
+        host.read_content(&user, &read, Some(64), None)
+            .await?
+            .as_ref(),
         b"user edit"
     );
     assert!(matches!(
@@ -190,7 +196,9 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         Err(Error::Conflict(_))
     ));
     assert_eq!(
-        host.read_content(&user, &read, 64, None).await?.as_ref(),
+        host.read_content(&user, &read, Some(64), None)
+            .await?
+            .as_ref(),
         b"user edit"
     );
     Ok(())

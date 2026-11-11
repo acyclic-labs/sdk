@@ -579,7 +579,7 @@ async fn finish_publication<'io>(
     crate::executor::with_history_io(io, |work| file.descriptor().verify(expected.bytes, work))?;
     content
         .reader
-        .verify_publication(file, file.descriptor().byte_length(), io)?
+        .verify_publication(file, Some(file.descriptor().byte_length()), io)?
         .await?;
     let (file, hold) = output;
     if let Some(hold) = hold {

@@ -219,7 +219,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         reference: &FileRef,
         grant: &ContentGrant,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         grant.require_file_read(reference, io)?;

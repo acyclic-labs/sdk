@@ -334,7 +334,7 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
             assert_eq!(
                 fixture
                     .host
-                    .read_content(&fixture.file, grant, 4096, None)
+                    .read_content(&fixture.file, grant, Some(4096), None)
                     .await
                     .is_ok(),
                 !denied,
@@ -362,7 +362,7 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
                 &directory,
                 fixture.file.path(),
                 Some(&generation),
-                4096,
+                Some(4096),
                 acyclic_harness::conversation::ContentAccess::default(),
             )
             .await;
@@ -384,7 +384,7 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
     assert!(
         fixture
             .host
-            .read_content(&fixture.file, &write, 4096, None)
+            .read_content(&fixture.file, &write, Some(4096), None)
             .await
             .is_err()
     );
@@ -464,7 +464,7 @@ async fn reference_metadata_needs_list_but_known_content_does_not() -> Result<()
         assert_eq!(
             fixture
                 .host
-                .read_content(&fixture.file, &grant, 4096, None)
+                .read_content(&fixture.file, &grant, Some(4096), None)
                 .await?
                 .as_ref(),
             b"private"
@@ -492,7 +492,7 @@ async fn reference_metadata_needs_list_but_known_content_does_not() -> Result<()
                     &grant,
                     fixture.file.path(),
                     Some(&generation),
-                    4096,
+                    Some(4096),
                     acyclic_harness::conversation::ContentAccess::default()
                 )
                 .await,
@@ -654,7 +654,7 @@ proptest! {
             let grant = ContentGrant::verify_read(
                 &fixture.issuer.verifier(&mut None)?, &scope, &fixture.file,
             )?;
-            let allowed = fixture.host.read_content(&fixture.file, &grant, 4096, None).await.is_ok();
+            let allowed = fixture.host.read_content(&fixture.file, &grant, Some(4096), None).await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
             let grant = ContentGrant::verify_directory_read(
                 &fixture.issuer.verifier(&mut None)?, &scope, &fixture.volume, "secrets", &mut None,
@@ -668,7 +668,7 @@ proptest! {
                 &fixture.issuer.verifier(&mut None)?, &scope, &fixture.volume, "secrets", &mut None,
             )?;
             let allowed = fixture.host.read_private_path(
-                &fixture.volume, &grant, fixture.file.path(), Some(&fixture.generation()?), 4096, acyclic_harness::conversation::ContentAccess::default(),
+                &fixture.volume, &grant, fixture.file.path(), Some(&fixture.generation()?), Some(4096), acyclic_harness::conversation::ContentAccess::default(),
             ).await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
             Ok::<_, Box<dyn Error>>(())
@@ -833,7 +833,7 @@ async fn empty_pinned_reads_keep_zero_byte_bounds_and_current_authority()
     assert!(
         fixture
             .host
-            .read_content(&empty, &grant, 0, None)
+            .read_content(&empty, &grant, Some(0), None)
             .await?
             .is_empty()
     );
@@ -841,7 +841,7 @@ async fn empty_pinned_reads_keep_zero_byte_bounds_and_current_authority()
     assert!(
         fixture
             .host
-            .read_content(&fixture.file, &grant, 0, None)
+            .read_content(&fixture.file, &grant, Some(0), None)
             .await
             .is_err()
     );
@@ -860,7 +860,7 @@ async fn empty_pinned_reads_keep_zero_byte_bounds_and_current_authority()
     assert!(
         fixture
             .host
-            .read_content(&empty, &grant, 0, None)
+            .read_content(&empty, &grant, Some(0), None)
             .await
             .is_err()
     );
