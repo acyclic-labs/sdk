@@ -326,6 +326,115 @@ impl HttpTransport for ToolLoop {
 }
 
 #[tokio::test]
+async fn responses_reasoning_runs_survive_delegate_results_and_durable_replay() -> Result<()> {
+    // Swarmbench 20261111T003659Z-decipher-single-XS-0c16 emitted two distinct
+    // opaque reasoning items before spawn. Preserve the whole run in order:
+    // https://developers.openai.com/api/docs/guides/reasoning#keeping-reasoning-items-in-context
+    let native = [
+        r#"{"id":"rs_plan","type":"reasoning","content":[],"encrypted_content":"opaque-plan","summary":[]}"#,
+        r#"{"id":"rs_delegate","type":"reasoning","content":[],"encrypted_content":"opaque-delegate","summary":[]}"#,
+    ];
+    let mut first = String::new();
+    for (index, item) in native.iter().enumerate() {
+        first.push_str(&format!(
+            "data: {{\"type\":\"response.output_item.done\",\"output_index\":{index},\"item\":{item}}}\n\n"
+        ));
+    }
+    first.push_str(concat!(
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"call_id\":\"delegate\",\"name\":\"spawn\",\"arguments\":\"{\\\"name\\\":\\\"worker\\\"}\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+    ));
+    let script = Arc::new(ToolLoop {
+        replies: Mutex::new(VecDeque::from([
+            first,
+            concat!(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"delegated\"}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+            )
+            .into(),
+        ])),
+        sent: Mutex::new(Vec::new()),
+    });
+    let (mut provider, _) = provider(Adapter::Responses, 200);
+    provider.model.name = "gpt-6-luna".into();
+    provider.transport = crate::deadline::Bounded::new(script.clone(), crate::TimeoutSpec::DEFAULT);
+    let (initial, dispatch) = request(&provider)?;
+    let events = provider
+        .generate(&initial, dispatch)
+        .try_collect::<Vec<_>>()
+        .await?;
+    let events: Vec<ModelEvent> = serde_json::from_slice(&serde_json::to_vec(&events).unwrap())
+        .expect("durable response events");
+    let mut next = initial.request().clone();
+    next.tools.push(acyclic_harness_core::tool::ToolDefinition {
+        name: "spawn".into(),
+        revision: "1".into(),
+        description: "Delegate to a child".into(),
+        input_schema: json!({"type":"object"}),
+        output_schema: json!({}),
+        projection_schema: json!({}),
+    });
+    let mut call_id = None;
+    for event in events {
+        let part = match event {
+            ModelEvent::ReasoningBlock { block } => ModelContentPart::Reasoning { block },
+            ModelEvent::ToolCall(call) => {
+                call_id = Some(call.call_id.clone());
+                ModelContentPart::ToolCall(call)
+            }
+            _ => continue,
+        };
+        next.messages.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(part),
+        });
+    }
+    next.messages.push(ModelMessage {
+        role: ModelRole::Tool,
+        content: ModelContent::Part(ModelContentPart::ToolResult {
+            call_id: call_id.ok_or_else(|| invalid("missing delegate call"))?,
+            name: "spawn".into(),
+            content: ToolResultContent::Json {
+                value: json!({"agent":"worker"}),
+            },
+        }),
+    });
+    let next = PreparedModelRequest::prepare(next, Limits::default(), None)?;
+    let next = PreparedModelRequest::decode(next.bytes(), Limits::default(), None)?;
+    let events = provider
+        .generate(
+            &next,
+            ModelDispatch {
+                step: 1,
+                request_digest: next.request_digest(),
+                ..dispatch
+            },
+        )
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert!(events.contains(&ModelEvent::Content {
+        delta: "delegated".into(),
+    }));
+    let sent = script.sent.lock().map_err(|_| invalid("fixture lock"))?;
+    assert_eq!(sent.len(), 2);
+    let body = json(&sent[1].body)?;
+    assert!(crate::validate_input(Adapter::Responses, &body).is_empty());
+    let input = body["input"].as_array().expect("Responses input");
+    let start = input
+        .iter()
+        .position(|item| item["id"] == "rs_plan")
+        .unwrap();
+    assert_eq!(input[start + 1]["id"], "rs_delegate");
+    assert_eq!(input[start + 2]["type"], "function_call");
+    assert_eq!(input[start + 3]["type"], "function_call_output");
+    let encoded = std::str::from_utf8(&sent[1].body).unwrap();
+    for item in native {
+        assert!(encoded.contains(item), "native item changed during replay");
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoning_protocols()
 -> Result<()> {
     for adapter in [Adapter::Anthropic, Adapter::Gemini, Adapter::Responses] {

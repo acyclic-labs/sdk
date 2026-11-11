@@ -612,16 +612,18 @@ pub(crate) fn response_sequence_violation(
     }
 }
 
-/// Independent reference, deliberately not `ResponseItem`: each reasoning item
-/// is immediately followed by a function call or an assistant message.
+/// Independent reference, deliberately not `ResponseItem`: a reasoning run
+/// ends with a function call or an assistant message, without an interruption.
 fn unanswered_reasoning(items: &[serde_json::Value]) -> usize {
     (0..items.len())
         .filter(|&index| {
             items[index]["type"] == "reasoning"
                 && !items.get(index + 1).is_some_and(|next| {
-                    next["type"] == "function_call"
-                        || (next["type"].as_str().unwrap_or("message") == "message"
-                            && next["role"] == "assistant")
+                    matches!(
+                        next["type"].as_str(),
+                        Some("reasoning" | "function_call" | "custom_tool_call")
+                    ) || (next["type"].as_str().unwrap_or("message") == "message"
+                        && next["role"] == "assistant")
                 })
         })
         .count()
