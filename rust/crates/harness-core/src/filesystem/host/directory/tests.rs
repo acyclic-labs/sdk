@@ -163,20 +163,20 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         );
         assert_eq!(
             files
-                .create("branch-owner/action.json", b"first", 4096)
+                .create("branch-owner/action.json", b"first", Some(4096))
                 .await?,
             None
         );
         assert_eq!(
             files
-                .read("branch-owner/action.json", 4096)
+                .read("branch-owner/action.json", Some(4096))
                 .await?
                 .as_deref(),
             Some(b"first".as_slice())
         );
         assert_eq!(
             files
-                .create("branch-owner/action.json", b"later", 4096)
+                .create("branch-owner/action.json", b"later", Some(4096))
                 .await?
                 .as_deref(),
             Some(b"first".as_slice())
