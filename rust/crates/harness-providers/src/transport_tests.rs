@@ -223,15 +223,24 @@ async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_t
     }
 
     for native in [false, true] {
-        for (status, headers, reason) in [
+        for (status, headers, reason, seconds) in [
             (
                 429,
                 "Retry-After: 60\r\nRateLimit-Reset: 900\r\n",
                 "provider rate limit",
+                60,
             ),
-            (429, "RateLimit-Reset: 60\r\n", "provider rate limit"),
-            (503, "Retry-After: 60\r\n", "provider transport"),
+            (429, "RateLimit-Reset: 60\r\n", "provider rate limit", 60),
+            (
+                429,
+                "x-ratelimit-remaining-requests: 0\r\nx-ratelimit-reset-requests: 1s\r\nx-ratelimit-remaining-tokens: 10000\r\nx-ratelimit-reset-tokens: 65s\r\n",
+                "provider rate limit",
+                1,
+            ),
+            (503, "Retry-After: 60\r\n", "provider transport", 60),
         ] {
+            let expected = Duration::from_secs(seconds);
+            let until = format!("until {}.000000000 (Unix seconds)", 1_700_000_000 + seconds);
             let (port, accepted) = serve(vec![
                 Reply::Headers(status, headers, r#"{"detail":"Rate limit exceeded. Please slow down your requests. Limit: 24290 uncached input tokens/minute."}"#),
                 Reply::Full(200, CHAT),
@@ -296,19 +305,20 @@ async fn retry_after_429_is_visible_until_the_exact_wait_finishes_then_resumes_t
             tokio::pin!(run);
             tokio::select! {
                 result = &mut run => panic!("turn ended before its provider wait: {result:?}"),
-                wait = &mut entered => assert_eq!(wait.unwrap(), Duration::from_secs(60)),
+                wait = &mut entered => assert_eq!(wait.unwrap(), expected),
             }
             assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
             assert_eq!(accepted.load(Ordering::SeqCst), 1);
-            assert_eq!(*transport.waits.lock().unwrap(), [Duration::from_secs(60)]);
+            assert_eq!(*transport.waits.lock().unwrap(), [expected]);
             let waits = report.snapshot();
-            assert!(waits.iter().any(|wait| wait.primitive == reason
-                && wait.key == "until 1700000060.000000000 (Unix seconds)"));
+            assert!(
+                waits
+                    .iter()
+                    .any(|wait| wait.primitive == reason && wait.key == until)
+            );
             let visible = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
             assert!(
-                visible.contains(&format!(
-                    "waiting for {reason} until 1700000060.000000000 (Unix seconds)"
-                )),
+                visible.contains(&format!("waiting for {reason} {until}")),
                 "{visible}"
             );
             release.send(()).unwrap();
