@@ -34,7 +34,7 @@ use acyclic_harness::{
     },
 };
 use acyclic_harness_client::{AgentControlFailure, AgentExchangeError, AgentReply};
-use futures::{StreamExt as _, stream::LocalBoxStream};
+use futures::StreamExt as _;
 use std::{sync::Arc, time::Instant};
 
 type Failure = Box<dyn std::error::Error>;
@@ -744,36 +744,6 @@ fn paged(effect: InputEffect, page: usize) -> InputEffect {
     }
 }
 
-/// The terminal's input batches, read on a thread of their own: the runtime's
-/// single blocking worker stays free for the agent's file work, which would
-/// otherwise wait behind a read that lasts until the next key. A full channel
-/// holds the reader back; a dropped view ends it at its next batch.
-fn terminal_events(
-    mut tty: Tty,
-) -> std::io::Result<LocalBoxStream<'static, std::io::Result<Vec<InputEvent>>>> {
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    std::thread::Builder::new()
-        .name("graphcoder-input".into())
-        .spawn(move || {
-            loop {
-                let events = tty.read_events(None);
-                let failed = events.is_err();
-                if matches!(&events, Ok(events) if events.is_empty()) {
-                    continue;
-                }
-                if sender.blocking_send(events).is_err() || failed {
-                    return;
-                }
-            }
-        })?;
-    Ok(
-        futures::stream::unfold(receiver, |mut receiver| async move {
-            receiver.recv().await.map(|events| (events, receiver))
-        })
-        .boxed_local(),
-    )
-}
-
 /// Runs the terminal view; `resume` reopens the last conversation's recent
 /// turns, paged in from the stream as they show, otherwise the view starts
 /// empty.
@@ -870,7 +840,7 @@ async fn run_current(
     let size = tty.size_reader();
     let (tty, output) = tty.split();
     let mut terminal = FrameTerminal::new(output, size()?)?;
-    let mut keys = terminal_events(tty)?;
+    let mut keys = acyclic_harness::tui::term::input_events(tty)?;
     // Its settled turns from the tail on, its phase and, while it works, the
     // newest tool call's output or its streaming answer or reasoning. A
     // resumed view replays its newest turn, whose outcome is the session's,

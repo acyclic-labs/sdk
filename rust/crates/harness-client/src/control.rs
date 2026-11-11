@@ -354,6 +354,39 @@ impl AgentControls {
         Ok(crate::DiffQuery::new(socket, agent, page, projection))
     }
 
+    /// Open the bounded last-input projection of the original history context.
+    pub async fn input_query(
+        &self,
+        agent: acyclic_harness_core::agent::AgentPath,
+        page: crate::AgentPageRequest,
+    ) -> Result<crate::InputQuery, AgentExchangeError> {
+        if page.cursor().is_some() {
+            return Err(CommandError::Invalid.into());
+        }
+        let page = crate::AgentPageRequest::new(
+            page.items(),
+            page.bytes().checked_sub(1).ok_or(CommandError::Capacity)?,
+            None,
+        )?;
+        let command = AgentCommand::History {
+            agent,
+            page: page.clone(),
+        };
+        let invocation = self.prepare(PreparedCommand::new(&command)?)?;
+        let [invocation] = invocation.invocations() else {
+            return Err(CommandError::Invalid.into());
+        };
+        let socket = self
+            .client
+            .actor_socket(
+                crate::QueryProjection::Input.open(invocation)?,
+                self.credential,
+            )
+            .await
+            .map_err(AgentExchangeError::Session)?;
+        Ok(crate::InputQuery::new(socket, command, &page))
+    }
+
     /// Execute once. The caller retains the prepared value on every outcome.
     pub async fn execute(
         &self,

@@ -33,6 +33,10 @@ mod diff;
 mod queries;
 pub use diff::{DIFF_FILE_BYTES, DiffSource};
 
+/// Original lazy input source; filtered work is distinct from an empty cut.
+pub type InputPreviewSource =
+    acyclic_stream::BoxProviderStream<'static, crate::Result<crate::agent::InputPreviewStep>>;
+
 use crate::{
     agent::{
         AgentPath, AgentRecord, ContextAction, ContextRequest, Control, Delivered, Error,
@@ -159,6 +163,21 @@ pub trait Platform: ProviderPlatform + 'static {
         Box::pin(async {
             Err(crate::Error::Unsupported(
                 "workspace diff source is unavailable".into(),
+            ))
+        })
+    }
+
+    /// Select accepted input under this platform's original admission.
+    fn input_preview_source<'a>(
+        &'a self,
+        authorization: &'a CallAuthorization,
+        agent: &'a AgentPath,
+        maximum: u64,
+    ) -> BoxProviderFuture<'a, crate::Result<InputPreviewSource>> {
+        let _ = (authorization, agent, maximum);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "input preview source is unavailable".into(),
             ))
         })
     }

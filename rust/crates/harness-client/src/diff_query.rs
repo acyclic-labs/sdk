@@ -30,27 +30,16 @@ impl DiffProjection {
     /// Encode the original invocation without introducing another identity or
     /// command decoder. The host admits that same invocation exactly once.
     pub fn open(self, invocation: &[u8]) -> Result<Bytes, CommandError> {
-        if invocation.is_empty() || invocation.len() > acyclic_stream::MAX_COMMAND_BYTES - 2 {
-            return Err(CommandError::Capacity);
-        }
-        let mut bytes = Vec::with_capacity(invocation.len() + 2);
-        bytes.extend_from_slice(&[1, u8::from(self == Self::Summary)]);
-        bytes.extend_from_slice(invocation);
-        Ok(bytes.into())
+        crate::QueryProjection::Diff(self).open(invocation)
     }
 
     /// Decode only the product framing; the owning host admits the returned
     /// original invocation through its existing canonical command decoder.
     pub fn decode_open(bytes: &[u8]) -> Result<(Self, &[u8]), CommandError> {
-        if bytes.len() < 3 || bytes.len() > acyclic_stream::MAX_COMMAND_BYTES {
-            return Err(CommandError::Capacity);
+        match crate::QueryProjection::decode_open(bytes)? {
+            (crate::QueryProjection::Diff(projection), invocation) => Ok((projection, invocation)),
+            _ => Err(CommandError::Invalid),
         }
-        let projection = match &bytes[..2] {
-            [1, 0] => Self::Patch,
-            [1, 1] => Self::Summary,
-            _ => return Err(CommandError::Invalid),
-        };
-        Ok((projection, &bytes[2..]))
     }
 }
 

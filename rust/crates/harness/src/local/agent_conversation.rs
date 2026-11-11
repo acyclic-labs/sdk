@@ -113,6 +113,21 @@ pub struct WorkspaceDiff {
     _connection: Connection,
 }
 
+/// The original input query retains the same embedded-host lifetime.
+pub struct ConversationInput {
+    query: crate::client::InputQuery,
+    _connection: Connection,
+}
+
+impl ConversationInput {
+    /// Receive one original credited step or typed failure.
+    pub async fn next(
+        &mut self,
+    ) -> std::result::Result<Option<crate::client::InputPreviewStep>, AgentExchangeError> {
+        self.query.next().await
+    }
+}
+
 impl WorkspaceDiff {
     /// Receive the next original credited event, or the original failure.
     pub async fn next(
@@ -123,6 +138,22 @@ impl WorkspaceDiff {
 }
 
 impl Conversation {
+    /// Open the selected context's bounded last-input query.
+    pub async fn input_query(
+        &self,
+        page: AgentPageRequest,
+    ) -> std::result::Result<ConversationInput, AgentExchangeError> {
+        let query = self
+            .connection
+            .controls
+            .input_query(self.agent().clone(), page)
+            .await?;
+        Ok(ConversationInput {
+            query,
+            _connection: self.connection.clone(),
+        })
+    }
+
     /// Open a demand-driven diff on the original authenticated client socket.
     /// Dropping it releases the server's immutable traversal and comparison.
     ///

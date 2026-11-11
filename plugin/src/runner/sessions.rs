@@ -6,6 +6,7 @@ use acyclic_harness::{
     tui::{onboarding::Input, term::Tty},
 };
 type Failure = Box<dyn std::error::Error>;
+mod picker;
 
 pub async fn select(
     args: &Args,
@@ -106,7 +107,7 @@ async fn choose(
     let mut previous = Vec::new();
     loop {
         let height = terminal.size_reader()()?.height;
-        let rows = u32::from(height.saturating_sub(9).max(1)).min(128);
+        let rows = u32::from(height.saturating_sub(12).max(1)).min(128);
         let page = sessions::page_filtered(
             &connection,
             AgentPageRequest::new(rows, 64 * 1024, cursor.clone())?,
@@ -158,14 +159,14 @@ async fn choose(
         let archive_index = choices.len();
         choices.push("Archive a session".into());
         let row_choices = choices[..visible.len()].to_vec();
-        let (owned, choice) = tokio::task::spawn_blocking(move || {
-            let choice =
-                Input::new(&mut terminal).and_then(|mut input| input.choose("Session", &choices));
-            (terminal, choice)
-        })
+        let (owned, choice) = picker::choose(
+            terminal,
+            connection.clone(),
+            visible.iter().map(|row| row.agent.clone()).collect(),
+            choices,
+        )
         .await?;
         terminal = owned;
-        let choice = choice?;
         if Some(choice) == next_index {
             previous.push(cursor);
             cursor = page.next;
