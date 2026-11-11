@@ -490,14 +490,26 @@ toolchain, `CARGO_INCREMENTAL=0` and the shared target
 `/Users/var/foreman/target/lanes`. Log:
 `Q:/scratch/stream-unbounded/ivar-51c-check.log`. The design/inventory commits
 through `e948030667c` do not change that checked Rust source. The subsequent
-range-reader extension requires its own compile and focused tests; results at
-`51c07fd8384` cannot validate that extension.
+range-reader and bookmark extensions are checked at their own source below;
+results at `51c07fd8384` cannot validate those extensions.
 
-The macOS focused run is now live at that same source: six `staged::tests::`
-cases and four `content::tree::tests::` cases, followed by paired guard-removal
-negative controls. It is waiting for the shared build target, not reporting a
-test result. Log: `Q:/scratch/stream-unbounded/ivar-51c-tests.log`; command:
-`Q:/scratch/stream-unbounded/ivar-51c-tests.sh`. The script requires each
+The queued focused test run at `51c07fd8384` was stopped before any test executed
+because the range/bookmark source superseded it. Its process and script exited,
+and its checkout was confirmed clean before the replacement started. That stop
+is neither a test failure nor a test pass.
+
+The same native all-target check passed at exact source
+`e7ec6d0a1b33acd2cae17932b84ad77dafffd355`, including the shared range reader,
+staged bookmarks and their test targets. It used the same installed toolchain,
+shared target and incremental setting above. Log:
+`Q:/scratch/stream-unbounded/ivar-e7ec-tests.log`; command:
+`Q:/scratch/stream-unbounded/ivar-e7ec-tests.sh`.
+
+That source's focused run is live: seven `staged::tests::` cases and five
+`content::tree::tests::` cases, followed by paired guard-removal negative
+controls. It advanced from its passed compilation to the first test command,
+which is waiting for the shared build target. No test result is claimed.
+The script requires each
 cancellation mutant to fail with its own invariant marker and restores the
 production source on exit. These are ingestion/content controls, not final-apply
 atomicity proofs. Linux and all-backend publication qualification remain due.
