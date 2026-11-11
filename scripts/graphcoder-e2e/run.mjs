@@ -8,6 +8,7 @@
 // all temporary directories and is mandatory on Windows.
 // E2E_OUTPUT selects the matrix/capture directory; roots are retained on failure.
 // E2E_CASES_ROOT selects an isolated cases/ and coverage.json input tree.
+// E2E_PTY_FRAMES=1 logs observed frames, consumed actions and model requests.
 // Unix requires python3 and a controlling PTY; no alternate GraphCoder runtime.
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";

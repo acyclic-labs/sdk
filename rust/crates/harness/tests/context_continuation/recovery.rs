@@ -100,6 +100,7 @@ pub(super) async fn local_journal_compaction_preserves_context_settlement_and_re
                         purpose: ModelPurpose::Summary,
                         request_digest: request.request_digest(),
                         request: request_ref,
+                        context: None,
                     },
                     None,
                 )?

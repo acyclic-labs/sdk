@@ -194,7 +194,11 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
     let provider = text();
     let mut config = volume_config(directory.path(), project, provider.clone())?;
     let owner_path = config.resolved_state_directory()?.join("owner.v2");
-    config = config.compaction(acyclic_harness::context::CompactionPolicy::default());
+    config = config.compaction(crate::context::CompactionPolicy::Capacity(
+        crate::context::CapacityCompaction {
+            response_reserve_tokens: capacity().context_tokens,
+        },
+    ));
     assert!(matches!(
         LocalHarness::open(config).await,
         Err(Error::Invalid(_))

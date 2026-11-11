@@ -32,7 +32,7 @@
   },
   "message_tokens": 10,
   "compaction": {
-    "kind": "threshold"
+    "kind": "capacity"
   },
   "expect": {
     "request_count": 0

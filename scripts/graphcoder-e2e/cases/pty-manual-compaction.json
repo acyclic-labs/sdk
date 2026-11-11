@@ -62,7 +62,7 @@
           "when": {
             "contains": [
               "MANUAL_E2E_FIRST",
-              "\u25cb"
+              "○"
             ]
           },
           "prompt": "/compact refuse unmatched summary",
@@ -72,7 +72,8 @@
           "when": {
             "contains": [
               "Compacted conversation",
-              "\u25cb"
+              "○",
+              "context ?"
             ]
           },
           "assert": {
@@ -88,7 +89,7 @@
           "when": {
             "contains": [
               "MANUAL_E2E_DONE",
-              "\u25cb"
+              "○"
             ]
           },
           "send": "\u0004"

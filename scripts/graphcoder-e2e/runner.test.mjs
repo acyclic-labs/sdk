@@ -415,6 +415,20 @@ test("a slow transcript holds the source back, so queued bytes stay bounded by a
 
 const raw = text => OutputWatch.of(text, ["\x07", SHOW_CURSOR, HIDE_CURSOR]);
 
+test("PTY waits join cursor-painted wraps and reject absent markers", async () => {
+  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  try {
+    const write = data => new Promise(resolve => screen.write(data, resolve));
+    await write(`\x1b[16;3H${"z".repeat(74)}BAC\x1b[17;3HKGROUND_FIRST_DONE`);
+    assert.ok(matches(screen, raw(""), { contains: ["BACKGROUND_FIRST_DONE"] }));
+    assert.ok(!matches(screen, raw(""), { contains: ["BACKGROUND_NOT_DONE"] }));
+    assert.ok(!matches(screen, raw(""), { absent: ["BACKGROUND_FIRST_DONE"] }));
+    await write("\x1b[2J\x1b[16;3HBAC\x1b[17;3HKGROUND_FIRST_DONE");
+    assert.ok(!matches(screen, raw(""), { contains: ["BACKGROUND_FIRST_DONE"] }),
+      "short rows keep their hard line boundary");
+  } finally { screen.dispose(); }
+});
+
 test("screen conditions require rendered styles and reject literal markdown", async () => {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const write = data => new Promise(resolve => screen.write(data, resolve));

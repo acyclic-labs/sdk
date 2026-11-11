@@ -106,11 +106,13 @@ impl ExecutionEvent {
                 purpose,
                 request_digest,
                 request,
+                context,
             } => ModelStarted {
                 step: *step,
                 purpose: *purpose,
                 request_digest: *request_digest,
                 request: file(request)?,
+                context: *context,
             },
             Model {
                 step,
@@ -134,9 +136,14 @@ impl ExecutionEvent {
                 event: text(event)?,
                 usage: usage.as_ref().map(file).transpose()?,
             },
-            ModelStopped { step, purpose } => ModelStopped {
+            ModelStopped {
+                step,
+                purpose,
+                worker_paused,
+            } => ModelStopped {
                 step: *step,
                 purpose: *purpose,
+                worker_paused: *worker_paused,
             },
             ToolStarted {
                 step,

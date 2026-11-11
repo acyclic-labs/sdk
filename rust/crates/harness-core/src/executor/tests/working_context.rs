@@ -23,7 +23,7 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
     } else {
         None
     };
-    let (provider, _) = counted_model(65_536, None, [], []);
+    let (provider, _) = counted_model(32_768, None, [], []);
     let stage = crate::context::Context {
         messages: vec![ModelMessage {
             role: ModelRole::System,
@@ -42,11 +42,8 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
         )) as Arc<dyn crate::context::ContextStage>]),
         ToolRegistry::default(),
     )
-    .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
-        crate::context::ThresholdCompaction {
-            recent_tokens: 1,
-            ..Default::default()
-        },
+    .with_compaction_policy(crate::context::CompactionPolicy::Capacity(
+        crate::context::CapacityCompaction::default(),
     ));
     let selected = vec![
         ModelMessage {

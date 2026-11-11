@@ -212,11 +212,8 @@ mod tests {
             ContextPipeline::default(),
             ToolRegistry::default(),
         )
-        .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
-            crate::context::ThresholdCompaction {
-                recent_tokens: 1,
-                ..Default::default()
-            },
+        .with_compaction_policy(crate::context::CompactionPolicy::Capacity(
+            crate::context::CapacityCompaction::default(),
         ));
         let input = TurnInput {
             max_steps: None,

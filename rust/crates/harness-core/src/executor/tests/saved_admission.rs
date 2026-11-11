@@ -171,6 +171,7 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
                 purpose: ModelPurpose::Response,
                 request_digest: prepared.request_digest(),
                 request: reference,
+                context: None,
             },
             None,
         )?

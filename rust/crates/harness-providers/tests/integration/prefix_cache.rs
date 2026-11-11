@@ -19,7 +19,7 @@ use super::TestResult;
 use acyclic_harness::{
     agent::{AgentId, AgentPath, InboxRecord, IntentId, Message, Sender},
     approvals::ApprovalPolicy,
-    context::{CompactionPolicy, ModelContextCapacity, ThresholdCompaction},
+    context::{CapacityCompaction, CompactionPolicy, ModelContextCapacity},
     contract::{Capabilities, capability},
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef, wire::Notice},
     executor::Executor,
@@ -207,7 +207,27 @@ impl TurnExecutors for Changing {
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, acyclic_harness::Result<Arc<dyn Executor>>> {
-        self.current().executor(agent, turn, input, authority)
+        Box::pin(async move {
+            let mut agent = agent.clone();
+            if agent.parent.is_none() {
+                // This host exercises code-mode prefixes, so select its worker
+                // fixture through the same template reader as the spawned forks.
+                let templates = authority.templates.as_ref().ok_or_else(|| {
+                    acyclic_harness::Error::Invalid("missing fixture templates".into())
+                })?;
+                let parent = agent.profile.as_ref().ok_or_else(|| {
+                    acyclic_harness::Error::Invalid("missing fixture creation".into())
+                })?;
+                agent.profile = Some(
+                    templates
+                        .child(parent, &agent.path, &agent.volumes, "worker", None)
+                        .await?,
+                );
+            }
+            self.current()
+                .executor(&agent, turn, input, authority)
+                .await
+        })
     }
 }
 
@@ -240,9 +260,8 @@ fn executors(
             tools,
             (
                 limits,
-                CompactionPolicy::Threshold(ThresholdCompaction {
+                CompactionPolicy::Capacity(CapacityCompaction {
                     response_reserve_tokens: 1024,
-                    recent_tokens: 1,
                 }),
             ),
             Arc::new(Tasks(bindings)),
@@ -518,8 +537,12 @@ async fn run(
     // A fork with the same directive preserves the entire admitted prefix.
     // Use the same real template reader as production, with a home override.
     let root_template = acyclic_harness::seed::file("templates/orchestrator/AGENT.md").unwrap();
-    let child_template =
-        std::str::from_utf8(root_template)?.replace("context: top_level", "context: fork");
+    let child_template = std::str::from_utf8(root_template)?
+        .replace("context: top_level", "context: fork")
+        .lines()
+        .filter(|line| !line.starts_with("allowed_tools:"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let set_template = |agent: AgentPath| {
         let filesystem = filesystem.clone();
         let provider = &provider;

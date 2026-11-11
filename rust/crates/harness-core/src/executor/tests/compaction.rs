@@ -136,7 +136,7 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
 }
 
 #[test]
-fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call() -> Result<()> {
+fn capacity_rewrite_publishes_its_own_context_occupancy() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -211,7 +211,30 @@ fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call() -> R
             );
         let output = output?;
         assert_eq!(output.text, "answer");
-        assert_eq!(runtime.block_on(executor.execute(input, journal))?, output);
+        assert_eq!(
+            runtime.block_on(executor.execute(input.clone(), journal))?,
+            output
+        );
+        let usage = runtime.block_on(crate::executor::usage_page(
+            journal,
+            input.operation_id,
+            "agents/context-window",
+            0,
+        ))?;
+        let Some(crate::executor::ContextUsage::Counted {
+            input_tokens,
+            capacity_tokens,
+        }) = usage.context
+        else {
+            return Err(Error::Invalid(
+                "rewritten response has no occupancy receipt".into(),
+            ));
+        };
+        assert_eq!(capacity_tokens, 65_536);
+        assert!(
+            input_tokens < 6_000,
+            "occupancy kept the pre-rewrite input count"
+        );
         let requests = provider.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].max_output_tokens, requested_output);
@@ -219,7 +242,7 @@ fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call() -> R
             provider.context_capacity(&requests[0].model)?.output_tokens,
             output_capacity
         );
-        assert_eq!(requests[0].messages.len(), 4);
+        assert_eq!(requests[0].messages.len(), 3);
         let ModelContent::Part(ModelContentPart::File { file, .. }) =
             &requests[0].messages[0].content
         else {
@@ -270,7 +293,7 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
         let journal = Journal::default();
         #[cfg(not(feature = "filesystem"))]
         let journal = &journal;
-        let (provider, accounting_calls) = counted_model(65_536, None, [], []);
+        let (provider, accounting_calls) = counted_model(32_768, None, [], []);
         let history = vec![
             ModelMessage {
                 role: ModelRole::User,
@@ -300,11 +323,8 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
             pipeline,
             ToolRegistry::default(),
         )
-        .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
-            crate::context::ThresholdCompaction {
-                recent_tokens: 1,
-                ..Default::default()
-            },
+        .with_compaction_policy(crate::context::CompactionPolicy::Capacity(
+            crate::context::CapacityCompaction::default(),
         ));
         let mut input = TurnInput {
             max_steps: None,
@@ -385,35 +405,6 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
     }
     Ok(())
 }
-#[tokio::test]
-async fn impossible_default_capacity_fails_before_turn_admission() -> Result<()> {
-    let journal = Journal::default();
-    let (provider, _accounting_calls) = counted_model(32_768, None, [], []);
-    let executor = StockExecutor::new(
-        Model::new("synthetic".into(), "small".into(), "1".into())?,
-        provider.clone(),
-        ContextPipeline::default(),
-        ToolRegistry::default(),
-    );
-    assert!(
-        executor
-            .execute(
-                TurnInput {
-                    max_steps: None,
-                    operation_id: OperationId::new(),
-                    input: ModelContent::Text("current".into()),
-                    selected_context: None,
-                },
-                &journal
-            )
-            .await
-            .is_err()
-    );
-    assert!(journal.0.lock().unwrap().is_empty());
-    assert!(journal.1.lock().unwrap().is_empty());
-    assert!(provider.requests().is_empty());
-    Ok(())
-}
 
 #[tokio::test]
 async fn malformed_provider_accounting_rejects_before_projection_or_model_publication() -> Result<()>
@@ -478,7 +469,7 @@ fn accounting_wire_rejects_unknown_negative_and_out_of_range_counts() -> Result<
 async fn actual_compacted_accounting_blocks_the_response_without_a_model_call() -> Result<()> {
     let journal = Journal::default();
     let (provider, _accounting_calls) =
-        counted_model(65_536, Some(AccountingFault::CompactedPressure), [], []);
+        counted_model(32_768, Some(AccountingFault::CompactedPressure), [], []);
     let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
     let executor = StockExecutor::new(
         Model::new("synthetic".into(), "counter".into(), "1".into())?,
@@ -556,7 +547,7 @@ async fn oversized_mandatory_instruction_or_native_media_rejects_before_summary(
             ],
             ..crate::context::Context::default()
         };
-        let (provider, _accounting_calls) = counted_model(65_536, None, [], []);
+        let (provider, _accounting_calls) = counted_model(32_768, None, [], []);
         let executor = StockExecutor::new(
             Model::new("synthetic".into(), "counter".into(), "1".into())?,
             provider.clone(),

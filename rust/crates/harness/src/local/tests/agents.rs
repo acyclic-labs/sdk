@@ -1299,10 +1299,9 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
             volume_config(directory.path(), volume(directory.path()).await?, provider)?
                 .without_default_tools()
                 .workspace_mounting(crate::local::WorkspaceMounting::Physical)
-                .compaction(crate::context::CompactionPolicy::Threshold(
-                    crate::context::ThresholdCompaction {
+                .compaction(crate::context::CompactionPolicy::Capacity(
+                    crate::context::CapacityCompaction {
                         response_reserve_tokens: 4096,
-                        recent_tokens: 4096,
                     },
                 )),
         )
@@ -3075,7 +3074,8 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let harness = Arc::new(
         LocalHarness::open(
             volume_config(directory.path(), project, provider.clone())?
-                .compaction(crate::context::CompactionPolicy::Disabled),
+                .without_default_tools()
+                .compaction(crate::context::CompactionPolicy::default()),
         )
         .await?,
     );
@@ -3099,7 +3099,16 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         }
     };
     let inbox = client.send("first", "hello").await?;
-    settlement(&mut observed, inbox).await?;
+    let first = settlement(&mut observed, inbox).await?;
+    assert!(first.outcome.is_completed(), "{:?}", first.outcome);
+    settled(&harness, &root).await?;
+    let mut usage = client.usage_query();
+    while !usage.synchronized() {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.totals().completed, 1);
+    let original_window = usage.context();
+    assert!(original_window.is_some());
     let store = crate::agent::actor_store(agents.provider()).map_err(agent)?;
     let actor = agents.actor(&root).map_err(agent)?;
     let before = store.load(&actor).await.map_err(agent)?.follow_request();
@@ -3139,6 +3148,15 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         .await?;
     let refusal = settlement(&mut observed, inbox).await?;
     assert_eq!(refusal.outcome, TurnOutcome::RestoreConflict);
+    settled(&harness, &root).await?;
+    for _ in notice..=inbox {
+        usage.advance().await?;
+    }
+    assert_eq!(
+        usage.context(),
+        original_window,
+        "refused restore changed model occupancy"
+    );
     assert!(
         client
             .turn(&refusal)

@@ -2,16 +2,28 @@ use super::*;
 
 use super::exchanges::{Group, exchange_groups};
 
-impl ThresholdCompaction {
+impl CapacityCompaction {
     /// Plans a bounded projection preserving complete tool exchanges.
     pub(crate) fn projection_budget(
         &self,
         context: &Context,
-        count: &ModelTokenCount,
         maximum_messages: usize,
-        recent_tokens: u32,
+        requested_cut: usize,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(usize, usize)> {
+        self.try_projection_budget(context, maximum_messages, requested_cut, work)?
+            .ok_or_else(|| compaction_error(work, "no complete older compaction source"))
+    }
+
+    /// No complete evictable prefix is an ordinary speculative miss. Invalid
+    /// input and accounting failures remain errors, never silently suppressed.
+    pub(crate) fn try_projection_budget(
+        &self,
+        context: &Context,
+        maximum_messages: usize,
+        requested_cut: usize,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Option<(usize, usize)>> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let recent_messages = maximum_messages.checked_sub(1).ok_or_else(|| {
             compaction_error(
@@ -19,30 +31,9 @@ impl ThresholdCompaction {
                 "compaction requires a summary message allowance",
             )
         })?;
-        if recent_tokens == 0 {
-            return Err(compaction_error(
-                quota.work(),
-                "recent token budget must be positive",
-            ));
-        }
-        let mut recent = 0_u64;
-        let mut start = count.message_tokens.len();
-        for tokens in count.message_tokens.iter().rev() {
-            if recent >= u64::from(recent_tokens) {
-                break;
-            }
-            compaction_step(&mut quota)?;
-            start -= 1;
-            recent = recent
-                .checked_add(u64::from(*tokens))
-                .ok_or_else(|| compaction_error(quota.work(), "recent token count overflows"))?;
-        }
-        let mut through = start.max(context.messages.len().saturating_sub(recent_messages));
-        if count.message_tokens.len() != context.messages.len() || through == 0 {
-            return Err(compaction_error(
-                quota.work(),
-                "no older source fits the compaction policy",
-            ));
+        let mut through = requested_cut.max(context.messages.len().saturating_sub(recent_messages));
+        if through == 0 || through >= context.messages.len() {
+            return Ok(None);
         }
         let groups = exchange_groups(context, &mut quota)?;
         for group in groups.iter().rev() {
@@ -52,10 +43,7 @@ impl ThresholdCompaction {
             }
         }
         if through == 0 && maximum_messages == usize::MAX {
-            return Err(compaction_error(
-                quota.work(),
-                "tool exchange leaves no complete older compaction source",
-            ));
+            return Ok(None);
         }
         let selected = mandatory_selection(context, context.messages.len(), &groups, &mut quota)?;
         let mut mandatory = context.messages.len();
@@ -87,24 +75,16 @@ impl ThresholdCompaction {
                 break;
             }
         }
-        let through = cut.ok_or_else(|| {
-            compaction_error(
-                quota.work(),
-                "mandatory content leaves no compaction source",
-            )
-        })?;
+        let Some(through) = cut else { return Ok(None) };
         let maximum = mandatory.checked_add(1).ok_or_else(|| {
             compaction_error(quota.work(), "compaction projection count overflows")
         })?;
         retire_vector(groups, &mut quota)?;
         retire_vector(selected, &mut quota)?;
         if maximum > context.messages.len() || maximum > maximum_messages {
-            return Err(compaction_error(
-                quota.work(),
-                "mandatory content leaves no compaction source",
-            ));
+            return Ok(None);
         }
-        Ok((through, maximum))
+        Ok(Some((through, maximum)))
     }
 }
 
@@ -194,6 +174,19 @@ pub(crate) fn mandatory_messages(
     }
     quota.transfer();
     Ok(messages)
+}
+
+pub(crate) fn mandatory_message_count(
+    context: &Context,
+    covered: usize,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<usize> {
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let (selected, groups) = mandatory_flags(context, covered, &mut quota)?;
+    let count = selected.iter().filter(|keep| **keep).count();
+    retire_vector(groups, &mut quota)?;
+    retire_vector(selected, &mut quota)?;
+    Ok(count)
 }
 
 pub(crate) fn compact_context(

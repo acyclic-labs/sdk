@@ -576,7 +576,13 @@ fn validate_reply(
                     || page.end > *after
                     || *observed_children != Some(*open_children))
                 && page.items.len() <= 32
-                && (page.context.is_none() || page.end > *after)
+                && (page.context.is_none()
+                    || page.end > *after
+                    || (*settled
+                        && matches!(
+                            page.context,
+                            Some(acyclic_harness_core::executor::ContextUsage::Unavailable)
+                        )))
                 && !matches!(
                     page.context,
                     Some(acyclic_harness_core::executor::ContextUsage::Counted {

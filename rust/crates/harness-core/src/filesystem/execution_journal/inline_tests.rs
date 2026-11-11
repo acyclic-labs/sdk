@@ -32,6 +32,7 @@ async fn initialize(journal: &Journal, operation: OperationId) -> Result<()> {
                 purpose: ModelPurpose::Response,
                 request_digest: prepared.request_digest(),
                 request: reference,
+                context: None,
             },
             None,
         )?

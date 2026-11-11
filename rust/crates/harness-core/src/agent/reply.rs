@@ -93,7 +93,10 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
             std::cmp::Ordering::Greater => high = middle,
             std::cmp::Ordering::Equal => {
                 return match &entry.input {
-                    TurnInput::Message { id: settled, .. } if settled == id => {
+                    TurnInput::Message { id: settled, .. }
+                    | TurnInput::Context { id: settled, .. }
+                        if settled == id =>
+                    {
                         goal_reply(provider, state, middle, entry, None).await
                     }
                     _ => Err(Error::Conflict(

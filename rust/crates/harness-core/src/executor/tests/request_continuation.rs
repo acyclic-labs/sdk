@@ -238,11 +238,8 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
     };
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(journal, &input).await?;
-    let (tail, _) = execution
-        .model_records(journal, input.operation_id, 0, ModelPurpose::Response)
-        .await?;
     let (projection, accounting, prepared) = execution
-        .capture_response(journal, &input, 0, &[], tail, None)
+        .capture_response(journal, &input, 0, &[], None)
         .await?;
     let (_, records) = execution
         .model_records(journal, input.operation_id, 0, ModelPurpose::Response)

@@ -112,7 +112,8 @@
       "owner": "b-substrate",
       "cases": [
         "auto-compaction",
-        "pty-manual-compaction"
+        "pty-manual-compaction",
+        "compaction-background"
       ]
     },
     "A9": {
