@@ -41,13 +41,19 @@ The default denies filesystem reads and writes outside its granted roots.
 volumes and explicit read-only runtime dependencies in one shared policy core.
 Linux runtime grants are `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` and
 `/etc/ld.so.cache`; macOS grants are `/System/Library`, `/usr`, `/bin`, `/sbin`
-`/Library/Apple/System/Library` and the null device `/dev/null`; Windows grants
+`/Library/Apple/System/Library`, the OS and App Cryptex graft points used by
+dyld, and the null device `/dev/null`; Windows grants
 its `SystemRoot`. All three also grant the host's once-selected shell installation
 directory, including runtime files beside the shell executable. Model arguments
 and per-command PATH values cannot select that directory.
 Missing optional directories are omitted. Every selected root is bound by the
 same immutable grant machinery. Tools needing other paths or network access
 require an explicit authenticated grant; command arguments cannot add authority.
+On macOS, each bound root also permits reading its ancestor directory objects
+so dyld can resolve its bootstrap paths with `openat`. This includes the root
+directory object, without read access to ungranted sibling files or subtrees.
+Bindings retain the caller's alias path for lookup metadata (for example,
+`/var` leading to `/private/var`); file contents still require a canonical grant.
 The command still receives only the host's ordinary environment, excluding secret
 variables and startup hooks. The default TMPDIR names the primary workspace, so standard temporary-file APIs
 remain inside the writable view without a separate mount or directory.

@@ -58,6 +58,7 @@ an error; it never silently changes an active workspace's mounting mode.
 The deterministic stock-container acceptance command is:
 
 ```sh
+docker pull node:24-trixie
 node scripts/qualify-docker-no-fuse.mjs node:24-trixie \
   /absolute/path/to/graphcoder /absolute/path/to/harness-mock-model \
   /absolute/path/to/fresh-evidence

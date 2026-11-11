@@ -225,6 +225,9 @@ impl acyclic_collections::IndexWork for RootIndexBuild {
 #[derive(Debug)]
 struct BoundPath {
     path: PathBuf,
+    // Lookup aliases are metadata authority, not additional content roots.
+    #[cfg(target_os = "macos")]
+    aliases: Vec<PathBuf>,
     is_dir: bool,
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     identity: crate::FileIdentity,
@@ -238,7 +241,13 @@ impl BoundPath {
         if !path.is_absolute() {
             return Err(refused("execution grant paths must be absolute"));
         }
-        let path = std::fs::canonicalize(path).map_err(failure)?;
+        let canonical = std::fs::canonicalize(path).map_err(failure)?;
+        #[cfg(target_os = "macos")]
+        let aliases = (path != canonical.as_path())
+            .then(|| path.to_path_buf())
+            .into_iter()
+            .collect();
+        let path = canonical;
         let object = Self::open_path(&path)?;
         let metadata = object.metadata().map_err(failure)?;
         #[cfg(any(target_os = "linux", target_vendor = "apple"))]
@@ -247,6 +256,8 @@ impl BoundPath {
         let identity = crate::file_identity(&object).map_err(failure)?;
         Ok(Self {
             path,
+            #[cfg(target_os = "macos")]
+            aliases,
             is_dir: metadata.is_dir(),
             #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
             identity,
@@ -375,7 +386,14 @@ fn bind_roots(
     roots.sort_unstable_by(|left, right| {
         AsRef::<[u8]>::as_ref(left).cmp(AsRef::<[u8]>::as_ref(right))
     });
-    roots.dedup_by(|left, right| left.path == right.path);
+    roots.dedup_by(|left, right| {
+        if left.path != right.path {
+            return false;
+        }
+        #[cfg(target_os = "macos")]
+        right.aliases.append(&mut left.aliases);
+        true
+    });
     acyclic_collections::CompiledPrefixIndex::from_sorted(roots, &mut RootIndexBuild).map_err(
         |error| {
             use acyclic_collections::CompiledPrefixError;
