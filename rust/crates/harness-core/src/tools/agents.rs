@@ -82,6 +82,8 @@ pub struct SendAgentInput {
     pub agent: String,
     /// Message text.
     pub message: String,
+    /// Optional identity of the message being answered.
+    pub re: Option<String>,
     /// Steer at the next model boundary (default), or reserve a subsequent turn.
     pub delivery: Option<crate::agent::MessageDelivery>,
 }
@@ -173,6 +175,12 @@ impl AgentTool {
         }
         let key = call_key(&invocation, context.as_ref());
         let operation = crate::agent::operation_key(invocation.operation_id);
+        if self.name == "send" {
+            let id = IntentId::try_from(format!("send:{operation}")).map_err(Error::from)?;
+            if let Some(sent) = turn.effects.sent(&id).await? {
+                return Ok(sent_result(sent));
+            }
+        }
         let _spawning = if self.name == "spawn" {
             Some(turn.spawning.lock().await)
         } else {
@@ -265,13 +273,17 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
+                let re = match input.re.map(IntentId::try_from).transpose() {
+                    Ok(re) => re,
+                    Err(error) => return Ok(rejected(error.to_string())),
+                };
                 // A peer by path, or by sibling name; the scope's grants or
                 // the parent's spawn-time peers authorize it.
                 let recipient = match self.recipient(&input.agent, true).await? {
-                    Some(path) => Some(path),
+                    Some(path) => Some((path, None)),
                     None => self.peer(&input.agent, context.as_ref()).await?,
                 };
-                let Some(to) = recipient else {
+                let Some((to, peer)) = recipient else {
                     return Ok(rejected(
                         "send requires a parent, open child or authorized peer inbox",
                     ));
@@ -292,9 +304,11 @@ impl AgentTool {
                     .await?
                     .0;
                 TurnEffect::Send {
+                    peer,
                     delivery: input.delivery.unwrap_or_default(),
                     to,
                     id: IntentId::try_from(format!("send:{operation}")).map_err(Error::from)?,
+                    re,
                     body: Box::new(body),
                 }
             }
@@ -327,7 +341,9 @@ impl AgentTool {
                 "agent": TurnEffect::child(&self.turn.agent, &intent).map_err(Error::from)?.as_str(),
                 "name": spawn_name(&intent).map_err(Error::from)?,
             }),
-            TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
+            TurnEffect::Send { to, id, .. } => {
+                json!({"sent": to.as_str(), "id": id, "status": "queued"})
+            }
             TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
         };
         Ok(ToolResult { value })
@@ -376,7 +392,7 @@ impl AgentTool {
         &self,
         reference: &str,
         context: Option<&ToolContext>,
-    ) -> Result<Option<AgentPath>> {
+    ) -> Result<Option<(AgentPath, Option<crate::agent::PeerAdmission>)>> {
         let turn = &*self.turn;
         let path = match AgentPath::try_from(reference.to_owned()) {
             Ok(path) => Some(path),
@@ -395,15 +411,15 @@ impl AgentTool {
             .into_iter()
             .chain(turn.templates.as_ref().map(|(creation, _)| &creation.peers))
         {
-            if crate::agent::peer_send_allowed(grants, &path) {
-                return Ok(Some(path));
-            }
-            if let Some(observer) = &turn.observer
-                && let Some(parent) = &turn.parent
+            if let Some(admission) = peer_grant_allowed(
+                turn.observer.as_deref(),
+                grants,
+                turn.parent.as_ref(),
+                &path,
+            )
+            .await?
             {
-                if crate::agent::sibling_send_allowed(&**observer, grants, parent, &path).await? {
-                    return Ok(Some(path));
-                }
+                return Ok(Some((path, admission)));
             }
         }
         Ok(None)
@@ -628,7 +644,50 @@ mod selection_checks;
 #[cfg(feature = "test-support")]
 pub use selection_checks::check as check_agent_wait_selection;
 
+/// Explicit capabilities are independent of automatic session membership.
+/// Custom hosts can admit a peer without hosting the account's peer directory.
+async fn peer_grant_allowed(
+    observer: Option<&dyn TurnChildren>,
+    grants: &crate::Capabilities,
+    parent: Option<&AgentPath>,
+    recipient: &AgentPath,
+) -> Result<Option<Option<crate::agent::PeerAdmission>>> {
+    if crate::agent::peer_send_allowed(grants, recipient) {
+        return Ok(Some(None));
+    }
+    let Some(observer) = observer else {
+        return Ok(None);
+    };
+    match parent {
+        None if recipient.depth() == 0 && grants.contains(crate::agent::SEND_PEER) => {
+            Ok(observer.peer_admission(grants, recipient).await?.map(Some))
+        }
+        Some(parent) => Ok(
+            crate::agent::sibling_send_allowed(observer, grants, parent, recipient)
+                .await?
+                .then_some(None),
+        ),
+        None => Ok(None),
+    }
+}
+
+fn sent_result(sent: crate::agent::SentMessage) -> ToolResult {
+    let value = match sent.delivery {
+        crate::agent::Delivered::Committed { inbox } => json!({
+            "kind": "delivered", "sent": sent.to, "id": sent.id, "inbox": inbox,
+        }),
+        crate::agent::Delivered::Closed => json!({
+            "kind": "rejected", "sent": sent.to, "id": sent.id, "reason": "closed",
+        }),
+    };
+    ToolResult { value }
+}
+
 impl ToolExecutor for AgentTool {
+    fn requires_effect_commit(&self, result: &ToolResult) -> bool {
+        self.name == "send" && result.value.get("status").and_then(Value::as_str) == Some("queued")
+    }
+
     fn prepare<'a>(
         &'a self,
         invocation: &'a ToolInvocation,
@@ -773,7 +832,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "send",
             definition::<SendAgentInput>(
                 "send",
-                "Queue a message for your parent, an open child (by name or path), or a peer your spawn granted (by sibling name or path); steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
+                "Queue a message for your parent, an open child (by name or path), a peer session (by path), or a sibling your spawn granted (by name or path); steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
             )?,
         ),
         (
@@ -848,6 +907,13 @@ mod tests {
     struct Effects(std::sync::atomic::AtomicUsize);
 
     impl TurnEffects for Effects {
+        fn sent<'a>(
+            &'a self,
+            _: &'a IntentId,
+        ) -> BoxProviderFuture<'a, Result<Option<crate::agent::SentMessage>>> {
+            Box::pin(async { Ok(None) })
+        }
+
         fn recorded_call<'a>(
             &'a self,
             _: &'a str,
@@ -940,6 +1006,30 @@ mod tests {
                 )
                 .await?;
             assert!(rejected.value["error"].is_string());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explicit_root_peer_grants_do_not_require_a_membership_observer() -> Result<()> {
+        let root = AgentPath::root(&crate::agent::AgentId::from_bytes([42; 16]));
+        for prefix in ["agent.send:", "agent.send-subtree:"] {
+            let grants = crate::Capabilities::new([format!("{prefix}{root}")]);
+            assert!(
+                peer_grant_allowed(None, &grants, None, &root)
+                    .await?
+                    .is_some()
+            );
+        }
+        for grants in [
+            crate::Capabilities::default(),
+            crate::Capabilities::new([crate::agent::SEND_PEER]),
+        ] {
+            assert!(
+                peer_grant_allowed(None, &grants, None, &root)
+                    .await?
+                    .is_none()
+            );
         }
         Ok(())
     }

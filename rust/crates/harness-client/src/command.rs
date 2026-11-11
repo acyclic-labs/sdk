@@ -174,6 +174,18 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
+    /// Change peer participation through the authenticated user connection.
+    /// This operation is never a model tool or a file-backed request.
+    SetPeerMembership {
+        /// The selected independent session.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Caller-owned intent retained after an uncertain result.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// True to rejoin; false to opt out symmetrically.
+        enabled: bool,
+    },
     /// Fork a parentless session at a settled turn, retaining the source.
     ForkSession {
         /// Source session within the admitted directory.
@@ -625,6 +637,9 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
+            Self::SetPeerMembership { agent, .. } if agent.parent().is_some() => {
+                Err(CommandError::Invalid)
+            }
             Self::NameSession { name, .. } | Self::ResolveSession { name } if name.is_empty() => {
                 Err(CommandError::Invalid)
             }
@@ -775,6 +790,7 @@ impl AgentCommand {
             | Self::Fork { parent: agent, .. }
             | Self::ForkSession { agent, .. }
             | Self::Pause { agent, .. }
+            | Self::SetPeerMembership { agent, .. }
             | Self::MergeSession { agent, .. }
             | Self::Prompt { agent, .. }
             | Self::Cancel { agent, .. }
@@ -817,6 +833,7 @@ impl AgentCommand {
             Self::LatestSession {} => "latest_session",
             Self::Sessions { .. } => "sessions",
             Self::NewSession { .. } => "new_session",
+            Self::SetPeerMembership { .. } => "set_peer_membership",
             Self::ForkSession { .. } => "fork_session",
             Self::Pause { .. } => "pause",
             Self::MergeSession { .. } => "merge_session",

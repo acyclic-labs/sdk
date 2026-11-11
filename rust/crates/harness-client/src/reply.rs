@@ -84,6 +84,11 @@ pub enum AgentReply {
         /// True for pause, false for resume.
         paused: bool,
     },
+    /// The user's peer-membership decision committed on the owning node.
+    PeerMembership {
+        /// The selected session's committed participation.
+        enabled: bool,
+    },
     /// Original Git-facade merge receipt; an unchanged source needs no commit.
     Merged {
         /// Content-addressed merge commit, when the facade created one.
@@ -560,6 +565,18 @@ fn validate_reply(
             },
         ) => {
             return if paused == requested {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::PeerMembership { enabled },
+            AgentCommand::SetPeerMembership {
+                enabled: requested, ..
+            },
+        ) => {
+            return if enabled == requested {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
@@ -1173,6 +1190,27 @@ mod tests {
     }
 
     #[test]
+    fn peer_membership_reply_must_match_the_user_decision() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let command = AgentCommand::SetPeerMembership {
+            agent: AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([9; 16])),
+            id: IntentId::try_from("peers-off")?,
+            enabled: false,
+        };
+        let bytes =
+            encode_agent_reply(&Ok(AgentReply::PeerMembership { enabled: false }), &command)?;
+        assert!(matches!(
+            decode_agent_reply(&bytes, &command)?,
+            Ok(AgentReply::PeerMembership { enabled: false })
+        ));
+        assert!(matches!(
+            encode_agent_reply(&Ok(AgentReply::PeerMembership { enabled: true }), &command,),
+            Err(CommandError::Invalid)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn usage_reply_frontiers_preserve_empty_and_partial_source_progress()
     -> Result<(), Box<dyn std::error::Error>> {
         use acyclic_harness_core::executor::ModelUsagePage;
@@ -1517,6 +1555,7 @@ mod tests {
                 },
                 id: IntentId::try_from("prompt")?,
                 body: Box::new(file.clone()),
+                re: None,
                 attachments: None,
             },
             output: file.clone(),
@@ -1536,6 +1575,7 @@ mod tests {
                 },
                 id: IntentId::try_from(format!("{GOAL_INTENT}{run}:2"))?,
                 body: Box::new(file),
+                re: None,
                 attachments: None,
             },
             ..origin.clone()
@@ -1666,6 +1706,7 @@ mod tests {
                 from: from.clone(),
                 id: IntentId::try_from(name)?,
                 body: body.clone(),
+                re: None,
                 attachments: None,
             });
             assert!(matches!(

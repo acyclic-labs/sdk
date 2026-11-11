@@ -359,6 +359,7 @@ mod tests {
                 from: from.clone(),
                 id: intent(),
                 body: Box::new(file()),
+                re: None,
                 attachments: Some(Box::new(file())),
             }));
             records.push(InboxRecord::Spawn(SpawnRequest {
@@ -453,6 +454,7 @@ mod tests {
                 from: control,
                 id: intent(),
                 body: Box::new(file()),
+                re: None,
                 attachments: None,
             })
             .encode()

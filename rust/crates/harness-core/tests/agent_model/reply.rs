@@ -14,6 +14,7 @@ fn message(name: &str) -> Result<TurnInput> {
         from: user(),
         id: intent(name),
         body: Box::new(file(name)?),
+        re: None,
         attachments: None,
     })
 }
@@ -71,6 +72,7 @@ async fn committed_reply_search_respects_identity_and_fork_base() -> Result {
                     from: user(),
                     id: intent(name),
                     body: Box::new(file(name)?),
+                    re: None,
                     attachments: None,
                 }),
             )?,
@@ -178,6 +180,7 @@ async fn admitted_steering_joins_its_settling_turn_and_original_identity() -> Re
             from: user(),
             id: intent(name),
             body: Box::new(file(name)?),
+            re: None,
             attachments: None,
         });
         submit(&provider, send(&path, &user(), &record)?).await?;

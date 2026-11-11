@@ -284,6 +284,24 @@ impl AgentPath {
         stream(&format!("{}/{CLOSED}", self.text))
     }
 
+    /// Host-owned peer admission for one root, outside every fork destination.
+    /// Children neither inherit the record nor acquire account peer reach.
+    pub fn peer_membership(&self) -> Result<StreamPath, Error> {
+        if self.depth != 0 {
+            return Err(Error::Path("peer membership belongs to roots only"));
+        }
+        stream(&format!("harness/peer-membership/{}", self.id_text()))
+    }
+
+    /// Original sent-message receipt index, outside inherited subtrees.
+    pub fn sent_message(&self, id: &super::IntentId) -> Result<StreamPath, Error> {
+        stream(&format!(
+            "harness/sent/{}/{}",
+            self.id_text(),
+            blake3::hash(id.as_str().as_bytes()).to_hex(),
+        ))
+    }
+
     /// Parent of the child subtrees, the `children_page` parent.
     pub fn children(&self) -> Result<StreamPath, Error> {
         stream(&format!("{}/{CHILDREN}", self.text))

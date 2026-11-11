@@ -10,7 +10,7 @@
 use super::checkpoint::{checkpoint_state, codec};
 use super::{
     AgentId, AgentPath, AgentRecord, AgentState, Alarm, Error, ForkAdopted, InboxRecord, IntentId,
-    Out, Spawn, TurnDriver, Wake, create_root, delivery_key, lower,
+    Out, Spawn, TurnDriver, Wake, delivery_key, lower,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -174,7 +174,17 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         intent: &IntentId,
         adopted: ForkAdopted,
     ) -> Result<Spawn, Error> {
-        let created = create_root(intent, adopted)?;
+        self.prepare_root_with_peer(within, intent, adopted, true)
+    }
+
+    pub(super) fn prepare_root_with_peer(
+        &self,
+        within: &ActorReference,
+        intent: &IntentId,
+        adopted: ForkAdopted,
+        peer: bool,
+    ) -> Result<Spawn, Error> {
+        let created = super::create_root_with_peer(intent, adopted, peer)?;
         self.root_actor(within, created, false)
     }
 
@@ -186,7 +196,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         source: &AgentPath,
         history: &super::HistorySelection,
     ) -> Result<Spawn, Error> {
-        let created = super::commit::create_root_at(intent, adopted, Some((source, history)))?;
+        let created =
+            super::commit::create_root_at(intent, adopted, Some((source, history)), true)?;
         self.root_actor(within, created, true)
     }
 

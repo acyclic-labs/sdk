@@ -1998,6 +1998,18 @@ where
         &self.agent
     }
 
+    fn peer_admission<'a>(
+        &'a self,
+        grants: &'a crate::Capabilities,
+        recipient: &'a AgentPath,
+    ) -> BoxFuture<'a, Result<Option<crate::agent::PeerAdmission>>> {
+        Box::pin(async move {
+            crate::agent::session_peer_admission(&*self.stream, grants, &self.agent, recipient)
+                .await
+                .map_err(Error::from)
+        })
+    }
+
     fn closed(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             let path = self.agent.inbox().map_err(Error::from)?;

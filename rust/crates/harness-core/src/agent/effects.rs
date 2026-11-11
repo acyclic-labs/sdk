@@ -28,12 +28,19 @@ pub enum TurnEffect {
     },
     /// Send a message to the parent or an open child.
     Send {
+        /// Exact member versions for the automatic peer grant; explicit grants
+        /// and tree messages do not require account membership.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer: Option<super::PeerAdmission>,
         /// Safe boundary or next-turn delivery, in the same inbox.
         delivery: super::MessageDelivery,
         /// Recipient.
         to: AgentPath,
         /// Message identity.
         id: IntentId,
+        /// Optional identity of the message being answered.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        re: Option<IntentId>,
         /// Body, staged on the sender's private volume.
         body: Box<FileRef>,
     },
@@ -55,6 +62,14 @@ impl TurnEffect {
 
 /// The effects recorded by one turn's agent tools.
 pub trait TurnEffects: acyclic_stream::ProviderPlatform {
+    /// Original receipt of a committed send from this agent. This lookup is
+    /// independent of the turn's current effect segment, so a crash after the
+    /// publication barrier cannot redeliver the message.
+    fn sent<'a>(
+        &'a self,
+        id: &'a IntentId,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<super::SentMessage>>>;
+
     /// The original effect saved for this exact call, without preparing a new
     /// effect or consulting mutable inputs during interrupted-call recovery.
     fn recorded_call<'a>(
@@ -113,43 +128,59 @@ pub fn operation_key(operation: OperationId) -> String {
 #[must_use]
 pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
     let mut spawned = BTreeSet::new();
-    recorded
-        .into_iter()
-        .filter_map(|effect| match effect {
+    let mut outs = Vec::with_capacity(recorded.len());
+    for effect in recorded {
+        match effect {
             TurnEffect::Spawn {
                 intent,
                 brief,
                 profile,
-            } => spawned.insert(intent.clone()).then(|| Out::Spawn {
-                intent,
-                brief: Some(*brief),
-                profile: Some(profile),
-                volumes: Vec::new(),
-                history: None,
-            }),
+            } => {
+                if spawned.insert(intent.clone()) {
+                    outs.push(Out::Spawn {
+                        intent,
+                        brief: Some(*brief),
+                        profile: Some(profile),
+                        volumes: Vec::new(),
+                        history: None,
+                    });
+                }
+            }
             TurnEffect::Send {
+                peer,
                 to,
                 id,
+                re,
                 body,
                 delivery,
-            } => Some(Out::Send {
-                to,
-                record: {
-                    let message = Message {
-                        from: Sender::Agent {
-                            path: agent.path.clone(),
-                        },
-                        id,
-                        body,
-                        attachments: None,
-                    };
-                    match delivery {
-                        super::MessageDelivery::Steer => InboxRecord::Message(message),
-                        super::MessageDelivery::FollowUp => InboxRecord::FollowUp(message),
-                    }
-                },
-            }),
-            TurnEffect::Archive { target, id } => Some(Out::Archive { target, id }),
-        })
-        .collect()
+            } => {
+                if let Some(admission) = peer {
+                    outs.push(Out::PeerGuard {
+                        to: to.clone(),
+                        admission,
+                    });
+                }
+                outs.push(Out::Send {
+                    to,
+                    record: {
+                        let message = Message {
+                            from: Sender::Agent {
+                                path: agent.path.clone(),
+                            },
+                            id,
+                            re,
+                            body,
+                            attachments: None,
+                        };
+                        match delivery {
+                            super::MessageDelivery::Steer => InboxRecord::Message(message),
+                            super::MessageDelivery::FollowUp => InboxRecord::FollowUp(message),
+                        }
+                    },
+                });
+            }
+            TurnEffect::Archive { target, id } => outs.push(Out::Archive { target, id }),
+        }
+    }
+    outs
 }

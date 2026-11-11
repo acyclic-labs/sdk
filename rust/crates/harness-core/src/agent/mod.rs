@@ -48,7 +48,9 @@ pub use notices::NoticeSelection;
 pub(crate) mod records;
 mod release;
 mod reply;
+mod sent;
 pub(crate) use reply::entry as conversation_entry;
+pub use sent::{SentMessage, sent};
 mod settled;
 #[cfg(test)]
 mod ui_tests;
@@ -60,7 +62,10 @@ pub(crate) mod spawn_names;
 pub use spawn_names::{SpawnResolution, resolve_spawn_name};
 mod messaging;
 mod steering;
-pub use messaging::{MessageDelivery, peer_send_allowed, sibling_send_allowed};
+pub use messaging::{
+    MessageDelivery, PeerAdmission, PeerMembership, PeerMembershipHead, SEND_PEER,
+    peer_send_allowed, session_peer_admission, session_peer_allowed, sibling_send_allowed,
+};
 pub use steering::{
     BoundaryCut, BoundaryEnd, BoundarySelection, ModelBoundary, SteeringSnapshot,
     SteeringTranscript, select_boundary,
@@ -82,7 +87,8 @@ pub use volumes::SpawnVolumes;
 pub use checkpoint::MAX_CHECKPOINT_BYTES;
 pub(crate) use checkpoint::{checkpoint_state, committed_state};
 pub use commit::{
-    Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit,
+    Spawn, Submitted, archive, create_root, create_root_with_peer, inbox_tail, intent_key, send,
+    set_peer_membership, spawn, submit,
 };
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, NOTICE_MEDIA_TYPE, OpenControl,

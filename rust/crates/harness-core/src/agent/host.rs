@@ -586,8 +586,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     pub fn prepare_root(
         &self,
         intent: &IntentId,
+        adopted: ForkAdopted,
+        question_plugin: bool,
+    ) -> Result<Spawn, Error> {
+        self.prepare_root_with_peer(intent, adopted, question_plugin, true)
+    }
+
+    /// Prepare the root with an explicit user launch choice, without a later
+    /// membership update or any transient peer admission.
+    pub fn prepare_root_with_peer(
+        &self,
+        intent: &IntentId,
         mut adopted: ForkAdopted,
         question_plugin: bool,
+        peer: bool,
     ) -> Result<Spawn, Error> {
         if adopted.profile.is_some() {
             return Err(Error::Record(
@@ -605,7 +617,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             profile.question_plugin = question_plugin;
             adopted.profile = Some(profile);
         }
-        self.agents.prepare_root(&self.within, intent, adopted)
+        self.agents
+            .prepare_root_with_peer(&self.within, intent, adopted, peer)
     }
 
     /// Prepare a root branch of an admitted source at its coupled history cut.
@@ -679,6 +692,24 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         record: &InboxRecord,
     ) -> Result<Delivered, Error> {
         self.deliver(to, send(to, from, record)?).await
+    }
+
+    /// Change root peer participation through the authenticated user surface.
+    /// This writes no inbox input and grants no session-directory authority.
+    pub async fn set_peer_membership(
+        &self,
+        root: &AgentPath,
+        by: &Sender,
+        id: &IntentId,
+        enabled: bool,
+    ) -> Result<(), Error> {
+        let request = super::set_peer_membership(root, by, id, enabled)?;
+        match submit(&*self.provider, request).await? {
+            Submitted::Committed(_) => Ok(()),
+            Submitted::RecipientClosed(_) => Err(Error::Record("the peer root is archived")),
+            Submitted::NoSuchAgent(_) => Err(Error::NoSuchAgent),
+            Submitted::Conflict(_) => Err(Error::Record("peer membership changed")),
+        }
     }
 
     /// Close `target` and its open descendants. Closing admission precedes

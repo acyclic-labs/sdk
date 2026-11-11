@@ -12,6 +12,7 @@ use crate::{
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock, wire};
 use acyclic_fs::{EmbeddedCapabilities, LogicalObjectStore};
 use acyclic_harness_client::{AgentControlFailure, PreparedCommand, decode_agent_reply};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{MemoryStream, session::Client, testing::Counted};
 use prost::Message as _;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -621,6 +622,76 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &AgentCommand::Root {}).await?,
         Ok(AgentReply::Root { agent }) if agent == root
     ));
+    let peer_client = Client::in_process_with_products(
+        stream.clone(),
+        acyclic_stream::session::testing::authority(),
+        None,
+        server.clone(),
+        Arc::new(acyclic_stream::runtime::PlatformExecutor),
+        None,
+    );
+    peer_client.register_credential(0, credential("actors:/peer-directory/account"))?;
+    for command in [
+        AgentCommand::SetPeerMembership {
+            agent: root.clone(),
+            id: IntentId::try_from("peer-cannot-opt-out")?,
+            enabled: false,
+        },
+        AgentCommand::Archive {
+            agent: root.clone(),
+            id: IntentId::try_from("peer-cannot-archive")?,
+        },
+        AgentCommand::Approvals {
+            agent: root.clone(),
+            page: AgentPageRequest::default(),
+        },
+        AgentCommand::Children {
+            agent: root.clone(),
+            page: AgentPageRequest::default(),
+        },
+        AgentCommand::PublishAgentFiles {
+            agent: root.clone(),
+            operation: OperationId::new(),
+            changes: vec![crate::client_files::ClientFileChange {
+                path: "ui/title".into(),
+                expected: None,
+                text: "forged title".into(),
+            }],
+        },
+    ] {
+        let before = stream.requests();
+        let denied = call(&peer_client, "agents", &command).await;
+        assert!(
+            !matches!(&denied, Ok(Ok(_))),
+            "peer authority reached a user command: {denied:?}"
+        );
+        let requests = stream.requests().since(before);
+        assert_eq!(
+            (requests.data(), requests.control()),
+            (0, 0),
+            "peer authority must be refused before observing or changing storage"
+        );
+    }
+    for enabled in [false, true] {
+        let command = AgentCommand::SetPeerMembership {
+            agent: root.clone(),
+            id: IntentId::try_from(if enabled { "peers-on" } else { "peers-off" })?,
+            enabled,
+        };
+        assert!(matches!(call(&client, "agents", &command).await?,
+            Ok(AgentReply::PeerMembership { enabled: committed }) if committed == enabled));
+        // Replay the user's exact action without another membership record.
+        let before = stream.tail(root.peer_membership()?).await?;
+        assert!(matches!(call(&client, "agents", &command).await?,
+            Ok(AgentReply::PeerMembership { enabled: committed }) if committed == enabled));
+        assert_eq!(stream.tail(root.peer_membership()?).await?, before);
+        let head = stream.head(root.peer_membership()?).await?;
+        let record = head.last.ok_or("membership record missing")?;
+        assert_eq!(
+            crate::agent::PeerMembership::decode(&record.value)?.enabled,
+            enabled
+        );
+    }
     let usage = AgentCommand::Usage {
         agent: root.clone(),
         input: 0,

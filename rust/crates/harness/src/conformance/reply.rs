@@ -114,6 +114,7 @@ fn message(id: &str) -> Result<InboxRecord> {
         from: sender(),
         id: intent(id)?,
         body: Box::new(prompt()?),
+        re: None,
         attachments: None,
     }))
 }

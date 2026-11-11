@@ -284,6 +284,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 from: user(),
                 id: intent("prepare"),
                 body: Box::new(prepare),
+                re: None,
                 attachments: None,
             }),
         )
@@ -307,6 +308,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 from: user(),
                 id: intent("work"),
                 body: Box::new(body),
+                re: None,
                 attachments: None,
             }),
         )
@@ -409,6 +411,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 from: user(),
                 id: intent("continue"),
                 body: Box::new(body),
+                re: None,
                 attachments: None,
             }),
         )

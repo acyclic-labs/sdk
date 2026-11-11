@@ -297,6 +297,10 @@ pub struct Message {
     pub from: Sender,
     /// Stable message identity.
     pub id: IntentId,
+    /// Message being answered. Threads are a projection of committed messages,
+    /// with no separate thread store or authority conferred by this identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub re: Option<IntentId>,
     /// Message body.
     pub body: Box<FileRef>,
     /// The files the body's `@` mentions name, pinned when the message was

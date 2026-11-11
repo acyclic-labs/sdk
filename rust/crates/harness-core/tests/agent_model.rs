@@ -25,6 +25,8 @@ mod failed_publication;
 #[cfg(feature = "test-support")]
 #[path = "agent_model/hosting.rs"]
 mod hosting;
+#[path = "agent_model/peers.rs"]
+mod peers;
 #[path = "agent_model/reply.rs"]
 mod reply;
 #[path = "agent_model/runtime.rs"]
@@ -1406,6 +1408,7 @@ async fn attention_alarm_default_resumes_on_input_or_original_deadline() -> Resu
                 from: user(),
                 id: intent(id),
                 body: Box::new(body.clone()),
+                re: None,
                 attachments: None,
             }),
         };

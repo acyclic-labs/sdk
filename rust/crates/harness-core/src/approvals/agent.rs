@@ -206,6 +206,18 @@ impl AgentApprovals {
         Ok(!held)
     }
 
+    /// Publish this invocation's own effects before returning its receipt.
+    pub fn commit_effects(&self) -> Result<()> {
+        if self.effects.is_none() {
+            return Err(Error::Unsupported(
+                "tool effects have no publication owner".into(),
+            ));
+        }
+        self.wait(None)?;
+        self.yielded.store(true, Ordering::Release);
+        Ok(())
+    }
+
     /// Hands this call's condition to the turn driver without waiting here.
     pub fn defer(&self, until: crate::agent::Until) -> Result<()> {
         self.wait(None)?;
