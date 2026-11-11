@@ -241,8 +241,9 @@ where
         if entries.is_empty() {
             return Ok(None);
         }
+        let manifest = crate::agent::InstructionManifest::new(entries)?;
         let mut content = Vec::new();
-        for entry in &entries {
+        for entry in &manifest.entries {
             content.extend_from_slice(
                 format!("Instructions for workspace {}:\n", entry.entry).as_bytes(),
             );
@@ -255,11 +256,8 @@ where
                 content.push(b'\n');
             }
         }
-        let manifest = crate::contract::canonical_json_bytes(&crate::agent::InstructionManifest {
-            version: 1,
-            entries,
-        })
-        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let manifest = crate::contract::canonical_json_bytes(&manifest)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         let stage = |name, bytes: Vec<u8>, media_type| async move {
             let digest = blake3::hash(&bytes).to_hex();
             self.conversation_file(

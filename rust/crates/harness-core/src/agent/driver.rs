@@ -423,20 +423,11 @@ impl AgentRecord for ConversationEntry {
             if !kinds.insert(document.kind) {
                 return Err(Error::Record("announcement kind repeats"));
             }
-            if document.kind == super::AnnouncementKind::Targets
-                && !document.instructions.is_empty()
+            if document.kind == super::AnnouncementKind::Targets && document.instructions.is_some()
             {
                 return Err(Error::Record(
                     "target announcement carries workspace instructions",
                 ));
-            }
-            let mut entries = std::collections::BTreeSet::new();
-            if document
-                .instructions
-                .iter()
-                .any(|instructions| !entries.insert(instructions.entry))
-            {
-                return Err(Error::Record("workspace instructions repeat a slot"));
             }
         }
         match &self.outcome {

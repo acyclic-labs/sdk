@@ -98,6 +98,32 @@ pub(crate) struct InstructionManifest {
     pub(crate) entries: Vec<WorkspaceInstructions>,
 }
 
+impl InstructionManifest {
+    pub(crate) fn new(entries: Vec<WorkspaceInstructions>) -> crate::Result<Self> {
+        let manifest = Self {
+            version: 1,
+            entries,
+        };
+        manifest.check()?;
+        Ok(manifest)
+    }
+
+    fn check(&self) -> crate::Result<()> {
+        if self.version != 1 {
+            return Err(crate::Error::Invalid(
+                "instruction manifest is not v1".into(),
+            ));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        if self.entries.iter().any(|entry| !ids.insert(entry.entry)) {
+            return Err(crate::Error::Invalid(
+                "workspace instructions repeat a slot".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl AnnouncedInstructions {
     /// Load exactly the selected provenance, independently of current bindings.
     pub async fn entries(
@@ -114,11 +140,7 @@ impl AnnouncedInstructions {
             .await?;
         let manifest: InstructionManifest = crate::contract::json_from_slice(&bytes)
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-        if manifest.version != 1 {
-            return Err(crate::Error::Invalid(
-                "instruction manifest is not v1".into(),
-            ));
-        }
+        manifest.check()?;
         Ok(manifest.entries)
     }
 }
