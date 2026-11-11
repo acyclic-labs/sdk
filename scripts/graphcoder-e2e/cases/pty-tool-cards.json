@@ -22,7 +22,7 @@
             "id": "ok",
             "name": "shell",
             "arguments": {
-              "command": "node -p \"['CARD','SHELL_OK'].join('_')\""
+              "command": "echo CARD\"\"_SHELL_OK"
             }
           }
         ]
@@ -53,7 +53,7 @@
         {
           "when": {
             "contains": [
-              "⏺ shell  node -p",
+              "⏺ shell  echo CARD",
               "⏺ read  CARD_MISSING.txt ✗",
               "CARDS_DONE",
               "○"
