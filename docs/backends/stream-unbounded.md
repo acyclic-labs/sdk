@@ -194,6 +194,24 @@ Unknown/old versions return Unsupported; there is no migration or dual decoder.
 
 ## Collection and crash safety
 
+Before adding collection, declare large-field reachability in the shared content
+graph. `content::tree::Writer::reference(root)` records a dependency without
+appending its bytes. Sealing a writer with dependencies wraps its byte root in
+one manifest whose parts carry the original bytes and whose edges point to a
+bounded dependency tree. Dependency nodes use the existing Objects manifest
+edge encoding, and the same carry builder as byte parts; there is no second
+Merkle-tree implementation. Arbitrarily many references spill into edge pages.
+Writers without references retain their existing content identities.
+
+The byte reader follows only manifest parts, so dependency edges do not change
+logical bytes, byte ranges or record order. Graph retention/retirement follows
+both parts and edges through that one canonical codec. The staged encoder calls
+`reference` whenever it writes a content-root field, including a supplied root.
+Interrupted reference writes retire the writer exactly like interrupted byte
+writes. Supplied roots still require owner authorization and validation before
+final apply; declaring an edge is not authority to publish or consume a stage.
+This is a collection prerequisite, not completion of stage-owner/event GC.
+
 An unpublished stage owns page references. Session close, explicit abort,
 publication completion and recovery's owner-death event enqueue retirement.
 Collection processes a bounded reference-edge work queue; shared content is
@@ -524,3 +542,9 @@ These results validate ingestion/content behavior. They are not successful
 100k-effect or 64 MiB atomic write conformance, crash-at-publication simulation,
 the final-apply loom proof, owner-event collection or any backend's staged
 publication integration. Those obligations and Linux qualification remain due.
+
+The subsequent reference-edge extension requires its own compile and focused
+run. Its controls add dependency-page spill and reference-write cancellation,
+and require the large-record stage to declare its value edge. A third mutation
+removes that declaration and must fail with `staged body omitted content
+dependencies`. Earlier `e7ec6d0a1b3` evidence does not validate this extension.

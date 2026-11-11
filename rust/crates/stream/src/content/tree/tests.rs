@@ -139,6 +139,67 @@ async fn content_identity_ignores_fragments_and_blob_bytes_cannot_alias_manifest
 }
 
 #[tokio::test]
+async fn content_dependencies_spill_to_edges_without_changing_byte_reads()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let disk = Disk::open(directory.path());
+    let value = upload(&disk, input(2 * LEAF_BYTES + 1, 997)).await?;
+    let mut writer = Writer::new(&disk)?;
+    writer.write(b"header").await?;
+    writer.reference(value).await?;
+    writer.write(b"tail").await?;
+    let root = writer.finish().await?;
+    let page = disk.get(root.part.digest).await?;
+    let manifest = Manifest::decode(page.bytes.as_slice())?;
+    assert_eq!(manifest.parts().len(), 1);
+    assert_eq!(
+        manifest.edges().collect::<Vec<_>>(),
+        vec![value.part.digest]
+    );
+    let mut reader = Reader::new(&disk, root)?;
+    assert_eq!(
+        reader.next().await?.ok_or("missing body")?.as_slice(),
+        b"headertail"
+    );
+    assert!(reader.next().await?.is_none());
+
+    let mut writer = Writer::new(&disk)?;
+    writer.write(b"x").await?;
+    for _ in 0..EDGE_FANOUT + 1 {
+        writer.reference(value).await?;
+    }
+    let root = writer.finish().await?;
+    let page = disk.get(root.part.digest).await?;
+    let manifest = Manifest::decode(page.bytes.as_slice())?;
+    let edges = manifest.edges().collect::<Vec<_>>();
+    assert_eq!(edges.len(), 1);
+    let dependencies = disk.get(edges[0]).await?;
+    let dependencies = Manifest::decode(dependencies.bytes.as_slice())?;
+    assert_eq!(dependencies.parts().len(), 0);
+    let children = dependencies.edges().collect::<Vec<_>>();
+    assert_eq!(children.len(), 2);
+    for (digest, count) in children.into_iter().zip([EDGE_FANOUT, 1]) {
+        let page = disk.get(digest).await?;
+        assert!(page.bytes.len() <= PAGE_BYTES);
+        let manifest = Manifest::decode(page.bytes.as_slice())?;
+        assert_eq!(manifest.parts().len(), 0);
+        assert_eq!(manifest.edges().len(), count);
+        assert!(manifest.edges().all(|digest| digest == value.part.digest));
+    }
+    let mut selected = Reader::range(&disk, root, 0, 1)?;
+    assert_eq!(
+        selected
+            .next()
+            .await?
+            .ok_or("missing byte range")?
+            .as_slice(),
+        b"x"
+    );
+    assert!(selected.next().await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn content_ranges_seek_without_fetching_unselected_pages()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

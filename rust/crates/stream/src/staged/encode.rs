@@ -68,6 +68,7 @@ impl<'a, S: Storage> Encoder<'a, S> {
         if root.height > u64::BITS as u8 {
             return Err(StreamError::InvalidArgument);
         }
+        self.output.reference(root).await?;
         self.byte(1).await?;
         self.output.write(&root.part.digest).await?;
         self.number(root.part.length).await?;

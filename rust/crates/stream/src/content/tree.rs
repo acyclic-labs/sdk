@@ -9,6 +9,7 @@ pub const PAGE_BYTES: usize = 64 * 1024;
 const BLOB_MAGIC: &[u8] = b"acyclic-content-leaf-v1\0";
 const LEAF_BYTES: usize = PAGE_BYTES - BLOB_MAGIC.len();
 const FANOUT: usize = (PAGE_BYTES - super::MANIFEST_MAGIC.len() - 8) / 40;
+pub(crate) const EDGE_FANOUT: usize = (PAGE_BYTES - super::MANIFEST_MAGIC.len() - 8) / 32;
 // Even binary fanout cannot require more levels for a u64 logical length.
 const MAX_HEIGHT: u8 = u64::BITS as u8;
 
@@ -71,21 +72,58 @@ async fn put(
     Ok(Part { digest, length })
 }
 
-struct Builder<'a, S> {
-    storage: &'a S,
-    levels: Vec<Vec<Part>>,
+trait TreeEntry: Copy {
+    const FANOUT: usize;
+    fn encode(entries: &[Self]) -> Result<(Vec<u8>, u64), StreamError>;
+    fn parent(part: Part) -> Self;
 }
 
-impl<S: Storage> Builder<'_, S> {
-    async fn node(&self, parts: &[Part]) -> Result<Part, StreamError> {
-        let length = parts.iter().try_fold(0_u64, |sum, part| {
+impl TreeEntry for Part {
+    const FANOUT: usize = self::FANOUT;
+    fn encode(entries: &[Self]) -> Result<(Vec<u8>, u64), StreamError> {
+        let length = entries.iter().try_fold(0_u64, |sum, part| {
             sum.checked_add(part.length).ok_or(StreamError::Capacity)
         })?;
-        let bytes = encode_manifest(parts.iter().copied(), std::iter::empty())?;
-        put(self.storage, Kind::Manifest, bytes, length).await
+        Ok((
+            encode_manifest(entries.iter().copied(), std::iter::empty())?,
+            length,
+        ))
+    }
+    fn parent(part: Part) -> Self {
+        part
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Edge([u8; 32]);
+
+impl TreeEntry for Edge {
+    const FANOUT: usize = EDGE_FANOUT;
+    fn encode(entries: &[Self]) -> Result<(Vec<u8>, u64), StreamError> {
+        Ok((
+            encode_manifest(std::iter::empty(), entries.iter().map(|edge| edge.0))?,
+            0,
+        ))
+    }
+    fn parent(part: Part) -> Self {
+        Self(part.digest)
+    }
+}
+
+struct Builder<'a, S, T = Part> {
+    storage: &'a S,
+    levels: Vec<Vec<T>>,
+}
+
+impl<S: Storage, T: TreeEntry> Builder<'_, S, T> {
+    async fn node(&self, entries: &[T]) -> Result<T, StreamError> {
+        let (bytes, length) = T::encode(entries)?;
+        let part = put(self.storage, Kind::Manifest, bytes, length).await?;
+        crate::runtime::yield_now().await?;
+        Ok(T::parent(part))
     }
 
-    async fn push(&mut self, mut level: usize, mut part: Part) -> Result<(), StreamError> {
+    async fn push(&mut self, mut level: usize, mut part: T) -> Result<(), StreamError> {
         loop {
             if level > usize::from(MAX_HEIGHT) {
                 return Err(StreamError::Capacity);
@@ -96,11 +134,11 @@ impl<S: Storage> Builder<'_, S> {
             let parts = &mut self.levels[level];
             if parts.is_empty() {
                 parts
-                    .try_reserve_exact(FANOUT)
+                    .try_reserve_exact(T::FANOUT)
                     .map_err(|_| StreamError::Capacity)?;
             }
             parts.push(part);
-            if parts.len() < FANOUT {
+            if parts.len() < T::FANOUT {
                 return Ok(());
             }
             part = self.node(&self.levels[level]).await?;
@@ -109,7 +147,7 @@ impl<S: Storage> Builder<'_, S> {
         }
     }
 
-    async fn finish(mut self) -> Result<Root, StreamError> {
+    async fn finish_tree(mut self) -> Result<(T, u8), StreamError> {
         for level in 0..=usize::from(MAX_HEIGHT) {
             let Some(parts) = self.levels.get(level) else {
                 return Err(StreamError::InvalidArgument);
@@ -118,10 +156,7 @@ impl<S: Storage> Builder<'_, S> {
                 continue;
             }
             if level + 1 == self.levels.len() && parts.len() == 1 {
-                return Ok(Root {
-                    part: parts[0],
-                    height: level as u8,
-                });
+                return Ok((parts[0], level as u8));
             }
             let part = self.node(parts).await?;
             self.levels[level].clear();
@@ -131,10 +166,23 @@ impl<S: Storage> Builder<'_, S> {
     }
 }
 
+impl<S: Storage> Builder<'_, S> {
+    async fn finish(self) -> Result<Root, StreamError> {
+        let (part, height) = self.finish_tree().await?;
+        Ok(Root { part, height })
+    }
+}
+
+enum Update<'a> {
+    Bytes(&'a [u8]),
+    Reference(Root),
+}
+
 /// Incremental content writer. Failed or cancelled writes cannot be sealed as
 /// successful prefixes; their pages remain owned by the enclosing stage.
 pub struct Writer<'a, S> {
     builder: Builder<'a, S>,
+    dependencies: Builder<'a, S, Edge>,
     buffer: Vec<u8>,
     total: u64,
     interrupted: bool,
@@ -153,6 +201,10 @@ impl<'a, S: Storage> Writer<'a, S> {
                 storage,
                 levels: Vec::new(),
             },
+            dependencies: Builder {
+                storage,
+                levels: Vec::new(),
+            },
             buffer,
             total: 0,
             interrupted: false,
@@ -162,11 +214,27 @@ impl<'a, S: Storage> Writer<'a, S> {
     /// Consumes bytes into canonical pages. Dropping this future during IO
     /// permanently retires the writer's ability to finish, without polling.
     pub async fn write(&mut self, bytes: &[u8]) -> Result<(), StreamError> {
+        self.update(Update::Bytes(bytes)).await
+    }
+
+    /// Declares content reachable through this payload without appending bytes.
+    /// The stage owner retains the supplied root until sealing or retirement.
+    pub async fn reference(&mut self, root: Root) -> Result<(), StreamError> {
+        self.update(Update::Reference(root)).await
+    }
+
+    async fn update(&mut self, update: Update<'_>) -> Result<(), StreamError> {
         if self.interrupted {
             return Err(StreamError::Unavailable);
         }
         self.interrupted = true;
-        let result = self.write_inner(bytes).await;
+        let result = match update {
+            Update::Bytes(bytes) => self.write_inner(bytes).await,
+            Update::Reference(root) if root.height <= MAX_HEIGHT => {
+                self.dependencies.push(0, Edge(root.part.digest)).await
+            }
+            Update::Reference(_) => Err(StreamError::InvalidArgument),
+        };
         if result.is_ok() {
             self.interrupted = false;
         }
@@ -212,7 +280,20 @@ impl<'a, S: Storage> Writer<'a, S> {
             let part = put(self.builder.storage, Kind::Blob, self.buffer, length).await?;
             self.builder.push(0, part).await?;
         }
-        self.builder.finish().await
+        let storage = self.builder.storage;
+        let body = self.builder.finish().await?;
+        if self.dependencies.levels.is_empty() {
+            return Ok(body);
+        }
+        let height = body
+            .height
+            .checked_add(1)
+            .filter(|height| *height <= MAX_HEIGHT)
+            .ok_or(StreamError::Capacity)?;
+        let (edge, _) = self.dependencies.finish_tree().await?;
+        let bytes = encode_manifest([body.part], [edge.0])?;
+        let part = put(storage, Kind::Manifest, bytes, body.part.length).await?;
+        Ok(Root { part, height })
     }
 }
 
@@ -342,7 +423,7 @@ impl<'a, S: Storage> Reader<'a, S> {
                 .map_err(|_| StreamError::InvalidResponse)?;
             if manifest.parts().len() == 0
                 || manifest.parts().len() > FANOUT
-                || manifest.edges().len() != 0
+                || manifest.edges().len() > EDGE_FANOUT
                 || manifest.parts().any(|part| part.length == 0)
                 || manifest
                     .length()

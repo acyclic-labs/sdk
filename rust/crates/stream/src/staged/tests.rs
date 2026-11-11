@@ -187,6 +187,17 @@ async fn staged_large_record_is_a_content_reference_and_projection_keeps_identit
         return Err("large value was not content addressed".into());
     };
     assert_eq!(root.part.length, size as u64);
+    let body_page = storage.get(staged.body().part.digest).await?;
+    assert_eq!(
+        body_page.kind,
+        tree::Kind::Manifest,
+        "staged body omitted content dependencies"
+    );
+    let body_manifest = crate::content::Manifest::decode(body_page.bytes.as_slice())?;
+    assert_eq!(
+        body_manifest.edges().collect::<Vec<_>>(),
+        vec![root.part.digest]
+    );
     let mut content = tree::Reader::new(&storage, root)?;
     let mut read = 0;
     while let Some(bytes) = content.next().await? {
@@ -297,33 +308,60 @@ async fn cancelled_content_write_cannot_seal_or_resume_a_staged_prefix()
             self.disk.get(digest).await
         }
     }
-    let directory = tempfile::tempdir()?;
-    let (stored, event) = tokio::sync::oneshot::channel();
-    let (_resume, wait) = tokio::sync::oneshot::channel();
-    let storage = Delayed {
-        disk: Disk::open(directory.path()),
-        gate: std::sync::Mutex::new(Some((stored, wait))),
-    };
-    let mut writer = tree::Writer::new(&storage)?;
-    let input = vec![42; 2 * tree::PAGE_BYTES];
-    {
-        let writing = writer.write(&input);
-        tokio::pin!(writing);
-        tokio::select! {
-            result = &mut writing => return Err(format!("write completed before its stored-page event: {result:?}").into()),
-            result = event => result?,
+    for references in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let disk = Disk::open(directory.path());
+        let root = if references {
+            Some(
+                tree::upload(
+                    &disk,
+                    futures::stream::iter([Ok(OwnedBytes::from_static(b"dependency"))]),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let (stored, event) = tokio::sync::oneshot::channel();
+        let (_resume, wait) = tokio::sync::oneshot::channel();
+        let storage = Delayed {
+            disk,
+            gate: std::sync::Mutex::new(Some((stored, wait))),
+        };
+        let mut writer = tree::Writer::new(&storage)?;
+        if let Some(root) = root {
+            for _ in 0..tree::EDGE_FANOUT - 1 {
+                writer.reference(root).await?;
+            }
         }
+        let input = vec![42; 2 * tree::PAGE_BYTES];
+        {
+            let writing = async {
+                match root {
+                    Some(root) => writer.reference(root).await,
+                    None => writer.write(&input).await,
+                }
+            };
+            tokio::pin!(writing);
+            tokio::select! {
+                result = &mut writing => return Err(format!("write completed before its stored-page event: {result:?}").into()),
+                result = event => result?,
+            }
+        }
+        assert!(
+            std::fs::read_dir(directory.path())?.next().is_some(),
+            "no original page was stored"
+        );
+        assert_eq!(
+            writer.write(b"replacement").await,
+            Err(StreamError::Unavailable),
+            "cancelled staging writer accepted replacement bytes"
+        );
+        if let Some(root) = root {
+            assert_eq!(writer.reference(root).await, Err(StreamError::Unavailable));
+        }
+        assert_eq!(writer.finish().await, Err(StreamError::Unavailable));
     }
-    assert!(
-        std::fs::read_dir(directory.path())?.next().is_some(),
-        "no original page was stored"
-    );
-    assert_eq!(
-        writer.write(b"replacement").await,
-        Err(StreamError::Unavailable),
-        "cancelled staging writer accepted replacement bytes"
-    );
-    assert_eq!(writer.finish().await, Err(StreamError::Unavailable));
     Ok(())
 }
 
