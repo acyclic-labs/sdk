@@ -1519,7 +1519,7 @@ async fn policy_revision_retires_original_scratch_on_confirmation_close_and_with
             assert!(spent.items_examined > 1);
         }
     }
-    for outcome in 0..3 {
+    for outcome in 0..4 {
         let cancellation = CancellationToken::new();
         let source = Prefunded {
             budget,
@@ -1556,10 +1556,22 @@ async fn policy_revision_retires_original_scratch_on_confirmation_close_and_with
                 drop(producer);
                 assert!(matches!(operation.await, Err(FsError::WorkspaceDeleted)));
             }
-            _ => {
+            2 => {
                 cancellation.cancel();
                 drop(operation);
                 drop(producer);
+            }
+            _ => {
+                workspace.write_text("/concurrent", "publication").await?;
+                let current = workspace.head(budget, &cancellation).await?.value;
+                producer
+                    .send(())
+                    .map_err(|_| "confirmation receiver lost")?;
+                assert_eq!(
+                    operation.await?.map(|(generation, _)| generation),
+                    Some(current.id()),
+                    "a data-only publication must not invalidate the policy",
+                );
             }
         }
         accounting.spent().verify(budget)?;

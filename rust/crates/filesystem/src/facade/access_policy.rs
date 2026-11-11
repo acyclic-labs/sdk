@@ -239,37 +239,7 @@ macro_rules! policy_revision {
             let volume = $volume;
             let (generation, observed) =
                 volume.resolve_head_generation(scope, $cancellation).await?;
-            let metadata = {
-                let (root, _root_allocation) = read_generation_root_with_accounting(
-                    &volume.fs.inner.objects,
-                    generation,
-                    volume.config,
-                    scope,
-                    $cancellation,
-                )
-                .await?;
-                if root.volume_id != volume.id {
-                    return Err(FsError::VolumeMismatch);
-                }
-                let (record, _record_allocation) = lookup_file_record_async_with_accounting(
-                    &volume.fs.inner.objects,
-                    root.file_table,
-                    root.root_file_id,
-                    DecodeLimits::for_volume(volume.config),
-                    scope,
-                    $cancellation,
-                    None,
-                )
-                .await?;
-                crate::kernel::read_file_metadata_with_accounting(
-                    volume.fs.objects(),
-                    (record.ok_or(FsError::NotFound)?).metadata,
-                    DecodeLimits::for_volume(volume.config),
-                    scope,
-                    $cancellation,
-                )
-                .await?
-            };
+            let revision = policy_revision_at(volume, generation, scope, $cancellation).await?;
             let mut authority = crate::async_storage::AuthorityFrame::borrow(scope)?;
             let current = volume
                 .fs
@@ -278,11 +248,25 @@ macro_rules! policy_revision {
                 .head(volume_authority_id(volume.id), &mut authority)
                 .await;
             finish_authority_work(authority)?;
+            let current = current?;
+            if observed == current {
+                return Ok(Some((GenerationId::from_root(generation), revision)));
+            }
+            if observed.epoch != current.epoch {
+                return Ok(None);
+            }
+            // A data publication need not revoke the selected policy. Capture
+            // one confirming committed root after the selected metadata IO,
+            // then verify its immutable revision. That head is the return cut;
+            // later publications cannot change this proof. No quiet cut,
+            // retry, or further authority observation is required.
+            let (confirmed_generation, confirmed) =
+                volume.resolve_head_generation(scope, $cancellation).await?;
+            let confirmed_revision =
+                policy_revision_at(volume, confirmed_generation, scope, $cancellation).await?;
             Ok(
-                crate::facade::policy_head_is_current(observed, current?).then_some((
-                    GenerationId::from_root(generation),
-                    metadata.named_attributes,
-                )),
+                policy_revision_is_current(observed, confirmed, &revision, &confirmed_revision)
+                    .then_some((GenerationId::from_root(confirmed_generation), revision)),
             )
         })
     }};
@@ -290,7 +274,8 @@ macro_rules! policy_revision {
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> crate::Workspace<A, O> {
     /// Reads the current policy revision without constructing a checkout.
-    /// Returns None if publication overtakes the metadata read.
+    /// Data-only publications retain the observation. Returns None if the
+    /// confirming policy revision or authority epoch differs from the selection.
     pub async fn current_access_policy_revision<W: FsWork>(
         &self,
         work: W,
@@ -322,8 +307,51 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     }
 }
 
-pub(crate) fn policy_head_is_current(observed: Head, current: Head) -> bool {
-    observed == current
+pub(crate) fn policy_revision_is_current(
+    observed: Head,
+    current: Head,
+    selected: &crate::kernel::MetadataField<ObjectId>,
+    confirmed: &crate::kernel::MetadataField<ObjectId>,
+) -> bool {
+    observed.epoch == current.epoch && selected == confirmed
+}
+
+async fn policy_revision_at<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
+    generation: ObjectId,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<crate::kernel::MetadataField<ObjectId>, FsError> {
+    let (root, _root_allocation) = read_generation_root_with_accounting(
+        &volume.fs.inner.objects,
+        generation,
+        volume.config,
+        accounting,
+        cancellation,
+    )
+    .await?;
+    if root.volume_id != volume.id {
+        return Err(FsError::VolumeMismatch);
+    }
+    let (record, _record_allocation) = lookup_file_record_async_with_accounting(
+        &volume.fs.inner.objects,
+        root.file_table,
+        root.root_file_id,
+        DecodeLimits::for_volume(volume.config),
+        accounting,
+        cancellation,
+        None,
+    )
+    .await?;
+    let metadata = crate::kernel::read_file_metadata_with_accounting(
+        volume.fs.objects(),
+        (record.ok_or(FsError::NotFound)?).metadata,
+        DecodeLimits::for_volume(volume.config),
+        accounting,
+        cancellation,
+    )
+    .await?;
+    Ok(metadata.named_attributes)
 }
 
 fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
