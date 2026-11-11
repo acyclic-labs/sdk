@@ -33,7 +33,7 @@ function readProtoEnums(root) {
     const result = spawnSync(
       executable,
       ["build", "--as-file-descriptor-set", "--path", "rust/crates/filesystem-wire/proto/filesystem/v2", "-o", descriptorPath],
-      { cwd: root, encoding: "utf8" },
+      { maxBuffer: Infinity, cwd: root, encoding: "utf8" },
     );
     if (result.status !== 0) {
       process.stderr.write(result.stdout ?? "");

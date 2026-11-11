@@ -43,7 +43,7 @@ export async function main(args = process.argv.slice(2)) {
     || args.some(arg => !arg.startsWith('--scope-file=') && !arg.startsWith('--workers=')
       && !arg.startsWith('--package=') && arg !== '--list')) throw new Error('invalid consumer build arguments');
   const result = spawnSync('cargo', ['metadata', '--locked', '--no-deps', '--format-version', '1'],
-    { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    { cwd: root, encoding: 'utf8', maxBuffer: Infinity });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(result.stderr || 'consumer metadata failed');
   const all = consumers(JSON.parse(result.stdout));

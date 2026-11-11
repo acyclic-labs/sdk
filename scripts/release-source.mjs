@@ -20,7 +20,7 @@ function releaseSource(){
 const output=process.env.GITHUB_OUTPUT;
 if(!output)throw new Error('GITHUB_OUTPUT is required for release source outputs');
 const version=checkReleaseVersion(process.env.RELEASE_VERSION);
-const sha=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+const sha=execFileSync('git',['rev-parse','HEAD'],{ maxBuffer: Infinity,encoding:'utf8'}).trim();
 checkReleaseSource(sha,process.env.GITHUB_SHA);
 checkNpmVersions(version,JSON.parse(fs.readFileSync('release/npm-packages.json','utf8')));
 execFileSync(process.execPath,['scripts/publish-cargo-crates.mjs','check',sha,version],{stdio:'inherit'});

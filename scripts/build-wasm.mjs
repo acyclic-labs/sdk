@@ -52,7 +52,7 @@ if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packag
 
 const cargo = cargoArgument || process.env.ACYCLIC_CARGO_BIN || "cargo";
 const capture = (executable, args) => {
-  const result = spawnSync(executable, args, { cwd: root, encoding: "utf8", windowsHide: true });
+  const result = spawnSync(executable, args, { maxBuffer: Infinity, cwd: root, encoding: "utf8", windowsHide: true });
   return result.error || result.status !== 0 ? undefined : result.stdout.trim();
 };
 const run = (executable, args) => {

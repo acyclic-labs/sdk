@@ -58,7 +58,7 @@ function inspect(path, content) {
 }
 
 async function main() {
-  const paths = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\u0000").filter(Boolean);
+  const paths = execFileSync("git", ["ls-files", "-z"], { maxBuffer: Infinity, cwd: root, encoding: "utf8" }).split("\u0000").filter(Boolean);
   for (const path of paths) {
     try {
       const content = await readFile(join(root, path), "utf8");
