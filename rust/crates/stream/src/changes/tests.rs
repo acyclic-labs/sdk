@@ -275,7 +275,7 @@ fn admitted_decode_reserves_once_without_trusting_opaque_or_forged_keys() {
     compare(&retained, &expected, true);
     // Extra opaque keys cannot cause an allocation sized by an unrelated index.
     let keys = (0..128)
-        .map(|index| format!("key-{index:02}").into())
+        .map(|index| format!("key-{index:03}").into())
         .collect::<Vec<OwnedBytes>>();
     let opaque = AppendRecord {
         value: retained.value.clone(),
