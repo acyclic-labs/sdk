@@ -588,7 +588,11 @@ impl ToolContext {
         for change in changes {
             crate::executor::with_history_io(io, |work| {
                 crate::conversation::validate_content_path(change.path(), work)?;
-                if change.path().len() > self.effective_scope().limits().path_bytes
+                if self
+                    .effective_scope()
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|maximum| change.path().len() > maximum.get())
                     || crate::conversation::is_internal_path(change.path())
                 {
                     return Err(Error::tool_rejected(
@@ -923,7 +927,11 @@ impl ToolContext {
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         crate::executor::with_history_io(io, |history| {
             kind.validate(path, history).map_err(Error::tool_input)?;
-            if path.len() > self.effective_scope().limits().path_bytes
+            if self
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
                 || crate::conversation::is_internal_path(path)
             {
                 return Err(crate::store::guarded_boundary(

@@ -751,7 +751,12 @@ impl crate::context::InstructionReader for VolumeInstructions<'_> {
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>
     {
         Box::pin(async move {
-            if path.len() > self.harness.limits.path_bytes {
+            if self
+                .harness
+                .limits
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+            {
                 return Err(Error::Invalid("instruction path exceeds path bound".into()));
             }
             let Some(instruction) = self.source.instruction(path, revision, maximum).await? else {
@@ -837,7 +842,6 @@ mod tests {
             let operation = ContextEpoch::operation(&agent, checkpoint)?;
             let path = ContextEpoch::path(operation);
             crate::conversation::validate_content_path(&path, &mut None)?;
-            prop_assert!(path.len() <= Limits::default().path_bytes);
             prop_assert_eq!(ContextEpoch::operation(&agent, checkpoint)?, operation);
             if agent != other {
                 prop_assert_ne!(ContextEpoch::operation(&other, checkpoint)?, operation);

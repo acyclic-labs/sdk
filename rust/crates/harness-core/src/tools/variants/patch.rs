@@ -233,7 +233,11 @@ fn authorize_actions<'a>(
             crate::executor::with_history_io(io, |history| {
                 crate::conversation::validate_content_path(&relative, history)
             })?;
-            if relative.len() > context.effective_scope().limits().path_bytes
+            if context
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| relative.len() > maximum.get())
                 || crate::conversation::is_internal_path(&relative)
             {
                 return Err(Error::tool_rejected(

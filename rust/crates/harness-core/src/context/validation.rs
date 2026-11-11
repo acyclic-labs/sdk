@@ -187,7 +187,11 @@ pub(crate) fn restrict_context_limits(
     })?;
     Ok(Limits {
         file_bytes: pinned.file_bytes.min(admitted.file_bytes),
-        path_bytes: pinned.path_bytes.min(admitted.path_bytes),
+        path_bytes: pinned
+            .path_bytes
+            .into_iter()
+            .chain(admitted.path_bytes)
+            .min(),
         attachments: pinned
             .attachments
             .into_iter()

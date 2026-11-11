@@ -47,7 +47,9 @@ fuzz_target!(|input: &[u8]| {
     }
     round_trip::<Context>(input);
     round_trip::<ContextSummary>(input);
-    for path_bytes in [1, 16, 64, 4096] {
+    for path_bytes in [Some(1), Some(16), Some(64), Some(4096), None]
+        .map(|bound| bound.and_then(std::num::NonZeroUsize::new))
+    {
         let limits = Limits {
             path_bytes,
             ..limits

@@ -98,7 +98,10 @@ impl ContextManifest {
             }
             let mut matched = 0;
             for skill in &self.discovery.skills {
-                if skill.source.path.len() > limits.path_bytes {
+                if limits
+                    .path_bytes
+                    .is_some_and(|maximum| skill.source.path.len() > maximum.get())
+                {
                     return Err(stock_boundary(
                         io,
                         ErrorCode::Invalid,
@@ -199,7 +202,10 @@ impl ContextManifest {
         let bytes = self.encode(limits)?;
         crate::conversation::validate_content_path(path, &mut None)?;
         // Bounded by what it renders (`encode`), not by the file bound.
-        if path.len() > limits.path_bytes {
+        if limits
+            .path_bytes
+            .is_some_and(|maximum| path.len() > maximum.get())
+        {
             return Err(Error::Invalid(
                 "context manifest publication exceeds file bounds".into(),
             ));
