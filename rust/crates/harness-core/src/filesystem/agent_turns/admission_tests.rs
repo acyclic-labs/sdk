@@ -8,7 +8,7 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
     for _ in 1..128 {
         agent = agent
             .child(&AgentId::from_bytes([201; 16]))
-            .map_err(agent_error)?;
+            .map_err(Error::from)?;
     }
     let provider = ProviderRef::new("waits".into(), "filesystem".into(), "2".into(), &mut None)?;
     let volume = private_volume(provider.clone(), &agent.id())?;
@@ -57,10 +57,10 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
     };
     let first = agent
         .child(&AgentId::from_bytes([203; 16]))
-        .map_err(agent_error)?;
+        .map_err(Error::from)?;
     let replacement = agent
         .child(&AgentId::from_bytes([204; 16]))
-        .map_err(agent_error)?;
+        .map_err(Error::from)?;
     let operation = OperationId::from_bytes([205; 16]);
     // Repeating full paths for 32 deepest children exceeds 64 KiB even once.
     let mut references = vec![first.as_str().to_owned()];
@@ -68,7 +68,7 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
         references.push(
             agent
                 .child(&AgentId::from_bytes([byte; 16]))
-                .map_err(agent_error)?
+                .map_err(Error::from)?
                 .as_str()
                 .to_owned(),
         );
@@ -204,7 +204,7 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
             policy: None,
         },
     )
-    .map_err(agent_error)?;
+    .map_err(Error::from)?;
     state.conversation_tail = 1;
     let issuer = AuthorityRoot::new(
         "opening",
@@ -285,11 +285,11 @@ async fn frozen_notice_ranges_page_without_gaining_later_records() -> Result<()>
     let mut records = Vec::new();
     for index in 0..=count {
         if index == acyclic_stream::MAX_ITEMS / 2 {
-            records.push(InboxRecord::Awaited.encode().map_err(agent_error)?);
+            records.push(InboxRecord::Awaited.encode().map_err(Error::from)?);
         }
         records.push(
             InboxRecord::Notice {
-                id: IntentId::try_from(format!("event-{index}")).map_err(agent_error)?,
+                id: IntentId::try_from(format!("event-{index}")).map_err(Error::from)?,
                 notice: NoticePayload::Quiet(Notice {
                     source: "events".into(),
                     kind: "source.changed".into(),
@@ -299,14 +299,14 @@ async fn frozen_notice_ranges_page_without_gaining_later_records() -> Result<()>
                 }),
             }
             .encode()
-            .map_err(agent_error)?,
+            .map_err(Error::from)?,
         );
     }
     let mut from = 0;
     for (page, records) in records.chunks(acyclic_stream::MAX_ITEMS).enumerate() {
         stream
             .append(AppendRequest {
-                path: agent.inbox().map_err(agent_error)?,
+                path: agent.inbox().map_err(Error::from)?,
                 records: records.iter().cloned().map(Into::into).collect(),
                 if_tail: Some(from),
                 idempotency_key: IdempotencyKey::new(format!("notices-{page}").into_bytes())?,
@@ -344,7 +344,7 @@ async fn frozen_notice_ranges_page_without_gaining_later_records() -> Result<()>
         .uncertain()
     );
     for cause in [StreamError::Unavailable, StreamError::DeadlineElapsed] {
-        let error = agent_error(crate::agent::Error::Stream(cause));
+        let error = Error::from(crate::agent::Error::Stream(cause));
         assert!(error.uncertain());
         assert!(!Error::Invalid(error.to_string()).uncertain());
     }

@@ -71,13 +71,13 @@ impl Devices {
         } else {
             targets.push(status.target.clone());
         }
-        let roster = Arc::new(Roster::new(&home.name, targets.clone()).map_err(agent)?);
+        let roster = Arc::new(Roster::new(&home.name, targets.clone()).map_err(Error::from)?);
         // Prepare producer-loss disclosure at this same admitted change. Drop
         // only selects a retained immutable snapshot; it cannot allocate/fail.
         for target in targets.iter_mut().skip(1) {
             target.state = TargetState::Offline;
         }
-        let offline = Arc::new(Roster::new(&home.name, targets).map_err(agent)?);
+        let offline = Arc::new(Roster::new(&home.name, targets).map_err(Error::from)?);
         Ok(Some((roster, offline)))
     }
 }
@@ -131,9 +131,10 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
         home: Target,
         grant: DeviceGrant,
     ) -> Result<Self> {
-        crate::agent::AgentRecord::check(&home.record).map_err(agent)?;
-        let roster =
-            Arc::new(Roster::new(&home.record.name, vec![home.record.clone()]).map_err(agent)?);
+        crate::agent::AgentRecord::check(&home.record).map_err(Error::from)?;
+        let roster = Arc::new(
+            Roster::new(&home.record.name, vec![home.record.clone()]).map_err(Error::from)?,
+        );
         let devices = Devices {
             statuses: BTreeMap::new(),
             offline: Arc::clone(&roster),
@@ -203,7 +204,7 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
                 continue;
             };
             let status: TargetStatus = decode(&record.value)?;
-            crate::agent::AgentRecord::check(&status.target).map_err(agent)?;
+            crate::agent::AgentRecord::check(&status.target).map_err(Error::from)?;
             if (status.target.state == TargetState::Online) != status.session.is_some()
                 || status.session.is_some() != status.socket.is_some()
             {
@@ -769,8 +770,4 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             self.outcome(&invocation, context, true).await.map(Some)
         })
     }
-}
-
-fn agent(error: crate::agent::Error) -> Error {
-    Error::Invalid(error.to_string())
 }

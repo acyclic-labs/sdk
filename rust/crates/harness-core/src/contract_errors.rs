@@ -120,6 +120,9 @@ impl HeadlessOutcome {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An agent primitive failure with its original cause and uncertain request.
+    #[error("{0}")]
+    Agent(#[source] Box<crate::agent::Error>),
     /// One command's cached facts and original local cause or remote diagnostic.
     #[error("{0}")]
     Command(#[source] Box<CommandFailure>),
@@ -699,6 +702,20 @@ impl Error {
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
         match self {
+            Self::Agent(source) => match &**source {
+                crate::agent::Error::Path(_) => ErrorCode::Invalid,
+                crate::agent::Error::NoSuchAgent => ErrorCode::NotFound,
+                crate::agent::Error::SpawnRefused(_) | crate::agent::Error::Conflict(_) => {
+                    ErrorCode::Conflict
+                }
+                crate::agent::Error::IncompatibleCheckpointCodec
+                | crate::agent::Error::UnsupportedRecordVersion(_) => ErrorCode::Unsupported,
+                crate::agent::Error::Unknown(_) => ErrorCode::Indeterminate,
+                crate::agent::Error::Record(_)
+                | crate::agent::Error::Stream(_)
+                | crate::agent::Error::Actor(_) => ErrorCode::Storage,
+                crate::agent::Error::Turn(source) => source.code(),
+            },
             Self::Command(failure) => failure.classification.code,
             Self::OutputOmitted(_) => ErrorCode::Invalid,
             Self::Cleanup(failure) => failure.classification.code,
@@ -794,6 +811,9 @@ impl Error {
 
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
+        if let Self::Agent(source) = self {
+            return source.uncertain();
+        }
         if let Self::Command(failure) = self {
             return failure.classification.effect_uncertain;
         }
@@ -819,12 +839,14 @@ impl Error {
         )
     }
 
-    /// Whether a failed command's outcome is unknown: every failure whose wire class is storage,
-    /// indeterminate or cancelled. Reading the class, not the variant, keeps the failures that
-    /// carry it only as a code (native ledgers, task-volume storage, deferred search
-    /// publication) uncertain. A failed task is the one storage-coded failure that is settled.
+    /// Whether a failed command's outcome is unknown. Agent primitives retain their
+    /// original decision; other storage, indeterminate and cancelled failures need
+    /// reconciliation, except a task whose failure is already settled.
     #[doc(hidden)]
     pub fn leaves_outcome_uncertain(&self) -> bool {
+        if let Self::Agent(source) = self {
+            return source.uncertain();
+        }
         if let Self::Command(failure) = self {
             return failure.classification.outcome_uncertain;
         }
@@ -839,14 +861,15 @@ impl Error {
             )
     }
 
-    /// Whether work that failed this way may yet succeed unchanged: its
-    /// store was unreachable or left the outcome undecided (every failure
-    /// whose wire class is storage, unavailable, indeterminate or cancelled,
-    /// whatever variant carries it). Retrying the same step reconciles it; a
-    /// failed task is the one storage-coded failure that is settled. The one
-    /// classifier every wrapper of a harness error asks.
+    /// Whether work that failed this way may yet succeed unchanged. Agent
+    /// primitives retain their original uncertainty; other storage, unavailable,
+    /// indeterminate and cancelled failures need reconciliation, except a task
+    /// whose failure is already settled. Every wrapper asks this classifier.
     #[must_use]
     pub fn uncertain(&self) -> bool {
+        if let Self::Agent(source) = self {
+            return source.uncertain();
+        }
         if let Self::Command(failure) = self {
             return failure.classification.uncertain;
         }
@@ -867,6 +890,12 @@ impl Error {
     /// A tool's definitive refusal is model feedback. Native accounting and
     /// producer faults remain harness failures even when their wire code is Invalid.
     pub(crate) fn is_tool_failure(&self) -> bool {
+        if let Self::Agent(source) = self {
+            return match &**source {
+                crate::agent::Error::Turn(source) => source.is_tool_failure(),
+                _ => false,
+            };
+        }
         if let Self::Command(failure) = self {
             return failure.classification.tool_failure;
         }
@@ -938,6 +967,10 @@ impl Error {
     #[doc(hidden)]
     pub fn is_native_failure(&self) -> bool {
         match self {
+            Self::Agent(source) => match &**source {
+                crate::agent::Error::Turn(source) => source.is_native_failure(),
+                _ => false,
+            },
             Self::Command(failure) => failure.classification.native_failure,
             Self::OutputOmitted(_) => true,
             Self::Cleanup(_) => true,
@@ -1359,6 +1392,17 @@ impl From<acyclic_fs::native_mount::NativeMountError> for Error {
         Self::NativeView {
             cause: Box::new(acyclic_fs::native_mount::MountLifecycleError::Native(cause)),
             custody: None,
+        }
+    }
+}
+
+/// Agent adapters share one conversion; nested turn failures already have the
+/// harness's original classification and custody.
+impl From<crate::agent::Error> for Error {
+    fn from(source: crate::agent::Error) -> Self {
+        match source {
+            crate::agent::Error::Turn(source) => *source,
+            source => Self::Agent(Box::new(source)),
         }
     }
 }

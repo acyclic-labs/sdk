@@ -294,7 +294,7 @@ impl AgentTool {
                 TurnEffect::Send {
                     delivery: input.delivery.unwrap_or_default(),
                     to,
-                    id: IntentId::try_from(format!("send:{operation}")).map_err(agent)?,
+                    id: IntentId::try_from(format!("send:{operation}")).map_err(Error::from)?,
                     body: Box::new(body),
                 }
             }
@@ -308,7 +308,7 @@ impl AgentTool {
                 };
                 TurnEffect::Archive {
                     target,
-                    id: IntentId::try_from(format!("archive:{operation}")).map_err(agent)?,
+                    id: IntentId::try_from(format!("archive:{operation}")).map_err(Error::from)?,
                 }
             }
             _ => return Err(Error::Unsupported(format!("agent tool {}", self.name))),
@@ -324,8 +324,8 @@ impl AgentTool {
     fn result(&self, recorded: TurnEffect) -> Result<ToolResult> {
         let value = match recorded {
             TurnEffect::Spawn { intent, .. } => json!({
-                "agent": TurnEffect::child(&self.turn.agent, &intent).map_err(agent)?.as_str(),
-                "name": spawn_name(&intent).map_err(agent)?,
+                "agent": TurnEffect::child(&self.turn.agent, &intent).map_err(Error::from)?.as_str(),
+                "name": spawn_name(&intent).map_err(Error::from)?,
             }),
             TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
             TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
@@ -340,9 +340,9 @@ impl AgentTool {
         let mut open = turn.children.clone();
         for effect in turn.effects.recorded().await? {
             if let TurnEffect::Spawn { intent, .. } = effect {
-                open.insert(&TurnEffect::child(&turn.agent, &intent).map_err(agent)?)
+                open.insert(&TurnEffect::child(&turn.agent, &intent).map_err(Error::from)?)
                     .await
-                    .map_err(agent)?;
+                    .map_err(Error::from)?;
             }
         }
         Ok(open)
@@ -368,7 +368,7 @@ impl AgentTool {
             .children
             .contains(&child)
             .await
-            .map_err(agent)?
+            .map_err(Error::from)?
             .then_some(child))
     }
 
@@ -490,7 +490,7 @@ impl AgentTool {
                         if open
                             .contains(child)
                             .await
-                            .map_err(|error| (name, agent(error)))?
+                            .map_err(|error| (name, Error::from(error)))?
                         {
                             Ok(None)
                         } else {
@@ -525,7 +525,7 @@ impl AgentTool {
                     serde_json::to_value(&observed.phase)
                         .map_err(|error| Error::Invalid(error.to_string()))
                 })?;
-            if open.contains(child).await.map_err(agent)? {
+            if open.contains(child).await.map_err(Error::from)? {
                 pending.insert(child.clone());
                 unsettled.push(json!({"name": name, "phase": phase}));
             } else {
@@ -627,10 +627,6 @@ async fn waited(
 mod selection_checks;
 #[cfg(feature = "test-support")]
 pub use selection_checks::check as check_agent_wait_selection;
-
-fn agent(error: crate::agent::Error) -> Error {
-    Error::Invalid(error.to_string())
-}
 
 impl ToolExecutor for AgentTool {
     fn prepare<'a>(
@@ -849,6 +845,105 @@ pub fn bind_agent_tools(
 mod tests {
     use super::*;
 
+    struct Effects(std::sync::atomic::AtomicUsize);
+
+    impl TurnEffects for Effects {
+        fn recorded_call<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> BoxProviderFuture<'a, Result<Option<TurnEffect>>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn record<'a>(
+            &'a self,
+            _: &'a str,
+            effect: &'a TurnEffect,
+        ) -> BoxProviderFuture<'a, Result<TurnEffect>> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(effect.clone())
+            })
+        }
+        fn recorded(&self) -> BoxProviderFuture<'_, Result<Vec<TurnEffect>>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn holds(&self, _: crate::OperationId) -> BoxProviderFuture<'_, Result<bool>> {
+            Box::pin(async { Ok(false) })
+        }
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_a_persistent_child_index_failure_out_of_model_feedback() -> Result<()> {
+        use crate::agent::AgentId;
+        let parent = AgentPath::root(&AgentId::from_bytes([71; 16]));
+        let child = parent.child(&AgentId::from_bytes([72; 16]))?;
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
+        let mut children = crate::agent::Children::new();
+        children.bind(stream.clone());
+        children.insert(&child).await?;
+        let checkpoint = serde_json::to_vec(&children).unwrap();
+
+        for missing_source in [false, true] {
+            let mut children: crate::agent::Children = serde_json::from_slice(&checkpoint).unwrap();
+            children.bind(if missing_source {
+                Arc::new(acyclic_stream::MemoryStream::default())
+            } else {
+                stream.clone()
+            });
+            let effects = Arc::new(Effects(std::sync::atomic::AtomicUsize::new(0)));
+            let tool = AgentTool {
+                name: "archive",
+                turn: Arc::new(Turn {
+                    spawned_children: 1,
+                    spawning: futures::lock::Mutex::new(()),
+                    agent: parent.clone(),
+                    parent: None,
+                    children,
+                    effects: effects.clone(),
+                    observer: None,
+                    writer: Arc::new(crate::runtime::test_context::PrivateVolume(
+                        crate::runtime::test_context::private_volume(71)?,
+                    )),
+                    maximum_bytes: u64::MAX,
+                    templates: None,
+                    volumes: Vec::new(),
+                    released: AtomicBool::new(false),
+                }),
+            };
+            let invocation = ToolInvocation {
+                operation_id: crate::OperationId::from_bytes([73; 16]),
+                call_id: "archive-child".into(),
+                name: "archive".into(),
+                arguments: json!({"agent":child.as_str()}),
+            };
+            let result = tool.execute(invocation.clone(), None).await;
+            if missing_source {
+                let error = result.expect_err("the checkpoint's immutable node is missing");
+                assert_eq!(error.code(), crate::wire::ErrorCode::Storage);
+                assert!(!error.is_tool_failure());
+                assert!(!error.uncertain(), "a missing index is a definitive fault");
+                assert!(matches!(error, Error::Agent(_)));
+                assert_eq!(effects.0.load(Ordering::SeqCst), 0);
+            } else {
+                assert_eq!(result?.value["archived"], child.as_str());
+                assert_eq!(effects.0.load(Ordering::SeqCst), 1);
+            }
+            // A genuine bad reference is still ordinary feedback, even when
+            // the unrelated persistent child index cannot be read.
+            let rejected = tool
+                .execute(
+                    ToolInvocation {
+                        arguments: json!({"agent":"missing-child"}),
+                        ..invocation
+                    },
+                    None,
+                )
+                .await?;
+            assert!(rejected.value["error"].is_string());
+        }
+        Ok(())
+    }
+
     #[test]
     fn model_schemas_carry_only_meaning() -> Result<()> {
         let names = AGENT_TOOLS.map(String::from);
@@ -907,7 +1002,7 @@ mod tests {
                     name,
                 )
                 .await
-                .map_err(agent)
+                .map_err(Error::from)
             })
         }
 
@@ -946,11 +1041,15 @@ mod tests {
         use crate::agent::AgentId;
         let mut parent = AgentPath::root(&AgentId::from_bytes([1; 16]));
         for _ in 1..128 {
-            parent = parent.child(&AgentId::from_bytes([2; 16])).map_err(agent)?;
+            parent = parent
+                .child(&AgentId::from_bytes([2; 16]))
+                .map_err(Error::from)?;
         }
-        let deepest = parent.child(&AgentId::from_bytes([3; 16])).map_err(agent)?;
-        let sibling = TurnEffect::child(&parent, &spawn_intent("sibling", 0).map_err(agent)?)
-            .map_err(agent)?;
+        let deepest = parent
+            .child(&AgentId::from_bytes([3; 16]))
+            .map_err(Error::from)?;
+        let sibling = TurnEffect::child(&parent, &spawn_intent("sibling", 0).map_err(Error::from)?)
+            .map_err(Error::from)?;
         let children = Children {
             agent: deepest.clone(),
             settled: BTreeSet::new(),
@@ -962,7 +1061,7 @@ mod tests {
             sibling.id().as_str().as_bytes(),
         )
         .expect("sibling actor");
-        let store = crate::agent::actor_store(&children.stream).map_err(agent)?;
+        let store = crate::agent::actor_store(&children.stream).map_err(Error::from)?;
         let effects = [
             store
                 .create(None, &actor, acyclic_actors::local::Creation::default())
@@ -978,7 +1077,7 @@ mod tests {
         assert!(matches!(
             crate::agent::submit(&*children.stream, request)
                 .await
-                .map_err(agent)?,
+                .map_err(Error::from)?,
             crate::agent::Submitted::Committed(_)
         ));
         assert!(

@@ -116,7 +116,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let stream =
             |path: std::result::Result<acyclic_stream::StreamPath, crate::agent::Error>| {
                 path.map(|path| acyclic_stream::wire_codec::session::stream_resource(path.as_str()))
-                    .map_err(|error| Error::Invalid(format!("agent stream: {error}")))
+                    .map_err(Error::from)
             };
         let (conversation, status) = (stream(agent.conversation())?, stream(agent.status())?);
         let children = stream(agent.children())?;

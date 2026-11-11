@@ -93,7 +93,7 @@ impl InProcessTargets {
     /// When a record is malformed, a name repeats or the home is unlisted.
     pub fn new(home: &str, targets: Vec<Target>) -> Result<Self> {
         let records = targets.iter().map(|target| target.record.clone()).collect();
-        let roster = Roster::new(home, records).map_err(agent_error)?;
+        let roster = Roster::new(home, records).map_err(Error::from)?;
         Ok(Self {
             roster: Arc::new(roster),
             targets: targets.into_iter().map(Arc::new).collect(),
@@ -158,10 +158,6 @@ impl TargetResolver for InProcessTargets {
         let position = self.roster.select_position(target).map_err(Error::Target)?;
         Ok(Arc::clone(&self.targets[position]))
     }
-}
-
-fn agent_error(error: crate::agent::Error) -> Error {
-    Error::Invalid(error.to_string())
 }
 
 /// The target a workspace tool call runs on: the one a `shell` call names,

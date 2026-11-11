@@ -275,7 +275,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         target: &str,
         from: u64,
     ) -> Result<Option<acyclic_stream::Record>> {
-        let path = agent.machine(target).map_err(agent_error)?;
+        let path = agent.machine(target).map_err(Error::from)?;
         let request = ReadRequest {
             key: None,
             path,
@@ -359,7 +359,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             source,
         };
         let (_, key) = intent("provision", agent, &target.name)?;
-        let path = agent.machine(&target.name).map_err(agent_error)?;
+        let path = agent.machine(&target.name).map_err(Error::from)?;
         let value = serde_json::to_vec(&plan)
             .map_err(|error| Error::Invalid(format!("Machine plan encode: {error}")))?;
         // Distinct proposals race on Absent; only identical proposals share a
@@ -458,7 +458,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         target: &ProvisionedTarget,
         binding: MachineBinding,
     ) -> Result<SandboxRef> {
-        let path = agent.machine(&binding.target).map_err(agent_error)?;
+        let path = agent.machine(&binding.target).map_err(Error::from)?;
         let value = serde_json::to_vec(&binding)
             .map_err(|error| Error::Invalid(format!("Machine binding encode: {error}")))?;
         let (_, key) = intent("bind", agent, &binding.target)?;
@@ -522,7 +522,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     ) -> Result<impl futures::Stream<Item = Result<&'a ProvisionedTarget>> + 'a> {
         let request = ChildrenPageRequest {
             tail_stream: None,
-            parent: Some(agent.machines().map_err(agent_error)?),
+            parent: Some(agent.machines().map_err(Error::from)?),
             after: None,
             hierarchy_version: None,
             limit: 64,
@@ -661,7 +661,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     }
 
     async fn closed(&self, agent: &AgentPath) -> Result<bool> {
-        match self.stream.tail(agent.closed().map_err(agent_error)?).await {
+        match self.stream.tail(agent.closed().map_err(Error::from)?).await {
             Ok(_) => Ok(true),
             Err(StreamError::NotFound) => Ok(false),
             Err(error) => Err(error.into()),
@@ -853,10 +853,6 @@ fn intent(verb: &str, agent: &AgentPath, target: &str) -> Result<(OperationId, I
         .first_chunk::<16>()
         .ok_or_else(|| Error::Invalid("key digest".into()))?;
     Ok((OperationId::from_bytes(*operation), key))
-}
-
-fn agent_error(error: crate::agent::Error) -> Error {
-    Error::Invalid(error.to_string())
 }
 
 #[cfg(test)]

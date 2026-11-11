@@ -1006,19 +1006,11 @@ where
                 .await?;
             let mut records = acyclic_stream::pages::ExactRange::new(records, from..through)?;
             while let Some(record) = records.try_next().await? {
-                entries.push(ConversationEntry::decode(&record.value).map_err(agent_error)?);
+                entries.push(ConversationEntry::decode(&record.value).map_err(Error::from)?);
             }
             from = through;
         }
         Ok(entries)
-    }
-}
-
-pub(super) fn agent_error(error: crate::agent::Error) -> Error {
-    match error {
-        crate::agent::Error::Stream(cause) => cause.into(),
-        crate::agent::Error::Turn(cause) => *cause,
-        other => Error::Invalid(other.to_string()),
     }
 }
 
@@ -1073,14 +1065,14 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
     use crate::model::ModelContentPart;
     let mut pending = NoticeBlocks::new(maximum);
     if let Some(selected) = selected {
-        selected.validate(agent).map_err(agent_error)?;
+        selected.validate(agent).map_err(Error::from)?;
         let mut from = selected.range.start;
         while from < selected.range.end {
             let limit = (selected.range.end - from).min(acyclic_stream::MAX_ITEMS as u64) as u32;
             let records = stream
                 .read(ReadRequest {
                     key: None,
-                    path: selected.source.inbox().map_err(agent_error)?,
+                    path: selected.source.inbox().map_err(Error::from)?,
                     from,
                     limit,
                     at_least: Default::default(),
@@ -1092,7 +1084,7 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
                 if let crate::agent::InboxRecord::Notice {
                     notice: crate::agent::NoticePayload::Quiet(notice),
                     ..
-                } = crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?
+                } = crate::agent::InboxRecord::decode(&record.value).map_err(Error::from)?
                 {
                     pending.push(notice)?;
                 }
@@ -1275,7 +1267,7 @@ impl<'a> TurnContext<'a> {
                     fork = None;
                 }
                 Some((
-                    crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
+                    crate::agent::turn_id(agent, &entry.input).map_err(Error::from)?,
                     entry.output,
                 ))
             }
@@ -1314,9 +1306,9 @@ impl<'a> TurnContext<'a> {
                     roster_at = Some(at);
                 }
                 Ok(SettledTurn {
-                    turn: crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
+                    turn: crate::agent::turn_id(agent, &entry.input).map_err(Error::from)?,
                     targets: entry.targets,
-                    input: crate::agent::model_input(&entry.input).map_err(agent_error)?,
+                    input: crate::agent::model_input(&entry.input).map_err(Error::from)?,
                     output: entry.output,
                     steering: entry.steering.map(|steering| steering.file),
                     steered: Vec::new(),
@@ -1336,7 +1328,7 @@ impl<'a> TurnContext<'a> {
             // A spawned agent runs under the approval policy it inherited,
             // staged on an ancestor's private volume.
             policy: agent.policy.as_ref(),
-            notices: crate::agent::turn_notices(agent).map_err(agent_error)?,
+            notices: crate::agent::turn_notices(agent).map_err(Error::from)?,
         })
     }
 
@@ -1667,7 +1659,7 @@ where
                             Error::Invalid("selected checkpoint is absent".into())
                         })?;
                         let entry =
-                            ConversationEntry::decode(&record.value).map_err(agent_error)?;
+                            ConversationEntry::decode(&record.value).map_err(Error::from)?;
                         if record.sequence != at || entry.checkpoint().is_none() {
                             return Err(Error::Invalid(
                                 "selected checkpoint differs from its indexed cut".into(),
@@ -1830,7 +1822,7 @@ where
                 // turn decides it once, when it starts: a resumed turn keeps the
                 // announcement its checkpoint holds, so it sends the request it
                 // started with, and a roster change meanwhile is the next turn's.
-                let roster = match crate::agent::turn_roster(agent).map_err(agent_error)? {
+                let roster = match crate::agent::turn_roster(agent).map_err(Error::from)? {
                     Some(kept) => kept,
                     None => match self.executors.roster(agent) {
                         Some(roster) => {
@@ -1844,7 +1836,7 @@ where
                         None => None,
                     },
                 };
-                let segment = crate::agent::turn_segment(agent).map_err(agent_error)?;
+                let segment = crate::agent::turn_segment(agent).map_err(Error::from)?;
                 let effects = Arc::new(FilesystemTurnEffects::new(
                     Arc::clone(&files),
                     Arc::clone(&self.stream),
@@ -1984,13 +1976,13 @@ where
 
     fn closed(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            let path = self.agent.inbox().map_err(agent_error)?;
+            let path = self.agent.inbox().map_err(Error::from)?;
             // Archive's close marker and inbox delivery commit together. Watch
             // the delivery, so active work stops before resource retirement.
             let tail = self.stream.tail(path.clone()).await?;
             match self
                 .stream
-                .tail(self.agent.closed().map_err(agent_error)?)
+                .tail(self.agent.closed().map_err(Error::from)?)
                 .await
             {
                 Ok(_) => return Ok(()),
@@ -2004,7 +1996,7 @@ where
             );
             while let Some(record) = records.try_next().await? {
                 let record =
-                    crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?;
+                    crate::agent::InboxRecord::decode(&record.value).map_err(Error::from)?;
                 if matches!(record, crate::agent::InboxRecord::Archive(_)) {
                     return Ok(());
                 }
@@ -2029,7 +2021,7 @@ where
                         let child = self
                             .agent
                             .child(&crate::agent::AgentId::from_bytes(id))
-                            .map_err(agent_error)?;
+                            .map_err(Error::from)?;
                         Ok((reference.unwrap_or_else(|| child.as_str().into()), child))
                     })
                     .collect()
@@ -2069,7 +2061,7 @@ where
         Box::pin(async move {
             crate::agent::resolve_spawn_name(&self.stream, &self.within, parent, name)
                 .await
-                .map_err(agent_error)
+                .map_err(Error::from)
         })
     }
 
@@ -2083,7 +2075,7 @@ where
                 Err(crate::agent::Error::NoSuchAgent) => {
                     Err(Error::NotFound(child.as_str().to_owned()))
                 }
-                Err(error) => Err(agent_error(error)),
+                Err(error) => Err(Error::from(error)),
             }
         })
     }
@@ -2096,7 +2088,7 @@ where
         Box::pin(async move {
             let entry = crate::agent::answer(&*self.stream, child, sequence)
                 .await
-                .map_err(agent_error)?;
+                .map_err(Error::from)?;
             let outcome = entry.outcome;
             let external = [entry.output];
             let authority = agent_authority(
