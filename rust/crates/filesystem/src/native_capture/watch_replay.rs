@@ -60,9 +60,11 @@ pub async fn capture_watch_batch<
         };
         let (epoch, first_sequence, next_sequence) = (*epoch, *first_sequence, *next_sequence);
         let cancellation = meter.cancellation();
-        if options.maximum_paths == 0
-            || options.maximum_extent_spans == 0
-            || changes.len() > usize::try_from(options.maximum_paths).unwrap_or(usize::MAX)
+        if options.maximum_paths == Some(0)
+            || options.maximum_extent_spans == Some(0)
+            || options
+                .maximum_paths
+                .is_some_and(|maximum| changes.len() as u64 > u64::from(maximum))
         {
             return Err(CaptureError::InvalidOptions);
         }
@@ -206,7 +208,7 @@ pub async fn capture_watch_batch<
         .await?;
 
         // A watcher may report a nested file before any ancestor has been observed in this lazy checkout. Capture only the missing ancestors, rather than expanding their entire host subtrees as event roots.
-        let maximum_paths = usize::try_from(options.maximum_paths).unwrap_or(usize::MAX);
+        let maximum_paths = options.maximum_paths.map(|maximum| maximum as usize);
         let mut renamed_paths = 0;
         for (_, record) in &rename_records {
             capture_charge(
@@ -231,7 +233,7 @@ pub async fn capture_watch_batch<
             &ordinary,
             &rename_records,
             policy,
-            maximum_paths.saturating_sub(renamed_paths),
+            maximum_paths.map(|maximum| maximum.saturating_sub(renamed_paths)),
             checkout.volume_config().limits,
             meter,
         )?;
@@ -241,7 +243,7 @@ pub async fn capture_watch_batch<
             ancestors,
             &source_root,
             epoch,
-            maximum_paths.saturating_sub(renamed_paths),
+            maximum_paths.map(|maximum| maximum.saturating_sub(renamed_paths)),
             meter,
         )
         .await?;

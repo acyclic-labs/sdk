@@ -27,7 +27,7 @@ where
     let changes = previous_live
         .diff_to(
             &live,
-            u32::MAX,
+            None,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -35,7 +35,7 @@ where
         .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;
     let changed = changes
-        .changed_paths(u32::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .changed_paths(None, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;

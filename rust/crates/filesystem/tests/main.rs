@@ -1,6 +1,8 @@
 //! Integration behaviour tests.
 #[cfg(loom)]
 use acyclic_fs::NativeMountError;
+#[cfg(all(not(loom), feature = "native-watch", any(target_os = "linux", windows)))]
+mod native_watch_events;
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(loom))]
 acyclic_test_support::counting_allocator!();

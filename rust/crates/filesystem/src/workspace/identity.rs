@@ -85,9 +85,6 @@ impl WorkspaceName {
         // No normalization scratch or temporary UTF-8 copy for ASCII. Retain
         // the zero-work admission before reporting canonical-name errors.
         normalize::admit_scratch(0, accounting)?;
-        if name.len() > MAXIMUM_WORKSPACE_NAME_BYTES {
-            return Err(WorkspaceNameError::TooLong.into());
-        }
         if name.is_empty() {
             return Err(WorkspaceNameError::Empty.into());
         }
@@ -108,7 +105,7 @@ impl WorkspaceName {
         let length = canonical.len();
         let copied = copy_work(length as u64);
         accounting.admit(copied)?;
-        let mut owned = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
+        let owned = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
         // Convert the empty, admitted buffer before copying valid UTF-8; this
         // keeps String's invariant without validating the copied bytes again.
         let mut name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;

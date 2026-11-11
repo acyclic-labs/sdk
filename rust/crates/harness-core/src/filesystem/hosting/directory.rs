@@ -91,7 +91,6 @@ where
                 acyclic_fs::kernel::LogicalName::new(
                     acyclic_fs::kernel::NameEncoding::Utf8,
                     name.as_bytes().to_vec(),
-                    u32::MAX,
                 )
             })
             .transpose()

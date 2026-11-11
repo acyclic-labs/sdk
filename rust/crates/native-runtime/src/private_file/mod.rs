@@ -480,9 +480,12 @@ pub fn validate_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Read a bounded complete private record into secret storage. Metered hosts use
+/// Read a complete private record under an optional caller byte policy. Metered hosts use
 /// `read_with` to admit the allocation to their own ledger before allocating it.
-pub fn read(path: &Path, maximum: u64) -> io::Result<crate::owner_record::SecretBytes> {
+pub fn read(
+    path: &Path,
+    maximum: impl Into<Option<u64>>,
+) -> io::Result<crate::owner_record::SecretBytes> {
     use std::io::Read as _;
     read_with(path, maximum, |file, length| {
         let mut bytes = crate::owner_record::SecretBytes(Vec::new());
@@ -495,25 +498,25 @@ pub fn read(path: &Path, maximum: u64) -> io::Result<crate::owner_record::Secret
     })
 }
 
-/// Bounded private-record read. The allocator callback admits storage before
+/// Private-record read under an optional caller byte policy. The callback admits storage before
 /// allocation, allowing native hosts to retain their original invocation ledger.
 pub fn read_with<T, E: From<io::Error>>(
     path: &Path,
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
 ) -> Result<T, E> {
     let file = open(path, false)?;
-    read_held_with(file, maximum, read)
+    read_held_with(file, maximum.into(), read)
 }
 
 fn read_held_with<T, E: From<io::Error>>(
     file: File,
-    maximum: u64,
+    maximum: Option<u64>,
     read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
 ) -> Result<T, E> {
     use std::io::Read as _;
     let length = file.metadata()?.len();
-    if length > maximum {
+    if maximum.is_some_and(|maximum| length > maximum) {
         return Err(io::Error::from(io::ErrorKind::InvalidData).into());
     }
     let mut bounded = file.take(

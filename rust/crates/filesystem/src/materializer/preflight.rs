@@ -239,21 +239,13 @@ async fn host_name_has_binding<O: crate::AsyncObjectStore>(
     ))
     .then_some(crate::FilesystemProfile::Portable);
     for profile in std::iter::once(config.profile).chain(utf8) {
-        let encoded = match crate::native_name::host_name_bytes_with_native_work(
-            physical,
-            profile,
-            config.limits.maximum_component_bytes,
-            work,
-        ) {
-            Ok(encoded) => encoded,
-            Err(NativeTreeMaterializationError::InvalidLayout) => continue,
-            Err(error) => return Err(error.into()),
-        };
-        let Ok(name) = crate::kernel::LogicalName::new(
-            encoded.0.0,
-            encoded.0.1,
-            config.limits.maximum_component_bytes,
-        ) else {
+        let encoded =
+            match crate::native_name::host_name_bytes_with_native_work(physical, profile, work) {
+                Ok(encoded) => encoded,
+                Err(NativeTreeMaterializationError::InvalidLayout) => continue,
+                Err(error) => return Err(error.into()),
+            };
+        let Ok(name) = crate::kernel::LogicalName::new(encoded.0.0, encoded.0.1) else {
             continue;
         };
         let name = (name, encoded.1);
@@ -324,7 +316,6 @@ mod tests {
                         vec![crate::kernel::LogicalName::new(
                             crate::kernel::NameEncoding::Utf8,
                             b"explicit-utf8".to_vec(),
-                            config.limits.maximum_component_bytes,
                         )?],
                         config.limits,
                     )?,
@@ -421,7 +412,6 @@ mod tests {
             crate::native_name::host_name_bytes_with_native_work(
                 std::ffi::OsStr::from_bytes(b"raw-\xff"),
                 config.profile,
-                config.limits.maximum_component_bytes,
                 &original,
             ),
             Err(NativeTreeMaterializationError::InvalidLayout)

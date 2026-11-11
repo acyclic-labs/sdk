@@ -55,7 +55,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
                 allocation_operations: 1,
                 ..B
             })?;
-            assert!(local.rebase_head(8, &denied, &cancel).await.is_err());
+            assert!(local.rebase_head(Some(8), &denied, &cancel).await.is_err());
             assert_eq!(
                 before,
                 (
@@ -67,11 +67,11 @@ pub(super) async fn sparse_rebase_across_remote_ranges(native: bool) -> TestResu
         }
         #[cfg(not(target_arch = "wasm32"))]
         let (decision, _allocation) = if native {
-            let result = local.rebase_head(8, &original, &cancel).await?;
+            let result = local.rebase_head(Some(8), &original, &cancel).await?;
             assert!(result.1.work().shares_ledger(&original));
             (result.0, Some(result.1))
         } else {
-            (local.rebase_head(8, B, &cancel).await?.value, None)
+            (local.rebase_head(Some(8), B, &cancel).await?.value, None)
         };
         #[cfg(target_arch = "wasm32")]
         let decision = local.rebase_head(8, B, &cancel).await?.value;
@@ -206,13 +206,14 @@ pub(super) async fn assert_authority_volume_identity_fails_closed() -> TestResul
     commit(&mut checkout, &cancel).await?;
     let authority = &volume.fs.inner.authority;
     let mut work = crate::AuthorityWork::new(B, &cancel);
+    let payload_bytes = work.remaining()?.authority_bytes_read;
     let (records, _) = authority
         .replay(
             volume_authority_id(volume.id),
             Sequence::GENESIS,
             crate::ReplayLimit {
                 records: 2,
-                payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES * 2,
+                payload_bytes,
             },
             &mut work,
         )

@@ -264,21 +264,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &CancellationToken,
     ) -> Result<crate::kernel::Owned<AuthoredTransactionResult>, FsError> {
         accounting.check()?;
-        let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
-            .unwrap_or(usize::MAX);
-        if input.mutations().len() > maximum || input.capacity() > maximum {
-            return Err(FsError::TooManyPendingMutations);
-        }
         let count = input
             .mutations()
             .iter()
             .try_fold(0_usize, |count, mutation| {
                 count.checked_add(authored_mutation_operation_count(mutation))
             })
-            .ok_or(FsError::TooManyPendingMutations)?;
-        if count > maximum {
-            return Err(FsError::TooManyPendingMutations);
-        }
+            .ok_or(WorkError::Overflow)?;
         crate::heap_future::in_borrowed_frame!(accounting, |accounting| self
             .apply_authored_transaction_validated(input, count, accounting, cancellation))
     }
@@ -367,30 +359,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         #[cfg(not(target_arch = "wasm32"))]
         self.validate_authored_input(&input, accounting)?;
         accounting.check()?;
-        let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
-            .unwrap_or(usize::MAX);
-        if maximum == 0 {
-            return Err(FsError::TooManyPendingMutations);
-        }
+        let maximum = usize::MAX;
         let mut candidate = self.private_candidate(accounting, cancellation)?;
         let backing =
             crate::foundation::usize_to_u64(input.value.capacity() * size_of::<AuthoredMutation>());
         let mut input = (input.value.into_iter(), input.allocation);
         let mut batch = Owned::<Vec<AuthoredMutation>>::allocate(0, accounting)?;
-        let mut count = 0_usize;
         for mutation in input.0.by_ref() {
-            let next = authored_mutation_operation_count(&mutation);
-            if next > maximum {
-                return Err(FsError::TooManyPendingMutations);
-            }
-            if !batch.value.is_empty() && (batch.value.len() == maximum || next > maximum - count) {
-                let output = candidate
-                    .apply_authored_transaction_with_accounting(batch, accounting, cancellation)
-                    .await?;
-                output.retire(accounting)?;
-                batch = Owned::<Vec<AuthoredMutation>>::allocate(0, accounting)?;
-                count = 0;
-            }
             batch.ensure_for_push(maximum, accounting)?;
             let bytes = mutation.logical_owned_bytes();
             let allocation = split_allocation(&mut input.1, bytes)?;
@@ -402,7 +377,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             batch.value.push(mutation.value);
             batch.allocation.absorb(&mut mutation.allocation)?;
             batch.bytes = batch.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            count += next;
         }
         drop(input.0);
         if batch.value.is_empty() {

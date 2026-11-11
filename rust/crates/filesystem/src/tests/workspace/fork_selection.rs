@@ -290,3 +290,53 @@ proptest::proptest! {
         proptest::prop_assert!(result.is_ok(), "{result:?}");
     }
 }
+
+#[tokio::test]
+async fn selected_fork_continues_past_batch_boundaries_and_duplicate_prefixes()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let parent = unbounded!(fs, create_workspace("large-selection-parent"))?;
+    let mut transaction = unbounded!(parent, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(transaction, create_directory("/kept"))?;
+    for index in 0..2049 {
+        transaction
+            .write_text(&format!("/kept/file-{index:04}"), "body")
+            .await?;
+    }
+    transaction.write_text("/omitted", "private").await?;
+    commit(&mut transaction).await?;
+    let pinned = unbounded!(parent, head())?;
+    let mut paths = vec!["/kept".to_owned(); 2049];
+    // Selecting the ancestor makes the absent descendant irrelevant, even
+    // when inputs are duplicated and an entire subtree crosses batch pages.
+    paths.insert(0, "/kept/absent".to_owned());
+    let child = fork_workspace(
+        &parent,
+        "large-selection-child",
+        ForkOptions::from_generation(pinned.clone(), IdempotencyKey::new())
+            .inherit_paths(paths.clone()),
+    )
+    .await?;
+    let head = unbounded!(child, head())?;
+    assert!(unbounded!(
+        head,
+        matches_fork_selection(&pinned, Some(paths))
+    )?);
+    let mut after = None;
+    let mut count = 0;
+    loop {
+        let (page, _) = unbounded!(child, list_directory("/kept", after.as_ref(), 127))?;
+        count += page.entries.len();
+        if !page.has_more {
+            break;
+        }
+        after = page.entries.last().map(|entry| entry.name.clone());
+    }
+    assert_eq!(count, 2049);
+    assert_eq!(
+        unbounded!(child, read("/kept/file-2048", 16))?.as_ref(),
+        b"body"
+    );
+    assert!(unbounded!(child, read("/omitted", 16)).is_err());
+    Ok(())
+}

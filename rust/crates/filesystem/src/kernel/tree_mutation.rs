@@ -119,19 +119,17 @@ impl Format for TreeFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
-        key.try_clone(maximum_bytes, steps)
+        key.try_clone(steps)
     }
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         Ok(TreeEntry {
-            name: Self::try_clone_key(&value.name, maximum_bytes, steps)?,
+            name: Self::try_clone_key(&value.name, steps)?,
             file_id: value.file_id,
             kind: value.kind,
         })
@@ -218,7 +216,6 @@ pub async fn apply_tree_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     mutations: Vec<TreeMutation>,
-    maximum_mutations: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &crate::CancellationToken,
@@ -228,7 +225,6 @@ pub async fn apply_tree_mutations<S: crate::AsyncObjectStore>(
         store,
         root,
         &mutations,
-        maximum_mutations,
         limits,
         &mut accounting,
         cancellation,
@@ -241,7 +237,6 @@ pub(crate) async fn apply_tree_mutations_with_accounting<S: crate::AsyncObjectSt
     store: &S,
     root: ObjectId,
     mutations: &[TreeMutation],
-    maximum_mutations: u32,
     limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
@@ -250,7 +245,6 @@ pub(crate) async fn apply_tree_mutations_with_accounting<S: crate::AsyncObjectSt
         store,
         (root, None, None),
         mutations,
-        maximum_mutations,
         limits,
         accounting,
         cancellation,
@@ -281,7 +275,6 @@ pub(super) fn project_tree_error(error: crate::FsError) -> TreeMutationError {
 pub(super) fn map_error(error: persistent_btree::Error<TreeMutationError>) -> TreeMutationError {
     match error {
         persistent_btree::Error::Empty => TreeMutationError::Empty,
-        persistent_btree::Error::TooManyMutations => TreeMutationError::TooManyMutations,
         persistent_btree::Error::WrongRootKind => TreeMutationError::WrongRootKind,
         persistent_btree::Error::InvalidLimits => TreeMutationError::InvalidLimits,
         persistent_btree::Error::PageItemTooLarge => TreeMutationError::PageItemTooLarge,
@@ -308,9 +301,6 @@ pub enum TreeMutationError {
     /// Batch contains no mutation.
     #[error("tree mutation batch is empty")]
     Empty,
-    /// Batch count is zero-bounded, excessive, or unrepresentable.
-    #[error("tree mutation count exceeds its admitted bound")]
-    TooManyMutations,
     /// Root object has the wrong class.
     #[error("tree mutation root is not a tree page")]
     WrongRootKind,

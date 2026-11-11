@@ -91,7 +91,7 @@ async fn disjoint_rebase_composes_directory_bindings_without_losing_siblings() -
         .await?
         .ok_or("independent names in an existing directory did not certify")?;
     certificate.retire(&mut accounting)?;
-    let decision = local.rebase_head(8, B, &cancel).await?.value;
+    let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
     assert!(matches!(decision, RebaseDecision::Safe { .. }));
     commit(&mut local, &cancel).await?;
     let mut final_tree = open_checkout(&volume, pinned(), &cancel).await?;
@@ -158,7 +158,13 @@ async fn disjoint_rebase_adoption_fences_reads_added_during_preparation() -> Tes
         .await?
         .ok_or("independent proposal was not certified")?;
     let (root, prepared) = local
-        .prepare_rebased_head(object, 8, Some(&certificate), &mut accounting, &cancel)
+        .prepare_rebased_head(
+            object,
+            Some(8),
+            Some(&certificate),
+            &mut accounting,
+            &cancel,
+        )
         .await?
         .ok_or("independent merge conflicted")?;
     // This is the actual interleaving of an observing handle: its old-base
@@ -260,9 +266,9 @@ async fn disjoint_native_rebase_retains_original_custody_and_rejects_unfunded_wo
         items_examined: 0,
         ..B
     })?;
-    assert!(local.rebase_head(8, &denied, &cancel).await.is_err());
+    assert!(local.rebase_head(Some(8), &denied, &cancel).await.is_err());
     assert_eq!(before, checkout_state(&local));
-    let (decision, allocation) = local.rebase_head(8, &original, &cancel).await?;
+    let (decision, allocation) = local.rebase_head(Some(8), &original, &cancel).await?;
     assert!(matches!(decision, RebaseDecision::Safe { .. }));
     assert!(allocation.work().shares_ledger(&original));
     for (value, expected) in [
@@ -356,7 +362,7 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
             .await?;
         let dependencies = local.dependencies.proof().dependencies.clone();
         let replayed = local
-            .probe_rebase_head(candidate, &dependencies, 8, &mut accounting, &cancel)
+            .probe_rebase_head(candidate, &dependencies, Some(8), &mut accounting, &cancel)
             .await;
         assert!(
             matches!(replayed, Err(FsError::Object(ObjectStoreError::Missing))),
@@ -365,7 +371,7 @@ async fn disjoint_rebase_preserves_observed_content_without_blob_reads() -> Test
     }
     *tracked.lock().map_err(|_| "fixture lock poisoned")? = Some(remote.generation_root);
     reads.store(0, Ordering::Relaxed);
-    let rebased = local.rebase_head(8, B, &cancel).await?;
+    let rebased = local.rebase_head(Some(8), B, &cancel).await?;
     assert!(matches!(rebased.value, RebaseDecision::Safe { .. }));
     let candidate_reads = reads.load(Ordering::Relaxed);
     println!("disjoint candidate root reads={candidate_reads}");

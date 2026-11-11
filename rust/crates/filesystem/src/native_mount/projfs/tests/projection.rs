@@ -73,8 +73,8 @@ async fn concurrent_revalidations_observe_the_same_failed_cache_clear()
     let tree = lock_recover(&runtime.projector.tree);
     lock_recover(&runtime.projector.state).negative_cache_dirty = true;
     std::thread::scope(|threads| {
-        let first = threads.spawn(|| runtime.projector.settle());
-        let second = threads.spawn(|| runtime.projector.settle());
+        let first = threads.spawn(|| runtime.projector.settle(&denied));
+        let second = threads.spawn(|| runtime.projector.settle(&denied));
         let mut state = lock_recover(&runtime.projector.state);
         while state.settlers != 2 {
             state = runtime
@@ -193,7 +193,7 @@ async fn a_failed_relist_retains_its_deferred_creations() -> Result<(), Box<dyn 
     // Re-entering revalidate with the exhausted meter would refuse admission
     // before settle can consume the failed pass, leaving its error for recovery.
     source.fence_changes_with_meter(&work)?;
-    let refused = runtime.projector.settle();
+    let refused = runtime.projector.settle(&work);
     assert!(
         refused.is_err(),
         "the deferred write exceeded its allowance"

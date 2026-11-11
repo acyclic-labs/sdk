@@ -49,7 +49,7 @@ pub(super) async fn read_selected<
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
@@ -74,7 +74,7 @@ pub(super) async fn read_selected_with_accounting<
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<crate::kernel::OwnedSourceChunk, WorkspaceError> {
@@ -100,14 +100,8 @@ pub(super) async fn read_selected_with_accounting<
                 return Err(WorkspaceError::NotRegularFile);
             }
             let length = regular_file_bytes(record)?;
-            if length > maximum_bytes {
+            if maximum_bytes.is_some_and(|maximum| length > maximum) {
                 return Err(WorkspaceError::ReadLimitExceeded);
-            }
-            if length > checkout.value.volume_config().limits.maximum_read_bytes {
-                return Err(crate::FsError::FileRead(
-                    crate::kernel::FileRangeReadError::InvalidRange,
-                )
-                .into());
             }
             let range = crate::ByteRange { offset: 0, length };
             let read = checkout
@@ -152,11 +146,6 @@ pub(super) async fn read_range<
             let (mut checkout, path) = workspace
                 .open_read_path(selector, path, &mut scope, cancellation)
                 .await?;
-            if range.length > checkout.value.volume_config().limits.maximum_read_bytes {
-                return Err(
-                    FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into(),
-                );
-            }
             let record = checkout
                 .value
                 .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, true)
@@ -263,10 +252,7 @@ pub(super) async fn matches_content<
                         workspace.volume.fs.objects(),
                         record,
                         expected,
-                        (
-                            crate::kernel::DecodeLimits::for_volume(workspace.volume_config()),
-                            workspace.limits().maximum_read_bytes,
-                        ),
+                        crate::kernel::DecodeLimits::for_volume(workspace.volume_config()),
                         &mut scope,
                         cancellation,
                     )
@@ -448,7 +434,7 @@ pub(super) async fn plan<
     path: &str,
     offset: u64,
     length: u64,
-    maximum_spans: u32,
+    maximum_spans: Option<u32>,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<(WorkspaceExtentPlan, crate::AuthorityAllocation), WorkspaceError> {

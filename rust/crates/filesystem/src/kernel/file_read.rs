@@ -13,6 +13,9 @@ use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::ByteRange;
 use thiserror::Error;
 
+/// Chunk size for internal comparisons and digests that continue until EOF.
+pub(crate) const CONTENT_READ_CHUNK_BYTES: u64 = 64 * 1024;
+
 /// Complete bounded request for one regular-file byte range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileRangeRequest {
@@ -21,7 +24,7 @@ pub struct FileRangeRequest {
     /// Exact logical range returned.
     pub range: ByteRange,
     /// Maximum sparse spans admitted in the result plan.
-    pub maximum_spans: u32,
+    pub maximum_spans: Option<u32>,
     /// Canonical page and allocation limits.
     pub limits: DecodeLimits,
     /// Exact implementation-work ceiling.

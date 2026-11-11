@@ -1,7 +1,7 @@
 use super::*;
 use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
-use crate::simulation::{Simulation, SimulationFault, SimulationOperation, SimulationOptions};
+use crate::simulation::{Simulation, SimulationFault, SimulationOperation};
 use crate::storage::{
     ObjectKind, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, object_digest,
 };
@@ -199,30 +199,6 @@ fn option_validation_location_identity_and_executor_accessors_are_total()
     let defaults = PromotionSpeculatorOptions::default();
     for invalid in [
         PromotionSpeculatorOptions {
-            maximum_active_operations: 0,
-            ..defaults
-        },
-        PromotionSpeculatorOptions {
-            maximum_active_bytes: 0,
-            ..defaults
-        },
-        PromotionSpeculatorOptions {
-            maximum_active_cost_units: 0,
-            ..defaults
-        },
-        PromotionSpeculatorOptions {
-            maximum_residency_facts: 0,
-            ..defaults
-        },
-        PromotionSpeculatorOptions {
-            maximum_destinations: 0,
-            ..defaults
-        },
-        PromotionSpeculatorOptions {
-            maximum_accepted_tiers: 0,
-            ..defaults
-        },
-        PromotionSpeculatorOptions {
             outcome_window: 0,
             ..defaults
         },
@@ -274,8 +250,7 @@ fn option_validation_location_identity_and_executor_accessors_are_total()
 }
 
 #[test]
-fn input_and_active_capacity_rejections_are_independent() -> Result<(), Box<dyn std::error::Error>>
-{
+fn volume_identity_is_checked_before_planning() -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([71; 16]);
     let generation_id = generation(72);
     let object_id = object(73);
@@ -293,39 +268,6 @@ fn input_and_active_capacity_rejections_are_independent() -> Result<(), Box<dyn 
         PromotionAdmission::Rejected(PromotionRejection::WrongVolume)
     );
 
-    let mut input_limited = PromotionSpeculator::new(
-        PromotionSpeculatorOptions {
-            maximum_residency_facts: 1,
-            ..defaults
-        },
-        volume_id,
-        generation_id,
-    )?;
-    assert_eq!(
-        input_limited.plan(
-            candidate(2, volume_id, generation_id, object_id),
-            &[source, fact(object_id, 76, StorageTier::SharedCache),],
-            &[writable],
-        )?,
-        PromotionAdmission::Rejected(PromotionRejection::InputCapacity)
-    );
-
-    let mut active_limited = PromotionSpeculator::new(
-        PromotionSpeculatorOptions {
-            maximum_active_bytes: 63,
-            ..defaults
-        },
-        volume_id,
-        generation_id,
-    )?;
-    assert_eq!(
-        active_limited.plan(
-            candidate(3, volume_id, generation_id, object_id),
-            &[source],
-            &[writable],
-        )?,
-        PromotionAdmission::Rejected(PromotionRejection::ActiveCapacity)
-    );
     Ok(())
 }
 
@@ -386,12 +328,7 @@ async fn planning_is_deterministic_bounded_generation_fenced_and_idempotent()
         destination(6, StorageTier::NodeLocal, 1),
     ];
     let mut engine = PromotionSpeculator::new(
-        PromotionSpeculatorOptions {
-            maximum_active_operations: 1,
-            maximum_active_bytes: 64,
-            maximum_active_cost_units: 128,
-            ..PromotionSpeculatorOptions::default()
-        },
+        PromotionSpeculatorOptions::default(),
         volume_id,
         generation_id,
     )?;
@@ -504,9 +441,6 @@ fn residency_handoff_preemption_and_adaptive_feedback_are_exact()
     assert_eq!(promotion.reason, ResidencyReason::DirectorySuccessor);
 
     let options = PromotionSpeculatorOptions {
-        maximum_active_operations: 1,
-        maximum_active_bytes: 64,
-        maximum_active_cost_units: 128,
         outcome_window: 2,
         minimum_usefulness_samples: 2,
         minimum_usefulness_basis_points: 5_000,
@@ -545,17 +479,67 @@ fn residency_handoff_preemption_and_adaptive_feedback_are_exact()
 }
 
 #[test]
+fn complete_location_facts_select_exact_priorities_and_reject_late_duplicates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let volume_id = VolumeId::from_bytes([1; 16]);
+    let generation_id = generation(2);
+    let object_id = object(3);
+    let mut residency: Vec<_> = (0..4_097u16)
+        .map(|index| ObjectResidency {
+            object_id,
+            location_id: StorageLocationId::from_bytes(u128::from(index).to_le_bytes()),
+            tier: StorageTier::DurableOrigin,
+            source_priority: 4_097 - index,
+        })
+        .collect();
+    let mut destinations: Vec<_> = (0..4_097u16)
+        .map(|index| PromotionDestination {
+            location_id: StorageLocationId::from_bytes((10_000 + u128::from(index)).to_le_bytes()),
+            tier: StorageTier::NodeLocal,
+            writable: true,
+            maximum_object_bytes: 64,
+            priority: 4_097 - index,
+            cost_units_per_byte: 0,
+        })
+        .collect();
+    let mut engine = PromotionSpeculator::new(
+        PromotionSpeculatorOptions::default(),
+        volume_id,
+        generation_id,
+    )?;
+    let request = candidate(1, volume_id, generation_id, object_id);
+    let PromotionAdmission::Planned(plan) =
+        engine.plan(request.clone(), &residency, &destinations)?
+    else {
+        return Err("complete location facts were refused".into());
+    };
+    assert_eq!(Some(&plan.source), residency.last());
+    assert_eq!(Some(&plan.destination), destinations.last());
+    engine.finish(request.operation_id, true)?;
+
+    residency.push(residency[0]);
+    assert_eq!(
+        engine.plan(request.clone(), &residency, &destinations)?,
+        PromotionAdmission::Rejected(PromotionRejection::InvalidRequest),
+    );
+    residency.pop();
+    destinations.push(destinations[0]);
+    assert_eq!(
+        engine.plan(request, &residency, &destinations)?,
+        PromotionAdmission::Rejected(PromotionRejection::InvalidRequest),
+    );
+    assert_eq!(engine.metrics().active, 0);
+    Ok(())
+}
+
+#[test]
 fn malformed_and_unavailable_inputs_reject_before_a_plan_exists()
 -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([1; 16]);
     let generation_id = generation(2);
     let object_id = object(3);
     let mut engine = PromotionSpeculator::new(
-        PromotionSpeculatorOptions {
-            maximum_residency_facts: 1,
-            maximum_destinations: 1,
-            ..PromotionSpeculatorOptions::default()
-        },
+        PromotionSpeculatorOptions::default(),
         volume_id,
         generation_id,
     )?;
@@ -729,11 +713,7 @@ async fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
         &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
     )
     .await?;
-    let source_simulation = Simulation::wrap(
-        MemoryAuthorityStore::default(),
-        source_inner,
-        SimulationOptions::default(),
-    )?;
+    let source_simulation = Simulation::wrap(MemoryAuthorityStore::default(), source_inner);
     let destination_simulation = Simulation::default();
     destination_simulation.schedule_next(
         SimulationOperation::ObjectPut,

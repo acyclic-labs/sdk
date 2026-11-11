@@ -1,16 +1,15 @@
 //! In-place heap traversal with caller-owned work and cancellation boundaries.
 
-use crate::WorkError;
 use std::cmp::Ordering;
 
-pub(crate) fn heap_sort<T, C, E: From<WorkError>>(
+pub(crate) fn heap_sort<T, C, E>(
     values: &mut [T],
     context: &mut C,
     mut compare: impl FnMut(&T, &T, &mut C) -> Result<Ordering, E>,
     mut swap: impl FnMut(&mut [T], usize, usize, &mut C) -> Result<(), E>,
     mut before_extract: impl FnMut(&mut C) -> Result<(), E>,
 ) -> Result<(), E> {
-    fn sift<T, C, E: From<WorkError>>(
+    fn sift<T, C, E>(
         values: &mut [T],
         mut root: usize,
         end: usize,
@@ -20,23 +19,10 @@ pub(crate) fn heap_sort<T, C, E: From<WorkError>>(
     ) -> Result<(), E> {
         while root < end / 2 {
             let mut child = root * 2 + 1;
-            if child + 1 < end
-                && compare(
-                    values.get(child).ok_or(WorkError::Overflow)?,
-                    values.get(child + 1).ok_or(WorkError::Overflow)?,
-                    context,
-                )?
-                .is_lt()
-            {
+            if child + 1 < end && compare(&values[child], &values[child + 1], context)?.is_lt() {
                 child += 1;
             }
-            if !compare(
-                values.get(root).ok_or(WorkError::Overflow)?,
-                values.get(child).ok_or(WorkError::Overflow)?,
-                context,
-            )?
-            .is_lt()
-            {
+            if !compare(&values[root], &values[child], context)?.is_lt() {
                 break;
             }
             swap(values, root, child, context)?;

@@ -18,7 +18,7 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+            .discard(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(js_error)?;
         mutation_value(receipt.work)

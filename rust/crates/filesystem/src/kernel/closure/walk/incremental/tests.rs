@@ -42,9 +42,6 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
     let store = crate::memory::MemoryObjectStore::default();
     let limits = ClosureLimits {
         decode: DecodeLimits::default(),
-        maximum_objects: u64::MAX,
-        maximum_files: u64::MAX,
-        maximum_object_bytes: u64::MAX,
         profile: FilesystemProfile::Portable,
         symbolic_links: false,
         hard_links: false,
@@ -211,7 +208,7 @@ fn namespace_diff(count: usize, chain: bool) -> TestResult<crate::GenerationDiff
             } else {
                 0
             };
-            let name = LogicalName::new(NameEncoding::Utf8, index.to_string().into_bytes(), 255)?;
+            let name = LogicalName::new(NameEncoding::Utf8, index.to_string().into_bytes())?;
             diff.bindings.push(crate::DirectoryBindingChange {
                 directory_id: FileId::from_bytes((parent as u128).to_be_bytes()),
                 name: name.clone(),
@@ -235,9 +232,6 @@ fn validate(diff: &crate::GenerationDiff, budget: WorkBudget) -> TestResult<(boo
         &store,
         ClosureLimits {
             decode: crate::kernel::DecodeLimits::default(),
-            maximum_objects: 1024,
-            maximum_files: 1024,
-            maximum_object_bytes: 1_000_000,
             profile: FilesystemProfile::Portable,
             symbolic_links: false,
             hard_links: false,
@@ -324,9 +318,6 @@ fn ordered_child_matching_is_metered_and_linear() -> TestResult<()> {
             .collect::<Vec<_>>();
         let limits = ClosureLimits {
             decode: crate::kernel::DecodeLimits::default(),
-            maximum_objects: 4096,
-            maximum_files: 4096,
-            maximum_object_bytes: 1_000_000,
             profile: FilesystemProfile::Portable,
             symbolic_links: false,
             hard_links: false,

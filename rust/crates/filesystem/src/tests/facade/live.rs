@@ -76,7 +76,7 @@ async fn original_guarded_live_conflict_requires_explicit_rebase() -> TestResult
     assert!(checks_at_conflict <= 1);
     assert!(local.has_pending_mutations());
     drop(conflict);
-    let (decision, allocation) = local.rebase_head(16, &original, &cancel).await?;
+    let (decision, allocation) = local.rebase_head(Some(16), &original, &cancel).await?;
     assert!(matches!(decision, RebaseDecision::Safe { .. }));
     drop(allocation);
     let outcome = local
@@ -187,7 +187,7 @@ async fn direct_live_conflicts_return_before_explicit_rebase() -> TestResult {
             second.resume_live(operation, B, &cancel).await?.value,
             LiveMutationOutcome::Conflict { actual }
         );
-        let rebase = second.rebase_head(8, B, &cancel).await?.value;
+        let rebase = second.rebase_head(Some(8), B, &cancel).await?.value;
         if overlap {
             assert!(
                 matches!(rebase, RebaseDecision::Conflicted { conflicts, .. }
@@ -281,7 +281,7 @@ async fn direct_live_resume_preserves_original_identity_and_epoch_fence() -> Tes
     ));
     assert!(retrying.has_pending_mutations());
     assert!(matches!(
-        retrying.rebase_head(8, B, &cancel).await?.value,
+        retrying.rebase_head(Some(8), B, &cancel).await?.value,
         RebaseDecision::Safe { .. }
     ));
     assert!(matches!(

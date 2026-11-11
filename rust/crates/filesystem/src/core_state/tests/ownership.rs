@@ -132,17 +132,6 @@ fn measured_admission_reads(root: &Path) -> u64 {
 }
 
 #[test]
-fn measured_shared_admission_charges_its_claim_check_allocations() {
-    let directory = tempfile::tempdir().unwrap();
-    let work = measured_admission(&directory.path().join("core-state"));
-    assert!(
-        work.peak_allocation_bytes >= acyclic_native_runtime::StoreClaim::CHECK_ALLOCATION_BYTES
-            && work.allocation_operations >= acyclic_native_runtime::StoreClaim::CHECK_ALLOCATIONS,
-        "{work:?}"
-    );
-}
-
-#[test]
 fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let root = directory.path().join("core-state");

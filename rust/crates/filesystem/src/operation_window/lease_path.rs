@@ -2,7 +2,6 @@ use super::{OperationLeaseId, WorkspaceId};
 
 mod encoding;
 pub(crate) use encoding::MAX_ENCODED_BYTES;
-const _: () = assert!(MAX_ENCODED_BYTES <= acyclic_stream::MAX_PATH_BYTES);
 
 /// Encodes a lease path, admitting and charging writes on the caller's ledger.
 pub(crate) fn encode<const N: usize>(

@@ -45,7 +45,7 @@ pub struct DirectoryBindingChange {
     pub after: Option<crate::kernel::TreeEntry>,
 }
 
-/// Bounded Merkle-aware semantic diff between two immutable generations.
+/// Merkle-aware semantic diff between two immutable generations.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenerationDiff {
     /// Content, metadata, kind, link-count, or directory-root changes by file identity.
@@ -93,7 +93,7 @@ pub(crate) async fn diff_generation_file_tables<O: AsyncObjectStore>(
     objects: &O,
     before: ObjectId,
     after: ObjectId,
-    maximum_changes: u32,
+    maximum_changes: Option<u32>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -113,7 +113,7 @@ async fn diff_tables<O: AsyncObjectStore>(
     objects: &O,
     before: ObjectId,
     after: ObjectId,
-    maximum_changes: u32,
+    maximum_changes: Option<u32>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -130,7 +130,7 @@ async fn diff_tables<O: AsyncObjectStore>(
     .await?;
     let record_bytes = records.retained_allocation_bytes;
     let mut records = crate::kernel::Owned::new(records, allocation, record_bytes);
-    let maximum = usize::try_from(maximum_changes).unwrap_or(usize::MAX);
+    let maximum = maximum_changes.map_or(usize::MAX, |maximum| maximum as usize);
     let mut files = crate::kernel::Owned::<Vec<FileRecordChange>>::allocate(
         records.value.changes.len(),
         accounting,
@@ -172,7 +172,9 @@ async fn diff_tables<O: AsyncObjectStore>(
             objects,
             before_entries,
             after_entries,
-            u32::try_from(remaining_changes).unwrap_or(u32::MAX),
+            maximum_changes
+                .map(|_| u32::try_from(remaining_changes).map_err(|_| WorkError::Overflow))
+                .transpose()?,
             limits,
             accounting,
             cancellation,
