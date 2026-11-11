@@ -811,11 +811,13 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         agent: root.clone(),
         page: Default::default(),
     };
+    eprintln!("hosted admission control: empty diff");
     let empty_diff = diff_call(&client, "agents", &diff).await?;
     assert!(
         matches!(&empty_diff, Ok(AgentReply::Diff { items }) if items.is_empty()),
         "the original empty source must finish normally: {empty_diff:?}"
     );
+    eprintln!("hosted admission control: suspended diff revocation");
     // The real session admits this query before its source suspends. Revoking
     // policy during that wait must refuse disclosure, including an empty result.
     let (entered, waiting) = tokio::sync::oneshot::channel();
@@ -842,6 +844,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         Some(StreamError::AccessDenied)
     ));
     owner.denied.store(false, Ordering::SeqCst);
+    eprintln!("hosted admission control: lost diff source");
     // A lost source owner ends the same waiter with a typed refusal, rather
     // than leaving its original admitted channel pending forever.
     let (entered, waiting) = tokio::sync::oneshot::channel();
@@ -861,6 +864,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         "a lost diff source must preserve its definitive conflict: {refused:?}"
     );
     waiting.await?;
+    eprintln!("hosted admission control: revoked diff source failure");
     // A source error can disclose state too. Revocation takes precedence over
     // the original typed source failure after the same admitted wait.
     let (entered, waiting) = tokio::sync::oneshot::channel();
@@ -885,6 +889,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         Some(StreamError::AccessDenied)
     ));
     owner.denied.store(false, Ordering::SeqCst);
+    eprintln!("hosted admission control: child and history pages");
     let children = AgentCommand::Children {
         agent: root.clone(),
         page: Default::default(),
@@ -980,6 +985,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     ));
     // A spawn is the parent's own step: the reply names the child, and the
     // running host's next step for the parent creates it.
+    eprintln!("hosted admission control: spawn actor");
     let runner = {
         let server = server.clone();
         tokio::spawn(async move { server.run(|_, _| {}).await })
@@ -992,6 +998,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         matches!(call(&client, "agents", &spawn).await?, Ok(AgentReply::Spawned { agent, .. }) if agent == child),
         "a retried spawn names the same child"
     );
+    eprintln!("hosted admission control: retire actor runner");
     runner.abort();
     let _ = runner.await;
     // Spawn's committed result already names the child. No later publication
@@ -1009,6 +1016,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         0,
         "child status required separate record reads"
     );
+    eprintln!("hosted admission control: child admission revocation");
     // Admission itself may suspend after the original policy decision. The
     // real child page and status still require current policy at disclosure.
     let (entered, waiting) = tokio::sync::oneshot::channel();
@@ -1039,6 +1047,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     ));
     owner.denied.store(false, Ordering::SeqCst);
 
+    eprintln!("hosted admission control: lost child admission");
     // Dropping the admission producer must end the original query, too.
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let (release, resume) = tokio::sync::oneshot::channel();
@@ -1149,7 +1158,9 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             &IntentId::try_from("close-usage-source")?,
         )
         .await?;
+    eprintln!("hosted admission control: drain archived runtime");
     assert!(server.bound().agents().runtime().drain().await.is_empty());
+    eprintln!("hosted admission control: closed producer queries");
     let end = crate::agent::inbox_tail(&*stream, &root).await?;
     assert!(
         matches!(

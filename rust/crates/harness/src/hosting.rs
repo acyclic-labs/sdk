@@ -515,11 +515,10 @@ where
         command: &'a AgentCommand,
         by: &'a Sender,
         approver: &'a str,
-        authorization: &'a CallAuthorization,
     ) -> BoxProviderFuture<'a, Result<AgentReply, Error>> {
         // Construct this operation before entering its poll graph. The session
         // carrier keeps the admitted command; its caller retains one owner.
-        Box::pin(self.dispatch_inner(command, by, approver, authorization))
+        Box::pin(self.dispatch_inner(command, by, approver))
     }
 
     async fn dispatch_inner(
@@ -527,7 +526,6 @@ where
         command: &AgentCommand,
         by: &Sender,
         approver: &str,
-        authorization: &CallAuthorization,
     ) -> Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
@@ -1775,7 +1773,7 @@ where
             };
             server.platform.admitted().await?;
             let approver = server.platform.approver(&principal);
-            let dispatch = server.dispatch(call.command(), &by, &approver, &authorization);
+            let dispatch = server.dispatch(call.command(), &by, &approver);
             #[cfg(test)]
             {
                 let bytes = std::mem::size_of_val(&dispatch);
