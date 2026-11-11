@@ -328,7 +328,7 @@ where
             let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.history.volume.v1");
             hash.update(parent.path.as_str().as_bytes());
             hash.update(&sequence.to_be_bytes());
-            hash.update(binding.id.to_string().as_bytes());
+            hash.update(&binding.id.into_bytes());
             // A refused publication can retry this turn at a newer project
             // head. Both the companion cut and fork operation belong to the
             // complete selected generation, not just the conversation slot.

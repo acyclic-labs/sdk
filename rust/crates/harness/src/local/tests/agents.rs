@@ -501,50 +501,6 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
     parent.send("prefix", "decision point").await?;
     let prefix = records(&**agents.provider(), root.conversation().map_err(agent)?).await?;
     let saved = crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
-    // A display rename after the saved cut cannot change its restore identity.
-    let state = agents.state(&root).await.map_err(agent)?;
-    let mut primary = crate::agent::WorkspaceTable::primary_in(&state.volumes)
-        .ok_or_else(|| Error::NotFound("primary workspace".into()))?
-        .clone();
-    let original_id = primary.id;
-    primary.name = "renamed-before-restore".into();
-    let record = InboxRecord::WorkspaceChanged(Box::new(crate::agent::WorkspaceChanged {
-        version: 1,
-        op: crate::agent::WorkspaceOp::Rename,
-        entry: primary,
-    }));
-    let request = acyclic_stream::CommitRequest {
-        idempotency_key: acyclic_stream::IdempotencyKey::new(b"rename-saved-workspace".to_vec())
-            .map_err(agent)?,
-        deadline_unix_millis: None,
-        effects: vec![acyclic_stream::CommitEffect::hard(
-            vec![
-                acyclic_stream::CommitCondition::Present {
-                    path: root.inbox().map_err(agent)?,
-                },
-                acyclic_stream::CommitCondition::Absent {
-                    path: root.closed().map_err(agent)?,
-                },
-            ],
-            vec![acyclic_stream::CommitMutation::Append {
-                path: root.inbox().map_err(agent)?,
-                records: vec![record.encode().map_err(agent)?.into()],
-            }],
-        )],
-    };
-    assert!(matches!(
-        agents.provider().commit(request).await.map_err(agent)?,
-        acyclic_stream::CommitOutcome::Committed(_)
-    ));
-    agents.drain(&root).await.map_err(agent)?;
-    assert_eq!(
-        crate::agent::WorkspaceTable::primary_in(
-            &agents.state(&root).await.map_err(agent)?.volumes
-        )
-        .ok_or_else(|| Error::NotFound("renamed workspace".into()))?
-        .id,
-        original_id
-    );
     assert!(saved.live_children);
     workspace
         .write_text("/plan.md", "after cut")
@@ -3531,6 +3487,50 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         return Err(Error::Invalid("notice recipient closed".into()));
     };
     let saved = crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
+    // A display rename after the saved cut cannot change its restore identity.
+    let state = agents.state(&root).await.map_err(agent)?;
+    let mut primary = crate::agent::WorkspaceTable::primary_in(&state.volumes)
+        .ok_or_else(|| Error::NotFound("primary workspace".into()))?
+        .clone();
+    let original_id = primary.id;
+    primary.name = "renamed-before-restore".into();
+    let record = InboxRecord::WorkspaceChanged(Box::new(crate::agent::WorkspaceChanged {
+        version: 1,
+        op: crate::agent::WorkspaceOp::Rename,
+        entry: primary,
+    }));
+    let request = acyclic_stream::CommitRequest {
+        idempotency_key: acyclic_stream::IdempotencyKey::new(b"rename-saved-workspace".to_vec())
+            .map_err(agent)?,
+        deadline_unix_millis: None,
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![
+                acyclic_stream::CommitCondition::Present {
+                    path: root.inbox().map_err(agent)?,
+                },
+                acyclic_stream::CommitCondition::Absent {
+                    path: root.closed().map_err(agent)?,
+                },
+            ],
+            vec![acyclic_stream::CommitMutation::Append {
+                path: root.inbox().map_err(agent)?,
+                records: vec![record.encode().map_err(agent)?.into()],
+            }],
+        )],
+    };
+    assert!(matches!(
+        agents.provider().commit(request).await.map_err(agent)?,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    agents.drain(&root).await.map_err(agent)?;
+    assert_eq!(
+        crate::agent::WorkspaceTable::primary_in(
+            &agents.state(&root).await.map_err(agent)?.volumes
+        )
+        .ok_or_else(|| Error::NotFound("renamed workspace".into()))?
+        .id,
+        original_id
+    );
     let snapshot = saved
         .volumes
         .first()
