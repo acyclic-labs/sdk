@@ -92,7 +92,7 @@ async fn concurrent_publication() -> Result<()> {
             b"original",
             "text/markdown",
             "GOAL.md",
-            64,
+            Some(64),
             &IdempotencyKey::new("original")?,
             None,
             crate::conversation::ContentAccess::default(),
@@ -134,7 +134,7 @@ async fn concurrent_publication() -> Result<()> {
         b"parent replacement",
         "text/markdown",
         "GOAL.md",
-        64,
+        Some(64),
         &key,
         None,
         crate::conversation::ContentAccess::default(),
@@ -147,7 +147,7 @@ async fn concurrent_publication() -> Result<()> {
                 &child_grants.directory,
                 "GOAL.md",
                 Some(&fork.generation),
-                64,
+                Some(64),
                 crate::conversation::ContentAccess::default(),
             )
             .await;
@@ -163,7 +163,7 @@ async fn concurrent_publication() -> Result<()> {
                     b"child replacement",
                     "text/markdown",
                     "GOAL.md",
-                    64,
+                    Some(64),
                     &IdempotencyKey::new("child-replacement")?,
                     None,
                     crate::conversation::ContentAccess::default(),
@@ -205,7 +205,7 @@ async fn concurrent_publication() -> Result<()> {
                     &parent_grants.directory,
                     "GOAL.md",
                     None,
-                    64,
+                    Some(64),
                     crate::conversation::ContentAccess::default(),
                 )
                 .await?;
@@ -238,7 +238,7 @@ async fn concurrent_publication() -> Result<()> {
                     &child_grants.directory,
                     "GOAL.md",
                     Some(&fork.generation),
-                    64,
+                    Some(64),
                     crate::conversation::ContentAccess::default()
                 )
                 .await?

@@ -162,7 +162,7 @@ impl LocalHarness {
                         "inputs",
                         &path,
                         None,
-                        crate::conversation::MAX_EXACT_JS_INTEGER,
+                        Some(crate::conversation::MAX_EXACT_JS_INTEGER),
                         crate::conversation::ContentAccess::default(),
                     )?
                     .await?;

@@ -47,49 +47,51 @@ async fn default_policy_opens_an_approval_that_waits_for_its_decider() -> Result
 
 #[tokio::test]
 async fn human_decision_settles_a_waiting_approval() -> Result<()> {
-    for (approved, settled) in [
-        (true, InteractionOutcome::Approved {}),
-        (false, InteractionOutcome::Declined {}),
-    ] {
-        let storage = MemoryHarnessStorage::new(AgentId::new(), Some(65_536)).await?;
-        let (id, waiting) = open(&storage).await?;
-        assert_eq!(waiting, None);
-        // Only the policy's own principal may decide.
-        assert!(
-            storage
-                .decide_approval(
-                    id,
-                    ApprovalResponder::Human("intruder"),
-                    approved.into(),
-                    None
-                )
-                .await
-                .is_err()
-        );
-        let human = ApprovalResponder::Human("human");
-        assert_eq!(
-            storage
-                .decide_approval(id, human, approved.into(), None)
-                .await?,
-            Some(settled.clone())
-        );
-        // The same decision replays; the journal sees the settled outcome.
-        assert_eq!(
-            storage
-                .decide_approval(id, human, approved.into(), None)
-                .await?,
-            Some(settled.clone())
-        );
-        assert!(
-            storage
-                .decide_approval(id, human, (!approved).into(), None)
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            storage.journal().interaction_outcome(id, None)?.await?,
-            Some(settled)
-        );
+    for maximum_bytes in [Some(65_536), None] {
+        for (approved, settled) in [
+            (true, InteractionOutcome::Approved {}),
+            (false, InteractionOutcome::Declined {}),
+        ] {
+            let storage = MemoryHarnessStorage::new(AgentId::new(), maximum_bytes).await?;
+            let (id, waiting) = open(&storage).await?;
+            assert_eq!(waiting, None);
+            // Only the policy's own principal may decide.
+            assert!(
+                storage
+                    .decide_approval(
+                        id,
+                        ApprovalResponder::Human("intruder"),
+                        approved.into(),
+                        None
+                    )
+                    .await
+                    .is_err()
+            );
+            let human = ApprovalResponder::Human("human");
+            assert_eq!(
+                storage
+                    .decide_approval(id, human, approved.into(), None)
+                    .await?,
+                Some(settled.clone())
+            );
+            // The same decision replays; the journal sees the settled outcome.
+            assert_eq!(
+                storage
+                    .decide_approval(id, human, approved.into(), None)
+                    .await?,
+                Some(settled.clone())
+            );
+            assert!(
+                storage
+                    .decide_approval(id, human, (!approved).into(), None)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                storage.journal().interaction_outcome(id, None)?.await?,
+                Some(settled)
+            );
+        }
     }
     Ok(())
 }
@@ -114,7 +116,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
         fn read<'a>(
             &'a self,
             path: &'a str,
-            maximum: u64,
+            maximum: Option<u64>,
         ) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
             Box::pin(async move {
                 if path.ends_with("/request.json") {
@@ -133,7 +135,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
             &'a self,
             path: &'a str,
             bytes: Vec<u8>,
-            maximum: u64,
+            maximum: Option<u64>,
         ) -> BoxFuture<'a, Result<crate::approvals::ApprovalCreate>> {
             self.files.create(path, bytes, maximum)
         }
@@ -517,7 +519,7 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
         fn read<'a>(
             &'a self,
             path: &'a str,
-            maximum: u64,
+            maximum: Option<u64>,
         ) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
             self.files.read(path, maximum)
         }
@@ -525,7 +527,7 @@ async fn an_interrupted_rule_publication_replays_the_original_decision() -> Resu
             &'a self,
             path: &'a str,
             bytes: Vec<u8>,
-            maximum: u64,
+            maximum: Option<u64>,
         ) -> BoxFuture<'a, Result<ApprovalCreate>> {
             Box::pin(async move {
                 if path.starts_with("approvals/rules/") && self.fail.swap(false, Ordering::AcqRel) {

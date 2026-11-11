@@ -83,7 +83,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
                 b"original",
                 "application/json",
                 "original.json",
-                64,
+                Some(64),
                 &key,
                 None,
                 acyclic_harness::conversation::ContentAccess {
@@ -105,7 +105,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             b"later",
             "text/plain",
             "later.txt",
-            64,
+            Some(64),
             &IdempotencyKey::new("later-content")?,
             None,
             acyclic_harness::conversation::ContentAccess {
@@ -129,7 +129,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             &write,
             &key,
             "result.json",
-            64,
+            Some(64),
             acyclic_harness::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&io),
@@ -163,7 +163,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             b"original",
             "application/json",
             "original.json",
-            64,
+            Some(64),
             &key,
             None,
             acyclic_harness::conversation::ContentAccess {
@@ -234,7 +234,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             &write,
             &IdempotencyKey::new("never-uploaded")?,
             "result.json",
-            64,
+            Some(64),
             acyclic_harness::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&io),
@@ -248,7 +248,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             &write,
             &key,
             "changed.json",
-            64,
+            Some(64),
             acyclic_harness::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&io)
@@ -280,7 +280,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             b"never",
             "text/plain",
             "never",
-            64,
+            Some(64),
             &IdempotencyKey::new("cancelled-content")?,
             None,
             acyclic_harness::conversation::ContentAccess {
@@ -303,7 +303,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             b"never",
             "text/plain",
             "never",
-            64,
+            Some(64),
             &IdempotencyKey::new("denied-content")?,
             None,
             acyclic_harness::conversation::ContentAccess {
@@ -325,7 +325,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             &write,
             &IdempotencyKey::new("denied-content")?,
             "denied",
-            64,
+            Some(64),
             acyclic_harness::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&io)

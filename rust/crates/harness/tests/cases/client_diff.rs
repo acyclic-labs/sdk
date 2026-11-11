@@ -298,7 +298,7 @@ impl Fixture {
                 text.as_bytes(),
                 "text/plain",
                 "source",
-                1_000_000,
+                Some(1_000_000),
                 &IdempotencyKey::new(key)?,
                 None,
                 acyclic_harness::conversation::ContentAccess::default(),

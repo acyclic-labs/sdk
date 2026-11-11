@@ -70,9 +70,9 @@ fn approval_data_never_bypasses_the_interaction_gate() -> Result<()> {
     };
     // Identity length is not a capacity policy. The shared canonical path
     // check still refuses aliases, independently of the payload byte policy.
-    ApprovalRequest::new(&"request-".repeat(64), b"{}", 2)?;
+    ApprovalRequest::new(&"request-".repeat(64), b"{}", Some(2))?;
     for id in ["", ".", "..", "../request", "request/child", "request\0"] {
-        assert!(ApprovalRequest::new(id, b"{}", 2).is_err());
+        assert!(ApprovalRequest::new(id, b"{}", Some(2)).is_err());
     }
     let gate = policy.bind()?;
     let invocation = ToolInvocation {

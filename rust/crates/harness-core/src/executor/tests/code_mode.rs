@@ -880,7 +880,7 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
                 "",
                 "file.txt",
                 None,
-                65536,
+                Some(65536),
                 crate::conversation::ContentAccess::default(),
             )?
             .await?

@@ -43,7 +43,7 @@ pub(in crate::local) async fn write(
             source.as_bytes(),
             "text/typescript",
             path.rsplit('/').next().unwrap_or(path),
-            u64::MAX,
+            None,
             &IdempotencyKey::new(format!(
                 "settings:{path}:{}",
                 blake3::hash(source.as_bytes())
@@ -191,7 +191,7 @@ async fn effective_media_versions_require_current_source_authority() -> Result<(
             include_bytes!("../../../../harness-core/tests/fixtures/notebook-output.png"),
             "image/png",
             path,
-            u64::MAX,
+            None,
             &IdempotencyKey::new("media-authority-control")?,
             None,
             ContentAccess::default(),
