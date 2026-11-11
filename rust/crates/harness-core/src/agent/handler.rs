@@ -434,6 +434,13 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             )
             .await?
         };
+        for out in &prepared.step().outs {
+            if let Out::Diagnostic { diagnostic, text } = out {
+                diagnostic
+                    .stage(self.agents.store.provider().as_ref(), text)
+                    .await?;
+            }
+        }
         prepared
             .persist_children(Arc::clone(self.agents.store.provider()))
             .await?;

@@ -655,14 +655,14 @@ async fn a_logical_step_retains_its_driver_state_before_host_checkpoint_admissio
 }
 
 #[tokio::test]
-async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> Result {
+async fn a_large_terminal_failure_retains_its_complete_text_and_admitted_reference() -> Result {
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
     let driver = script(vec![TurnStep {
         checkpoint: None,
         outs: Vec::new(),
         wait: Wait::Done(AgentOutcome::Failed {
-            message: "x".repeat(MAX_OUTCOME_BYTES),
+            message: "x".repeat(MAX_RECORD_BYTES / 2),
         }),
         drops: None,
     }]);
@@ -678,16 +678,26 @@ async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> R
         acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
-    let failed = AgentOutcome::Failed {
-        message: OVERSIZED_OUTCOME.into(),
+    let Phase::Done {
+        outcome: AgentOutcome::FailedDiagnostic { diagnostic },
+    } = &stepped.state.phase
+    else {
+        return Err("complete failure was replaced".into());
     };
-    assert_eq!(
-        stepped.state.phase,
-        Phase::Done {
-            outcome: failed.clone()
-        }
-    );
-    // The report it sends encodes within the parent's inbox record limit.
+    assert_eq!(diagnostic.agent, path);
+    assert_eq!(diagnostic.bytes, (MAX_RECORD_BYTES / 2) as u64);
+    let Some(Out::Diagnostic {
+        diagnostic: staged,
+        text,
+    }) = stepped
+        .outs
+        .iter()
+        .find(|out| matches!(out, Out::Diagnostic { .. }))
+    else {
+        return Err("original diagnostic was not staged".into());
+    };
+    assert_eq!(staged, diagnostic);
+    assert_eq!(text, &"x".repeat(MAX_RECORD_BYTES / 2));
     let Some(Out::Send { record, .. }) = stepped.outs.iter().find(|out| {
         matches!(
             out,
@@ -697,9 +707,19 @@ async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> R
             }
         )
     }) else {
-        return Err("no ChildDone was sent".into());
+        return Err("no original parent completion".into());
     };
     assert!(record.encode().is_ok());
+    let forged = InboxRecord::ChildDone(ChildDone {
+        child: AgentPath::root(&id(3)),
+        outcome: AgentOutcome::FailedDiagnostic {
+            diagnostic: diagnostic.clone(),
+        },
+    });
+    assert!(
+        forged.encode().is_err(),
+        "a different child borrowed the retained diagnostic"
+    );
     Ok(())
 }
 

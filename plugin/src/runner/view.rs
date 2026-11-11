@@ -449,12 +449,22 @@ impl View {
                 if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
                     self.observe_settled_before(status.cursor);
                 }
-                if let Phase::Done {
-                    outcome: AgentOutcome::Failed { message },
-                } = &status.phase
-                {
+                let failure = match &status.phase {
+                    Phase::Done {
+                        outcome: AgentOutcome::Failed { message },
+                    } => Some(message.clone()),
+                    Phase::Done {
+                        outcome: AgentOutcome::FailedDiagnostic { diagnostic },
+                    } => Some(format!(
+                        "diagnostic: {} ({} bytes)",
+                        diagnostic.path()?,
+                        diagnostic.bytes
+                    )),
+                    _ => None,
+                };
+                if let Some(message) = failure {
                     self.settle_pending();
-                    self.failed(conversation, message);
+                    self.failed(conversation, &message);
                 } else if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
                     if std::mem::take(&mut self.cancelling) {
                         // The cancel's stop shows once the entries this status

@@ -664,6 +664,23 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 (names[2], crate::contract::canonical_json_bytes(&state)?),
             ]);
         }
+        let diagnostic = super::Diagnostic {
+            agent: state.path.clone(),
+            digest: [0x5a; 32],
+            bytes: u64::MAX,
+        };
+        seeds.push((
+            "complete-diagnostic-status-v2",
+            written(&StatusRecord {
+                child_settlement: None,
+                child_wakes: None,
+                phase: Phase::Done {
+                    outcome: super::AgentOutcome::FailedDiagnostic { diagnostic },
+                },
+                cursor: u64::MAX,
+                conversation: u64::MAX,
+            })?,
+        ));
         seeds.extend(history_seeds()?);
         seeds.extend(roster_seeds()?);
         let entry = super::WorkspaceEntry {
