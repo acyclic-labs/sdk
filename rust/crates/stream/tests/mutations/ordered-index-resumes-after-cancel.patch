@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/content/index/build.rs b/rust/crates/stream/src/content/index/build.rs
+--- a/rust/crates/stream/src/content/index/build.rs
++++ b/rust/crates/stream/src/content/index/build.rs
+@@ -183,9 +183,5 @@ impl<'a, S: Storage> Builder<'a, S> {
+     /// Equal or decreasing keys refuse before any index root is returned.
+     pub async fn push(&mut self, key: Field, value: Field) -> Result<(), StreamError> {
+-        if self.interrupted {
+-            return Err(StreamError::Unavailable);
+-        }
+-        self.interrupted = true;
+         let result = self.push_inner(key, value).await;
+         if result.is_ok() {
+             self.interrupted = false;

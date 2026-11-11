@@ -67,8 +67,8 @@ impl<F: Format> Clone for Page<F> {
 /// The caller's ordered values and complete page-reference identity.
 /// Codecs and original admission remain with the storage engine.
 pub trait Format: Send + Sync + 'static {
-    /// Ordered leaf and child-bound key.
-    type Key: Clone + Eq + Ord + Send + Sync + 'static;
+    /// Leaf and child-bound key, compared through the caller's admitted work.
+    type Key: Clone + Eq + Send + Sync + 'static;
     /// One original leaf value.
     type Value: Clone + Eq + Send + Sync + 'static;
     /// The original complete reference, never a truncated or reconstructed ID.

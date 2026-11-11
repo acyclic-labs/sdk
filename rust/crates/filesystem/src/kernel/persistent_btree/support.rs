@@ -5,7 +5,9 @@ use super::{
     retire_allocation, split_allocation, usize_to_u64,
 };
 use thiserror::Error;
-pub(crate) trait Format: acyclic_collections::page::Format<Reference = ObjectId> {
+pub(crate) trait Format:
+    acyclic_collections::page::Format<Key: Ord, Reference = ObjectId>
+{
     fn kind() -> ObjectKind;
     /// A stable hash of `key`, which places page boundaries.
     fn key_hash(key: &Self::Key) -> u64;

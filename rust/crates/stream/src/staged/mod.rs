@@ -3,7 +3,11 @@
 //! Staging retains immutable bytes only. Final apply must consume this cursor
 //! under the shared publication owner, canonically bind retry identity, and
 //! publish every effect together. A staged root is never a Stream position.
-use crate::content::tree::{self, Root, Storage};
+pub use crate::content::Field;
+use crate::content::{
+    INLINE_FIELD_BYTES as INLINE_BYTES,
+    tree::{self, Root, Storage},
+};
 use crate::{
     CommitCondition, CommitId, CommitMutation, IdempotencyKey, OwnedBytes, StreamError,
     WriteRequest,
@@ -14,8 +18,6 @@ mod encode;
 pub use decode::{Bookmark, Reader};
 
 const MAGIC: &[u8] = b"acyclic-stream-staged-v1\0";
-// This chooses a chunk representation, never an accepted logical byte ceiling.
-const INLINE_BYTES: usize = 4096;
 
 /// Original request family; accepted-output selection does not change identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,16 +28,6 @@ pub enum Family {
     Fork,
     /// Ordered coordinated effects.
     Commit,
-}
-
-/// A field's immutable bytes, inline in a page or addressed by content root.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Field<B = OwnedBytes> {
-    /// Inline bytes. Encoding promotes large fields to content roots;
-    /// decoding retains only a bounded field for the current token.
-    Inline(B),
-    /// Arbitrarily large bytes, read through the shared content-tree reader.
-    Content(Root),
 }
 
 /// One bounded decoded token. Wide counts describe subsequent ordered tokens;

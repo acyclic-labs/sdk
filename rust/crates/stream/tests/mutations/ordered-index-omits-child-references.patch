@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/content/index/codec.rs b/rust/crates/stream/src/content/index/codec.rs
+--- a/rust/crates/stream/src/content/index/codec.rs
++++ b/rust/crates/stream/src/content/index/codec.rs
+@@ -87,7 +87,6 @@ pub(super) async fn write(
+             for child in children {
+                 bytes.extend_from_slice(&child.first.prefix);
+                 field_bytes(&mut writer, &mut bytes, &child.first.field).await?;
+-                writer.reference(child.page).await?;
+                 root_bytes(&mut bytes, child.page);
+             }
+         }

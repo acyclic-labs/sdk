@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/content/index/codec.rs b/rust/crates/stream/src/content/index/codec.rs
+--- a/rust/crates/stream/src/content/index/codec.rs
++++ b/rust/crates/stream/src/content/index/codec.rs
+@@ -32,7 +32,6 @@ async fn field_bytes<S: Storage>(
+             bytes.extend_from_slice(value.as_slice());
+         }
+         Field::Content(root) => {
+-            writer.reference(*root).await?;
+             bytes.push(1);
+             root_bytes(bytes, *root);
+         }

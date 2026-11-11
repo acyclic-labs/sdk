@@ -3,9 +3,22 @@
 //! Objects and staged Stream writes use the same persisted manifest format.
 //! A page size splits work; it never bounds the logical content length.
 
-use crate::{StreamError, content_digest};
+use crate::{OwnedBytes, StreamError, content_digest};
 
+pub mod index;
 pub mod tree;
+
+pub(crate) const INLINE_FIELD_BYTES: usize = 4096;
+
+/// Immutable byte field, inline in a physical page or addressed by content root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Field<B = OwnedBytes> {
+    /// Inline bytes. Writers promote large fields to content roots, so decoded
+    /// pages retain only bounded fields without a logical byte ceiling.
+    Inline(B),
+    /// Bytes read lazily through the shared verified content-tree reader.
+    Content(tree::Root),
+}
 
 /// Canonical Objects manifest v1 domain, including its version terminator.
 pub const MANIFEST_MAGIC: &[u8; 20] = b"acyclic-manifest-v1\0";

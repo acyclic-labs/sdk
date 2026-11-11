@@ -92,7 +92,10 @@ pub fn apply<F: Format, M, W: Work<F, M>>(
     entries: &[F::Value],
     mutations: &[(usize, &M)],
     output: &mut W::Output,
-) -> Result<(), W::Error> {
+) -> Result<(), W::Error>
+where
+    F::Key: Ord,
+{
     let mut entry_index = 0;
     let mut mutation_index = 0;
     while entry_index < entries.len() || mutation_index < mutations.len() {

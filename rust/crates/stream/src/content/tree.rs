@@ -7,7 +7,7 @@ use futures::{Stream, StreamExt};
 /// Physical page size, independent of logical record or commit size.
 pub const PAGE_BYTES: usize = 64 * 1024;
 const BLOB_MAGIC: &[u8] = b"acyclic-content-leaf-v1\0";
-const LEAF_BYTES: usize = PAGE_BYTES - BLOB_MAGIC.len();
+pub(super) const LEAF_BYTES: usize = PAGE_BYTES - BLOB_MAGIC.len();
 const FANOUT: usize = (PAGE_BYTES - super::MANIFEST_MAGIC.len() - 8) / 40;
 pub(crate) const EDGE_FANOUT: usize = (PAGE_BYTES - super::MANIFEST_MAGIC.len() - 8) / 32;
 // Even binary fanout cannot require more levels for a u64 logical length.

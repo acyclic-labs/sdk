@@ -622,3 +622,38 @@ subsequences and refusal boundaries against the standard ordered result, and
 a full-width coordinate case allocates no slice. The content-key map, async
 comparison adapter and page-format bound change remain to be implemented; this
 continuation extraction alone is not an index or atomic publication.
+
+The exact `21f5143212d4eb9ce55ca285579404ebef74a6e5` native run completed:
+all-target Stream local/http compilation passed, all 13 content/staged cases
+passed in 0.98 s, and all four mutations failed at their intended assertions
+in 0.19 s. The markers covered writer cancellation, reader cancellation, missing
+content dependencies and empty referenced-body rejection. The script reversed
+all four mutations, checked a clean diff, and emitted
+`DEPENDENCY_CONTROLS_PASS_FOUR_MUTANTS_REJECTED_SOURCE_RESTORED` with that SHA.
+Logs/script: `Q:/scratch/stream-unbounded/ivar-21f5-tests.log` and
+`Q:/scratch/stream-unbounded/ivar-21f5-tests.sh`. This is content/ingestion evidence;
+no final-apply, crash, loom, GC or atomic-write conformance claim follows.
+
+The index foundation now implements a bulk ordered Builder and point lookup.
+It reuses collections Page/Child shapes, content-defined packing and Search
+continuations, and the existing verified content trees and retained manifest
+edges. Byte fields and their inline policy now live once in the general content
+module; staged tokens expose that same type. Keys retain only a bounded prefix
+alongside an inline field or root; comparisons stream beyond the prefix. Builder
+failure/cancellation cannot return a prefix root. General page shapes no longer
+require Ord; algorithms that directly compare synchronously, including the
+filesystem format facade, state their existing Ord requirement explicitly.
+
+Three new real-file controls cover multiple internal levels with a pinned
+predecessor and reopened storage, arbitrarily long common key prefixes and
+representation-independent duplicate refusal, reachable key/value/child pages,
+and interrupted input. Three corresponding mutations remove the input guard,
+field references and child references. They must trigger their distinct assertion
+markers. This new index source is pending remote compilation and tests.
+
+This is not yet the full index API: paged ordered iteration, efficient immutable
+updates and authenticated root-descriptor persistence remain. Reopening storage
+with an existing pinned Index handle is not a crash/restart proof. The staged
+canonical planner, original-work admission integration, authority publication,
+terminal receipts, event GC, all six production proofs and backend/caller cutover
+remain outstanding. No backend write is routed through the new index yet.
