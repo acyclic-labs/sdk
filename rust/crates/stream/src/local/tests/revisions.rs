@@ -153,7 +153,8 @@ async fn input_revisions_follow_only_own_history_membership_and_grafts_across_re
                 StreamPath::new(paths[2])?,
                 StreamPath::new("stable/source/kids/b/status")?,
             ]
-            .into(),
+            .into_iter()
+            .collect(),
             retained: [crate::RetainedRecord {
                 commit_id: late.commit_id,
                 path: StreamPath::new(paths[2])?,

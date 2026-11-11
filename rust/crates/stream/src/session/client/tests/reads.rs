@@ -863,7 +863,8 @@ async fn historical_heads_keep_the_selected_cut_after_newer_session_progress() -
             StreamPath::new("tree/a/status")?,
             StreamPath::new("tree/new/status")?,
         ]
-        .into(),
+        .into_iter()
+        .collect(),
         children: Some(page("tree", 10)?),
         limit: 12,
         at_least: Default::default(),
