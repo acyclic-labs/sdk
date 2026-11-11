@@ -156,14 +156,43 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         selected.settle("author-ui", inbox, &mut events).await?;
         Result::Ok(())
     };
-    let (changed, ()) = futures::try_join!(
+    let (_changed, ()) = futures::try_join!(
         selected.agent_file_previews(vec!["ui/title".into()], Some(before.generation), 64),
         publish,
     )?;
-    assert_eq!(changed.files["ui/title"].as_deref(), Some("Authored title"));
+    // The private producer also carries journal publications. The original
+    // input's settlement, not its first volume event, certifies this write.
+    let changed = selected
+        .agent_file_previews(vec!["ui/title".into()], None, 64)
+        .await?;
     let request = provider
         .last_request()
         .ok_or_else(|| Error::Conflict("no tool result request".into()))?;
+    for part in request
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+    {
+        if let ModelContentPart::ToolResult {
+            call_id, content, ..
+        } = part
+            && call_id == "ui-title"
+        {
+            match content {
+                ToolResultContent::Error { message } => {
+                    eprintln!("private UI write refused: {message}")
+                }
+                ToolResultContent::Json { value } => eprintln!(
+                    "private UI result volume: {:?}",
+                    value
+                        .pointer("/file/volume/class")
+                        .and_then(serde_json::Value::as_str)
+                ),
+                ToolResultContent::Parts { .. } => {}
+            }
+        }
+    }
+    assert_eq!(changed.files["ui/title"].as_deref(), Some("Authored title"));
     for id in ["managed-output", "escape-output"] {
         assert!(request.messages.iter().flat_map(|message| message.content.parts()).any(|part|
             matches!(part, ModelContentPart::ToolResult {call_id, content: ToolResultContent::Error {..}, ..} if call_id == id)),
