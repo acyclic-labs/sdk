@@ -2,7 +2,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::{
-    CancellationToken, WorkBudget, WorkCounters,
+    CancellationToken, NativeMaterializationWork, WorkBudget, WorkCounters,
+    demand::{DemandError, DemandSource},
     kernel::{KernelAccounting, MetadataDecodeError, NativeAccounting, RetainedAllocation},
 };
 use acyclic_harness_core::agent::{
@@ -14,6 +15,44 @@ use acyclic_stream::{
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+struct NoContent;
+impl acyclic_harness_core::conversation::ContentResidencyVerifier for NoContent {}
+
+fn navigation(
+    child: &StreamPath,
+    ctx: &mut KernelAccounting<'_>,
+) -> std::result::Result<acyclic_fs::kernel::OwnedSourceChunk, DemandError> {
+    use std::io::Write;
+    acyclic_fs::kernel::OwnedSourceChunk::produce(ctx, |sink| {
+        write!(sink, "/{}/ui", child.as_str()).map_err(DemandError::from)
+    })
+}
+
+fn namespace(path: &str) -> acyclic_fs::kernel::NamespacePath {
+    acyclic_fs::kernel::NamespacePath::from_text_in_profile(
+        path,
+        acyclic_fs::FilesystemProfile::Portable,
+        acyclic_fs::VolumeLimits::default(),
+    )
+    .expect("test namespace")
+}
+
+fn adoption(
+    agent: acyclic_harness_core::agent::AgentId,
+) -> acyclic_harness_core::agent::ForkAdopted {
+    acyclic_harness_core::agent::ForkAdopted {
+        agent,
+        parent: None,
+        profile: None,
+        forked_at: 0,
+        conversation_tail: 0,
+        checkpoint: None,
+        volumes: Vec::new(),
+        brief: None,
+        policy: None,
+    }
+}
 
 fn accounting(cancellation: &CancellationToken, budget: WorkBudget) -> KernelAccounting<'_> {
     KernelAccounting::Standalone {
@@ -160,5 +199,186 @@ fn accounted_agent_records_share_version_shape_and_whole_input_validation() -> R
     assert!(baseline - caller.remaining()?.peak_allocation_bytes >= text.len() as u64);
     drop(decoded);
     assert_eq!(caller.remaining()?.peak_allocation_bytes, baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
+    use acyclic_harness_core::{
+        agent::{AgentId, IntentId, create_root, spawn},
+        ui::{StreamUiProvider, View},
+    };
+    use acyclic_stream::CommitOutcome;
+    use std::sync::Arc;
+    let streams = Arc::new(MemoryStream::default());
+    let root = create_root(
+        &IntentId::try_from("root".to_owned())?,
+        adoption(AgentId::from_bytes([1; 16])),
+    )?;
+    let agent = root.child;
+    assert!(matches!(
+        streams.commit(root.request).await?,
+        CommitOutcome::Committed(_)
+    ));
+    let child = spawn(
+        &agent,
+        &IntentId::try_from("child".to_owned())?,
+        1,
+        adoption(AgentId::from_bytes([2; 16])),
+    )?;
+    let child_path = child.child;
+    assert!(matches!(
+        streams.commit(child.request).await?,
+        CommitOutcome::Committed(_)
+    ));
+    let source = StreamUiProvider::new(
+        streams.clone(),
+        Arc::new(NoContent),
+        agent.clone(),
+        View::new(2)?,
+        [7; 16],
+        navigation,
+    )
+    .into_source();
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut ctx = KernelAccounting::NativeOriginal {
+        work: &native,
+        cancellation: &cancellation,
+    };
+    let frozen = source.reference(&mut ctx).await?;
+    streams
+        .append(AppendRequest {
+            path: StreamPath::new("unrelated/input")?,
+            records: vec![b"unrelated".to_vec().into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    assert_eq!(
+        source.reference(&mut ctx).await?,
+        frozen,
+        "unrelated progress must not invalidate UI inputs"
+    );
+    let status_path = namespace("/status.md");
+    let baseline = native.live_allocation_bytes();
+    let old = source
+        .lookup(frozen.clone(), &status_path, &native, &cancellation)
+        .await?
+        .ok_or("status")?;
+    assert_eq!(native.live_allocation_bytes(), baseline);
+    let mut latest = StatusRecord::decode(
+        &streams
+            .head(agent.status()?)
+            .await?
+            .last
+            .ok_or("status record")?
+            .value,
+    )?;
+    latest.phase = Phase::WaitingUser {
+        path: "reply/étude.md".into(),
+    };
+    streams
+        .append(AppendRequest {
+            path: agent.status()?,
+            records: vec![latest.encode()?.into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let next_child = spawn(
+        &agent,
+        &IntentId::try_from("new-child".to_owned())?,
+        1,
+        adoption(AgentId::from_bytes([3; 16])),
+    )?;
+    assert!(matches!(
+        streams.commit(next_child.request).await?,
+        CommitOutcome::Committed(_)
+    ));
+    let output = source
+        .read_range(
+            frozen.clone(),
+            &status_path,
+            old.version,
+            0,
+            u64::MAX,
+            &native,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(output.bytes.as_slice(), b"Idle\n");
+    drop(output);
+    let children = source
+        .list_page(
+            frozen.clone(),
+            &namespace("/children"),
+            None,
+            1,
+            &native,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(children.entries.len(), 1);
+    let child_link = namespace(&format!("/children/{}", child_path.id()));
+    let target = source
+        .read_link(
+            frozen.clone(),
+            &child_link,
+            children.entries[0].node.version,
+            u64::MAX,
+            &native,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(
+        target.bytes.as_slice(),
+        format!("/{}/ui", child_path.as_str()).as_bytes()
+    );
+    drop(target);
+    drop(children);
+    assert!(
+        source
+            .lookup(
+                frozen.clone(),
+                &namespace("/children/not-an-agent"),
+                &native,
+                &cancellation
+            )
+            .await?
+            .is_none()
+    );
+    assert!(
+        source
+            .lookup(
+                frozen.clone(),
+                &namespace("/turns/not-a-page.md"),
+                &native,
+                &cancellation
+            )
+            .await?
+            .is_none()
+    );
+    let current = source.reference(&mut ctx).await?;
+    assert_ne!(current, frozen);
+    let node = source
+        .lookup(current.clone(), &status_path, &native, &cancellation)
+        .await?
+        .ok_or("current status")?;
+    let output = source
+        .read_range(
+            current,
+            &status_path,
+            node.version,
+            0,
+            u64::MAX,
+            &native,
+            &cancellation,
+        )
+        .await?;
+    assert!(std::str::from_utf8(&output.bytes)?.contains("reply/étude.md"));
+    // Neither status nor navigation is allowed to read conversation files:
+    // NoContent's default read refuses rather than supplying fixture bytes.
     Ok(())
 }

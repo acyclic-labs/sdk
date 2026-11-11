@@ -113,6 +113,24 @@ impl StreamPath {
         Self::native_parts(&[path], meter).map(Ok)
     }
 
+    /// Validates and joins borrowed pieces directly into original-owned path
+    /// storage, without an intermediate concatenation buffer.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_native_parts(
+        parts: &[&str],
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        if parts
+            .iter()
+            .try_fold(0usize, |length, part| length.checked_add(part.len()))
+            .is_none_or(|length| length == 0 || length > MAX_PATH_BYTES)
+        {
+            return Ok(Err(StreamError::InvalidPath));
+        }
+        let path = Self::native_parts(parts, meter)?;
+        Ok(Self::validate(path.as_str()).map(|()| path))
+    }
+
     /// Concatenates an admitted source with its canonical slash-prefixed suffix.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_native_suffix(

@@ -3,10 +3,14 @@ pub mod blocks;
 #[cfg(feature = "filesystem")]
 mod filesystem;
 mod project;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod stream;
 use crate::command_request::CommandFileRoot;
 #[cfg(feature = "filesystem")]
 pub use filesystem::{FilesystemCut, FilesystemView};
 pub use project::{Affected, Children, Cut, Node, NodeRef, Page, View};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use stream::{StreamUiCut, StreamUiProvider};
 
 /// Projection or untrusted document failure.
 #[derive(Debug, thiserror::Error)]

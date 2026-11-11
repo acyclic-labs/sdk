@@ -68,7 +68,7 @@ pub enum Affected {
 /// or child count. Construction has no per-agent store reads or background work.
 #[derive(Clone, Copy)]
 pub struct View {
-    page_size: u32,
+    pub(super) page_size: u32,
 }
 impl View {
     /// Select a nonzero chunk size (the reader owns transport page sizing).
@@ -424,7 +424,7 @@ impl View {
     }
 }
 
-fn page_number<T: std::str::FromStr>(path: &str, prefix: &str) -> Result<T> {
+pub(super) fn page_number<T: std::str::FromStr>(path: &str, prefix: &str) -> Result<T> {
     path.strip_prefix(prefix)
         .and_then(|s| s.strip_suffix(".md"))
         .and_then(|s| s.parse().ok())

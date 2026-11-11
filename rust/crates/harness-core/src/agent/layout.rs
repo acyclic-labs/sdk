@@ -44,6 +44,13 @@ pub const NOT_INHERITED: [&str; 5] = [CHILDREN, CLOSED, TARGETS, MACHINES, "cont
 pub const MAX_DEPTH: usize = 64;
 
 const CONVERSATION: &str = "conversation";
+const MEMBERSHIP: &str = "harness/membership";
+
+pub(crate) enum AgentStream {
+    Status,
+    Conversation,
+    Membership,
+}
 /// Generation-linked checkpoints, indexed like [`CONVERSATION`].
 const HISTORY: &str = "history";
 const CLOSED: &str = "closed";
@@ -268,7 +275,7 @@ impl AgentPath {
 
     /// Conversation stream.
     pub fn conversation(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{}/{CONVERSATION}", self.text))
+        stream(&self.stream_parts(AgentStream::Conversation).concat())
     }
 
     /// Generation-linked checkpoints, indexed exactly like the conversation.
@@ -279,7 +286,7 @@ impl AgentPath {
 
     /// Status stream.
     pub fn status(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{STATUSES}/{}", self.id_text()))
+        stream(&self.stream_parts(AgentStream::Status).concat())
     }
 
     /// Close marker stream; its existence refuses every later inbox append.
@@ -295,16 +302,27 @@ impl AgentPath {
     /// Append-only membership: this agent first, then each direct child, in
     /// the same commit as its creation. Outside fork destinations like status.
     pub fn membership(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{}/{}", self.membership_tree()?, self.id_text()))
+        stream(&self.stream_parts(AgentStream::Membership).concat())
     }
 
     /// Namespace of this tree's membership feeds. A root observer can follow
     /// each descendant's feed on its existing authenticated session.
     pub fn membership_tree(&self) -> Result<StreamPath, Error> {
-        stream(&format!(
-            "harness/membership/{}",
-            self.tree_root().id_text()
-        ))
+        stream(&format!("{MEMBERSHIP}/{}", self.tree_root().id_text()))
+    }
+
+    pub(crate) fn stream_parts(&self, stream: AgentStream) -> [&str; 5] {
+        match stream {
+            AgentStream::Status => [STATUSES, "/", self.id_text(), "", ""],
+            AgentStream::Conversation => [self.as_str(), "/", CONVERSATION, "", ""],
+            AgentStream::Membership => [
+                MEMBERSHIP,
+                "/",
+                &self.text[AGENTS.len() + 1..AGENTS.len() + 1 + ID_HEX],
+                "/",
+                self.id_text(),
+            ],
+        }
     }
 
     /// The root of this agent's tree: itself for a root.
