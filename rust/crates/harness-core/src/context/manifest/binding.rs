@@ -18,7 +18,9 @@ impl ContextManifest {
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>, Vec<ToolDefinition>)> {
         crate::executor::with_history_io(io, |work| limits.validate_record(&reference, work))?;
         if reference.descriptor().media_type() != "application/json"
-            || reference.descriptor().byte_length() > limits.render_bytes
+            || limits
+                .render_bytes
+                .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
         {
             return Err(stock_boundary(
                 io,

@@ -81,7 +81,8 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
     )?;
     {
         let io = PreparationIo::from_native_work(&work)?;
-        let call = artifacts::read_tool_call(&NativeRecord, &reference, 4096, Some(&io)).await?;
+        let call =
+            artifacts::read_tool_call(&NativeRecord, &reference, Some(4096), Some(&io)).await?;
         assert_eq!(call.call_id, "call");
         assert_eq!(call.arguments, serde_json::json!({"value":1}));
         assert_eq!(
@@ -360,7 +361,7 @@ async fn json_projection_checks_resolved_bytes_before_parsing() -> Result<()> {
         ..Resolver::default()
     };
     assert!(matches!(
-        artifacts::read_value(&resolver, &reference, 1_024, None).await,
+        artifacts::read_value(&resolver, &reference, Some(1_024), None).await,
         Err(Error::Invalid(_))
     ));
     Ok(())

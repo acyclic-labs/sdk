@@ -677,8 +677,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 super::super::access::require(&view.0, action, path, io)?;
             }
             let expected = self.generation_ref_id(view.2, Some(io))?;
+            let credit = io.remaining()?.source_bytes_read;
+            let physical = maximum_bytes.map_or(credit, |policy| policy.min(credit));
             let bytes = sources
-                .read(volume, source_generation, path, maximum_bytes, original_io)?
+                .read(volume, source_generation, path, physical, original_io)?
                 .await?
                 .ok_or_else(|| Error::NotFound("retained skill source is absent".into()))?;
             super::super::access::require_current(&selected, &view.0, io).await?;

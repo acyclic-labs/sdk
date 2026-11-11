@@ -19,7 +19,7 @@ impl ContentResidencyVerifier for SnapshotReader {
             if self.missing.load(Ordering::SeqCst) {
                 return Err(Error::NotFound("snapshot source unavailable".into()));
             }
-            if file.descriptor().byte_length() > maximum_bytes {
+            if maximum_bytes.is_some_and(|maximum| file.descriptor().byte_length() > maximum) {
                 return Err(Error::Invalid("content exceeds selected limit".into()));
             }
             file.descriptor()
@@ -40,7 +40,7 @@ impl ContentResidencyVerifier for SnapshotReader {
             if self.missing.load(Ordering::SeqCst) {
                 return Err(Error::NotFound("snapshot source unavailable".into()));
             }
-            if file.descriptor().byte_length() > maximum_bytes {
+            if maximum_bytes.is_some_and(|maximum| file.descriptor().byte_length() > maximum) {
                 return Err(Error::Invalid("content exceeds selected limit".into()));
             }
             self.storage.read(file).await

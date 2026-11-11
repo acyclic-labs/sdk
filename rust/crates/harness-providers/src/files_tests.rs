@@ -289,7 +289,7 @@ async fn summary_files_keep_source_then_instruction_resolution_order() -> Result
             } else {
                 &self.instruction_reader
             };
-            reader.read(file, Some(maximum), ceiling, io)
+            reader.read(file, maximum, ceiling, io)
         }
     }
     for (adapter, _) in fixtures() {

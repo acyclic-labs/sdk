@@ -236,7 +236,11 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
     let crate::tool::files::FileReadSource::Authored(authored) = &selected.file else {
         panic!("notebook selection lost its authored source");
     };
-    assert!(authored.byte_length > limits.file_bytes);
+    assert!(
+        limits
+            .file_bytes
+            .is_some_and(|maximum| authored.byte_length > maximum)
+    );
     for (index, output) in selected.outputs.iter().enumerate() {
         assert_eq!((output.cell_index, output.output_index), (1, index as u64));
         assert_eq!(output.file.descriptor().media_type(), "image/png");
@@ -494,12 +498,16 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         trace
             .iter()
             .all(|(kind, _, length)| *kind != "generation-bound range"
-                || *length <= limits.file_bytes)
+                || limits.file_bytes.is_none_or(|maximum| *length <= maximum))
     );
     let projection = tool.projection.project(&invocation, &result, None)?.0;
     tool.definition
         .validate_projection(&projection, limits, None)?;
-    assert!(serde_json::to_vec(&projection).unwrap().len() as u64 <= limits.render_bytes);
+    assert!(
+        limits
+            .render_bytes
+            .is_none_or(|maximum| serde_json::to_vec(&projection).unwrap().len() as u64 <= maximum)
+    );
 
     let (warm, warm_ranges) =
         acyclic_test_support::differential::observe::<_, _, (&'static str, u64, u64)>(
@@ -513,7 +521,11 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         .collect();
     assert_eq!(warm_ranges.len(), 1);
     assert_eq!(warm_ranges[0].1, start as u64);
-    assert!(warm_ranges[0].2 <= limits.file_bytes);
+    assert!(
+        limits
+            .file_bytes
+            .is_none_or(|maximum| warm_ranges[0].2 <= maximum)
+    );
     invocation.arguments["selection"]["offset"] = json!(257);
     let (later, later_ranges) =
         acyclic_test_support::differential::observe::<_, _, (&'static str, u64, u64)>(

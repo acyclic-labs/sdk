@@ -64,7 +64,7 @@ impl ContentResidencyVerifier for TaskContext {
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
-            if reference.descriptor().byte_length() > maximum_bytes {
+            if maximum_bytes.is_some_and(|maximum| reference.descriptor().byte_length() > maximum) {
                 return Err(content_error(
                     io,
                     ErrorCode::Invalid,

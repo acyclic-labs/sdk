@@ -126,8 +126,8 @@ fn individually_bounded_signature_negative_control_cannot_reach_a_tool_handler()
         render_bytes: Some(1024),
         ..Limits::default()
     };
-    assert!(serde_json::to_vec(&metadata).unwrap().len() < limits.file_bytes as usize);
-    assert!(serde_json::to_vec(&arguments).unwrap().len() < limits.file_bytes as usize);
+    assert!(serde_json::to_vec(&metadata).unwrap().len() < limits.file_bytes.unwrap() as usize);
+    assert!(serde_json::to_vec(&arguments).unwrap().len() < limits.file_bytes.unwrap() as usize);
     let event = ModelEvent::ToolCall(
         ToolCall::new("call".into(), "echo".into(), arguments).with_metadata(metadata),
     );
