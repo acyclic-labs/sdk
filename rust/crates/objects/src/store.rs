@@ -1659,7 +1659,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             |error: &Error| error.code.as_str_name(),
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                if manifest.parts.is_empty() {
+                if manifest.parts.is_empty() && manifest.edges.is_empty() {
                     return Err(invalid());
                 }
                 let length = manifest.length()?;

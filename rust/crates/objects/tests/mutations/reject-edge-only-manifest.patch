@@ -1,0 +1,8 @@
+diff --git a/rust/crates/objects/src/store.rs b/rust/crates/objects/src/store.rs
+--- a/rust/crates/objects/src/store.rs
++++ b/rust/crates/objects/src/store.rs
+@@ -1662,3 +1662,3 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
+-                if manifest.parts.is_empty() && manifest.edges.is_empty() {
++                if manifest.parts.is_empty() {
+                     return Err(invalid());
+                 }

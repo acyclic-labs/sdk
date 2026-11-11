@@ -1,6 +1,6 @@
 {
   "family": "objects",
-  "version": 3,
+  "version": 4,
   "fixture": "two disposable accounts of one service with immediate visibility",
   "cases": [
     "availability-register-before-verification",
@@ -11,6 +11,7 @@
     "references-must-exist-and-match",
     "put-batch-ordered-members-fail-alone-and-repeat-writes-nothing",
     "manifest-ranges-select-intersecting-parts",
+    "manifest-edges-retain-without-byte-parts",
     "delete-refuses-live-references",
     "collection-keeps-retained-closures",
     "list-after-never-duplicates-or-skips",

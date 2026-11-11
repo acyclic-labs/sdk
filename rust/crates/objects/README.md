@@ -11,6 +11,7 @@ Content-addressed, account-scoped immutable blobs.
   returns kind, length and references.
 - A manifest lists `(digest, length)` parts plus typed edges; its digest is
   BLAKE3 of the canonical encoding and reads select only intersecting parts.
+  An edge-only manifest has zero logical bytes and retains its dependencies.
 - References live in the envelope, outside the payload. `retain(root, refs)`
   appends one atomic, idempotent batch; `release(root)` drops the root;
   `collect` marks from every root and sweeps the rest. Delete never breaks a

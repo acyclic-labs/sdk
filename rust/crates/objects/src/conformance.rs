@@ -69,6 +69,7 @@ fn code<T: std::fmt::Debug>(result: &Result<T, Error>) -> Option<ErrorCode> {
 /// Runs every case. `run` namespaces this run's content so repeated runs
 /// against one service stay independent.
 pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<(), Failure> {
+    edge_only_manifest(first, run).await?;
     // Register before inspecting an initially absent exact identity. An account
     // observing the same digest must receive none of this account's activity.
     use futures::FutureExt as _;
@@ -559,6 +560,72 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     );
     let still_first = first.head(digest).await;
     expect!("cross-account-isolation", still_first.is_ok(), still_first);
+    Ok(())
+}
+
+async fn edge_only_manifest(blobs: &dyn Blobs, run: &str) -> Result<(), Failure> {
+    const CASE: &str = "manifest-edges-retain-without-byte-parts";
+    let child = put(
+        blobs,
+        CASE,
+        bytes(&format!("{run}/edge-only-child"), 53),
+        Vec::new(),
+    )
+    .await?;
+    let manifest = Manifest {
+        parts: Vec::new(),
+        edges: vec![child],
+    };
+    let expected = Digest::of(&manifest.encode().map_err(|error| fail(CASE, error))?);
+    let outcome = blobs.put_manifest(manifest).await;
+    let Ok(Put::Created { verified }) = outcome else {
+        return Err(fail(CASE, outcome));
+    };
+    expect!(
+        "manifest-edges-retain-without-byte-parts",
+        verified.digest == expected && verified.length == 0,
+        verified
+    );
+    let object = blobs.get(expected, ByteRange::FULL, 0).await;
+    expect!(
+        "manifest-edges-retain-without-byte-parts",
+        matches!(&object, Ok(object) if object.body().is_empty() && object.head().kind == Kind::Manifest && object.head().references == vec![child]),
+        object
+    );
+    let protected = blobs.delete(child).await;
+    expect!(
+        "manifest-edges-retain-without-byte-parts",
+        matches!(protected, Ok(ref deleted) if deleted.outcome == Delete::Referenced),
+        protected
+    );
+    let root = RootId::new(format!("{run}/edge-only-root").into_bytes())
+        .map_err(|error| fail(CASE, error))?;
+    blobs
+        .retain(&root, vec![expected])
+        .await
+        .map_err(|error| fail(CASE, error))?;
+    let protected = blobs.delete(expected).await;
+    expect!(
+        "manifest-edges-retain-without-byte-parts",
+        matches!(protected, Ok(ref deleted) if deleted.outcome == Delete::Referenced),
+        protected
+    );
+    blobs
+        .release(&root)
+        .await
+        .map_err(|error| fail(CASE, error))?;
+    let removed = blobs.delete(expected).await;
+    expect!(
+        "manifest-edges-retain-without-byte-parts",
+        matches!(removed, Ok(ref deleted) if deleted.outcome == Delete::Deleted && deleted.references == vec![child]),
+        removed
+    );
+    let removed = blobs.delete(child).await;
+    expect!(
+        "manifest-edges-retain-without-byte-parts",
+        matches!(removed, Ok(ref deleted) if deleted.outcome == Delete::Deleted),
+        removed
+    );
     Ok(())
 }
 

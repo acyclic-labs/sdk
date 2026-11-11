@@ -118,7 +118,7 @@ pub struct Part {
 /// manifest keeps alive without contributing bytes.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Manifest {
-    /// Parts in logical order.
+    /// Parts in logical order; empty for an edge-only dependency manifest.
     pub parts: Vec<Part>,
     /// Additional retained references.
     pub edges: Vec<Digest>,

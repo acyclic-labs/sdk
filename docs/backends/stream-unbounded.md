@@ -1080,3 +1080,36 @@ cancelled IO and superseded private roots, before public-provider cutover. Actua
 final apply, registry/retirement events, production crash simulation/loom and all
 backend/transport conformance remain outstanding. Public providers still have the
 original size/count caps; no SDK main landing or Cloud PR exists yet.
+
+### Objects edge-only manifests (before implementation)
+
+Objects' shared Account::publish_manifest currently rejects every empty parts
+list, including the edge-only manifests emitted by content-tree dependency pages.
+Permit parts=[] when edges is nonempty; continue rejecting an entirely empty
+manifest. Logical length is zero, while stored bytes and outgoing dependencies
+remain real. Reads return an empty logical body of Kind::Manifest and edges still
+protect their children. No stored encoding changes: the shared v1 manifest codec
+already supports zero parts plus edges. All Medium-backed providers and remote
+Objects serving use this one Account implementation.
+
+Add the shared conformance case manifest-edges-retain-without-byte-parts: verify
+canonical digest/zero logical length, empty ranged read, child deletion refusal,
+root retention/release and exact outgoing references on metadata deletion. Clean
+up both fixture objects so other conformance cases stay independent. A mutation
+restores the old parts-only refusal and must fail this case. This unblocks only
+page graph representation; it does not solve stage ownership/GC or atomic apply.
+
+Inspection also found Objects.release/collect currently accumulate unbounded
+batch/graph vectors and collect holds account exclusion for the whole pass.
+A simple put-then-retain page adapter is unsafe against collection/crash gaps;
+do not introduce that as stage ownership. Reuse and extend Objects' ownership
+mechanism with bounded event work and original producer custody before cutover.
+
+The shared Objects engine now permits edge-only manifests, with a shared
+conformance case for canonical identity, zero-byte reads, dependency protection,
+retained-root protection/release and exact deleted outgoing edges. Both fixture
+objects are deleted after the case. The conformance inventory advances to v4;
+manifest/envelope persisted encodings do not change. A mutation restores the old
+parts-only refusal. Memory, local, gRPC, HTTP and binary conformance callers all
+run this same case; targeted remote execution is still pending. This does not
+supply stage ownership or bounded collector work yet.
