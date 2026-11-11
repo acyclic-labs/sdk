@@ -71,6 +71,11 @@ pub use targets::{
     DeviceKind, MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass,
     TargetRecord, TargetRefusal, TargetState, USER_PREFIX,
 };
+mod workspaces;
+pub use workspaces::{
+    WorkspaceChanged, WorkspaceEntry, WorkspaceInherit, WorkspaceKind, WorkspaceMode, WorkspaceOp,
+    WorkspaceSource, WorkspaceTable,
+};
 mod volumes;
 pub use volumes::SpawnVolumes;
 

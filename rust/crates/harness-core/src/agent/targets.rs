@@ -159,7 +159,7 @@ impl super::AgentRecord for TargetRecord {
 }
 
 /// Names are lowercase ASCII words, so `user:` can never name a device.
-fn check_name(name: &str) -> Result<(), super::Error> {
+pub(super) fn check_name(name: &str) -> Result<(), super::Error> {
     let mut bytes = name.bytes();
     if name.len() <= MAX_TARGET_NAME_BYTES
         && bytes
