@@ -328,8 +328,8 @@ these content-only passes.
 
 ## Publication failure prerequisite
 
-The namespace installer is now an infallible function returning the predecessor
-root. Append, fork, commit and accepted commit install the whole namespace and
+The namespace installer is now infallible. Decision::install_at retains the
+predecessor root before entering publication. Append, fork, commit and accepted commit install the whole namespace and
 retain their terminal retry result under the same state write guard before
 calling the fallible notification function. Notification reads the just-retained
 envelope from the retained tail in O(1), without adding a quorum or history read.
@@ -344,7 +344,7 @@ for all four write projections. Its negative control reverses the production
 fix while keeping the same test, requiring the lost-observation assertion.
 This fixes the named root/receipt failure window; it does not certify recovery
 of failed follower delivery or fulfill the staged crash/loom proofs above.
-Validation is pending for this change.
+Validation evidence follows below.
 
 The notification boundary is centralised in Decision::install_at, including
 prepared native commits. Native write accounting completes before notification
@@ -359,3 +359,18 @@ passed (0.168 s). Reversing production code failed exactly the lost-terminal-
 observation assertion. The custom command then failed because rg is absent on
 the build host; its EXIT trap restored the patch. Use grep for the next control
 witness. The accounting-boundary refinement requires its focused run next.
+
+## Publication prerequisite validation (source b35862f1e7c)
+
+Linux Stream local/http all-target check passed (25.40 s). Five focused controls
+passed in 0.132 s: all-family notification failure and exact retries, original
+native operation/byte accounting, real append/fork/commit snapshot replay,
+fork prefix cuts, follow ordering, and prepared native replay across growth.
+(The all-family and native-accounting obligations share one test.)
+The reverse-production-patch control failed the required lost-terminal-
+observation assertion; its witness was checked, the positive patch restored,
+and git diff proved the source clean. Job1794356986407-808796-5c1529b0 exited0.
+Retained evidence: Q:/scratch/stream-unbounded/notification-b35862.log.
+A subsequent source cleanup only removes the import the compiler reported
+unused; production code is identical to this validated source. The new staged
+protocol and six complete atomicity proofs remain outstanding.

@@ -1,6 +1,6 @@
 //! A real poisoned notification registry must not separate visibility and retry identity.
 use super::*;
-use crate::{NativeStreamProvider as _, WriteOutcome, WriteRequest, test_meter::Meter};
+use crate::{WriteOutcome, WriteRequest, test_meter::Meter};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::Ordering;
 
