@@ -3989,6 +3989,7 @@ async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
     assert_eq!(
         preview.as_ref().map(|value| value.text.as_str()),
         Some("ADMITTED_STEERING_INPUT"),
+        "{}",
         if later_hook {
             "a later hook must retain the newest admitted steering message"
         } else {
