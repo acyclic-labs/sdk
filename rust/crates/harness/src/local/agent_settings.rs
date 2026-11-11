@@ -446,7 +446,7 @@ mod tests {
                 b"export const sampling = {temperature: 0.25};",
                 "text/typescript",
                 "options.ts",
-                u64::MAX,
+                None,
                 &crate::IdempotencyKey::new("settings-import-control".to_owned())?,
                 None,
                 ContentAccess::default(),

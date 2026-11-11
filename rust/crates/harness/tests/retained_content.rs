@@ -85,7 +85,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             b"first",
             "text/plain",
             "current.txt",
-            64,
+            Some(64),
             &IdempotencyKey::new("admitted-content")?,
             None,
             acyclic_harness::conversation::ContentAccess::default(),
@@ -99,7 +99,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             b"second",
             "text/plain",
             "current.txt",
-            64,
+            Some(64),
             &IdempotencyKey::new("unpublished-content")?,
             None,
             acyclic_harness::conversation::ContentAccess::default(),
@@ -161,7 +161,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &attached_directory,
             "messages/current.txt",
             Some(&listed_generation),
-            64,
+            Some(64),
             acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?
@@ -187,7 +187,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         b"third",
         "text/plain",
         "current.txt",
-        64,
+        Some(64),
         &IdempotencyKey::new("advanced-head")?,
         None,
         acyclic_harness::conversation::ContentAccess::default(),
@@ -201,7 +201,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             b"first",
             "text/plain",
             "current.txt",
-            64,
+            Some(64),
             &IdempotencyKey::new("admitted-content")?,
             None,
             acyclic_harness::conversation::ContentAccess::default(),
@@ -216,7 +216,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             b"different",
             "text/plain",
             "current.txt",
-            64,
+            Some(64),
             &IdempotencyKey::new("admitted-content")?,
             None,
             acyclic_harness::conversation::ContentAccess::default()
@@ -234,7 +234,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             b"unread original",
             "text/plain",
             "unread.txt",
-            64,
+            Some(64),
             &IdempotencyKey::new("unread-original")?,
             None,
             acyclic_harness::conversation::ContentAccess::default(),
@@ -247,7 +247,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         b"overwritten",
         "text/plain",
         "unread.txt",
-        64,
+        Some(64),
         &IdempotencyKey::new("unread-overwrite")?,
         None,
         acyclic_harness::conversation::ContentAccess::default(),
@@ -268,7 +268,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &write,
             &IdempotencyKey::new("unread-original")?,
             "messages/unread.txt",
-            64,
+            Some(64),
             acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?
@@ -282,7 +282,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             b"unread original",
             "text/plain",
             "unread.txt",
-            64,
+            Some(64),
             &IdempotencyKey::new("unread-original")?,
             None,
             acyclic_harness::conversation::ContentAccess::default(),
@@ -346,7 +346,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 &attached_directory,
                 "messages/current.txt",
                 Some(&listed_generation),
-                64,
+                Some(64),
                 acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?
@@ -361,7 +361,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 &attached_directory,
                 "messages/current.txt",
                 None,
-                64,
+                Some(64),
                 acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?

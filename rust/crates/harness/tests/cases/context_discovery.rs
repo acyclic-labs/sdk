@@ -380,7 +380,7 @@ impl Fixture {
                 bytes,
                 "text/plain",
                 "source.md",
-                1_000_000,
+                Some(1_000_000),
                 &IdempotencyKey::new(key)?,
                 None,
                 acyclic_harness::conversation::ContentAccess::default(),

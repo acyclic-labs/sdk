@@ -162,7 +162,7 @@ mod tests {
                 "",
                 &path,
                 None,
-                4096,
+                Some(4096),
                 ContentAccess::default(),
             )?
             .await?
@@ -178,7 +178,7 @@ mod tests {
                     directory(operation)
                 ),
                 None,
-                2,
+                Some(2),
                 ContentAccess::default(),
             )?
             .await?
@@ -250,7 +250,7 @@ mod tests {
                 "",
                 &path,
                 None,
-                4096,
+                Some(4096),
                 ContentAccess::default(),
             )?
             .await?

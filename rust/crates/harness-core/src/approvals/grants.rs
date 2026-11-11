@@ -72,7 +72,11 @@ impl Grant {
         self.digest
     }
 
-    pub(super) async fn present(&self, files: &dyn ApprovalFiles, maximum: u64) -> Result<bool> {
+    pub(super) async fn present(
+        &self,
+        files: &dyn ApprovalFiles,
+        maximum: Option<u64>,
+    ) -> Result<bool> {
         let Some(bytes) = files.read(&self.path, maximum).await? else {
             return Ok(false);
         };
@@ -84,7 +88,11 @@ impl Grant {
         Ok(true)
     }
 
-    pub(super) async fn publish(self, files: &dyn ApprovalFiles, maximum: u64) -> Result<()> {
+    pub(super) async fn publish(
+        self,
+        files: &dyn ApprovalFiles,
+        maximum: Option<u64>,
+    ) -> Result<()> {
         super::files::create_exact(files, &self.path, self.bytes, maximum)
             .await
             .map(|_| ())

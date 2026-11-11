@@ -124,7 +124,7 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
                 b"private",
                 "text/plain",
                 "key",
-                4096,
+                Some(4096),
                 &IdempotencyKey::new("file")?,
                 None,
                 acyclic_harness::conversation::ContentAccess::default(),
@@ -552,7 +552,7 @@ async fn private_raw_file_reads_keep_bounds_and_meter_the_supplied_ledger()
                 &grant,
                 "raw",
                 Some(&generation),
-                4096,
+                Some(4096),
                 acyclic_harness::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&io),
@@ -571,7 +571,7 @@ async fn private_raw_file_reads_keep_bounds_and_meter_the_supplied_ledger()
                     &grant,
                     "raw",
                     Some(&generation),
-                    3,
+                    Some(3),
                     acyclic_harness::conversation::ContentAccess {
                         ceiling: None,
                         io: Some(&io)
@@ -822,7 +822,7 @@ async fn empty_pinned_reads_keep_zero_byte_bounds_and_current_authority()
             b"",
             "text/plain",
             "empty",
-            4096,
+            Some(4096),
             &IdempotencyKey::new("empty")?,
             None,
             Default::default(),
