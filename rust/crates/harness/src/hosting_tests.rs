@@ -247,7 +247,8 @@ async fn call(
 ) -> Result<std::result::Result<AgentReply, AgentControlFailure>> {
     let reply = client
         .actor_call(&invocation(namespace, command)?, 0, 1 << 20)
-        .await?;
+        .await
+        .inspect_err(|error| eprintln!("session control {command:?}: {error}"))?;
     let response = wire::InvokeActorResponse::decode(reply)?;
     Ok(decode_agent_reply(&response.body, command)?)
 }
