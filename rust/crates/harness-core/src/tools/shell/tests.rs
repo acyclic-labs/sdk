@@ -18,7 +18,7 @@ proptest! {
             let cwd = Path::new(input.cwd.as_deref().unwrap_or(""));
             prop_assert!(!cwd.is_absolute());
             prop_assert!(cwd.components().all(|part| matches!(part, Component::CurDir | Component::Normal(_))));
-            prop_assert!(input.command.valid());
+            prop_assert!(input.command.validate().is_ok());
             let timeout = input.timeout_ms().map_err(|error| TestCaseError::fail(error.to_string()))?;
             prop_assert!(timeout.is_none_or(|timeout| timeout > 0));
             prop_assert_eq!(timeout, input.timeout_ms);
@@ -27,32 +27,56 @@ proptest! {
 }
 
 #[test]
-fn model_cannot_select_a_workspace_or_escape_through_cwd() {
-    assert!(serde_json::from_str::<ShellInput>(r#"{"command":"pwd","workspace":"A"}"#).is_err());
-    for cwd in ["../sibling", "src/../sibling", "/absolute", "dir\0name"] {
-        assert!(
-            ShellInput {
-                command: "pwd".into(),
-                cwd: Some(cwd.into()),
-                timeout_ms: None,
-                background: false,
-                target: None
-            }
-            .validate()
-            .is_err()
-        );
-    }
+fn recon_shell_refusals_name_the_field_and_accept_its_correction() -> Result<()> {
+    // GC-30: exact source, directory and lifetime from the saved call.
+    let mut input: ShellInput = serde_json::from_str(r#"{
+        "command":"pwd && git rev-parse HEAD && git status --short && printf '\\nTOP\\n' && ls -la && printf '\\nPEER\\n' && git -C peer rev-parse HEAD && git -C peer status --short && printf '\\nDIRS\\n' && find . -maxdepth 2 -type d -not -path './.git*' -not -path './managed-agents*' -not -path './peer/.git*' | sort | head -200",
+        "cwd":"/mnt/bb/recon/runs/20261111T073658725Z/quality-cloud/workspace",
+        "timeout_ms":20000
+    }"#).expect("recorded shell call");
+    let error = input.validate().unwrap_err().to_string();
     assert!(
-        ShellInput {
-            command: "pwd".into(),
-            cwd: None,
-            timeout_ms: Some(0),
-            background: false,
-            target: None,
-        }
-        .validate()
-        .is_err()
+        error.contains("cwd: use a path relative to the task view"),
+        "{error}"
     );
+    input.cwd = None;
+    input.validate()?;
+    for cwd in ["../sibling", "src/../sibling", "/absolute", "dir\0name"] {
+        input.cwd = Some(cwd.into());
+        assert!(input.validate().unwrap_err().to_string().contains("cwd:"));
+        input.cwd = Some("src".into());
+        input.validate()?;
+    }
+    input.cwd = None;
+    input.timeout_ms = Some(0);
+    assert!(
+        input
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("timeout_ms: supply a positive duration in milliseconds")
+    );
+    input.timeout_ms = None;
+    input.validate()?;
+    for command in [
+        ShellCommand::Source(String::new()),
+        ShellCommand::Source("a\0b".into()),
+        ShellCommand::Argv(Vec::new()),
+        ShellCommand::Argv(vec![String::new()]),
+        ShellCommand::Argv(vec!["echo".into(), "a\0b".into()]),
+    ] {
+        input.command = command.clone();
+        let error = input.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("command: supply nonempty shell source or argv"),
+            "{error}"
+        );
+        assert_eq!(command.prepare(&PLATFORM).unwrap_err().to_string(), error);
+    }
+    input.command = ShellCommand::Argv(vec!["echo".into(), String::new()]);
+    input.validate()?;
+    assert!(serde_json::from_str::<ShellInput>(r#"{"command":"pwd","workspace":"A"}"#).is_err());
+    Ok(())
 }
 
 proptest! {

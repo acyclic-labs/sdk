@@ -34,11 +34,7 @@ impl ShellCommand {
         self,
         shell: &ShellSpec,
     ) -> Result<(Option<String>, Vec<String>, Option<Vec<u8>>)> {
-        if !self.valid() {
-            return Err(Error::Invalid(
-                "shell command is empty or contains NUL".into(),
-            ));
-        }
+        self.validate()?;
         Ok(match self {
             Self::Source(source) => {
                 let (arguments, stdin) = shell.prepare(source);
@@ -50,13 +46,18 @@ impl ShellCommand {
             }
         })
     }
-    fn valid(&self) -> bool {
-        match self {
+    fn validate(&self) -> Result<()> {
+        let valid = match self {
             Self::Source(source) => !source.is_empty() && !source.contains('\0'),
             Self::Argv(argv) => {
                 argv.first().is_some_and(|program| !program.is_empty())
                     && argv.iter().all(|argument| !argument.contains('\0'))
             }
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(Error::Invalid("command: supply nonempty shell source or argv with a nonempty executable and no NUL bytes".into()))
         }
     }
 }
@@ -191,14 +192,14 @@ impl ShellInput {
     /// Validates the command and relative directory before any native I/O.
     pub fn validate(&self) -> Result<()> {
         let cwd = Path::new(self.cwd.as_deref().unwrap_or(""));
-        if !self.command.valid()
-            || self.cwd.as_ref().is_some_and(|cwd| cwd.contains('\0'))
+        self.command.validate()?;
+        if self.cwd.as_ref().is_some_and(|cwd| cwd.contains('\0'))
             || cwd
                 .components()
                 .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
         {
             return Err(Error::Invalid(
-                "invalid shell command, cwd, target or timeout".into(),
+                "cwd: use a path relative to the task view without parent traversal or NUL bytes, or omit cwd".into(),
             ));
         }
         self.timeout_ms()?;
@@ -207,7 +208,7 @@ impl ShellInput {
 
     pub(crate) fn timeout_ms(&self) -> Result<Option<u32>> {
         if self.timeout_ms == Some(0) {
-            return Err(Error::Invalid("shell lifetime must be positive; recovery: omit timeout_ms for an unbounded command or supply a positive duration".into()));
+            return Err(Error::Invalid("timeout_ms: supply a positive duration in milliseconds or omit timeout_ms for an unbounded command".into()));
         }
         Ok(self.timeout_ms)
     }
