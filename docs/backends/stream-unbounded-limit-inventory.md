@@ -3,6 +3,39 @@
 Baseline 506843a3822; raw sites supplement the design classification.
 Includes tests so removed contracts and negative controls can be located.
 
+## Classification and required disposition
+
+The entries below classify mechanisms, rather than treating every use of the
+error enum as an independent restriction. A frame check is protective only
+after the shared sender splits every legitimate logical input and output before
+that check. The current unary encoders do not satisfy that prerequisite.
+
+| Source mechanism | Class | Required disposition |
+| --- | --- | --- |
+| `request.rs` record/effect/condition/mutation counts, command bytes and exclusions | Logical request size | Replace with shared staged validation and incremental canonicalization. Empty records are malformed input, not a size limit. Allocation failures become capacity failures. |
+| `lib/path.rs`, `memory/capacity.rs` graft depth/length, `memory/provider.rs` joined paths, `wire_codec/session/resource.rs` resource length | Logical request size | Stage path bytes and preserve segment semantics; remove the path and inherited-subtree ceilings together. Validate resource syntax independently of length. |
+| `record_headers/validation.rs`, `record_headers.rs`, `lib/domain.rs` key selectors, `follow_filter.rs` keys/attributes/predicates | Logical request size | Page headers and selectors; preserve canonical ordering and query semantics without count or byte rejection. |
+| `changes.rs` change-envelope sizing and single oversized change | Logical data size and physical page packing | Keep page packing, but allow one logical change to span physical pages; a record or change must not need to fit one page. |
+| `memory/capacity.rs` requested read limit, `memory/provider.rs` heads page bytes, `wire_codec/head.rs`, `http_validation.rs`, `http/follow.rs`, `http.rs` result memberships | Logical output size | Return bounded result pages rooted in the whole decision. A requested page size is a work hint; it must not reject a legitimate commit or truncate its atomic batch. |
+| `memory/prepared.rs`, `native/prepared.rs`, `record_headers/prepared/controls.rs` single-record prepared envelope and maximum | Logical request size | Feed the same staged cursor and planner; remove the one-mutation/one-record representation dependency rather than bypassing native accounting. |
+| `journal.rs`, `journal_provider.rs`, `local/prepared_commit.rs`, `local/prepared_frame.rs`, `local/frame_checksum.rs`, `memory/snapshot/mod.rs` whole-command/envelope bounds | Logical persisted size currently disguised as frame protection | Persist immutable pages first and one small versioned root decision last. Recovery must never reconstruct or admit a request-sized frame. |
+| `grpc/server.rs`, `http_codec.rs`, `browser/port.rs`, `wasm/provider_rpc.rs`, `wasm/validation.rs` unary request/response bounds | Logical request size at current API boundary | Route logical operations through shared staging and result cursors. Retain bounds solely on individual physical transport frames. |
+| `wire_codec/records.rs` record payload and `http_validation.rs` record payload | Logical record size | Resolve content references transparently, with bounded record-content pages. The owned adapter may assemble at the caller boundary. |
+| `wire_codec/records.rs` decoded response length and decompression, `wire_codec/provider_cursor.rs`, session framing and wasm incoming-frame checks | Protective physical frame bound, conditional on splitting | Retain bounded decoding before allocation/decompression; require page senders to split first. Never raise a frame ceiling to accommodate a logical commit. |
+| `session/client/input.rs`, `session/client/socket.rs`, `session/sockets.rs`, `session/mod.rs`, `session/frame.rs` socket/actor payloads | Logical payload size until frame split | Split and reassemble through shared session/content framing. Preserve actor/socket message boundaries; frame boundaries cannot become application message boundaries. |
+| `session/calls.rs` whole actor reply, `session/client/call.rs` invocation, `session/interest.rs`, `session/authority.rs` invocation/open bytes, hello/credential size | Logical control payload size | Stage logical payloads before bounded session envelopes. Auth syntax/authority checks remain separate; a credential length check is not proven hostile-input protection merely because it is a credential. |
+| `session/connection.rs` waiter count, `session/client.rs` channel capacity, session pending frame/byte credits | Backpressure where waiting; arbitrary count where refused | Preserve event-driven credit waits. Replace waiter-count refusal with admission/ownership transfer; do not use a queue ceiling as a logical operation limit. |
+| `preparation.rs` skipped effect `u32` conversion | Logical representation ceiling | Use wide effect positions in paged results and persisted facts. A staged request must not pass ingestion and fail when its skipped positions are encoded. |
+| `memory/commit.rs`, `memory/prepared.rs`, `preparation.rs`, `lib/stream.rs` checked sequence/cursor additions; session credit additions; encoded-size arithmetic | Protective arithmetic overflow | Keep checked arithmetic. Physical counters do not wrap; page counters must not be substituted for logical counts. Overflow is distinct from the removed 1024/64 KiB/1 MiB policy. |
+| `lib/receipt.rs::project` exhausted caller-funded buffers | Explicit caller capacity | Preserve allocation custody, but page projection and expose capacity/backpressure rather than implying a primitive request ceiling. Never grow the caller-funded buffer silently. |
+| `lib/error.rs`, `wire_codec/status.rs`, wasm error codes | Error transport, not a new bound | Audit remaining producers before removing or repurposing a public error code. Mapping an error is not evidence that the original restriction is protective. |
+
+Tests, conformance assertions, fuzz dispatch and negative controls in the raw
+inventory below are consumers of these contracts. Replace tests of deleted
+ceilings with the shared atomic staged cases; retain malformed frame and
+arithmetic controls. This classification is a removal plan, not evidence that
+the production logical limits have already been removed.
+
 ```text
 rust/crates/stream/proto\stream\v1\stream.proto:12:  STREAM_LIMIT_MAX_RECORD_BYTES = 65536;
 rust/crates/stream/proto\stream\v1\stream.proto:13:  STREAM_LIMIT_MAX_ITEMS = 1024;
