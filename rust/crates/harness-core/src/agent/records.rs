@@ -6,7 +6,7 @@
 //! the key unspent.
 
 use super::{AgentId, AgentPath, Error, WorkspaceChanged, WorkspaceEntry};
-use crate::conversation::FileRef;
+use crate::conversation::{FileRef, VolumeRef};
 use serde::{Deserialize, Serialize};
 
 /// Largest encoded agent record. Paths and references have their own bounds;
