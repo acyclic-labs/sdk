@@ -122,11 +122,7 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
         }
     }
     if let Some((sequence, entry)) = admitted
-        && entry.inbox < inbox
-        && entry
-            .steering
-            .as_ref()
-            .is_some_and(|steering| inbox < steering.through)
+        && entry.admits_steering_message(inbox)
     {
         // Every ordinary Message before this cursor passed a boundary;
         // reserved follow-ups and controls retain their own turns. Read
@@ -134,21 +130,19 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
         let record = inbox_record(provider, state.path.inbox()?, inbox)
             .await?
             .ok_or(Error::Record("admitted steering input is missing"))?;
-        match record {
-            InboxRecord::Message(message) if &message.id == id => {
+        match entry.admitted_message(inbox, &record) {
+            Some(message) if &message.id == id => {
+                let id = message.id.clone();
                 return goal_reply(
                     provider,
                     state,
                     sequence,
                     entry,
-                    Some(SteeringReply {
-                        inbox,
-                        id: message.id,
-                    }),
+                    Some(SteeringReply { inbox, id }),
                 )
                 .await;
             }
-            InboxRecord::Message(_) => {
+            Some(_) => {
                 return Err(Error::Conflict(
                     "the inbox sequence admitted another request",
                 ));

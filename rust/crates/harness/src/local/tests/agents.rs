@@ -3830,6 +3830,136 @@ async fn tool_free_checkout_sessions_read_their_own_logical_context_without_moun
 }
 
 #[tokio::test]
+async fn historical_input_previews_do_not_admit_reserved_follow_ups_inside_a_steering_cut()
+-> Result<()> {
+    use crate::{
+        agent::{Delivered, InboxRecord, InputPreviewStep, IntentId, Message, Sender},
+        model::{ModelEvent, ToolCall},
+        test_support::{ScriptedEvent, ScriptedTurn},
+    };
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "boundary".into(),
+                "example.echo".into(),
+                serde_json::json!({"text":"boundary"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ]),
+        ScriptedTurn::Text("at the selected cut".into()),
+        ScriptedTurn::Text("reserved turn".into()),
+    ]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider)?
+                .without_default_tools()
+                .tool(super::tool("example.echo"))
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect_sessions().await?;
+    let (agents, root) = harness.agents().await?;
+    agents.pause(root, true).await.map_err(agent)?;
+    let mut observed =
+        ObservedConversation::observe(Conversation::open(connection.clone()), None).await?;
+    let bound = harness
+        .agents
+        .get()
+        .ok_or_else(|| Error::Invalid("missing hosted agents".into()))?
+        .server
+        .bound();
+    let by = Sender::Host {
+        host: "preview-cut".into(),
+    };
+    let mut sequences = Vec::new();
+    let mut reserved = None;
+    for (name, text, follow_up) in [
+        ("first", "INITIAL_INPUT", false),
+        ("steer", "ADMITTED_STEERING_INPUT", false),
+        ("reserved", "UNADMITTED_FOLLOW_UP", true),
+    ] {
+        let id = IntentId::try_from(name).map_err(agent)?;
+        let body = bound
+            .stage_text(root, "message", &by, &id, (text, text))
+            .await
+            .map_err(agent)?;
+        if follow_up {
+            reserved = Some(body.clone());
+        }
+        let message = Message {
+            from: by.clone(),
+            id,
+            body: Box::new(body),
+            attachments: None,
+        };
+        let input = if follow_up {
+            InboxRecord::FollowUp(message)
+        } else {
+            InboxRecord::Message(message)
+        };
+        let Delivered::Committed { inbox } = agents.send(root, &by, &input).await.map_err(agent)?
+        else {
+            return Err(Error::Invalid("preview fixture input was closed".into()));
+        };
+        sequences.push(inbox);
+    }
+    agents.pause(root, false).await.map_err(agent)?;
+    let entry = observed.settled(sequences[0]).await?;
+    assert!(
+        entry
+            .steering
+            .as_ref()
+            .is_some_and(|cut| cut.through > sequences[2]),
+        "the selected prefix must include the reserved gap for this control to prove admission"
+    );
+    let branch =
+        crate::local::sessions::fork(&connection, root.clone(), 0, "preview-historical-cut")
+            .await?;
+    let branch = Conversation::open(branch);
+    let mut query = branch
+        .input_query(crate::client::AgentPageRequest::new(1, 128, None).map_err(agent)?)
+        .await
+        .map_err(agent)?;
+    let preview = loop {
+        match query.next().await.map_err(agent)? {
+            Some(InputPreviewStep::Progress) => {}
+            Some(InputPreviewStep::Selected(preview)) => break preview,
+            None => {
+                return Err(Error::Invalid(
+                    "input query ended before its selected cut".into(),
+                ));
+            }
+        }
+    };
+    assert_eq!(
+        preview.as_ref().map(|value| value.text.as_str()),
+        Some("ADMITTED_STEERING_INPUT"),
+        "an inherited preview must not disclose an unadmitted follow-up"
+    );
+    assert!(
+        branch
+            .text(&reserved.ok_or_else(|| Error::Invalid("missing reserved body".into()))?)
+            .await
+            .is_err()
+    );
+    let mut own = observed
+        .conversation
+        .input_query(crate::client::AgentPageRequest::new(1, 128, None).map_err(agent)?)
+        .await
+        .map_err(agent)?;
+    assert!(
+        matches!(own.next().await.map_err(agent)?, Some(InputPreviewStep::Selected(Some(preview))) if preview.text == "UNADMITTED_FOLLOW_UP"),
+        "the originating session still owns its accepted follow-up"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversation_cut()
 -> Result<()> {
     use crate::client::{AgentCommand, AgentReply};

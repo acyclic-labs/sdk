@@ -36,12 +36,21 @@ where
             let mut end = tail;
             let mut lower = floor;
             let mut conversation = state.conversation_tail;
+            let mut admitted = None::<ConversationEntry>;
             loop {
                 while end > lower {
                     end -= 1;
                     let record = input_record(provider, &selected, end).await?;
-                    match InboxRecord::decode(&record.value)? {
-                        InboxRecord::Message(message) | InboxRecord::FollowUp(message) => {
+                    let input = InboxRecord::decode(&record.value)?;
+                    let message = match &admitted {
+                        Some(entry) => entry.admitted_message(end, &input),
+                        None => match &input {
+                            InboxRecord::Message(message) | InboxRecord::FollowUp(message) => Some(message),
+                            _ => None,
+                        },
+                    };
+                    match message {
+                        Some(message) => {
                             let preview = bound.input_prefix(&state, &message.body, maximum).await?;
                             yield InputPreviewStep::Selected(Some(preview));
                             return;
@@ -64,15 +73,23 @@ where
                 let source = AgentPath::try_from(source.to_owned())?;
                 let source_inbox = source.inbox()?;
                 if source_inbox != selected {
-                    lower = input_floor(provider, &source).await?;
-                    selected = source_inbox;
-                    end = entry.observed_through;
-                    if end < lower {
+                    let floor = input_floor(provider, &source).await?;
+                    if entry.inbox < floor {
                         Err(Error::Record("conversation input precedes adoption"))?;
                     }
+                    selected = source_inbox;
+                    end = entry.observed_through;
+                } else {
+                    end = end.min(entry.observed_through);
                 }
-                // Consecutive entries from the same origin name earlier
-                // prefixes already proved to contain no accepted message.
+                if entry.observed_through <= entry.inbox {
+                    Err(Error::Record("conversation input has no admitted prefix"))?;
+                }
+                // Only this turn's exact input and ordinary admitted steering
+                // can disclose a file. Older entries retain their own proof;
+                // overlapping ranges already consumed need not be reread.
+                lower = entry.inbox;
+                admitted = Some(entry);
                 yield InputPreviewStep::Progress;
             }
         })
