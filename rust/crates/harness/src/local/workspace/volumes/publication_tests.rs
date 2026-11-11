@@ -272,11 +272,9 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
         &workspace.store,
         &acyclic_fs::hold_root(task.path()).map_err(storage)?,
         &mut rebound,
-        workspace
-            .mount_authority
-            .as_ref()
-            .ok_or(Error::FilesystemAccessConfiguration("test mount owner"))?,
+        workspace.mount_authority.as_ref(),
         &workspace.task_view_admission,
+        true,
     )
     .await?;
     let rebound = rebound.named(Some("home"))?.1;

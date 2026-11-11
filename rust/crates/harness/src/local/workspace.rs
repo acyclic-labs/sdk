@@ -32,7 +32,7 @@ pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
     pub(super) destination: PathBuf,
-    pub(super) options: acyclic_fs::MountOptions,
+    pub(super) options: Option<acyclic_fs::MountOptions>,
     pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
     /// Native execution scopes currently using `native`.
@@ -172,7 +172,13 @@ impl LocalWorkspace {
     pub(super) fn volume_owned_paths(&self) -> Result<Vec<String>> {
         let mut owned = vec![HOST_VIEW_ROOT.to_owned()];
         for (relative, mount) in self.mounts.mounts() {
-            if !relative.is_empty() && mount.view.source.is_some() {
+            if !relative.is_empty()
+                && mount
+                    .view
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.options.is_some())
+            {
                 owned.extend(volumes::owned(&self.path, relative)?);
             }
         }
@@ -208,7 +214,7 @@ impl LocalWorkspace {
             bindings
                 .iter()
                 .filter(|binding| {
-                    native
+                    (native || binding.volume.class() == VolumeClass::SessionShared)
                         && binding.name != "project"
                         && binding.name != crate::filesystem::PRIVATE_VOLUME
                 })
@@ -221,17 +227,16 @@ impl LocalWorkspace {
                     (binding.name.clone(), binding.volume.clone(), source)
                 }),
         )?;
-        if native {
-            volumes::attach(
-                &self.filesystem,
-                &self.store,
-                &root,
-                &mut mounts,
-                authority,
-                &self.task_view_admission,
-            )
-            .await?;
-        }
+        volumes::attach(
+            &self.filesystem,
+            &self.store,
+            &root,
+            &mut mounts,
+            Some(authority),
+            &self.task_view_admission,
+            native,
+        )
+        .await?;
         Ok(Arc::new(mounts))
     }
 
@@ -369,11 +374,7 @@ impl Attach<'_> {
         self.native_mounts
             .then_some((crate::filesystem::HOME_VOLUME, self.scratch))
             .into_iter()
-            .chain(
-                self.shared
-                    .filter(|_| self.native_mounts)
-                    .map(|volume| (super::SHARED_VOLUME, volume)),
-            )
+            .chain(self.shared.map(|volume| (super::SHARED_VOLUME, volume)))
     }
 }
 
@@ -415,6 +416,7 @@ pub(super) async fn open(
         }
     }
     volumes::seed::adopt_home(filesystem, attach.scratch, &root).await?;
+    let binding_root = root.try_clone().map_err(storage)?;
     let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     acyclic_fs::WorkspaceGraph::new(store.clone())
@@ -439,18 +441,17 @@ pub(super) async fn open(
         .authority
         .map(|(issuer, agent)| crate::filesystem::NativeMountAuthority::new(issuer, agent))
         .transpose()?;
+    volumes::attach(
+        filesystem,
+        &store,
+        &binding_root,
+        &mut mounts,
+        mount_authority.as_ref(),
+        &task_view_admission,
+        native_mounts,
+    )
+    .await?;
     if let Some(setup) = &setup {
-        volumes::attach(
-            filesystem,
-            &store,
-            setup,
-            &mut mounts,
-            mount_authority
-                .as_ref()
-                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
-            &task_view_admission,
-        )
-        .await?;
         Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
     }
     let context_line = mounts.context_line();
