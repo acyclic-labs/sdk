@@ -84,6 +84,9 @@ where
         file: &FileRef,
         maximum: u64,
     ) -> Result<InputPreview, Error> {
+        if file.descriptor().media_type() != "text/plain" {
+            return Err(Error::Record("structured input has no plain-text preview"));
+        }
         // The host selected this exact reference from an accepted inbox record
         // in the selected context. A caller never supplies an external file.
         let authority = agent_authority(
