@@ -246,7 +246,7 @@ impl MemoryStream {
                         .as_ref()
                         .map_or_else(KeyTree::default, |source| source.keys().cap(fork.forked_at)),
                     source,
-                    #[cfg(any(test, feature = "local"))]
+                    #[cfg(any(test, not(target_arch = "wasm32")))]
                     tail: fork.forked_at,
                     _allocation: self.allocate(std::mem::size_of::<History>())?,
                 }))
