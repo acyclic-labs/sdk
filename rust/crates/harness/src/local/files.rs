@@ -28,20 +28,16 @@ impl LocalHarness {
         if state.closed {
             return Err(Error::Refused("archived fork cannot be merged".into()));
         }
-        let project = state
-            .volumes
-            .iter()
-            .find(|binding| binding.name == "project")
+        let project = crate::agent::WorkspaceTable::primary_in(&state.volumes)
+            .filter(|binding| binding.role == crate::agent::WorkspaceRole::User)
             .ok_or_else(|| Error::Invalid("session has no project binding".into()))?;
-        let source = workspace.spawned_project_view(&project.volume).await?;
+        let source = workspace.spawned_project_view(project.volume()?).await?;
         let branch = format!("agents/{}", agent.id());
         if let Some(parent) = agent.parent().filter(|parent| parent != hosted.root()) {
             use super::workspace::owner::ViewOwner as _;
             let parent_state = hosted.agents().state(&parent).await.map_err(storage)?;
-            let project = parent_state
-                .volumes
-                .iter()
-                .find(|binding| binding.name == "project")
+            let project = crate::agent::WorkspaceTable::primary_in(&parent_state.volumes)
+                .filter(|binding| binding.role == crate::agent::WorkspaceRole::User)
                 .ok_or_else(|| Error::Invalid("parent has no project binding".into()))?;
             let (signed, verifier) = hosted
                 .server()
@@ -53,13 +49,13 @@ impl LocalHarness {
                 verifier.clone(),
                 signed.copy(&mut None)?,
             );
-            let view = workspace.spawned_project_view(&project.volume).await?;
+            let view = workspace.spawned_project_view(project.volume()?).await?;
             if workspace.has_physical_task_source(&view)? {
                 let bound = self
                     .project_workspace(
                         workspace,
                         &parent,
-                        &project.volume,
+                        project.volume()?,
                         &parent_state.volumes,
                         &signed,
                         &verifier,
@@ -77,7 +73,7 @@ impl LocalHarness {
             }
             // A volume join needs no OS projection. Keep the same selected
             // checkout and original authority without minting a native grant.
-            let logical = workspace.context_task_view(view, &project.volume, &authority)?;
+            let logical = workspace.context_task_view(view, project.volume()?, &authority)?;
             let (selected, pending) = logical.selected_view().await?;
             if pending.is_some() {
                 return Err(Error::Conflict(
@@ -90,7 +86,7 @@ impl LocalHarness {
                 &verifier,
                 &signed,
                 signed.capabilities(),
-                Some(&project.volume),
+                Some(project.volume()?),
             )?;
             access.require(destination.workspace()).await?;
             acyclic_fs::GitCompatRepository::new(repository, workspace.store.clone())

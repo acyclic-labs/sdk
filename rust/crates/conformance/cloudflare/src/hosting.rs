@@ -239,10 +239,10 @@ pub async fn spawned(factory: js_sys::Function) -> Result<JsValue, JsValue> {
         let grants = vec![
             acyclic_harness_core::contract::capability::INTERACTION_ROUTE.to_owned(),
             private
-                .volume
+                .volume()?
                 .capability(VolumeOperation::Read, &mut None)?,
             private
-                .volume
+                .volume()?
                 .capability(VolumeOperation::Write, &mut None)?,
         ];
         to_value(&serde_json::json!({"child": child, "grants": grants})).map_err(Into::into)

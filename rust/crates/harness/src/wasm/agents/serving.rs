@@ -514,10 +514,11 @@ impl WasmAgentServer {
         let volume = private_volume(self.observation.provider.clone(), &agent).map_err(js_error)?;
         Ok(RootRequest {
             agent,
-            fresh: vec![VolumeBinding {
-                name: PRIVATE_VOLUME.into(),
+            fresh: vec![WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Private,
+                PRIVATE_VOLUME.into(),
                 volume,
-            }],
+            )],
             retained: Vec::new(),
             brief: None,
             policy: None,

@@ -447,7 +447,7 @@ mod tests {
                     .iter()
                     .find(|binding| binding.name == "project")
                     .ok_or_else(|| Error::Invalid("missing project binding".into()))?;
-                assert_ne!(binding.volume, local.project);
+                assert_ne!(binding.volume()?, &local.project);
                 let workspace = local.workspace.as_ref().unwrap();
                 let (signed, verifier) = local
                     .agents
@@ -463,9 +463,9 @@ mod tests {
                     signed.copy(&mut None)?,
                 );
                 let mounts = workspace
-                    .bound_mounts(&binding.volume, &state.volumes, &authority)
+                    .bound_mounts(binding.volume()?, &state.volumes, &authority)
                     .await?;
-                let view = workspace.spawned_project_view(&binding.volume).await?;
+                let view = workspace.spawned_project_view(binding.volume()?).await?;
                 super::super::checkout_tools::access::require_mount_access(
                     view.workspace(),
                     &mounts,
@@ -485,12 +485,13 @@ mod tests {
                         .iter()
                         .find(|binding| binding.name == super::super::SHARED_VOLUME)
                         .unwrap()
-                        .volume
+                        .volume()?
+                        .clone()
                 );
 
                 projects.push(crate::filesystem::workspace_ref(
-                    binding.volume.provider().clone(),
-                    &binding.volume.storage_name(&mut None)?,
+                    binding.volume()?.provider().clone(),
+                    &binding.volume()?.storage_name(&mut None)?,
                 )?);
                 let binding = state
                     .volumes
@@ -498,8 +499,8 @@ mod tests {
                     .find(|binding| binding.name == super::super::SHARED_VOLUME)
                     .ok_or_else(|| Error::Invalid("missing shared binding".into()))?;
                 shared.push(crate::filesystem::workspace_ref(
-                    binding.volume.provider().clone(),
-                    &binding.volume.storage_name(&mut None)?,
+                    binding.volume()?.provider().clone(),
+                    &binding.volume()?.storage_name(&mut None)?,
                 )?);
             }
             for (index, text) in [(0, "first board"), (1, "second board")] {
@@ -1017,7 +1018,7 @@ mod tests {
                 .workspace
                 .as_ref()
                 .unwrap()
-                .spawned_project_view(&project.volume)
+                .spawned_project_view(project.volume()?)
                 .await?;
             let cancellation = acyclic_fs::CancellationToken::new();
             let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
@@ -1161,7 +1162,8 @@ mod tests {
                 .iter()
                 .find(|binding| binding.name == name)
                 .unwrap()
-                .volume
+                .volume()
+                .unwrap()
                 .clone()
         };
         let (signed, verifier) = local
@@ -1198,12 +1200,12 @@ mod tests {
             .state(descendants[1].root())
             .await
             .map_err(storage)?;
-        let grandchild_shared = &grandchild_state
+        let grandchild_shared = grandchild_state
             .volumes
             .iter()
             .find(|binding| binding.name == super::super::SHARED_VOLUME)
             .unwrap()
-            .volume;
+            .volume()?;
         let shared = binding(super::super::SHARED_VOLUME);
         let shared = crate::filesystem::workspace_ref(
             shared.provider().clone(),
@@ -1249,7 +1251,7 @@ mod tests {
             .workspace
             .as_ref()
             .unwrap()
-            .spawned_project_view(&project.volume)
+            .spawned_project_view(project.volume()?)
             .await?;
         let cancellation = acyclic_fs::CancellationToken::new();
         view.write(

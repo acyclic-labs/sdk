@@ -210,16 +210,17 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
             &intent("root"),
             RootRequest {
                 agent: id.clone(),
-                fresh: vec![acyclic_harness::agent::VolumeBinding {
-                    name: PRIVATE_VOLUME.into(),
-                    volume: VolumeRef::new(
+                fresh: vec![acyclic_harness::agent::WorkspaceEntry::initial_volume(
+                    acyclic_harness_core::agent::WorkspaceRole::Private,
+                    PRIVATE_VOLUME.into(),
+                    VolumeRef::new(
                         provider.clone(),
                         "agent-private".into(),
                         VolumeClass::AgentPrivate,
                         VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes(id.to_bytes())),
                         &mut None,
                     )?,
-                }],
+                )],
                 retained: Vec::new(),
                 brief: None,
                 policy: None,
@@ -255,7 +256,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         acyclic_harness::filesystem::FilesystemHost::new(filesystem.clone(), &provider, None)?;
     let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
         files,
-        &authority.private.volume,
+        authority.private.volume()?,
         &authority.verifier,
         &authority.scope,
         1 << 20,

@@ -9,7 +9,7 @@
 //! holds nothing, credentials never enter the handler, and a retried step
 //! repeats only idempotent releases.
 
-use super::{AgentPath, AgentState, Error, SpawnVolumes, VolumeBinding};
+use super::{AgentPath, AgentState, Error, SpawnVolumes, WorkspaceEntry};
 use acyclic_actors::{
     addressing::ActorReference,
     guest::{Checkpoint, Composer, Composition, GuestError, GuestFuture, Participant},
@@ -144,7 +144,7 @@ impl Composer for AgentComposer {
 struct Closing {
     lifecycle: Option<Arc<dyn AgentLifecycle>>,
     owner: Option<Arc<dyn SpawnVolumes>>,
-    bindings: Vec<VolumeBinding>,
+    bindings: Vec<WorkspaceEntry>,
     agent: AgentPath,
     volumes: Option<Box<dyn Composition>>,
 }

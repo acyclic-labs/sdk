@@ -1,5 +1,182 @@
 use super::*;
-use crate::{conversation::VolumeRef, core::AuthorityRoot, resources::ProviderRef};
+use crate::{
+    conversation::{ContentGrant, VolumeRef},
+    core::AuthorityRoot,
+    resources::ProviderRef,
+};
+
+#[tokio::test]
+async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result<()> {
+    use crate::agent::{
+        EntryId, WorkspaceInherit, WorkspaceKind, WorkspaceMode, WorkspaceRole, WorkspaceSource,
+    };
+    let path = AgentPath::root(&crate::agent::AgentId::from_bytes([198; 16]));
+    let provider = ProviderRef::new("bounded".into(), "filesystem".into(), "1".into(), &mut None)?;
+    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+    let issuer = AuthorityRoot::new(
+        "bounded",
+        [199; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "bounded".into(),
+        },
+    );
+    let private = private_volume(provider.clone(), &path.id())?;
+    host.create_volume(&private).await?;
+    let project = VolumeRef::new(
+        provider.clone(),
+        "content".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("owner".into()),
+        &mut None,
+    )?;
+    host.create_volume(&project).await?;
+    let seed = issuer.bootstrap_scope(
+        "seed",
+        &Capabilities::new([project.capability(VolumeOperation::Write, &mut None)?]),
+        None,
+        &mut None,
+    )?;
+    let grant = ContentGrant::verify(
+        &issuer.verifier(&mut None)?,
+        &seed,
+        &project,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
+    let mut files = Vec::new();
+    for name in ["inside/file", "outside/file"] {
+        files.push(
+            host.put_content(
+                &project,
+                &grant,
+                name,
+                name.as_bytes(),
+                "text/plain",
+                "file",
+                1024,
+                &crate::IdempotencyKey::new(name)?,
+                None,
+                Default::default(),
+            )
+            .await?,
+        );
+    }
+    let mut user =
+        WorkspaceEntry::initial_volume(WorkspaceRole::User, "repo".into(), project.clone());
+    let mut hidden = WorkspaceEntry::initial_volume(
+        WorkspaceRole::Internal,
+        "approval-state".into(),
+        VolumeRef::new(
+            provider,
+            "approvals".into(),
+            VolumeClass::AgentPrivate,
+            private.owner().clone(),
+            &mut None,
+        )?,
+    );
+    hidden.id = EntryId::from_bytes([200; 16]);
+    let mut tree = user.clone();
+    tree.id = EntryId::from_bytes([201; 16]);
+    tree.name = "tree".into();
+    tree.role = WorkspaceRole::Tree;
+    tree.kind = WorkspaceKind::Tree;
+    tree.source = WorkspaceSource::Subtree(path.clone());
+    tree.mode = WorkspaceMode::ReadOnly;
+    tree.inherit = WorkspaceInherit::Own;
+    for rooted in [false, true] {
+        user.mode = if rooted {
+            WorkspaceMode::ReadWrite
+        } else {
+            WorkspaceMode::ReadOnly
+        };
+        user.root = if rooted {
+            "inside".into()
+        } else {
+            String::new()
+        };
+        let volumes = vec![
+            tree.clone(),
+            user.clone(),
+            hidden.clone(),
+            WorkspaceEntry::initial_volume(
+                WorkspaceRole::Private,
+                "interface".into(),
+                private.clone(),
+            ),
+        ];
+        let authority = agent_authority(
+            &issuer.clone().into(),
+            &TurnAdmission::LocalRoot,
+            &path,
+            &volumes,
+            &[],
+        )
+        .await?;
+        assert!(
+            ContentGrant::verify(
+                &authority.verifier,
+                &authority.scope,
+                &project,
+                VolumeOperation::Write,
+                1024,
+                &mut None
+            )
+            .is_err()
+        );
+        assert!(
+            ContentGrant::verify(
+                &authority.verifier,
+                &authority.scope,
+                hidden.volume()?,
+                VolumeOperation::Read,
+                1024,
+                &mut None
+            )
+            .is_err()
+        );
+        let reader = FilesystemContentVerifier::new(
+            host.clone(),
+            &authority.verifier,
+            &authority.scope,
+            1024,
+            None,
+        )?;
+        assert_eq!(
+            reader.read(&files[0], 1024, None, None)?.await?.as_ref(),
+            b"inside/file"
+        );
+        let outside = reader.read(&files[1], 1024, None, None);
+        if rooted {
+            assert!(outside.is_err(), "a root must not grant its sibling");
+            // Retained conversation references remain exact even when a
+            // still-bound volume's new root no longer contains that input.
+            let resumed = agent_authority(
+                &issuer.clone().into(),
+                &TurnAdmission::LocalRoot,
+                &path,
+                &volumes,
+                &files[1..],
+            )
+            .await?;
+            let reader = FilesystemContentVerifier::new(
+                host.clone(),
+                &resumed.verifier,
+                &resumed.scope,
+                1024,
+                None,
+            )?;
+            assert_eq!(
+                reader.read(&files[1], 1024, None, None)?.await?.as_ref(),
+                b"outside/file"
+            );
+        } else {
+            assert_eq!(outside?.await?.as_ref(), b"outside/file");
+        }
+    }
+    Ok(())
+}
 
 #[tokio::test]
 async fn wait_selection_survives_reopening_and_reference_replacement() -> Result<()> {
@@ -19,10 +196,11 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
             None,
         )?;
     host.create_volume(&volume).await?;
-    let volumes = vec![VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
-        volume: volume.clone(),
-    }];
+    let volumes = vec![WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        "ui".into(),
+        volume.clone(),
+    )];
     let issuer: RuntimeAuthority = AuthorityRoot::new(
         "waits",
         [202; 32],
@@ -196,10 +374,11 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
             forked_at: 0,
             conversation_tail: 0,
             checkpoint: None,
-            volumes: vec![VolumeBinding {
-                name: PRIVATE_VOLUME.into(),
+            volumes: vec![WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Private,
+                PRIVATE_VOLUME.into(),
                 volume,
-            }],
+            )],
             brief: None,
             policy: None,
         },
@@ -373,10 +552,11 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
         VolumeOwner::Agent(owner),
         &mut None,
     )?;
-    let volumes = [VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
+    let volumes = [WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
         volume,
-    }];
+    )];
     let ceiling =
         acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
             .to_scope_label()
@@ -420,16 +600,17 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
     result?;
     let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
     assert!(!signatures.is_empty());
-    let foreign = [VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
-        volume: VolumeRef::new(
-            volumes[0].volume.provider().clone(),
+    let foreign = [WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        VolumeRef::new(
+            volumes[0].volume()?.provider().clone(),
             "private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(crate::AgentId::from_bytes([193; 16])),
             &mut None,
         )?,
-    }];
+    )];
     assert!(AdmittedAgent::verify(&issuer, &admission, &path, &foreign).is_err());
 
     // A valid private binding cannot authorize another agent's fresh volume.
@@ -438,9 +619,9 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
     let (result, signatures) = acyclic_test_support::differential::observe(
         || (),
         |()| -> Result<()> {
-            local.authorize_volume(&volumes[0].volume)?;
+            local.authorize_volume(volumes[0].volume()?)?;
             let error = local
-                .authorize_volume(&foreign[0].volume)
+                .authorize_volume(foreign[0].volume()?)
                 .expect_err("local root accepted a foreign fresh volume");
             assert!(
                 error
@@ -459,7 +640,7 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
     let read_only = root.bootstrap_scope(
         "read-only",
         &Capabilities::new([volumes[0]
-            .volume
+            .volume()?
             .capability(VolumeOperation::Read, &mut None)?]),
         Some(owner),
         &mut None,

@@ -173,6 +173,10 @@ uuid_id!(
     "Identity of one dispatch attempt for an effect."
 );
 uuid_id!(InteractionId, "Identity of one typed open interaction.");
+uuid_id!(
+    EntryId,
+    "Stable workspace identity retained across rename, re-root and fork."
+);
 
 /// Caller-selected identity used to reconcile uncertain admission.
 #[derive(

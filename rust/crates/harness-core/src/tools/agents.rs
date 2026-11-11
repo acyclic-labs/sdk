@@ -126,7 +126,7 @@ struct Turn {
     /// This agent's creation snapshot and the host's template reader; spawn refuses
     /// when either is absent.
     templates: Option<(CreationConfig, Arc<dyn SpawnTemplates>)>,
-    volumes: Vec<crate::agent::VolumeBinding>,
+    volumes: Vec<crate::agent::WorkspaceEntry>,
     /// The first unfinished wait consumes the actor deadline release.
     released: AtomicBool,
 }

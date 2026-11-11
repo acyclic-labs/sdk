@@ -41,11 +41,11 @@ impl<A, O> FilesystemTurnGoal<A, O> {
         let Some(binding) = agent
             .volumes
             .iter()
-            .find(|binding| binding.name == HOME_VOLUME)
+            .find(|binding| binding.role == crate::agent::WorkspaceRole::Home)
         else {
             return Ok(None);
         };
-        let volume = &binding.volume;
+        let volume = binding.volume()?;
         Ok(Some(Self {
             host: Arc::clone(host),
             read: ContentGrant::verify_directory_read(verifier, scope, volume, "", &mut None)?,

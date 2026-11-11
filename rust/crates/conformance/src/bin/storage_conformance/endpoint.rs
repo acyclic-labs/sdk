@@ -4,7 +4,7 @@ use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Sys
 use acyclic_agent_host_conformance::Result;
 use acyclic_harness::{
     Capabilities,
-    agent::{AgentId, AgentPath, IntentId, Reply, VolumeBinding},
+    agent::{AgentId, AgentPath, IntentId, Reply, WorkspaceEntry},
     context::CompactionPolicy,
     contract::capability::INTERACTION_ROUTE,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
@@ -197,10 +197,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                 &IntentId::try_from("root")?,
                 RootRequest {
                     agent: id,
-                    fresh: vec![VolumeBinding {
-                        name: PRIVATE_VOLUME.into(),
-                        volume: private,
-                    }],
+                    fresh: vec![WorkspaceEntry::initial_volume(acyclic_harness_core::agent::WorkspaceRole::Private, PRIVATE_VOLUME.into(), private)],
                     retained: Vec::new(),
                     brief: None,
                     policy: None,

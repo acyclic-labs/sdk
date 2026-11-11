@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     Capabilities,
-    agent::{AgentPath, AgentRecord, ConversationEntry},
+    agent::{AgentPath, AgentRecord, ConversationEntry, WorkspaceRole},
     context::CompactionPolicy,
     conversation::Limits,
     executor::{ExecutionEvent, ExecutionJournal},
@@ -44,12 +44,12 @@ impl TurnExecutors for NativeTurns {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, crate::Result<Arc<dyn Executor>>> {
         Box::pin(async move {
-            let volume = &agent
+            let volume = agent
                 .volumes
                 .iter()
                 .find(|binding| binding.name == "project")
                 .ok_or_else(|| crate::Error::Invalid("missing selected project".into()))?
-                .volume;
+                .volume()?;
             let directory =
                 tempfile::tempdir().map_err(|error| crate::Error::Storage(error.to_string()))?;
             std::fs::write(directory.path().join("selection"), volume.id())
@@ -195,21 +195,26 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
     )?;
     let id = AgentId::from_bytes([31; 16]);
     let fresh = [
-        (PRIVATE_VOLUME, VolumeClass::AgentPrivate),
-        ("project", VolumeClass::Project),
+        (
+            WorkspaceRole::Private,
+            PRIVATE_VOLUME,
+            VolumeClass::AgentPrivate,
+        ),
+        (WorkspaceRole::User, "project", VolumeClass::Project),
     ]
     .into_iter()
-    .map(|(name, class)| {
-        Ok(VolumeBinding {
-            name: name.into(),
-            volume: VolumeRef::new(
+    .map(|(role, name, class)| {
+        Ok(WorkspaceEntry::initial_volume(
+            role,
+            name.into(),
+            VolumeRef::new(
                 provider()?,
                 format!("results-{name}"),
                 class,
                 VolumeOwner::Agent(crate::AgentId::from_bytes(id.to_bytes())),
                 &mut None,
             )?,
-        })
+        ))
     })
     .collect::<Result<Vec<_>>>()?;
     let Serving::Served(server) = serve(
@@ -398,7 +403,7 @@ async fn observe(
             .await
             .ok_or("conversation producer lost")??;
         let entry = ConversationEntry::decode(&record.value)?;
-        if entry.output.volume() != &authority.private.volume {
+        if entry.output.volume() != authority.private.volume()? {
             continue;
         }
         break entry;
@@ -417,7 +422,7 @@ async fn observe(
         bound.agents().provider().clone(),
         bound.volumes().clone(),
         FilesystemJournalBinding {
-            volume: &authority.private.volume,
+            volume: authority.private.volume()?,
             verifier: &authority.verifier,
             scope: &authority.scope,
             io: None,
@@ -456,10 +461,10 @@ async fn observe(
     // whatever bytes a later raw writer puts at the same path.
     let expected = journal.load(&file, None)?.await?;
     let workspace = crate::resources::WorkspaceRef::new(
-        authority.private.volume.provider().clone(),
+        authority.private.volume()?.provider().clone(),
         authority
             .private
-            .volume
+            .volume()?
             .storage_name(&mut None)?
             .into_bytes(),
         None,
@@ -519,7 +524,7 @@ async fn observe(
         .iter()
         .find(|binding| binding.name == "project")
         .ok_or("project missing")?
-        .volume;
+        .volume()?;
     assert_eq!(value["execution"]["volume"], serde_json::to_value(volume)?);
     assert_eq!(value["stdout"], volume.id());
     value["result_file"] = serde_json::to_value(file)?;

@@ -17,7 +17,7 @@ use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{
-        AgentPath, AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, VolumeBinding,
+        AgentPath, AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, WorkspaceEntry,
     },
     conversation::{
         ContentResidencyVerifier, FileRef, ModelContextSelection, VolumeClass, VolumeOperation,
@@ -80,7 +80,7 @@ pub struct AgentAuthority<'v> {
     /// Verifier of grants under `scope`.
     pub verifier: AuthorityVerifier,
     /// The agent's own private volume binding.
-    pub private: &'v VolumeBinding,
+    pub private: &'v WorkspaceEntry,
 }
 
 /// What every agent scope of a host derives from.
@@ -138,8 +138,8 @@ impl TurnAdmission {
 pub(super) struct AdmittedAgent<'v> {
     issuer: RuntimeAuthority,
     owner: crate::AgentId,
-    volumes: &'v [VolumeBinding],
-    private: &'v VolumeBinding,
+    volumes: &'v [WorkspaceEntry],
+    private: &'v WorkspaceEntry,
     /// Original immutable admission; attestation occurs only when needed.
     parent: Option<&'v Scope>,
 }
@@ -151,15 +151,15 @@ impl<'v> AdmittedAgent<'v> {
         issuer: &RuntimeAuthority,
         admission: &'v TurnAdmission,
         path: &AgentPath,
-        volumes: &'v [VolumeBinding],
+        volumes: &'v [WorkspaceEntry],
     ) -> Result<Self> {
         let owner = crate::AgentId::from_bytes(path.id_bytes());
         let private = volumes
             .iter()
-            .find(|binding| binding.name == PRIVATE_VOLUME)
+            .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
             .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
-        if private.volume.class() != VolumeClass::AgentPrivate
-            || *private.volume.owner() != VolumeOwner::Agent(owner)
+        if private.volume()?.class() != VolumeClass::AgentPrivate
+            || *private.volume()?.owner() != VolumeOwner::Agent(owner)
         {
             return Err(Error::Unauthorized(
                 "private volume belongs to another agent".into(),
@@ -176,12 +176,12 @@ impl<'v> AdmittedAgent<'v> {
                 &issuer.verifier(&mut None)?,
                 scope,
                 owner,
-                &private.volume,
+                private.volume()?,
                 VolumeOperation::Write,
                 u64::MAX,
                 &mut None,
             )?;
-            require_structured_write(scope, owner, &private.volume)?;
+            require_structured_write(scope, owner, private.volume()?)?;
         }
         Ok(Self {
             issuer,
@@ -302,35 +302,46 @@ pub(super) fn require_structured_write(
     }
 }
 
-/// A local root agent's grants: routing, its agent tools, read, write and delete of
-/// every bound volume, read of its provider's seed layer (see
-/// [`crate::seed`]), and each `external` file by its exact version.
-fn root_grants(volumes: &[VolumeBinding], external: &[FileRef]) -> Result<Vec<String>> {
+/// A local root agent's grants: routing, tools, the visible entries' read/write
+/// ceilings, its provider's seed layer and retained exact input versions.
+/// Raw writers cannot widen a rooted entry; scoped publication belongs to the
+/// table's view composition.
+fn root_grants(volumes: &[WorkspaceEntry], external: &[FileRef]) -> Result<Vec<String>> {
     let mut grants = Vec::with_capacity(3 * volumes.len() + 2);
-    if let Some(binding) = volumes.first() {
+    if let Some(volume) = volumes.iter().find_map(WorkspaceEntry::as_volume) {
         grants.push(
-            crate::seed::volume(binding.volume.provider())?
-                .capability(VolumeOperation::Read, &mut None)?,
+            crate::seed::volume(volume.provider())?.capability(VolumeOperation::Read, &mut None)?,
         );
     }
     grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
     // Every agent may spawn, message and archive within its own subtree.
     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
-    for binding in volumes {
-        for operation in [
-            VolumeOperation::Read,
-            VolumeOperation::Write,
-            VolumeOperation::Delete,
-        ] {
-            grants.push(binding.volume.capability(operation, &mut None)?);
+    for binding in volumes
+        .iter()
+        .filter(|binding| binding.role != crate::agent::WorkspaceRole::Internal)
+    {
+        let Some(volume) = binding.as_volume() else {
+            continue; // A lazy subtree view has no whole-volume authority.
+        };
+        if !binding.root.is_empty() {
+            grants.push(volume.directory_read_capability(&binding.root, &mut None)?);
+        } else {
+            grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
+            if binding.mode == crate::agent::WorkspaceMode::ReadWrite {
+                for operation in [VolumeOperation::Write, VolumeOperation::Delete] {
+                    grants.push(volume.capability(operation, &mut None)?);
+                }
+            }
         }
     }
     for file in external {
+        // A retained exact file can lie outside the current root on a still
+        // bound volume. Its immutable conversation selection grants it alone.
+        grants.push(file.read_capability(&mut None)?);
         if !volumes
             .iter()
-            .any(|binding| binding.volume == *file.volume())
+            .any(|binding| binding.as_volume() == Some(file.volume()) && binding.root.is_empty())
         {
-            grants.push(file.read_capability(&mut None)?);
             // An attachment manifest's files are copies in its own directory,
             // so one grant reaches them however many it lists.
             if file.descriptor().media_type() == crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE
@@ -353,7 +364,7 @@ pub async fn agent_authority<'v>(
     issuer: &RuntimeAuthority,
     admission: &'v TurnAdmission,
     path: &AgentPath,
-    volumes: &'v [VolumeBinding],
+    volumes: &'v [WorkspaceEntry],
     external: &[FileRef],
 ) -> Result<AgentAuthority<'v>> {
     AdmittedAgent::verify(issuer, admission, path, volumes)?
@@ -736,13 +747,16 @@ where
         };
         let mut heads = Vec::new();
         for binding in &agent.volumes {
-            if binding.volume.class() != VolumeClass::Project {
+            if binding
+                .as_volume()
+                .is_none_or(|volume| volume.class() != VolumeClass::Project)
+            {
                 continue;
             }
             crate::conversation::ContentGrant::authorize_volume(
                 &authority.verifier,
                 &authority.scope,
-                &binding.volume,
+                binding.volume()?,
                 operation,
                 u64::MAX,
                 &mut None,
@@ -751,7 +765,7 @@ where
                 .host
                 .filesystem
                 .open_workspace(
-                    binding.volume.storage_name(&mut None)?,
+                    binding.volume()?.storage_name(&mut None)?,
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancel,
                 )
@@ -890,7 +904,7 @@ where
         }
         let writer = FilesystemContentPublisher::new(
             Arc::clone(&self.host),
-            &private.volume,
+            private.volume()?,
             &verifier,
             &scope,
             crate::conversation::MAX_EXACT_JS_INTEGER,
@@ -900,14 +914,14 @@ where
             Arc::clone(&self.stream),
             Arc::clone(&self.host),
             FilesystemJournalBinding {
-                volume: &private.volume,
+                volume: private.volume()?,
                 verifier: &verifier,
                 scope: &scope,
                 io: None,
             },
         )?
         .with_input_verifier(reader.clone());
-        let internal = self.internal_files(&private.volume, &verifier, &scope)?;
+        let internal = self.internal_files(private.volume()?, &verifier, &scope)?;
         Ok((
             journal,
             Bindings {
@@ -915,7 +929,7 @@ where
                 scope,
                 grants: capabilities,
                 content: ContentBindings {
-                    volume: private.volume.clone(),
+                    volume: private.volume()?.clone(),
                     reader,
                     writer: Some(writer),
                 },
@@ -1675,7 +1689,7 @@ where
             let authority =
                 crate::core::until_turn_stopped(Some(stop), admitted.authority(&[])).await?;
             let outputs = self.internal_files(
-                &authority.private.volume,
+                authority.private.volume()?,
                 &authority.verifier,
                 &authority.scope,
             )?;
@@ -1960,7 +1974,7 @@ struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     agent: AgentPath,
-    volumes: Vec<VolumeBinding>,
+    volumes: Vec<WorkspaceEntry>,
     maximum_bytes: u64,
 }
 

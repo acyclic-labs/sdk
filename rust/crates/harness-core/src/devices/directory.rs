@@ -362,7 +362,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         context: Option<&'a ToolContext>,
     ) -> Result<(
         &'a crate::agent::AgentPath,
-        &'a [crate::agent::VolumeBinding],
+        &'a [crate::agent::WorkspaceEntry],
     )> {
         let (agent, volumes) = context.and_then(|context| context.agent()).ok_or_else(|| {
             Error::Unauthorized("device call has no original agent binding".into())
@@ -693,13 +693,11 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             return Err(self.refusal(Refused::Offline));
         };
         let (agent, volumes) = self.agent(Some(context))?;
-        let volume = volumes
-            .iter()
-            .find(|binding| binding.name == "project")
+        let volume = crate::agent::WorkspaceTable::primary_in(volumes)
             .ok_or_else(|| {
                 Error::Unauthorized("device dispatch has no original project volume".into())
             })?
-            .volume
+            .whole_volume()?
             .clone();
         let command = RunCommand {
             op: invocation.operation_id,

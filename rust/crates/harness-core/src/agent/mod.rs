@@ -70,6 +70,12 @@ pub use targets::{
     DeviceKind, MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass,
     TargetRecord, TargetRefusal, TargetState, USER_PREFIX,
 };
+mod word;
+mod workspaces;
+pub use workspaces::{
+    EntryId, WorkspaceChanged, WorkspaceEntry, WorkspaceFilter, WorkspaceInherit, WorkspaceKind,
+    WorkspaceMode, WorkspaceOp, WorkspaceRole, WorkspaceSource, WorkspaceTable,
+};
 mod volumes;
 pub use volumes::SpawnVolumes;
 
@@ -100,9 +106,9 @@ pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled,
     ChildSettlement, ChildWake, ChildWakes, Closed, ContextAction, ContextRequest, Control,
     CreationConfig, ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
-    MAX_RECORD_BYTES, MAX_VOLUMES, Membership, Message, NoticePayload, Phase, RECORD_VERSION,
-    Sender, SpawnContext, SpawnRequest, SpawnTemplates, StatusRecord, UnsupportedRecordVersion,
-    VolumeBinding, decode_record,
+    MAX_RECORD_BYTES, Membership, Message, NoticePayload, Phase, RECORD_VERSION, Sender,
+    SpawnContext, SpawnRequest, SpawnTemplates, StatusRecord, UnsupportedRecordVersion,
+    decode_record,
 };
 pub use reply::{Reply, SteeringReply, reply};
 
@@ -116,7 +122,7 @@ pub enum Error {
     #[error("invalid agent record: {0}")]
     Record(&'static str),
     /// The retained checkpoint belongs to another artifact codec.
-    #[error("unsupported agent checkpoint codec")]
+    #[error("state format predates v1 table; start a fresh session")]
     IncompatibleCheckpointCodec,
     /// The recipient agent was never created.
     #[error("no such agent")]
@@ -202,6 +208,12 @@ impl Error {
             Self::Unknown(request) => Some(request),
             _ => None,
         }
+    }
+}
+
+impl From<crate::Error> for Error {
+    fn from(error: crate::Error) -> Self {
+        Self::Turn(Box::new(error))
     }
 }
 

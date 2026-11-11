@@ -1051,16 +1051,17 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
     assert!(host.runtime().drain().await.is_empty());
     assert_eq!(host.create(&intent("create"), adopted(id(1))).await?, root);
     let mut changed = adopted(id(1));
-    changed.volumes.push(VolumeBinding {
-        name: "private".into(),
-        volume: VolumeRef::new(
+    changed.volumes.push(WorkspaceEntry::initial_volume(
+        acyclic_harness_core::agent::WorkspaceRole::Private,
+        "private".into(),
+        VolumeRef::new(
             ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?,
             "changed".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(id(1).to_bytes())),
             &mut None,
         )?,
-    });
+    ));
     assert!(matches!(
         host.create(&intent("create"), changed).await,
         Err(Error::Stream(StreamError::IdempotencyMismatch))
@@ -1291,7 +1292,7 @@ async fn topology_spawn_outcomes_remain_original_after_archival() -> Result {
             &'a self,
             _: &'a CreationConfig,
             _: &'a AgentPath,
-            _: &'a [VolumeBinding],
+            _: &'a [WorkspaceEntry],
             _: &'a str,
             _: Option<&'a acyclic_harness_core::Capabilities>,
         ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness_core::Result<CreationConfig>>

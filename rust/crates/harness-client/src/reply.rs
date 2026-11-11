@@ -894,9 +894,9 @@ fn validate_reply(
         (AgentReply::ProjectHeads { items }, AgentCommand::ProjectHeads { .. }) => {
             let mut seen = std::collections::BTreeSet::new();
             return if items.iter().all(|item| {
-                item.binding.volume.class()
-                    == acyclic_harness_core::conversation::VolumeClass::Project
-                    && seen.insert(&item.binding.name)
+                item.binding.as_volume().is_some_and(|volume| {
+                    volume.class() == acyclic_harness_core::conversation::VolumeClass::Project
+                }) && seen.insert(&item.binding.name)
             }) {
                 Ok(())
             } else {
