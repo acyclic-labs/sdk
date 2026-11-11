@@ -1357,9 +1357,12 @@ async fn topology_spawn_outcomes_remain_original_after_archival() -> Result {
         }
     }
     for mode in ["team:0", "team:1", "swarm"] {
+        #[cfg(not(feature = "test-support"))]
         let provider = Arc::new(MemoryStream::default());
+        #[cfg(feature = "test-support")]
+        let provider = Arc::new(super::hosting::Evidence::default());
         let host = AgentHost::new(
-            provider,
+            provider.clone(),
             Spawner(AtomicUsize::new(1)),
             ActorReference::new(b"account", b"agents", b"owner")?,
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
@@ -1383,6 +1386,8 @@ async fn topology_spawn_outcomes_remain_original_after_archival() -> Result {
         };
         assert!(host.runtime().drain().await.is_empty());
         let (spawn, child) = requested_child(&root, inbox)?;
+        #[cfg(feature = "test-support")]
+        provider.missing(child.status()?, super::hosting::missing_refusal());
         let expected = if mode == "team:0" {
             SpawnOutcome::Refused {
                 reason: SpawnRefusal::Topology,
