@@ -165,7 +165,7 @@ pub enum Op {
         /// Stream.
         stream: StreamPath,
     },
-    /// `children_page(parent, after, limit, tail_stream)`.
+    /// `children_page(parent, offset = index * limit, limit, tail_stream)`.
     Children {
         /// Completion identity.
         id: u64,
@@ -173,13 +173,11 @@ pub enum Op {
         parent: StreamPath,
         /// Page index this fills.
         index: u32,
-        /// Exclusive start.
-        after: Option<StreamPath>,
         /// Child bound.
         limit: u32,
         /// Relative stream projected under each child.
         tail: Option<StreamPath>,
-        /// Hierarchy version a continuation (`after`) page is read at.
+        /// Hierarchy version a noninitial page is read at.
         version: Option<CommitId>,
     },
 }
@@ -361,7 +359,6 @@ impl OpKey {
 /// How a listing op is read and when its page goes stale.
 #[derive(Debug, Default)]
 struct Paging {
-    after: Option<StreamPath>,
     /// Original witness paths and positions admitted before this request.
     /// Wants for the same projection share the original request, never a
     /// later witness observation attached to an already running operation.
@@ -412,17 +409,6 @@ struct FollowIntent {
     selected: bool,
 }
 
-/// Exact listing continuations at strided page indexes, so any page is
-/// reachable from a bounded walk even after its predecessor was evicted.
-struct Anchors {
-    stride: u32,
-    at: BTreeMap<u32, StreamPath>,
-    used: u64,
-}
-
-const MAX_ANCHORED_PARENTS: usize = 64;
-const MAX_ANCHORS: usize = 256;
-
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Residency {
@@ -445,8 +431,6 @@ pub struct Residency {
     pub follows: usize,
     /// Outstanding needs this frame.
     pub demand: usize,
-    /// Parents with listing anchors.
-    pub anchored: usize,
 }
 
 /// One client's scheduler and cache.
@@ -464,7 +448,6 @@ pub struct Reader {
     cancelled: Vec<u64>,
     refused: BTreeMap<OpKey, u64>,
     issues: BTreeMap<StreamPath, ReadIssue>,
-    anchors: BTreeMap<StreamPath, Anchors>,
     follows: BTreeMap<StreamPath, FollowIntent>,
     follow_mark: bool,
     #[cfg(test)]
@@ -508,7 +491,6 @@ impl Reader {
             cancelled: Vec::new(),
             refused: BTreeMap::new(),
             issues: BTreeMap::new(),
-            anchors: BTreeMap::new(),
             follows: BTreeMap::new(),
             follow_mark: false,
             #[cfg(test)]
@@ -550,7 +532,6 @@ impl Reader {
         self.demand.clear();
         self.refused.clear();
         self.issues.clear();
-        self.anchors.clear();
         self.follows.clear();
         self.follow_changes.clear();
         self.hierarchy = None;
@@ -731,7 +712,6 @@ impl Reader {
             requests: self.inflight.len(),
             follows: self.follows.len(),
             demand: self.demand.len(),
-            anchored: self.anchors.len(),
         }
     }
 
@@ -903,49 +883,20 @@ impl Reader {
                     witness: witness.clone(),
                 };
                 let witnessed = witness.as_ref().and_then(|w| self.cache.tail(w));
-                let (index, after) = match self.cache.listing(parent, *index) {
-                    Some(listing)
-                        if listing.fresh
-                            && listing.projections.get(&projection) == Some(&witnessed) =>
-                    {
-                        return None;
-                    }
-                    // Displayed stale page: revalidate from its own start.
-                    Some(listing) => (*index, listing.after.clone()),
-                    None => self.reachable(parent, *index)?,
-                };
-                // A cursor is only valid at a known hierarchy version; a
-                // first page learns it.
-                let (index, after) = if after.is_some() && self.hierarchy.is_none() {
-                    (0, None)
-                } else {
-                    (index, after)
-                };
+                if let Some(listing) = self.cache.listing(parent, *index)
+                    && listing.fresh
+                    && listing.projections.get(&projection) == Some(&witnessed)
+                {
+                    return None;
+                }
                 Some((
-                    OpKey::children(parent, index, tail.clone()),
+                    OpKey::children(parent, *index, tail.clone()),
                     Paging {
-                        after,
                         witnesses: BTreeMap::from([(witness.clone(), witnessed)]),
                     },
                 ))
             }
         }
-    }
-
-    /// The highest page at or before `index` whose start is known.
-    fn reachable(&self, parent: &StreamPath, index: u32) -> Option<(u32, Option<StreamPath>)> {
-        let anchor = self
-            .anchors
-            .get(parent)
-            .and_then(|anchors| anchors.at.range(..=index).next_back());
-        let floor = anchor.map_or(0, |(at, _)| *at);
-        // Seek the retained predecessor directly, including displayed pages
-        // that could not fit beside protected cache entries.
-        let cached = self.cache.listing_before(parent, floor, index);
-        if let Some((page, listing)) = cached {
-            return listing.next.clone().map(|next| (page + 1, Some(next)));
-        }
-        Some(anchor.map_or((0, None), |(page, after)| (*page, Some(after.clone()))))
     }
 
     /// Reads to start now, in aged priority order, within every budget.
@@ -974,9 +925,7 @@ impl Reader {
             prefetch && self.inflight.prefetch() < self.policy.prefetch_requests,
             self.policy.requests,
         ) {
-            let Demand {
-                priority, paging, ..
-            } = pending;
+            let Demand { priority, .. } = pending;
             if self.inflight.len() >= limit {
                 break;
             }
@@ -997,10 +946,9 @@ impl Reader {
                     id,
                     parent: parent.clone(),
                     index: *index as u32,
-                    after: paging.after.clone(),
                     limit: self.policy.listing_limit,
                     tail: tail.clone(),
-                    version: paging.after.as_ref().and(self.hierarchy),
+                    version: (*index != 0).then_some(self.hierarchy).flatten(),
                 },
             };
             self.inflight.insert(
@@ -1055,7 +1003,6 @@ impl Reader {
                 // version by an intervening reply or another driver wake.
                 self.hierarchy = None;
                 self.cache.clear_listings();
-                self.anchors.clear();
                 self.demand.clear_children();
                 // Children is the final operation variant in the same key
                 // index used at admission. Earlier history work is untouched.
@@ -1210,23 +1157,12 @@ impl Reader {
             // The asynchronous driver can poll again before the next UI frame
             // replans demand. Do not reissue those same obsolete boundaries.
             self.demand.remove_children_after(parent, index);
-            if let Some(first) = index.checked_add(1)
-                && let Some(anchors) = self.anchors.get_mut(parent)
-            {
-                anchors.at.split_off(&first);
-            }
-        }
-        if let Some(next) = &next {
-            self.anchor(parent, index + 1, next.clone());
-        }
-        if let Some(after) = &paging.after {
-            self.anchor(parent, index, after.clone());
         }
         self.cache.observe_listing(
             parent,
             index,
             Listing {
-                after: paging.after,
+                after: None,
                 children: paths,
                 next,
                 fresh: true,
@@ -1336,35 +1272,6 @@ impl Reader {
             HeadObservation::Applied
         } else {
             HeadObservation::Invalid
-        }
-    }
-
-    fn anchor(&mut self, parent: &StreamPath, index: u32, after: StreamPath) {
-        if !self.anchors.contains_key(parent) && self.anchors.len() >= MAX_ANCHORED_PARENTS {
-            let oldest = self
-                .anchors
-                .iter()
-                .min_by_key(|(_, anchors)| anchors.used)
-                .map(|(path, _)| path.clone());
-            if let Some(oldest) = oldest {
-                self.anchors.remove(&oldest);
-            }
-        }
-        let used = self.cache.clock();
-        let anchors = self.anchors.entry(parent.clone()).or_insert(Anchors {
-            stride: 1,
-            at: BTreeMap::new(),
-            used,
-        });
-        anchors.used = used;
-        if !index.is_multiple_of(anchors.stride) {
-            return;
-        }
-        anchors.at.insert(index, after);
-        if anchors.at.len() > MAX_ANCHORS {
-            anchors.stride *= 2;
-            let stride = anchors.stride;
-            anchors.at.retain(|index, _| index.is_multiple_of(stride));
         }
     }
 
@@ -2180,7 +2087,6 @@ mod reader_tests {
         );
         let key = OpKey::children(&parent, 1, None);
         let paging = Paging {
-            after: Some(old.clone()),
             witnesses: BTreeMap::new(),
         };
         reader.inflight.insert(
@@ -2191,10 +2097,7 @@ mod reader_tests {
                 ticket: 0,
                 deadline: 100,
                 issued: 0,
-                paging: Paging {
-                    after: Some(old.clone()),
-                    ..Paging::default()
-                },
+                paging: Paging::default(),
                 observed: None,
             },
         );
@@ -2352,8 +2255,6 @@ mod reader_tests {
         ] {
             want(&mut reader, key);
         }
-        reader.anchor(&parent, 1, next.clone());
-        reader.anchor(&parent, u32::MAX, next.clone());
         reader.listed(
             &parent,
             0,
@@ -2372,14 +2273,6 @@ mod reader_tests {
             reader
                 .demand
                 .contains_key(&OpKey::children(&parent, 0, None))
-        );
-        assert_eq!(
-            reader.anchors[&parent]
-                .at
-                .keys()
-                .copied()
-                .collect::<Vec<_>>(),
-            vec![1]
         );
         reader.demand.remove_children_after(&parent, u32::MAX);
         assert_eq!(reader.demand.take_invalidation_visits(), 0);

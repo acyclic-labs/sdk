@@ -793,6 +793,18 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
             );
         }
         assert_eq!(client.children_page(page("tree", 10)?, 1).await?, expected);
+        // Offsets address the raw provider page before authorization. A
+        // filtered page keeps that boundary rather than densely reindexing
+        // visible children or widening the requested work to fill the page.
+        for offset in [1, 2, u64::MAX] {
+            let indexed = crate::ChildrenPageRequest {
+                offset,
+                ..page("tree", 1)?
+            };
+            let raw = provider.children_page(indexed.clone()).await?;
+            let projected = visibility.page(raw, tail_stream)?;
+            assert_eq!(client.children_page(indexed, 1).await?, projected);
+        }
         let view = client.heads(request.clone(), 1).await?;
         assert_eq!(view.snapshot, direct.snapshot);
         assert_eq!(view.children, Some(expected));

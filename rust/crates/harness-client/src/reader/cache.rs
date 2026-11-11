@@ -781,36 +781,6 @@ impl RecordCache {
         }
     }
 
-    /// The last retained page in `[from, before)` of one parent. Cached and
-    /// displayed pass-through pages share the same cursor order. Two range
-    /// seeks inspect at most one candidate from each residency map.
-    #[must_use]
-    pub fn listing_before(
-        &self,
-        parent: &StreamPath,
-        from: u32,
-        before: u32,
-    ) -> Option<(u32, &Listing)> {
-        if !self.access.allows() || from >= before {
-            return None;
-        }
-        let range = Key::Listing(parent.clone(), from)..Key::Listing(parent.clone(), before);
-        [
-            self.entries
-                .range(range.clone())
-                .next_back()
-                .map(|(key, entry)| (key, &entry.value)),
-            self.passed
-                .range(range)
-                .next_back()
-                .map(|(key, entry)| (key, &entry.value)),
-        ]
-        .into_iter()
-        .flatten()
-        .filter_map(|(key, value)| self.listing_entry(key, value))
-        .max_by_key(|(index, _)| *index)
-    }
-
     #[cfg(test)]
     pub(crate) fn take_listing_visits(&self) -> usize {
         self.listing_visits.replace(0)
