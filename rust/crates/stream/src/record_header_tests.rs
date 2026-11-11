@@ -130,7 +130,7 @@ fn every_write_family_authenticates_keys_and_attributes_in_retry_identity()
     Ok(())
 }
 
-#[cfg(feature = "local")]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn manual_append_and_commit_codecs_match_the_generated_header_contract() -> Result<(), StreamError>
 {

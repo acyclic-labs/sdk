@@ -127,7 +127,7 @@ impl<
         })
     }
     /// Checks exact pending state, or a ready successor against original DATA.
-    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn publication_companion_settled(
         &self,
         operation: crate::OperationId,

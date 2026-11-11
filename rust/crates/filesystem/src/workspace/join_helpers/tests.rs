@@ -102,7 +102,7 @@ fn check(path: &NamespacePath) {
         encoded.retire(&mut accounting).unwrap();
     }
 
-    #[cfg(feature = "native-watch")]
+    #[cfg(not(target_arch = "wasm32"))]
     if !path.is_root() {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"acyclic-fs-capture-policy-v1\0");

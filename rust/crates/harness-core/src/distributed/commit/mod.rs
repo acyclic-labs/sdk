@@ -3,15 +3,15 @@ use acyclic_stream::StreamProviderExt as _;
 
 mod observation;
 mod request;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod retained;
 mod sdk;
 pub(super) use observation::observe_commit;
 pub(crate) use request::{add_condition, commit_request};
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use retained::NativeCommit;
 pub(super) use sdk::inspect_idempotency;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use sdk::native_call_result;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,7 +31,7 @@ fn admit(
     request: &mut acyclic_stream::CommitRequest,
     quota: &mut CodecQuota<'_, '_>,
 ) -> Result<Admission> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if quota
         .work()
         .as_deref()
@@ -97,7 +97,7 @@ pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
     if let Some(phase) = phase.as_deref_mut() {
         *phase = CommitPhase::Uncommitted;
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     if quota
         .work()
         .as_deref()

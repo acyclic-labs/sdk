@@ -246,7 +246,7 @@ impl FollowFilter {
 
     #[cfg(any(
         test,
-        all(feature = "session", not(target_arch = "wasm32")),
+        not(target_arch = "wasm32"),
         all(feature = "wasm", target_arch = "wasm32")
     ))]
     pub(crate) fn transport_filter(&self) -> Result<wire::SessionFilter, StreamError> {

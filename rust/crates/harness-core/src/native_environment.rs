@@ -1,6 +1,6 @@
 //! One process-environment seam with explicit fixture discovery policy.
 use std::ffi::OsString;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
 /// Platform facts supplied by a native composition or an isolated fixture.
@@ -33,9 +33,9 @@ impl PlatformPolicy {
 #[derive(Clone, Copy)]
 enum Read<'a> {
     Variable(&'a str),
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     Home,
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     State(Option<&'a Path>),
 }
 
@@ -76,7 +76,7 @@ pub fn variable(name: &str) -> Option<OsString> {
 /// An admitted shell may locate the owner's installed tools without receiving
 /// its home, configuration, loader hooks or credentials. Call once when binding
 /// the executor, then pass this explicit map through preparation and `env_clear`.
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn tool_environment() -> std::io::Result<std::collections::BTreeMap<String, String>> {
     [
         "PATH",
@@ -98,13 +98,13 @@ pub fn tool_environment() -> std::io::Result<std::collections::BTreeMap<String, 
     .collect()
 }
 
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 /// Resolves an absolute native home directory for an ambient composition.
 /// Returns `None` when the platform supplies no absolute home.
 pub fn home() -> Option<PathBuf> {
     resolve(Read::Home).map(PathBuf::from)
 }
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 /// Resolves an injected root, an absolute data-directory override, or the native default.
 /// The environment override is `LOCALAPPDATA` on Windows and `XDG_DATA_HOME`
 /// elsewhere. Empty or relative environment values use an absolute platform
@@ -120,11 +120,11 @@ pub fn state(injected: Option<&Path>) -> Option<PathBuf> {
 fn resolve(read: Read<'_>) -> Option<OsString> {
     match read {
         Read::Variable(name) => std::env::var_os(name),
-        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         Read::Home => dirs::home_dir()
             .filter(|directory| directory.is_absolute())
             .map(PathBuf::into_os_string),
-        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         Read::State(None) => {
             // Native directory APIs can ignore process-level overrides. Resolve
             // the caller's explicit root before consulting the platform default.
@@ -142,7 +142,7 @@ fn resolve(read: Read<'_>) -> Option<OsString> {
                 .filter(|directory| directory.is_absolute())
                 .map(PathBuf::into_os_string)
         }
-        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         Read::State(Some(directory)) => Some(directory.as_os_str().to_owned()),
     }
 }
@@ -152,7 +152,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_state_honors_literal_data_override() {
         const EXPECTED: &str = "ACYCLIC_STATE_LOCATION_TEST";
@@ -243,7 +243,7 @@ mod tests {
         ] {
             assert!(variable_with_user_locations(name, false).is_none());
         }
-        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let directory = tempfile::tempdir().unwrap();
             assert_eq!(
@@ -254,8 +254,8 @@ mod tests {
     }
 }
 
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "native_environment/checkout.rs"]
 mod checkout;
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use checkout::{CheckoutFacts, checkout};

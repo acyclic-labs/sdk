@@ -795,7 +795,6 @@ mod tests {
             assert_eq!(reader.connectivity(), Connectivity::Online);
             assert_eq!(reader.next_deadline(), None);
 
-            #[cfg(any(feature = "agents", feature = "wasm"))]
             {
                 use super::super::live::{Error, Source};
                 use std::num::NonZeroU32;

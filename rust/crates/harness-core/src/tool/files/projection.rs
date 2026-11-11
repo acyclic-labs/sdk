@@ -216,8 +216,8 @@ impl Serialize for MediaParts<'_> {
 }
 
 impl ToolProjection for FileProjection {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_projection(&self, work: acyclic_fs::NativeWork<'_>) -> Result<()> {
         if let Some(work) = work {
             work.remaining()?;
         }
@@ -227,8 +227,8 @@ impl ToolProjection for FileProjection {
         &self,
         invocation: &ToolInvocation,
         result: &ToolResult,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(Value, crate::NativeCustody)> {
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(Value, acyclic_fs::NativeCustody)> {
         match *self {
             Self::Read(mode) => {
                 let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
@@ -244,13 +244,13 @@ impl ToolProjection for FileProjection {
                 let result = decode::<ReadFileResult>(&result.value, work)?;
                 let file = &result.0.file;
                 let text = &result.0.text;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let owned_io = work
                     .map(crate::executor::PreparationIo::from_native_work)
                     .transpose()?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                #[cfg(not(target_arch = "wasm32"))]
                 let io = owned_io.as_ref();
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                #[cfg(target_arch = "wasm32")]
                 let io: Option<&crate::executor::PreparationIo> = None;
                 if let Some(requested) = &input.0.selection {
                     let native =

@@ -6,7 +6,7 @@ mod behavior;
 mod entry;
 #[path = "../editor/model.rs"]
 mod model;
-#[cfg(feature = "tui")]
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "../editor/render.rs"]
 mod render;
 #[path = "../support/sequences.rs"]

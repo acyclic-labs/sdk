@@ -77,15 +77,8 @@ impl<'a> StockExecution<'a> {
             content_admission: Default::default(),
         }
     }
-    pub(in crate::executor) fn native_work(&self) -> crate::NativeWork<'_> {
-        #[cfg(feature = "filesystem")]
-        {
-            self.io.and_then(PreparationIo::original_native_work)
-        }
-        #[cfg(not(feature = "filesystem"))]
-        {
-            None
-        }
+    pub(in crate::executor) fn native_work(&self) -> acyclic_fs::NativeWork<'_> {
+        { self.io.and_then(PreparationIo::original_native_work) }
     }
     pub(in crate::executor) fn original_context(&self) -> Option<&crate::runtime::TaskContext> {
         self.context.map(|(context, _)| context.as_ref())
@@ -255,7 +248,7 @@ impl StockExecutor {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl StockExecutor {
     /// Audits the native callback boundaries without cloning configuration or boxing work.
     pub(crate) fn supports_native_execution(

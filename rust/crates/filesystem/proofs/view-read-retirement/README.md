@@ -17,7 +17,7 @@ retains the account for reconciliation after that producer's exit.
 From the repository root on Linux:
 
 ```sh
-RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test --locked -p acyclic-fs --lib --no-default-features --features memory,native-mount,model-checking demand::admissions::loom_tests::final_consumer_settles_original_read_credit_before_discarding_accounting -- --exact --nocapture
+RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test --locked -p acyclic-fs --lib --no-default-features --features model-checking demand::admissions::loom_tests::final_consumer_settles_original_read_credit_before_discarding_accounting -- --exact --nocapture
 ```
 
 `drop-completions.patch` omits the production completion drain. Apply it with

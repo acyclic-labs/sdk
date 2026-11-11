@@ -101,7 +101,7 @@ if (JSON.stringify(evidence.artifacts) !== JSON.stringify(artifactEvidence)) {
 // Exercise the smaller sibling scenario under the reduced feature set below.
 const e2e = [
   ["durable-local-conversation-fork-and-merge-reopens", "local_conversation_fork",
-    "local_reopen_preserves_ref_only_history_fork_and_parent_merge", ["--features", "filesystem-local"]],
+    "local_reopen_preserves_ref_only_history_fork_and_parent_merge", []],
 ];
 const e2eTranscripts = new Map();
 executed.e2e = new Set();
@@ -110,7 +110,7 @@ const recursiveName = recursiveProviderTest.slice(recursiveProviderTest.indexOf(
 executed.e2e.add(recursiveName);
 const narrowName = "thirty_two_sibling_forks_reject_stale_and_conflicting_merges";
 const narrowTranscript = command("cargo", [
-  "test", "--locked", "-p", "acyclic-harness", "--features", "filesystem",
+  "test", "--locked", "-p", "acyclic-harness",
   "--test", "recursive_fork", "--", "--exact", narrowName,
 ]);
 if (!narrowTranscript.split(/\r?\n/).includes(`test ${narrowName} ... ok`)) {
@@ -120,7 +120,7 @@ e2eTranscripts.set("recursive-fork-isolation-attachments-and-project-only-merge"
   createHash("sha256").update(`${providerDigest}\n${narrowTranscript}`).digest("hex"));
 for (const [marker, target, name, features] of e2e) {
   const transcript = command("cargo", [
-    "test", "--locked", "-p", "acyclic-harness", "--features", "filesystem", ...features,
+    "test", "--locked", "-p", "acyclic-harness",  ...features,
     "--test", target, "--", "--exact", name,
   ]);
   if (!transcript.split(/\r?\n/).some(line => line === `test ${name} ... ok`)) {

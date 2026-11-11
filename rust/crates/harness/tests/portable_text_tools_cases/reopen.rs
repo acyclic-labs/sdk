@@ -1,4 +1,4 @@
-#![cfg(feature = "filesystem-local")]
+#![cfg(not(target_arch = "wasm32"))]
 
 use super::*;
 

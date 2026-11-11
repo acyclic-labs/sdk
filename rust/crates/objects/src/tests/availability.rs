@@ -97,7 +97,7 @@ async fn memory_physical_repair_has_race_free_availability() -> TestResult {
     verify(MemoryMedium::default()).await
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn local_physical_repair_has_race_free_availability() -> TestResult {
     let root = tempfile::tempdir()?;

@@ -16,7 +16,7 @@ The retained production mutation restores a prefix visit before each result:
 
 ```sh
 git apply rust/crates/harness-core/src/model/instruction_reads_prefix_scan.patch
-cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib model::instruction_review_tests::read_projection_has_exact_linear_index_work_and_quadratic_negative -- --exact
+cargo test --locked -p acyclic-harness-core --features test-support --lib model::instruction_review_tests::read_projection_has_exact_linear_index_work_and_quadratic_negative -- --exact
 git apply -R rust/crates/harness-core/src/model/instruction_reads_prefix_scan.patch
 ```
 

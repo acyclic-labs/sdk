@@ -450,7 +450,6 @@ async fn an_unreconciled_empty_model_attempt_fails_without_redispatch() -> Resul
                 ..
             },
         ) => {
-            #[cfg(feature = "filesystem")]
             assert!(!_error.leaves_outcome_uncertain());
             Ok(())
         }
@@ -526,7 +525,6 @@ async fn unrecoverable_prefix(unsettled: bool) -> Result<()> {
                 ..
             },
         ) => {
-            #[cfg(feature = "filesystem")]
             assert!(!_error.leaves_outcome_uncertain());
             Ok(())
         }

@@ -52,9 +52,9 @@ mod client_files;
 mod journal;
 mod sessions;
 
-#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 mod guest;
-#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 pub use guest::{GuestAuthority, GuestMappingSource, LocalGuestEnrollment};
 
 /// The caller a host's platform verified for one request, before any of the
@@ -472,7 +472,7 @@ where
     ///
     /// # Errors
     /// When `root` is absent or its scope does not cover its observation.
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn client_credential(
         &self,
         root: &AgentPath,

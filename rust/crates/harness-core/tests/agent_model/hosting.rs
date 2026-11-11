@@ -54,7 +54,7 @@ fn provider() -> Result<ProviderRef> {
     )?)
 }
 
-#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before_io() -> Result {
     use super::wired::Refusing;

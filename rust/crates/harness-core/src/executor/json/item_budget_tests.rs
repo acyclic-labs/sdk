@@ -3,7 +3,7 @@ thread_local! {
     pub(super) static RESTORE_BYTE_CHARGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::*;
     use crate::executor::json::canonical_json_digest;

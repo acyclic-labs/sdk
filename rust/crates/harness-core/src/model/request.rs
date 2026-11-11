@@ -1,6 +1,5 @@
 use super::*;
 use std::collections::BTreeMap;
-#[cfg(feature = "filesystem")]
 use std::mem::size_of;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -120,7 +119,6 @@ impl ModelRequest {
         io: Option<&PreparationIo>,
         validate_declaration: impl Fn(&crate::tool::ToolDefinition) -> Result<()>,
     ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
         let _maps = if let Some(io) = io {
             let mut calls = 0u64;
             for message in messages.iter() {
@@ -213,7 +211,7 @@ impl ModelRequest {
                     )?;
                     if notice.body.get("complete").and_then(Value::as_bool) == Some(true) {
                         *open = false;
-                        #[cfg(feature = "filesystem")]
+                        #[cfg(not(target_arch = "wasm32"))]
                         let funded = io
                             .map(|io| {
                                 io.decode(
@@ -223,17 +221,14 @@ impl ModelRequest {
                                 )
                             })
                             .transpose()?;
-                        #[cfg(not(feature = "filesystem"))]
+                        #[cfg(target_arch = "wasm32")]
                         let funded: Option<(
                             Vec<crate::tool::ToolDefinition>,
                             crate::conversation::ContentHold<'_>,
                         )> = None;
                         let table = match funded {
                             Some((table, hold)) => {
-                                #[cfg(feature = "filesystem")]
                                 hold.into_retained()?;
-                                #[cfg(not(feature = "filesystem"))]
-                                let _ = hold;
                                 table
                             }
                             None => serde_json::from_str(fragments).map_err(|_| {
@@ -252,7 +247,7 @@ impl ModelRequest {
         if native_open || dynamic_open {
             return Err(Error::Invalid("tool notice table is incomplete".into()));
         }
-        #[cfg(feature = "filesystem")]
+        #[cfg(not(target_arch = "wasm32"))]
         let _historical_bindings = if let Some(io) = io {
             // A parent's header can contain more bindings than this worker's.
             // Fund the largest pair of retained tables, not their history sum.
@@ -338,10 +333,8 @@ impl ModelRequest {
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         if let ToolResultContent::Json { value } = content {
-            #[cfg(feature = "filesystem")]
             let _hold;
             let mut envelope = match io {
-                #[cfg(feature = "filesystem")]
                 Some(io) => {
                     let (envelope, hold) = io.decode(
                         std::marker::PhantomData::<Value>,
@@ -352,7 +345,6 @@ impl ModelRequest {
                     envelope
                 }
                 _ => {
-                    #[cfg(feature = "filesystem")]
                     {
                         _hold = None;
                     }
@@ -369,7 +361,6 @@ impl ModelRequest {
             return result;
         }
         match io {
-            #[cfg(feature = "filesystem")]
             Some(io) => {
                 let _hold;
                 let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
@@ -510,7 +501,6 @@ pub struct PreparedModelRequest {
     encoding: Vec<encoding::EncodingPrefix>,
     input: encoding::Input,
     content_admission: Option<admission::ContentAdmission>,
-    #[cfg(feature = "filesystem")]
     resident_payload: Option<u64>,
 }
 
@@ -530,7 +520,6 @@ impl Clone for PreparedModelRequest {
             content_admission: None,
             // Vec and String clones need not retain the producer's capacity.
             // The next continuation inventories its new storage once.
-            #[cfg(feature = "filesystem")]
             resident_payload: None,
         }
     }
@@ -584,7 +573,6 @@ impl PreparedModelRequest {
     pub(crate) const fn admitted_limits(&self) -> Limits {
         self.admitted_limits
     }
-    #[cfg(feature = "filesystem")]
     pub(super) fn encoding_owned_bytes(&self) -> Result<u64> {
         add(
             slots(
@@ -606,14 +594,12 @@ impl PreparedModelRequest {
             .first()
             .map_or(Ok(None), |state| state.digests(prefix, io))
     }
-    #[cfg(feature = "filesystem")]
     pub(super) fn resident_payload_bytes(&self) -> Result<u64> {
         match self.resident_payload {
             Some(bytes) => Ok(bytes),
             None => self.request.retained_payload_bytes(),
         }
     }
-    #[cfg(feature = "filesystem")]
     pub(crate) fn preparation_owned_bytes(&self, io: &PreparationIo) -> Result<u64> {
         let bytes = add(
             add(size_of::<Self>() as u64, self.resident_payload_bytes()?)?,
@@ -630,7 +616,6 @@ impl PreparedModelRequest {
     /// Decodes and verifies exact canonical input on the optional ledger.
     pub fn decode(bytes: &[u8], limits: Limits, io: Option<&PreparationIo>) -> Result<Self> {
         let request: ModelRequest = match io {
-            #[cfg(feature = "filesystem")]
             Some(io) => crate::filesystem::retain_decoded(io.decode(
                 std::marker::PhantomData::<ModelRequest>,
                 bytes,
@@ -654,7 +639,6 @@ impl PreparedModelRequest {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             #[cfg(not(target_arch = "wasm32"))]
             if io.original_native_work().is_some() {
@@ -707,17 +691,13 @@ impl PreparedModelRequest {
     }
 
     fn record_preparation() {
-        #[cfg(all(
-            any(test, feature = "test-support"),
-            feature = "filesystem",
-            not(target_arch = "wasm32")
-        ))]
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_differential::record(("prepare request", 1u64));
     }
 
     fn begin_preparation(io: Option<&PreparationIo>) -> Result<()> {
         Self::record_preparation();
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned((size_of::<Self>() - size_of::<ModelRequest>()) as u64)?;
         }
@@ -732,23 +712,18 @@ impl PreparedModelRequest {
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
         request.split_summary_instruction()?;
-        #[cfg(feature = "filesystem")]
         let bytes_hold;
         let bytes: acyclic_stream::OwnedBytes = match io {
-            #[cfg(feature = "filesystem")]
             Some(io) => io.encode(&request, io.remaining()?.bytes_encoded, true)?,
             _ => crate::contract::canonical_json_bytes(&request)?.into(),
         };
-        #[cfg(feature = "filesystem")]
         {
             bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         }
         let request_digest = hash_bytes(&bytes, io)?;
-        #[cfg(feature = "filesystem")]
         if let Some(hold) = bytes_hold {
             hold.into_retained()?;
         }
-        #[cfg(feature = "filesystem")]
         let resident_payload = Some(request.retained_payload_bytes()?);
         Ok(Self {
             request,
@@ -762,7 +737,6 @@ impl PreparedModelRequest {
             encoding: Vec::new(),
             input: Default::default(),
             content_admission: None,
-            #[cfg(feature = "filesystem")]
             resident_payload,
         })
     }
@@ -802,16 +776,15 @@ impl PreparedModelRequest {
     /// Additive token bound including every pinned file.
     pub fn serialized_token_upper_bound(
         &self,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(crate::context::ModelTokenCount, crate::NativeCustody)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<(crate::context::ModelTokenCount, acyclic_fs::NativeCustody)> {
+        #[cfg(not(target_arch = "wasm32"))]
         let observer = work.map(PreparationIo::from_native_work).transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let io = observer.as_ref();
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let io: Option<&PreparationIo> = None;
         let _ = work;
-        #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned(size_of::<crate::context::ModelTokenCount>() as u64)?;
         }
@@ -820,7 +793,6 @@ impl PreparedModelRequest {
         for message in &self.request.messages {
             charge_items(io, 1)?;
             let bytes = match io {
-                #[cfg(feature = "filesystem")]
                 Some(io) => {
                     let maximum = io.remaining()?.bytes_encoded;
                     with_history_io(Some(io), |work| {
@@ -852,7 +824,7 @@ impl PreparedModelRequest {
             fixed_tokens,
             message_tokens,
         );
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let custody = observer
             .map(|io| {
                 io.into_native_custody(add(
@@ -861,7 +833,7 @@ impl PreparedModelRequest {
                 )?)
             })
             .transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        #[cfg(target_arch = "wasm32")]
         let custody = None;
         Ok((count, custody))
     }
@@ -871,5 +843,5 @@ impl PreparedModelRequest {
 #[path = "request_tokens_tests.rs"]
 mod tokens_tests;
 
-#[cfg(all(test, feature = "filesystem"))]
+#[cfg(test)]
 mod inventory_tests;

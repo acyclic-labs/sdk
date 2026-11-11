@@ -377,7 +377,6 @@ fn redirect_address_policy_excludes_local_reserved_and_mapped_addresses() {
 }
 
 #[tokio::test]
-#[cfg(feature = "filesystem")]
 async fn unsafe_redirect_is_rejected_before_connect_on_ordinary_and_native_paths() -> Result<()> {
     for native in [false, true] {
         let target = tokio::net::TcpListener::bind("127.0.0.1:0")

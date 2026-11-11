@@ -411,6 +411,5 @@ pub enum FileTableMutationError {
 }
 
 #[cfg(test)]
-#[cfg(feature = "memory")]
 #[path = "tests/file_table_mutation.rs"]
 mod tests;

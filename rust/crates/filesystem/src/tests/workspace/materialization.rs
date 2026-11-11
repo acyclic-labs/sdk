@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn public_generation_materialize_path_is_a_complete_consumer_flow()
 -> Result<(), Box<dyn Error>> {
@@ -75,7 +75,7 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
     Ok(())
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn public_generation_materialize_paths_shares_parents_and_hard_link_identity()
 -> Result<(), Box<dyn Error>> {
@@ -111,7 +111,7 @@ async fn public_generation_materialize_paths_shares_parents_and_hard_link_identi
     Ok(())
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_path()
 -> Result<(), Box<dyn Error>> {
@@ -184,7 +184,7 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
     Ok(())
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32"), unix))]
+#[cfg(all(not(target_arch = "wasm32"), unix))]
 #[tokio::test]
 async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Result<(), Box<dyn Error>>
 {
@@ -214,7 +214,7 @@ async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Resul
     Ok(())
 }
 
-#[cfg(all(feature = "native-mount", windows))]
+#[cfg(all(not(target_arch = "wasm32"), windows))]
 #[tokio::test]
 async fn public_generation_restore_host_path_rejects_reparse_parent_when_available()
 -> Result<(), Box<dyn Error>> {

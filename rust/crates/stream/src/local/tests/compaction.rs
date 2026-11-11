@@ -106,8 +106,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
                 let mut head = provider.read(ReadRequest {
  key: None, path: path.clone(), from: 1, limit: 1, at_least: Default::default() }).await?;
                 assert_eq!(head.next().await.ok_or("head ended")??, record);
-                #[cfg(feature = "grpc")]
-                {
+                                {
                     let relay = crate::grpc::tests::client(provider.clone())?;
                     assert_eq!(relay.watermarks(path.clone()).await?, marks);
                     let mut followed = relay.follow(crate::FollowRequest {
@@ -134,7 +133,6 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         assert_snapshot_restores(directory.path(), limits).await
     })
 }
-#[cfg(feature = "grpc")]
 #[test]
 fn append_to_follow_progresses_across_repeated_compactions() -> Result {
     let runtime = tokio::runtime::Builder::new_multi_thread()

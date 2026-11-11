@@ -17,7 +17,7 @@ From the repository root:
 
 ```sh
 cargo run --locked -p acyclic-harness-fuzz --no-default-features --features runtime --bin native_session_log -- rust/crates/harness/src/local/host_process/fixtures -runs=0 -seed=1
-cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --lib local::host_owner::tests::claude_native_session_lifecycle -- --exact
+cargo test --locked -p acyclic-harness --features test-support --lib local::host_owner::tests::claude_native_session_lifecycle -- --exact
 ```
 
 `raw-json-prefilter.patch` restores the original production defect. With that

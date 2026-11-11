@@ -1,5 +1,5 @@
 //! Terminal profiles, decoder properties, restoration and PTY transport.
-#![cfg(feature = "tui")]
+#![cfg(not(target_arch = "wasm32"))]
 
 use std::io::{self, Write};
 use std::time::Instant;

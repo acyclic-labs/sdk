@@ -1,7 +1,7 @@
 use super::*;
 use crate::Fs;
 
-#[cfg(all(feature = "local", any(unix, windows)))]
+#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn collecting_checkout_retirement_preserves_the_other_checkout_credit()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -1,5 +1,4 @@
 //! Production filesystem discovery, reload, and lazy body boundaries.
-#![cfg(feature = "filesystem")]
 
 use acyclic_fs::Fs;
 use acyclic_harness::{

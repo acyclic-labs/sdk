@@ -375,7 +375,7 @@ impl CheckoutDependencies {
         Ok(())
     }
 
-    #[cfg(any(feature = "native-mount", test))]
+    #[cfg(any(not(target_arch = "wasm32"), test))]
     pub(crate) fn merged_with_accounting(
         &self,
         other: &Self,
@@ -583,7 +583,7 @@ impl CheckoutDependencies {
         }))
     }
 
-    #[cfg(feature = "native-mount")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn same_capture(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.captured, &other.captured)
             && self.data_generation == other.data_generation
