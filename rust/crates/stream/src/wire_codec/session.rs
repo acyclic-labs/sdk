@@ -135,7 +135,11 @@ pub fn validate_follow(
         return Err(StreamError::InvalidArgument);
     }
     if let Some(key) = &follow.key {
-        crate::wire_codec::read_key_from_wire(Some(key.clone()))?;
+        crate::ReadKeySeek::validate_parts(
+            &key.key,
+            key.end.as_deref(),
+            crate::ReadOrder::from_wire(key.order)?,
+        )?;
         crate::memory::validate_limit(follow.read_limit)?;
         if follow.delivery != wire::SessionDelivery::All as i32
             || !tracks_revisions(follow)
