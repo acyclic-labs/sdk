@@ -28,51 +28,53 @@ proptest! {
             ToolRegistry::default(),
         ).with_compaction_policy(crate::context::CompactionPolicy::Disabled)
             .with_max_output_tokens(128).unwrap();
-        stock.limits.file_bytes = Some(expected.len() as u64);
         let check = |execution: &StockExecution<'_>| {
             let (bytes, digest, messages) = execution.summary_source_identity(&source).unwrap();
             assert_eq!(bytes.as_ref(), expected);
             assert_eq!(digest, *blake3::hash(&expected).as_bytes());
             assert_eq!(messages as usize, source.messages.len());
         };
-        check(&StockExecution::ordinary(&stock));
-        for native in [false, true] {
-            let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
-                crate::AgentId::new(), Some(65_536),
-            )).unwrap();
-            let journal = storage.journal();
-            let observed = crate::test_support::accounted::accounted(native, 262_144, false, |io| {
-                let execution = StockExecution {
-                    io: Some(io),
-                    ..StockExecution::ordinary(&stock)
-                };
-                check(&execution);
-                let material = (source.clone(), ModelContent::Text("Summarize".into()));
-                let (result, trace) = acyclic_test_support::differential::observe::<_, _, super::super::json::SerializedType>(
-                    || (),
-                    |()| runtime.block_on(execution.summarize(
-                        journal.as_ref(), None, OperationId::new(), 0, material,
-                        &mut DispatchPhase::new(),
-                    )),
-                );
-                // The original entry point encodes before model admission.
-                // This provider has no native producer: require its typed
-                // refusal, without inventing an unaccounted model fallback.
-                match result {
-                    Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                        reason: "model provider has no original native-ledger producer" }) if native => (),
-                    Err(Error::Unsupported(reason)) if !native =>
-                        assert_eq!(reason, "stock model capacity requires original native work"),
-                    other => panic!("unexpected original summary admission: {other:?}"),
-                }
-                assert_eq!(
-                    trace.iter().filter(|event| event.0 == std::any::type_name::<crate::context::Context>()).count(),
-                    1, "summarize must encode its source without a separate count pass",
-                );
-            });
-            prop_assert!(observed.is_ok());
+        for maximum in [Some(expected.len() as u64), None] {
+            stock.limits.file_bytes = maximum;
+            check(&StockExecution::ordinary(&stock));
+            for native in [false, true] {
+                let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+                    crate::AgentId::new(), Some(65_536),
+                )).unwrap();
+                let journal = storage.journal();
+                let observed = crate::test_support::accounted::accounted(native, 262_144, false, |io| {
+                    let execution = StockExecution {
+                        io: Some(io),
+                        ..StockExecution::ordinary(&stock)
+                    };
+                    check(&execution);
+                    let material = (source.clone(), ModelContent::Text("Summarize".into()));
+                    let (result, trace) = acyclic_test_support::differential::observe::<_, _, super::super::json::SerializedType>(
+                        || (),
+                        |()| runtime.block_on(execution.summarize(
+                            journal.as_ref(), None, OperationId::new(), 0, material,
+                            &mut DispatchPhase::new(),
+                        )),
+                    );
+                    // The original entry point encodes before model admission.
+                    // This provider has no native producer: require its typed
+                    // refusal, without inventing an unaccounted model fallback.
+                    match result {
+                        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                            reason: "model provider has no original native-ledger producer" }) if native => (),
+                        Err(Error::Unsupported(reason)) if !native =>
+                            assert_eq!(reason, "stock model capacity requires original native work"),
+                        other => panic!("unexpected original summary admission: {other:?}"),
+                    }
+                    assert_eq!(
+                        trace.iter().filter(|event| event.0 == std::any::type_name::<crate::context::Context>()).count(),
+                        1, "summarize must encode its source without a separate count pass",
+                    );
+                });
+                prop_assert!(observed.is_ok());
+            }
         }
-        stock.limits.file_bytes -= 1;
+        stock.limits.file_bytes = Some(expected.len() as u64 - 1);
         prop_assert!(matches!(StockExecution::ordinary(&stock).summary_source_identity(&source), Err(Error::Invalid(_))));
         for native in [false, true] {
             let observed = crate::test_support::accounted::accounted(native, 262_144, false, |io| {
