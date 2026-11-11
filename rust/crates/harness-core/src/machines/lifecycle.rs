@@ -521,6 +521,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         agent: &AgentPath,
     ) -> Result<impl futures::Stream<Item = Result<&'a ProvisionedTarget>> + 'a> {
         let request = ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(agent.machines().map_err(agent_error)?),
             after: None,

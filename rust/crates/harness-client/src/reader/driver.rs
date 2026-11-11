@@ -484,6 +484,7 @@ pub(super) async fn execute<P: StreamProvider + ?Sized>(provider: &P, op: Op) ->
             ..
         } => provider
             .children_page(ChildrenPageRequest {
+                offset: 0,
                 tail_stream: tail,
                 parent: Some(parent),
                 after,

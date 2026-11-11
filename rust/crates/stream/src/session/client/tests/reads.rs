@@ -460,6 +460,7 @@ fn bounded(path: &str, until: u64) -> wire::SessionFollow {
 }
 fn page(parent: &str, limit: u32) -> Result<crate::ChildrenPageRequest, StreamError> {
     Ok(crate::ChildrenPageRequest {
+        offset: 0,
         tail_stream: Some(StreamPath::new("status")?),
         parent: Some(StreamPath::new(parent)?),
         after: None,

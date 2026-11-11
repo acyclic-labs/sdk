@@ -132,6 +132,7 @@ async fn prepared() -> Result<Snapshot, Box<dyn std::error::Error>> {
     let status = StatusRecord::decode(&record.value)?;
     let page = memory
         .children_page(ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(agent.children()?),
             after: None,

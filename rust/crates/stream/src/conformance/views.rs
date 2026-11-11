@@ -57,6 +57,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 .into_iter()
                 .collect(),
             children: Some(ChildrenPageRequest {
+                offset: 0,
                 parent: Some(path("coherent")?),
                 tail_stream: Some(path("state")?),
                 after: None,
@@ -257,6 +258,7 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
         projection: Default::default(),
         paths: selected.into_iter().collect(),
         children: Some(ChildrenPageRequest {
+            offset: 0,
             parent: Some(path("selected-children")?),
             tail_stream: Some(path("state")?),
             after: None,

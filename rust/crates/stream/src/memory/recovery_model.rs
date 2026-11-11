@@ -648,6 +648,7 @@ pub fn page_tail_cut(split_reads: bool) {
             let provider = provider.clone();
             move || {
                 let request = crate::ChildrenPageRequest {
+                    offset: 0,
                     parent: Some(StreamPath::new("agents").unwrap()),
                     after: None,
                     hierarchy_version: None,

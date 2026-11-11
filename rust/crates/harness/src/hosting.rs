@@ -796,6 +796,7 @@ where
                     projection: HeadProjection::Watermarks,
                     paths: Default::default(),
                     children: Some(ChildrenPageRequest {
+                        offset: 0,
                         tail_stream: None,
                         parent: Some(agent.children()?),
                         after,

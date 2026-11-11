@@ -63,6 +63,7 @@ async fn check_trusted_view<P: StreamProvider>(provider: &P) -> Result<(), Strea
 
 async fn check_child_selection<P: StreamProvider>(provider: &P) -> Result<(), StreamError> {
     let selected = ChildrenPageRequest {
+        offset: 0,
         parent: Some(StreamPath::new("membership")?),
         after: None,
         tail_stream: Some(StreamPath::new("events")?),

@@ -330,6 +330,7 @@ async fn head_preserves_each_inherited_cut_through_nested_forks_and_reopen()
     }
     let page = provider
         .children_page(crate::ChildrenPageRequest {
+            offset: 0,
             parent: Some(StreamPath::new("second")?),
             tail_stream: None,
             after: None,

@@ -154,6 +154,7 @@ mod tests {
             for index in 0..=128 {
                 let page = provider
                     .children_page(ChildrenPageRequest {
+                        offset: 0,
                         parent: Some(parent.clone()),
                         after: after.clone(),
                         hierarchy_version: version,
@@ -364,6 +365,7 @@ mod tests {
             let children = target.children().unwrap();
             let page = provider
                 .children_page(ChildrenPageRequest {
+                    offset: 0,
                     parent: Some(children.clone()),
                     after: None,
                     hierarchy_version: None,

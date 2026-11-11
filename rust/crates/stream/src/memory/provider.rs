@@ -266,29 +266,59 @@ fn head_at(
 fn namespace_page(
     index: &Index,
     lower: Option<&str>,
-    parent: Option<&StreamPath>,
+    offset: u64,
     limit: usize,
-    out: &mut Vec<StreamPath>,
+    examine: &mut impl FnMut(&str) -> Result<(), StreamError>,
+    emit: &mut impl FnMut(&str) -> Result<(), StreamError>,
+) -> Result<(), StreamError> {
+    let mut start = 0u64;
+    if let Some(lower) = lower {
+        let mut cursor = index;
+        while let Some(edge) = cursor {
+            examine(&edge.name.text)?;
+            if edge.name.text.as_str() <= lower {
+                start += width(&edge.left) as u64 + 1;
+                cursor = &edge.right;
+            } else {
+                cursor = &edge.left;
+            }
+        }
+    }
+    let mut skip = start.saturating_add(offset);
+    let mut remaining = limit;
+    namespace_rank_page(index, &mut skip, &mut remaining, examine, emit)
+}
+
+fn namespace_rank_page(
+    index: &Index,
+    skip: &mut u64,
+    remaining: &mut usize,
+    examine: &mut impl FnMut(&str) -> Result<(), StreamError>,
+    emit: &mut impl FnMut(&str) -> Result<(), StreamError>,
 ) -> Result<(), StreamError> {
     let Some(edge) = index else {
         return Ok(());
     };
-    if lower.is_none_or(|after| edge.name.text.as_str() > after) {
-        namespace_page(&edge.left, lower, parent, limit, out)?;
-        if out.len() == limit {
-            return Ok(());
-        }
-        out.push(StreamPath::new(parent.map_or_else(
-            || edge.name.text.to_string(),
-            |parent| format!("{}/{}", parent.as_str(), edge.name.text),
-        ))?);
+    if *remaining == 0 {
+        return Ok(());
     }
-    if out.len() < limit {
-        namespace_page(&edge.right, lower, parent, limit, out)?;
+    examine(&edge.name.text)?;
+    if *skip >= edge.width as u64 {
+        *skip -= edge.width as u64;
+        return Ok(());
     }
-    Ok(())
+    namespace_rank_page(&edge.left, skip, remaining, examine, emit)?;
+    if *remaining == 0 {
+        return Ok(());
+    }
+    if *skip == 0 {
+        emit(&edge.name.text)?;
+        *remaining -= 1;
+    } else {
+        *skip -= 1;
+    }
+    namespace_rank_page(&edge.right, skip, remaining, examine, emit)
 }
-
 fn projected_tail(
     paths: &Namespace,
     path: &StreamPath,
@@ -401,9 +431,16 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
         namespace_page(
             children,
             lower,
-            request.parent.as_ref(),
+            request.offset,
             request.limit as usize + 1,
-            &mut paths,
+            &mut |_| Ok(()),
+            &mut |name| {
+                paths.push(StreamPath::new(request.parent.as_ref().map_or_else(
+                    || name.to_owned(),
+                    |parent| format!("{parent}/{name}"),
+                ))?);
+                Ok(())
+            },
         )?;
     }
     let has_more = paths.len() > request.limit as usize;

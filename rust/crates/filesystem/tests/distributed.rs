@@ -245,6 +245,7 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
     ))?;
     let children = provider
         .children_page(acyclic_stream::ChildrenPageRequest {
+            offset: 0,
             tail_stream: None,
             parent: Some(authority_path),
             limit: 16,

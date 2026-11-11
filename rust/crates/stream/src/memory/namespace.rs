@@ -148,6 +148,8 @@ struct Branch {
     left: Index,
     right: Index,
     height: u8,
+    // Direct siblings only. `count` below also includes their descendants.
+    width: usize,
     count: usize,
     bytes: usize,
     max_suffix: usize,
@@ -174,6 +176,9 @@ impl NamespaceNode {
 }
 fn height(index: &Index) -> u8 {
     index.as_ref().map_or(0, |n| n.height)
+}
+fn width(index: &Index) -> usize {
+    index.as_ref().map_or(0, |edge| edge.width)
 }
 fn branch(
     name: Segment,
@@ -212,6 +217,7 @@ fn branch(
         name,
         node,
         height: 1 + height(&left).max(height(&right)),
+        width: 1 + width(&left) + width(&right),
         left,
         right,
         count,

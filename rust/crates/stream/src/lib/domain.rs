@@ -557,6 +557,9 @@ pub struct ChildrenPageRequest {
     pub parent: Option<StreamPath>,
     /// Last path from the preceding page; exclusive.
     pub after: Option<StreamPath>,
+    /// Number of direct children to skip after `after` (or from the beginning).
+    /// This is an indexed rank seek, not a scan through preceding pages.
+    pub offset: u64,
     /// Optional hierarchy fence returned by a preceding page. When supplied,
     /// any hierarchy change refuses the page. When absent, `after` seeks in
     /// the current snapshot; callers requiring stable membership must own

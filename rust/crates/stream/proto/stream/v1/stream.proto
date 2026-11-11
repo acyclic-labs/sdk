@@ -317,6 +317,8 @@ message Child {
   optional uint64 tail = 4;
 }
 message ChildrenPageRequest {
+  // Indexed skip after `after`, or from the beginning when it is absent.
+  uint64 offset = 6;
   optional string tail_stream = 5;
   optional string parent = 1;
   optional string after = 2;

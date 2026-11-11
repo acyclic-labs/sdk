@@ -352,6 +352,7 @@ pub fn children_page_from_wire(
     value: wire::ChildrenPageRequest,
 ) -> Result<crate::ChildrenPageRequest, StreamError> {
     Ok(crate::ChildrenPageRequest {
+        offset: value.offset,
         tail_stream: value.tail_stream.map(path).transpose()?,
         parent: value.parent.map(path).transpose()?,
         after: value.after.map(path).transpose()?,
@@ -374,6 +375,7 @@ pub fn children_page_request_to_wire(
     value: crate::ChildrenPageRequest,
 ) -> wire::ChildrenPageRequest {
     wire::ChildrenPageRequest {
+        offset: value.offset,
         tail_stream: value.tail_stream.map(|path| path.to_string()),
         parent: value.parent.map(|path| path.to_string()),
         after: value.after.map(|path| path.to_string()),
