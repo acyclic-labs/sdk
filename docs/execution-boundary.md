@@ -102,6 +102,8 @@ write access to its parent. The materialization primitive admits this layout
 only beneath an excluded namespace, resolves it through the held checkout,
 and rejects edits to that namespace. Original allocation, journal and cleanup
 identity checks cover the staging directories.
+Materialization journals use version 5 for this binding. Earlier versions are
+refused before publication; finish their operations with the original runtime.
 
 `ToolPolicy::execution_grant` selects an optional, already authorized physical
 grant after the exact invocation's policy and approval allow it, before its

@@ -487,6 +487,52 @@ async fn preparation_and_journal_reads_keep_original_custody() -> TestResult {
 }
 
 #[tokio::test]
+async fn obsolete_staging_binding_is_refused_before_publication() -> TestResult {
+    use acyclic_fs::MaterializationJournalStore as _;
+    for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
+        let fixture = Fixture::new().await?;
+        let operation = OperationId::new();
+        let publication = fixture.publication(operation)?;
+        let options = MaterializeOptions::native(publication.directory().join("target"));
+        let mut journal = publication
+            .prepare(
+                &fixture.from,
+                &fixture.to,
+                &fixture.state,
+                &options,
+                &fixture.work,
+            )
+            .await?;
+        assert_eq!(journal.version, 5);
+        journal.version = 4;
+        let expected = journal.revision;
+        journal.revision = expected + 1;
+        let (stored, _) = fixture
+            .state
+            .materialization(fixture.work.clone())
+            .compare_and_swap(operation, expected, journal)
+            .await?;
+        assert!(stored);
+        assert!(
+            fixture
+                .publish(adapter, operation, &fixture.from)
+                .await
+                .is_err()
+        );
+        assert!(!fixture.root.join("note").exists());
+        assert_eq!(
+            std::fs::read_to_string(options.destination.join("note"))?,
+            "candidate"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join(".volumes/host-owned"))?,
+            "host-owned"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn selected_approval_binds_original_root_transition_paths_and_creator() -> TestResult {
     let fixture = Fixture::new().await?;
     let publication = fixture.publication(OperationId::new())?;
