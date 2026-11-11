@@ -178,7 +178,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
                 );
             }
             assert_eq!(
-                journal.records(operation, 0, 4, None).await?.len(),
+                journal.replay(operation, 0, 4, None)?.await?.len(),
                 if version == current_version { 2 } else { 1 },
             );
         }
