@@ -985,42 +985,12 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
             "settlement admitted an unrelated progress producer or performed I/O before refusal: {observed:?}"
         );
     }
-    // A multiplexed observer may consume one source's refusal while retaining
-    // its other follows. Those remaining sources cannot settle for the lost one.
-    // Exercise both required sources through the public persisted-cursor API.
-    for (source, role) in events.sources()[..2].iter().zip(["status", "conversation"]) {
-        let mut projection = acyclic_harness_client::EventProjection::new("retired-source".into());
-        projection.accepted(
-            source,
-            Some(acyclic_harness_client::EventCursor {
-                next: u64::MAX,
-                opaque: String::new(),
-            }),
-        );
-        let mut retired = client.replay(&projection)?;
-        loop {
-            match retired.next_projected().await {
-                // The canonical pool returns an opening refusal to the pending
-                // open, rather than exposing that wire Close as a delivery.
-                Err(Error::Storage(reason))
-                    if reason == acyclic_stream::StreamError::OutOfRange.to_string() =>
-                {
-                    break;
-                }
-                Err(error) => return Err(error),
-                Ok((event, _)) => {
-                    event?;
-                }
-            }
-        }
-        let invalid = client.settle("lost-producer", inbox, &mut retired);
-        tokio::pin!(invalid);
-        let observed = futures::poll!(&mut invalid);
-        assert!(
-            matches!(&observed, std::task::Poll::Ready(Err(Error::Invalid(_)))),
-            "settlement retained a retired {role} source or performed I/O before refusal: {observed:?}"
-        );
-    }
+    // Retain another observer on the original connection. Its first failed
+    // opening retires only that follow; the other selected follows remain.
+    // A future live cursor is valid and waits, so it cannot provoke retirement.
+    let mut retired = client.replay(&acyclic_harness_client::EventProjection::new(
+        "retired-source".into(),
+    ))?;
     let root = connection.root().clone();
     let settling = settled(&harness, &root);
     tokio::pin!(settling);
@@ -1081,6 +1051,30 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     let hosted = harness.agents.get().unwrap();
     assert!(
         matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed"))
+    );
+    loop {
+        match retired.next_projected().await {
+            Err(Error::Storage(reason)) => {
+                assert!(
+                    reason.contains("model producer closed"),
+                    "retired follow lost the runtime cause: {reason}"
+                );
+                break;
+            }
+            Err(error) => return Err(error),
+            Ok((event, _)) => {
+                event?;
+            }
+        }
+    }
+    let invalid = client.settle("lost-producer", inbox, &mut retired);
+    tokio::pin!(invalid);
+    assert!(
+        matches!(
+            futures::poll!(&mut invalid),
+            std::task::Poll::Ready(Err(Error::Invalid(_)))
+        ),
+        "settlement admitted a retired original follow or performed I/O before refusal"
     );
     let settled = futures::poll!(&mut settling);
     assert!(
