@@ -1,12 +1,17 @@
 use super::*;
 
-async fn native_fixture() -> Result<(
+async fn native_fixture(
+    source: &[(&str, &[u8])],
+) -> Result<(
     tempfile::TempDir,
     tempfile::TempDir,
     LocalHarness,
     CheckoutPublisher,
 )> {
     let directory = tempfile::tempdir().map_err(storage)?;
+    for (path, bytes) in source {
+        std::fs::write(directory.path().join(path), bytes).map_err(storage)?;
+    }
     let state = tempfile::tempdir().map_err(storage)?;
     let model = Model::new("scripted".into(), "publication".into(), "1".into())?;
     let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
@@ -42,8 +47,9 @@ async fn native_fixture() -> Result<(
 
 #[tokio::test]
 async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -> Result<()> {
-    let (directory, _state, harness, initial) = native_fixture().await?;
-    std::fs::write(directory.path().join("branch.txt"), b"before\n").map_err(storage)?;
+    // The before-image belongs to the source that predates checkout binding.
+    let (_directory, _state, harness, initial) =
+        native_fixture(&[("branch.txt", b"before\n")]).await?;
     initial
         .stage_once(
             OperationId::new(),
@@ -217,7 +223,7 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
 
 #[tokio::test]
 async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()> {
-    let (directory, _state, harness, publisher) = native_fixture().await?;
+    let (directory, _state, harness, publisher) = native_fixture(&[]).await?;
     let (file, _) = publisher
         .stage_once(
             OperationId::new(),
@@ -313,7 +319,7 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
 #[tokio::test]
 async fn mounted_publication_retries_and_replacements_keep_their_volume_with_negative_control()
 -> Result<()> {
-    let (directory, _state, harness, publisher) = native_fixture().await?;
+    let (directory, _state, harness, publisher) = native_fixture(&[]).await?;
     let operation = OperationId::new();
     let (file, _) = publisher
         .stage_once(
@@ -637,7 +643,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
 // Negative control: requiring access to every mount refuses the caller.
 #[tokio::test]
 async fn project_only_callers_recover_their_own_operations() -> Result<()> {
-    let (_directory, _state, harness, publisher) = native_fixture().await?;
+    let (_directory, _state, harness, publisher) = native_fixture(&[]).await?;
     let project_only = Capabilities::new([
         harness
             .project
@@ -707,7 +713,7 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
 
 #[tokio::test]
 async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut() -> Result<()> {
-    let (directory, _state, harness, publisher) = native_fixture().await?;
+    let (directory, _state, harness, publisher) = native_fixture(&[]).await?;
     let publisher = Arc::new(publisher);
     let task_for = |grants| {
         let runtime = crate::runtime::Bindings {

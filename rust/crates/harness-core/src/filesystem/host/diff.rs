@@ -22,74 +22,107 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         current: &GenerationRef,
     ) -> Result<DiffPublication> {
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        let (before, after) = self
-            .diff_endpoints(volume, grant, (base, current), &io)
-            .await?;
-        let (changes, _changes) = io.sdk(
-            before
-                .generation
-                .diff_to(&after.generation, u32::MAX, &io, io.cancellation())
-                .await,
-        )?;
-        let (changed, _changed) = io.sdk(
-            changes
-                .changed_paths(u32::MAX, &io, io.cancellation())
-                .await,
-        )?;
         let root = ContextRoot {
             volume: volume.clone(),
             directory: String::new(),
         };
+        self.diff_private_publications(&[(&root, grant)], (base, current), &io)
+            .await?
+            .pop()
+            .ok_or_else(|| io.invalid("comparison lost its root"))
+    }
+
+    /// One comparison shared by every originally authorized root. Unrelated
+    /// changes are traversed once, not once for each skill root, and are never
+    /// copied into a root's disclosed result.
+    pub(crate) async fn diff_private_publications(
+        &self,
+        roots: &[(&ContextRoot, &ContentGrant)],
+        (base, current): (&GenerationRef, &GenerationRef),
+        io: &PreparationIo,
+    ) -> Result<Vec<DiffPublication>> {
+        let mut selections = Vec::new();
+        for (root, grant) in roots {
+            selections.push(
+                self.diff_endpoints(&root.volume, grant, (base, current), &root.directory, io)
+                    .await?,
+            );
+        }
+        let (before, after) = selections
+            .first()
+            .ok_or_else(|| io.invalid("comparison has no authorized roots"))?;
+        let (changes, _changes) = io.sdk(
+            before
+                .generation
+                .diff_to(&after.generation, u32::MAX, io, io.cancellation())
+                .await,
+        )?;
+        let (changed, _changed) =
+            io.sdk(changes.changed_paths(u32::MAX, io, io.cancellation()).await)?;
+        let mut paths = vec![Vec::new(); roots.len()];
         let now = super::super::access::access_now()?;
-        let mut paths = Vec::new();
         for change in changed {
             let regular = |record: Option<FileRecord>| {
                 record.filter(|record| record.kind == acyclic_fs::kernel::FileKind::Regular)
             };
             let (was, is) = (regular(change.before), regular(change.after));
-            if was.is_none() && is.is_none() {
-                continue;
-            }
-            let Some(path) = content_path(&change.path, &io)? else {
-                continue;
-            };
-            if crate::conversation::is_internal_path(&path)
-                || was.is_some() && !before.lists(&path, now)
-                || is.is_some() && !after.lists(&path, now)
+            if was.is_none() && is.is_none()
+                || was
+                    .zip(is)
+                    .is_some_and(|(was, is)| was.payload == is.payload)
             {
                 continue;
             }
-            if was
-                .zip(is)
-                .is_some_and(|(was, is)| was.payload == is.payload)
-            {
+            let Some(path) = content_path(&change.path, io)? else {
+                continue;
+            };
+            if crate::conversation::is_internal_path(&path) {
                 continue;
             }
-            let pin = |generation: &GenerationRef| PinnedContextPath {
-                root: root.clone(),
-                generation: generation.clone(),
-                path: path.clone(),
-            };
-            paths.push(DiffPath {
-                base: was.map(|_| pin(base)),
-                current: is.map(|_| pin(current)),
-                largest_file_bytes: was
-                    .iter()
-                    .chain(&is)
-                    .map(FileRecord::logical_file_bytes)
-                    .max(),
-                matches_base: false,
-                path,
-            });
+            for (((root, _), (before, after)), paths) in
+                roots.iter().zip(&selections).zip(&mut paths)
+            {
+                if !(root.directory.is_empty()
+                    || path == root.directory
+                    || path
+                        .strip_prefix(&root.directory)
+                        .is_some_and(|tail| tail.starts_with('/')))
+                    || was.is_some() && !before.lists(&path, now)
+                    || is.is_some() && !after.lists(&path, now)
+                {
+                    continue;
+                }
+                let pin = |generation: &GenerationRef| PinnedContextPath {
+                    root: (*root).clone(),
+                    generation: generation.clone(),
+                    path: path.clone(),
+                };
+                paths.push(DiffPath {
+                    base: was.map(|_| pin(base)),
+                    current: is.map(|_| pin(current)),
+                    largest_file_bytes: was
+                        .iter()
+                        .chain(&is)
+                        .map(FileRecord::logical_file_bytes)
+                        .max(),
+                    matches_base: false,
+                    path: path.clone(),
+                });
+            }
         }
-        before.require_current(&io).await?;
-        after.require_current(&io).await?;
-        grant.recheck(Some(&io))?;
-        Ok(DiffPublication {
-            previous: base.clone(),
-            generation: current.clone(),
-            paths,
-        })
+        for ((_, grant), (before, after)) in roots.iter().zip(&selections) {
+            before.require_current(io).await?;
+            after.require_current(io).await?;
+            grant.recheck(Some(io))?;
+        }
+        Ok(paths
+            .into_iter()
+            .map(|paths| DiffPublication {
+                previous: base.clone(),
+                generation: current.clone(),
+                paths,
+            })
+            .collect())
     }
 
     /// Whether `grant` and each owner's current policy still let the caller
@@ -106,7 +139,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<bool> {
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
         let (before, after) = self
-            .diff_endpoints(volume, grant, (base, current), &io)
+            .diff_endpoints(volume, grant, (base, current), "", &io)
             .await?;
         let now = super::super::access::access_now()?;
         let discloses = |selection: &super::directory::DirectorySelection<'_, A, O>, path: &str| {
@@ -125,13 +158,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(listed)
     }
 
-    /// Both endpoint roots, each selected under the caller's whole-volume
-    /// list authority and that generation's policy.
+    /// Both endpoints selected under the caller's directory authority and
+    /// that generation's policy, even when the directory is absent.
     async fn diff_endpoints<'io>(
         &self,
         volume: &VolumeRef,
         grant: &ContentGrant,
         (base, current): (&GenerationRef, &GenerationRef),
+        directory: &str,
         io: &'io PreparationIo,
     ) -> Result<(
         super::directory::DirectorySelection<'io, A, O>,
@@ -139,27 +173,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     )> {
         let mut ready = || std::future::ready(Ok(()));
         let before = self
-            .select_directory(&root_listing(volume, grant, base), io, &mut ready)
+            .select_directory(
+                &root_listing(volume, grant, base, directory),
+                io,
+                &mut ready,
+            )
             .await?;
         let after = self
-            .select_directory(&root_listing(volume, grant, current), io, &mut ready)
+            .select_directory(
+                &root_listing(volume, grant, current, directory),
+                io,
+                &mut ready,
+            )
             .await?;
         Ok((before, after))
     }
 }
 
-/// The volume root at one exact generation: selecting it requires the
-/// caller's whole-volume list authority under that generation's policy.
+/// One authorized directory at an exact generation; no entries are scanned.
 fn root_listing<'a>(
     volume: &'a VolumeRef,
     grant: &'a ContentGrant,
     generation: &'a GenerationRef,
+    directory: &'a str,
 ) -> DirectoryListing<'a> {
     DirectoryListing {
         volume,
         grant,
         ceiling: None,
-        path: "",
+        path: directory,
         generation: Some(generation),
         after: None,
         maximum_entries: 1,

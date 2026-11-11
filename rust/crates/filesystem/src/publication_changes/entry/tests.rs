@@ -230,6 +230,74 @@ fn every_entry_decodes_to_its_exact_path_and_only_untruncated_unicode_keys_carry
 }
 
 #[test]
+fn a_delta_entry_decodes_to_its_exact_path_and_origin_and_nothing_else() {
+    let mut cases = paths();
+    for config in configs() {
+        cases.push((
+            config,
+            NamespacePath::new(vec![], config.limits).unwrap(),
+            false,
+        ));
+    }
+    for (config, path, _) in cases {
+        for origin in [
+            DeltaOrigin::Empty,
+            DeltaOrigin::Generation(crate::GenerationId::from_root(crate::ObjectId {
+                kind: crate::ObjectKind::GenerationRoot,
+                digest: crate::Digest::from_bytes([91; 32]),
+                storage: Some(crate::ObjectStorage {
+                    locator: crate::Digest::from_bytes([92; 32]),
+                    root_file_id: crate::FileId::from_bytes([93; 16]),
+                    origin_generation: crate::Digest::from_bytes([94; 32]),
+                }),
+            })),
+        ] {
+            let key = key(&path, config);
+            let mut metadata = Vec::new();
+            encode_delta(
+                &path,
+                PublicationDelta::unfiltered(origin),
+                config,
+                &mut metadata,
+            );
+            assert_eq!(
+                metadata.len(),
+                delta_len(&path, PublicationDelta::unfiltered(origin), config)
+            );
+            let facts =
+                PublicationEntry::from_parts(key.slice(), DELTA, &metadata, config).unwrap();
+            assert_eq!(facts.path, path);
+            assert_eq!(
+                facts
+                    .delta
+                    .unwrap()
+                    .origin_for(&Default::default())
+                    .unwrap(),
+                origin
+            );
+            assert_eq!(
+                facts.before_present,
+                matches!(origin, DeltaOrigin::Generation(_))
+            );
+            assert!(facts.after_present);
+            let mut unknown_origin = metadata.clone();
+            let tag = names_len(&path, config);
+            unknown_origin[tag] = 2;
+            for invalid in [
+                [metadata.as_slice(), &[0]].concat(),
+                unknown_origin,
+                metadata[..metadata.len() - 1].to_vec(),
+            ] {
+                assert!(
+                    PublicationEntry::from_parts(key.slice(), DELTA, &invalid, config).is_err(),
+                    "{path:?} {invalid:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_key_that_cannot_be_the_whole_path_never_stands_for_one() {
     let [portable, _, folded] = configs();
     let mut created = vec![0, 1];

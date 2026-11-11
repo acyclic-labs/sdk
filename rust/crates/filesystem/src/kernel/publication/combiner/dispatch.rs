@@ -285,6 +285,7 @@ fn prepare_requests(
         return Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into());
     }
     let mut expected = None;
+    let mut previous_root = None;
     for proposal in state.selected() {
         work.admit(WorkCounters {
             items_examined: 1,
@@ -299,7 +300,14 @@ fn prepare_requests(
             .ok_or(crate::FsError::InvalidDiff)?;
         let predecessor = expected.unwrap_or(request.expected);
         if let Some(changes) = request.commit.publication.as_mut() {
-            changes.compose_base(request.expected, predecessor)?;
+            let baseline = previous_root
+                .or_else(|| match changes.origin() {
+                    crate::DeltaOrigin::Generation(generation) => Some(generation.object_id()),
+                    crate::DeltaOrigin::Empty => None,
+                })
+                .ok_or(crate::FsError::InvalidDiff)?;
+            changes.compose_base(request.expected, (predecessor, baseline))?;
+            previous_root = Some(changes.root());
         }
         request.expected = predecessor;
         let sequence = predecessor

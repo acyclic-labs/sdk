@@ -35,8 +35,16 @@ pub(super) fn inject(
 }
 
 async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutTools)> {
+    seeded(|root| std::fs::write(root.join("marker"), b"before").map_err(storage)).await
+}
+
+/// Opens a harness over a source tree that `seed` writes first: binding the
+/// checkout publishes that tree as its baseline.
+async fn seeded(
+    seed: impl FnOnce(&Path) -> Result<()>,
+) -> Result<(tempfile::TempDir, LocalHarness, CheckoutTools)> {
     let directory = tempfile::tempdir().map_err(storage)?;
-    std::fs::write(directory.path().join("marker"), b"before").map_err(storage)?;
+    seed(directory.path())?;
     let model = Model::new("scripted".into(), "test".into(), "1".into())?;
     let harness = LocalHarness::open(
         crate::test_support::local_harness_config(
@@ -548,9 +556,25 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
     harness.disconnect().await
 }
 
-/// Neither a failed native capture nor a rejected publication can consume the
-/// initial import's identity. Both failures discard the actual watcher cursor.
-async fn refuse_initial_imports(tools: &CheckoutTools) -> Result<Option<Cursor>> {
+/// The source baseline's receipt, when the import has been recorded.
+async fn baseline(tools: &CheckoutTools) -> Result<Option<acyclic_fs::GenerationId>> {
+    let workspace = tools.workspace.view().workspace();
+    Ok(workspace
+        .operation_generation(
+            acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes()),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(storage)?
+        .value
+        .map(|generation| generation.id()))
+}
+
+/// Neither a failed native capture nor a rejected publication of a changed
+/// source can move the head or the source baseline. Both failures discard
+/// the actual watcher cursor.
+async fn refuse_changed_captures(tools: &CheckoutTools) -> Result<Option<Cursor>> {
     let workspace = tools.workspace.view().workspace();
     let cancellation = CancellationToken::new();
     let original = workspace
@@ -559,6 +583,7 @@ async fn refuse_initial_imports(tools: &CheckoutTools) -> Result<Option<Cursor>>
         .map_err(storage)?
         .value
         .id();
+    let imported = baseline(tools).await?;
     let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
     cursor.initial = Some(WatchBatch::RescanRequired {
         epoch: 1,
@@ -603,20 +628,10 @@ async fn refuse_initial_imports(tools: &CheckoutTools) -> Result<Option<Cursor>>
             .id(),
         original
     );
-    assert!(
-        workspace
-            .operation_generation(
-                acyclic_fs::IdempotencyKey::from_bytes(
-                    baseline_operation(workspace.id()).into_bytes()
-                ),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(storage)?
-            .value
-            .is_none(),
-        "a refusal published the baseline"
+    assert_eq!(
+        baseline(tools).await?,
+        imported,
+        "a refusal replaced the baseline"
     );
     Ok(slot)
 }
@@ -627,24 +642,22 @@ proptest::proptest! {
     fn initial_watch_registration_captures_seeded_before_images(seed in "[a-z]{1,48}") {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            let (directory, harness, tools) = fixture().await?;
             let original = format!("before-{seed}\n");
-            std::fs::write(directory.path().join("marker"), original.as_bytes()).map_err(storage)?;
-            let mut slot = refuse_initial_imports(&tools).await?;
+            // No event mentions this file: it predates watcher registration.
+            let (directory, harness, tools) = seeded(|root| {
+                std::fs::write(root.join("marker"), original.as_bytes()).map_err(storage)
+            }).await?;
             let cancellation = CancellationToken::new();
             let workspace = tools.workspace.view().workspace();
-            let empty = workspace.head(WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
-            // No event mentions this file: it predates watcher registration.
-            run(&tools, &mut slot).await?;
+            // Binding the checkout imported the source, before any command.
             let before = workspace.head(WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
-            let baseline = workspace.operation_generation(
-                acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes()),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            ).await.map_err(storage)?.value.expect("retained initial source import");
-            assert_eq!(baseline.id(), before.id());
+            assert_eq!(baseline(&tools).await?, Some(before.id()), "retained initial source import");
             let bytes = before.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
             assert_eq!(bytes.as_ref(), original.as_bytes());
+            std::fs::write(directory.path().join("marker"), b"edited").map_err(storage)?;
+            let mut slot = refuse_changed_captures(&tools).await?;
+            run(&tools, &mut slot).await?;
+            assert_eq!(contents(&tools).await?, b"edited");
             std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
             run(&tools, &mut slot).await?;
             assert_eq!(contents(&tools).await?, b"after");
@@ -652,16 +665,13 @@ proptest::proptest! {
             // cannot replace the original baseline with the edited checkout.
             slot = None;
             run(&tools, &mut slot).await?;
-            let recovered = workspace.operation_generation(
-                acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes()),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            ).await.map_err(storage)?.value.expect("baseline after cursor loss");
-            assert_eq!(recovered.id(), before.id());
+            assert_eq!(baseline(&tools).await?, Some(before.id()), "baseline after cursor loss");
             let bytes = before.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
             assert_eq!(bytes.as_ref(), original.as_bytes());
-            // Negative control: the registration's empty authored generation
-            // reproduces the missing before-image, independently of new head.
+            // Negative control: the registration's empty authored generation,
+            // the baseline's first parent, lacks the before-image.
+            let (parents, _allocation) = before.parents(WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
+            let empty = workspace.generation(*parents.first().expect("baseline parent"), WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
             assert!(empty.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.is_err());
             drop(slot);
             drop(tools);
@@ -675,7 +685,14 @@ proptest::proptest! {
 async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    let (directory, harness, tools) = fixture().await?;
+    // The source refuses its before-image from the start, so binding the
+    // checkout cannot certify a baseline either.
+    let (directory, harness, tools) = seeded(|root| {
+        let marker = root.join("marker");
+        std::fs::write(&marker, b"before").map_err(storage)?;
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0)).map_err(storage)
+    })
+    .await?;
     let harness = Arc::new(harness);
     let connection = harness.connect().await?;
     let query = acyclic_harness_client::AgentCommand::Diff {
@@ -684,8 +701,7 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
             .map_err(storage)?,
     };
     let marker = directory.path().join("marker");
-    let permissions = std::fs::metadata(&marker).map_err(storage)?.permissions();
-    std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0)).map_err(storage)?;
+    let permissions = std::fs::Permissions::from_mode(0o644);
     let outcome = async {
         assert_eq!(
             std::fs::read(&marker).unwrap_err().kind(),
@@ -807,12 +823,65 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
     outcome
 }
 
+/// A source tree whose listed delta exceeds one stream command is published
+/// whole when the checkout binds, and readable before any command runs.
+#[tokio::test]
+async fn a_large_source_is_readable_before_the_first_command() -> Result<()> {
+    const FILES: usize = 6144;
+    let (_directory, harness, tools) = seeded(|root| {
+        std::fs::write(root.join("README.md"), b"# readme\n").map_err(storage)?;
+        for index in 0..FILES {
+            let directory = root
+                .join("crates/publication-reference-delta-regression-module")
+                .join(format!("generated-source-group-{:02}", index % 64));
+            std::fs::create_dir_all(&directory).map_err(storage)?;
+            std::fs::write(
+                directory.join(format!(
+                    "a-source-file-with-a-descriptive-name-{index:05}.rs"
+                )),
+                index.to_le_bytes(),
+            )
+            .map_err(storage)?;
+        }
+        Ok(())
+    })
+    .await?;
+    let workspace = tools.workspace.view().workspace();
+    let cancellation = CancellationToken::new();
+    let head = workspace
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    assert_eq!(baseline(&tools).await?, Some(head.id()));
+    let readme = head
+        .read("/README.md", 64, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    assert_eq!(readme.as_ref(), b"# readme\n");
+    let last = head
+        .read(
+            &format!(
+                "/crates/publication-reference-delta-regression-module/generated-source-group-{:02}/a-source-file-with-a-descriptive-name-{:05}.rs",
+                (FILES - 1) % 64,
+                FILES - 1
+            ),
+            64,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    assert_eq!(last.as_ref(), (FILES - 1).to_le_bytes());
+    drop(tools);
+    harness.disconnect().await
+}
+
 #[tokio::test]
 async fn an_empty_source_retains_its_baseline_before_later_creation() -> Result<()> {
-    let (directory, harness, tools) = fixture().await?;
-    std::fs::remove_file(directory.path().join("marker")).map_err(storage)?;
-    let mut slot = refuse_initial_imports(&tools).await?;
-    run(&tools, &mut slot).await?;
+    let (directory, harness, tools) = seeded(|_| Ok(())).await?;
     let workspace = tools.workspace.view().workspace();
     let cancellation = CancellationToken::new();
     let key =
@@ -824,6 +893,7 @@ async fn an_empty_source_retains_its_baseline_before_later_creation() -> Result<
         .value
         .expect("empty baseline receipt");
     std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
+    let mut slot = refuse_changed_captures(&tools).await?;
     run(&tools, &mut slot).await?;
     slot = None;
     run(&tools, &mut slot).await?;

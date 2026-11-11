@@ -272,6 +272,7 @@ impl LocalWorkspace {
             )
             .await?,
         );
+        tools.publish_baseline().await?;
         let publisher = super::checkout_tools::publisher::CheckoutPublisher::new(
             Arc::clone(&tools),
             Arc::clone(files),

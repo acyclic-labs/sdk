@@ -389,40 +389,19 @@ async fn layer_skills<S: SkillReader>(
     optional_root: bool,
     lower: Option<&BTreeMap<String, Option<SkillMetadata>>>,
 ) -> Result<Vec<(String, Option<SkillMetadata>)>> {
-    validate_content_path(name, &mut None)?;
-    if name.contains('/') {
-        return Err(Error::Invalid(
-            "discovery entry must be one filename".into(),
-        ));
-    }
-    let (revision, entries) = match work.list_source(source, directory, revision).await? {
-        Some(listed) => listed,
-        None if optional_root => return Ok(Vec::new()),
-        None => return Err(Error::NotFound("skill directory does not exist".into())),
+    let Some((revision, files)) =
+        skill_files(source, directory, name, work, revision, optional_root).await?
+    else {
+        return Ok(Vec::new());
     };
     let mut result = Vec::new();
-    for entry in entries {
-        if entry.kind != DiscoveryKind::Directory {
-            continue;
-        }
-        let directory = child(directory, &entry.name);
-        let (_, files) = work
-            .list_source(source, &directory, Some(&revision))
-            .await?
-            .ok_or_else(|| Error::NotFound("discovered skill directory disappeared".into()))?;
-        let Some(file) = files.iter().find(|e| e.name == name) else {
-            continue;
-        };
-        if file.kind != DiscoveryKind::File {
-            return Err(Error::Invalid("skill entry is not a file".into()));
-        }
-        let path = child(&directory, name);
+    for (entry, path) in files {
         let SkillPrefix {
             bytes: prefix,
             pinned,
             off,
         } = skill_prefix(source, &path, &revision, work.limits).await?;
-        if let Some(Some(lower)) = lower.and_then(|lower| lower.get(&entry.name))
+        if let Some(Some(lower)) = lower.and_then(|lower| lower.get(&entry))
             && lower.source.root.volume == crate::seed::volume(lower.source.root.volume.provider())?
             && let Some(seed) = crate::layers::seed_skill(&path)
         {
@@ -455,14 +434,57 @@ async fn layer_skills<S: SkillReader>(
         let skill = if off {
             None
         } else {
-            let identity = source.skill_identity(&child(&directory, name), &pinned)?;
+            let identity = source.skill_identity(&path, &pinned)?;
             let mut metadata = parse_skill_metadata(&prefix, pinned)?;
             metadata.identity = identity;
             Some(metadata)
         };
-        result.push((entry.name, skill));
+        result.push((entry, skill));
     }
     Ok(result)
+}
+
+/// The `<directory>/<entry>/<name>` files of one source at one pinned
+/// revision, as (entry name, file path) in lexical order. Reads directory
+/// pages only, never file contents. None is an absent optional root.
+pub(super) async fn skill_files<S: DiscoverySource>(
+    source: &mut S,
+    directory: &str,
+    name: &str,
+    work: &mut DiscoveryWork,
+    revision: Option<&S::Revision>,
+    optional_root: bool,
+) -> Result<Option<(S::Revision, Vec<(String, String)>)>> {
+    validate_content_path(name, &mut None)?;
+    if name.contains('/') {
+        return Err(Error::Invalid(
+            "discovery entry must be one filename".into(),
+        ));
+    }
+    let (revision, entries) = match work.list_source(source, directory, revision).await? {
+        Some(listed) => listed,
+        None if optional_root => return Ok(None),
+        None => return Err(Error::NotFound("skill directory does not exist".into())),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        if entry.kind != DiscoveryKind::Directory {
+            continue;
+        }
+        let directory = child(directory, &entry.name);
+        let (_, listed) = work
+            .list_source(source, &directory, Some(&revision))
+            .await?
+            .ok_or_else(|| Error::NotFound("discovered skill directory disappeared".into()))?;
+        let Some(file) = listed.iter().find(|e| e.name == name) else {
+            continue;
+        };
+        if file.kind != DiscoveryKind::File {
+            return Err(Error::Invalid("skill entry is not a file".into()));
+        }
+        files.push((entry.name, child(&directory, name)));
+    }
+    Ok(Some((revision, files)))
 }
 
 async fn skill_prefix<S: SkillReader>(

@@ -291,6 +291,22 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Exact changed regular-file paths at two immutable generations under
+    /// the root's original directory authority. Equal payloads and equal
+    /// Merkle subtrees are skipped without reading or parsing their contents.
+    fn diff_private_paths<'a>(
+        &'a self,
+        _roots: &'a [&'a crate::context::ContextRoot],
+        _generations: (&'a GenerationRef, &'a GenerationRef),
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, Vec<crate::context::DiffPublication>>> {
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "immutable path comparison is unavailable",
+        ))
+    }
+
     /// Selects a generation under the original directory authority even when
     /// the named path is absent. This reads neither directory entries nor file
     /// bytes. The returned reference is an identity, never a new grant.
@@ -912,6 +928,22 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             ceiling,
             io,
         )
+    }
+    fn diff_private_paths<'a>(
+        &'a self,
+        roots: &'a [&'a crate::context::ContextRoot],
+        generations: (&'a GenerationRef, &'a GenerationRef),
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, Vec<crate::context::DiffPublication>>> {
+        let root = roots.first().ok_or_else(|| {
+            content_error(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "comparison has no roots",
+            )
+        })?;
+        self.bound_reader(&root.volume, io)?
+            .diff_private_paths(roots, generations, io)
     }
     fn select_private_generation<'a, 'io>(
         &'a self,

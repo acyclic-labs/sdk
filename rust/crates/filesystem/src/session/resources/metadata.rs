@@ -1,6 +1,6 @@
 use super::*;
 use crate::VolumeConfig;
-use crate::kernel::{NameEncoding, NamespacePath};
+use crate::session::namespace_resource as canonical_resource;
 use acyclic_auth::authority::PolicyDecision;
 use acyclic_auth::contract::{Attribute, RecordAttributes};
 use acyclic_stream::{AppendRecord, Record};
@@ -12,6 +12,7 @@ pub(super) struct Projection<'a> {
     pub trie: &'a PathTrie,
     pub authorization: &'a acyclic_stream::session::ResourceAuthorization,
     pub selected: Option<&'a super::subtree::Selection>,
+    pub requested: &'a acyclic_stream::FollowFilter,
 }
 
 pub(super) fn project(
@@ -25,6 +26,7 @@ pub(super) fn project(
         trie,
         authorization,
         selected,
+        requested,
     } = projection;
     let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
     let context = crate::PublicationContext::from_bytes(&changes.context)?;
@@ -53,14 +55,52 @@ pub(super) fn project(
     .map_err(|_| StreamError::InvalidArgument)?;
     let now = authorization.now_unix_seconds()?;
     let mut visible = Vec::with_capacity(changes.entries.len());
-    for entry in changes.entries {
-        let entry_facts = crate::PublicationEntry::from_parts(
+    for mut entry in changes.entries {
+        let mut entry_facts = crate::PublicationEntry::from_parts(
             &entry.key,
             &entry.operation,
             &entry.metadata,
             config,
         )
         .map_err(|_| StreamError::InvalidArgument)?;
+        // A delta stands for every change under its path. A follower that
+        // selected a subtree of it receives the same delta narrowed to that
+        // subtree, and is authorized for that subtree alone.
+        if let Some(delta) = entry_facts.delta {
+            if !requested.matches_attributes(&record.headers) {
+                continue;
+            }
+            authorization.authorize_candidate()?;
+            if let Some(selected) = selected
+                && selected.path().components().len() > entry_facts.path.components().len()
+                && selected
+                    .path()
+                    .components()
+                    .starts_with(entry_facts.path.components())
+            {
+                entry_facts.path = selected.path().clone();
+            }
+            let delta = delta.with_selection(requested);
+            let key = crate::publication_changes::entry::key(&entry_facts.path, config);
+            let mut metadata = Vec::new();
+            crate::publication_changes::entry::encode_delta(
+                &entry_facts.path,
+                delta,
+                config,
+                &mut metadata,
+            );
+            entry.key = bytes::Bytes::copy_from_slice(key.slice());
+            entry.metadata = metadata.into();
+            // The placeholder is an index candidate, not a path disclosure.
+            // Its concrete paths are checked with this retained authorization
+            // and the immutable reader's directory policy during expansion.
+            visible.push(entry);
+            continue;
+        } else if !requested.matches_entry(&entry.key, &record.headers) {
+            // Widening the index admits indirect candidates only, never an
+            // ordinary change excluded by the original requested selection.
+            continue;
+        }
         // The lossless full path is authoritative. A 1-KiB indexed key must
         // never authorize a longer path or an alternate native representation.
         let prepared = trie
@@ -123,30 +163,10 @@ fn appended_by_context(
         .is_some_and(|path| path == record.origin.as_str())
 }
 
-pub(super) fn canonical_resource(
-    volume: VolumeId,
-    path: &NamespacePath,
-    config: VolumeConfig,
-) -> Result<String, StreamError> {
-    let mut result = resource(volume, "")?;
-    for name in path.components() {
-        let mut text = String::new();
-        name.append_unicode(&mut text)
-            .map_err(|_| StreamError::AccessDenied)?;
-        let text = if config.case_sensitivity == crate::model::CaseSensitivity::ProfileFolded {
-            NameEncoding::native_for_profile(config.profile).unicode_case_fold_key(&text)
-        } else {
-            std::borrow::Cow::Borrowed(text.as_str())
-        };
-        result.push('/');
-        result.push_str(&acyclic_auth::encode_component(text.as_bytes()));
-    }
-    Ok(result)
-}
-
 #[cfg(all(test, feature = "memory", not(loom)))]
 mod tests {
     use super::*;
+    use crate::kernel::NamespacePath;
 
     fn changes_stream(scope: [u8; 16], volume: VolumeId) -> acyclic_stream::StreamPath {
         let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
@@ -310,7 +330,8 @@ mod tests {
                         config,
                         trie: &trie,
                         authorization: &authorization,
-                        selected: None
+                        selected: None,
+                        requested: &Default::default(),
                     }
                 ),
                 Err(StreamError::InvalidArgument)
@@ -325,7 +346,8 @@ mod tests {
                     config,
                     trie: &trie,
                     authorization: &authorization,
-                    selected: None
+                    selected: None,
+                    requested: &Default::default(),
                 }
             )
             .unwrap(),
@@ -351,6 +373,30 @@ mod tests {
             &capability,
         )
         .unwrap();
+        let requested = acyclic_stream::FollowFilter::new(wire::SessionFilter {
+            keys: vec![wire::KeyRange {
+                start: bytes::Bytes::from_static(b"unrelated/"),
+                end: bytes::Bytes::from_static(b"unrelated0"),
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(matches!(
+            project(
+                record.clone(),
+                Projection {
+                    volume,
+                    scope: [0; 16],
+                    config,
+                    trie: &allowing,
+                    authorization: &authorization,
+                    selected: None,
+                    requested: &requested,
+                }
+            )
+            .unwrap(),
+            FollowUpdate::Progress { next: 4, .. }
+        ));
         let selected = super::super::subtree::Selection::new(volume, &full, config).unwrap();
         let outside = NamespacePath::from_text_in_profile(
             &format!("/{}/outside", text.rsplit_once('/').unwrap().0),
@@ -382,6 +428,7 @@ mod tests {
                     trie: &allowing,
                     authorization: &authorization,
                     selected: None,
+                    requested: &Default::default(),
                 },
             )
             .unwrap();
@@ -403,6 +450,7 @@ mod tests {
                         trie: &allowing,
                         authorization: &authorization,
                         selected: Some(selected),
+                        requested: &Default::default(),
                     },
                 )
                 .unwrap()

@@ -11,6 +11,7 @@
 use crate::VolumeConfig;
 use crate::kernel::{FileRecord, LogicalName, NameEncoding, NamespacePath};
 use crate::model::CaseSensitivity;
+use crate::publication_changes::{DeltaOrigin, PublicationDelta};
 use crate::workspace::ChangedPath;
 use std::fmt::Write;
 
@@ -111,6 +112,49 @@ fn record_len(record: &FileRecord) -> usize {
     16 + 1 + varint_len(reference) + reference
 }
 
+/// The operation of a namespace delta published by reference: every change
+/// under its path, from its [`DeltaOrigin`] to the record's generation.
+pub(crate) const DELTA: &str = "delta";
+
+/// Exact encoded length of a delta entry's metadata at `path`.
+pub(crate) fn delta_len(
+    path: &NamespacePath,
+    delta: PublicationDelta,
+    config: VolumeConfig,
+) -> usize {
+    names_len(path, config)
+        + 1
+        + 32
+        + match delta.origin {
+            DeltaOrigin::Empty => 0,
+            DeltaOrigin::Generation(generation) => {
+                let length = generation.to_bytes().len();
+                varint_len(length) + length
+            }
+        }
+}
+
+/// Writes the metadata of a delta entry at `path`, `delta_len` bytes: its
+/// names, then its origin and original selection digest.
+pub(crate) fn encode_delta(
+    path: &NamespacePath,
+    delta: PublicationDelta,
+    config: VolumeConfig,
+    output: &mut Vec<u8>,
+) {
+    write_names(path, config, output);
+    match delta.origin {
+        DeltaOrigin::Empty => output.push(0),
+        DeltaOrigin::Generation(generation) => {
+            output.push(1);
+            let reference = generation.to_bytes();
+            prost::encoding::encode_varint(reference.len() as u64, output);
+            output.extend_from_slice(reference.as_slice());
+        }
+    }
+    output.extend_from_slice(&delta.selection);
+}
+
 /// The semantic operation of a change: its before and after presence.
 pub(crate) fn operation(change: &ChangedPath) -> &'static str {
     match (change.before.is_some(), change.after.is_some()) {
@@ -162,20 +206,22 @@ fn names_from_key(path: &NamespacePath, config: VolumeConfig) -> Option<NameEnco
     (joined < acyclic_stream::MAX_RECORD_KEY_BYTES).then_some(first)
 }
 
-/// Exact encoded length of `change`'s metadata.
-pub(crate) fn encoded_len(change: &ChangedPath, config: VolumeConfig) -> usize {
-    let names = if names_from_key(&change.path, config).is_some() {
+fn names_len(path: &NamespacePath, config: VolumeConfig) -> usize {
+    if names_from_key(path, config).is_some() {
         2
     } else {
-        varint_len(change.path.depth() + 1)
-            + change
-                .path
+        varint_len(path.depth() + 1)
+            + path
                 .components()
                 .iter()
                 .map(|name| 1 + varint_len(name.as_bytes().len()) + name.as_bytes().len())
                 .sum::<usize>()
-    };
-    names
+    }
+}
+
+/// Exact encoded length of `change`'s metadata.
+pub(crate) fn encoded_len(change: &ChangedPath, config: VolumeConfig) -> usize {
+    names_len(&change.path, config)
         + [change.before.as_ref(), change.after.as_ref()]
             .into_iter()
             .flatten()
@@ -185,21 +231,25 @@ pub(crate) fn encoded_len(change: &ChangedPath, config: VolumeConfig) -> usize {
 
 /// Writes `change`'s metadata, `encoded_len` bytes, after `output`'s contents.
 pub(crate) fn encode(change: &ChangedPath, config: VolumeConfig, output: &mut Vec<u8>) {
-    if let Some(encoding) = names_from_key(&change.path, config) {
-        output.extend_from_slice(&[0, encoding.tag()]);
-    } else {
-        prost::encoding::encode_varint(change.path.depth() as u64 + 1, output);
-        for name in change.path.components() {
-            output.push(name.encoding().tag());
-            prost::encoding::encode_varint(name.as_bytes().len() as u64, output);
-            output.extend_from_slice(name.as_bytes());
-        }
-    }
+    write_names(&change.path, config, output);
     for record in [change.before.as_ref(), change.after.as_ref()]
         .into_iter()
         .flatten()
     {
         write_record(record, output);
+    }
+}
+
+fn write_names(path: &NamespacePath, config: VolumeConfig, output: &mut Vec<u8>) {
+    if let Some(encoding) = names_from_key(path, config) {
+        output.extend_from_slice(&[0, encoding.tag()]);
+    } else {
+        prost::encoding::encode_varint(path.depth() as u64 + 1, output);
+        for name in path.components() {
+            output.push(name.encoding().tag());
+            prost::encoding::encode_varint(name.as_bytes().len() as u64, output);
+            output.extend_from_slice(name.as_bytes());
+        }
     }
 }
 
@@ -223,6 +273,12 @@ pub struct PublicationEntry {
     pub before_present: bool,
     /// Whether a file record exists at this path after the publication.
     pub after_present: bool,
+    /// Present when this entry stands for every change under `path`, from
+    /// this origin to the record's generation: a namespace delta too large
+    /// to list in its commit, published by reference. Readers expand it from
+    /// the two content-addressed generations they are authorized to read,
+    /// applying the same original filter authenticated by the reference.
+    pub delta: Option<PublicationDelta>,
 }
 
 impl PublicationEntry {
@@ -305,10 +361,64 @@ mod read {
                 path: NamespacePath::new(vec![], config.limits).map_err(|_| Malformed)?,
                 before_present: false,
                 after_present: false,
+                delta: None,
+            });
+        }
+        let mut reader = Reader(metadata);
+        if operation == DELTA {
+            let components = names(key, &mut reader, config)?;
+            let origin = match reader.byte()? {
+                0 => DeltaOrigin::Empty,
+                1 => {
+                    let length = reader.number()?;
+                    DeltaOrigin::Generation(
+                        crate::GenerationId::from_bytes(reader.take(length)?).ok_or(Malformed)?,
+                    )
+                }
+                _ => return Err(Malformed),
+            };
+            let selection = reader.take(32)?.try_into().map_err(|_| Malformed)?;
+            if !reader.0.is_empty() {
+                return Err(Malformed);
+            }
+            return Ok(PublicationEntry {
+                path: NamespacePath::new(components, config.limits).map_err(|_| Malformed)?,
+                before_present: matches!(origin, DeltaOrigin::Generation(_)),
+                after_present: true,
+                delta: Some(PublicationDelta { origin, selection }),
             });
         }
         let expected = presence(operation).ok_or(Malformed)?;
-        let mut reader = Reader(metadata);
+        let components = names(key, &mut reader, config)?;
+        for present in expected {
+            if present {
+                reader.take(16)?;
+                FileKind::from_tag(reader.byte()?).map_err(|_| Malformed)?;
+                let length = reader.number()?;
+                let reference =
+                    crate::ObjectId::try_from(reader.take(length)?).map_err(|_| Malformed)?;
+                if reference.kind != crate::ObjectKind::Metadata {
+                    return Err(Malformed);
+                }
+            }
+        }
+        if !reader.0.is_empty() {
+            return Err(Malformed);
+        }
+        Ok(PublicationEntry {
+            path: NamespacePath::new(components, config.limits).map_err(|_| Malformed)?,
+            before_present: expected[0],
+            after_present: expected[1],
+            delta: None,
+        })
+    }
+
+    /// The path names an entry's metadata begins with: its key, or explicit names.
+    fn names(
+        key: &[u8],
+        reader: &mut Reader<'_>,
+        config: VolumeConfig,
+    ) -> Result<Vec<LogicalName>, Malformed> {
         let maximum = config.limits.maximum_component_bytes;
         let name = |encoding: NameEncoding, bytes: &[u8]| {
             if bytes.len() > maximum as usize {
@@ -344,26 +454,7 @@ mod read {
                 }
             }
         }
-        for present in expected {
-            if present {
-                reader.take(16)?;
-                FileKind::from_tag(reader.byte()?).map_err(|_| Malformed)?;
-                let length = reader.number()?;
-                let reference =
-                    crate::ObjectId::try_from(reader.take(length)?).map_err(|_| Malformed)?;
-                if reference.kind != crate::ObjectKind::Metadata {
-                    return Err(Malformed);
-                }
-            }
-        }
-        if !reader.0.is_empty() {
-            return Err(Malformed);
-        }
-        Ok(PublicationEntry {
-            path: NamespacePath::new(components, config.limits).map_err(|_| Malformed)?,
-            before_present: expected[0],
-            after_present: expected[1],
-        })
+        Ok(components)
     }
 
     #[cfg(test)]

@@ -208,6 +208,8 @@ pub struct SkillPublicationSource {
     volume: VolumeId,
     config: VolumeConfig,
     accepted: SourceCursor,
+    filter: acyclic_stream::FollowFilter,
+    authorization: acyclic_stream::session::ResourceAuthorization,
     observed: SourceCursor,
     revalidate: ResourceRevalidation,
     terminal: acyclic_stream::BoxProviderFuture<'static, StreamError>,
@@ -232,6 +234,7 @@ impl SkillPublicationSource {
         volume: VolumeId,
         config: VolumeConfig,
         accepted: SourceCursor,
+        filter: acyclic_stream::FollowFilter,
     ) -> Result<Self> {
         let first = roots
             .pop()
@@ -252,6 +255,8 @@ impl SkillPublicationSource {
             config,
             accepted,
             observed: accepted,
+            filter,
+            authorization: subscription.authorization,
             revalidate: subscription.revalidate,
             terminal: subscription.terminal,
             open: Some(subscription.open),
@@ -455,6 +460,79 @@ impl SkillPublicationSource {
             let Some(path) = crate::filesystem::content_path(&facts.path, session)? else {
                 continue;
             };
+            if let Some(reference) = facts.delta {
+                let roots: Vec<_> = std::iter::once(&self.root)
+                    .chain(&self.roots)
+                    .filter(|root| within(&root.directory, &path) || within(&path, &root.directory))
+                    .collect();
+                let Some(first) = roots.first() else {
+                    continue;
+                };
+                if generation.is_none() {
+                    generation = Some(crate::filesystem::bounded_io::generation_ref(
+                        first.volume.provider(),
+                        context.generation,
+                        Some(session),
+                    )?);
+                }
+                let generation = generation.as_ref().ok_or(StreamError::InvalidArgument)?;
+                let parent = match reference.origin_for(&self.filter)? {
+                    acyclic_fs::DeltaOrigin::Empty => None,
+                    acyclic_fs::DeltaOrigin::Generation(before) => {
+                        Some(crate::filesystem::bounded_io::generation_ref(
+                            first.volume.provider(),
+                            before,
+                            Some(session),
+                        )?)
+                    }
+                };
+                let compared = if let Some(parent) = &parent {
+                    let compared =
+                        reader.diff_private_paths(&roots, (parent, generation), Some(session))?;
+                    Some(gated(&mut self.terminal, session, compared).await??)
+                } else {
+                    None
+                };
+                if compared
+                    .as_ref()
+                    .is_some_and(|values| values.len() != roots.len())
+                {
+                    return Err(StreamError::InvalidResponse.into());
+                }
+                for (index, root) in roots.into_iter().enumerate() {
+                    let expanded = expand_delta(
+                        &mut self.terminal,
+                        reader,
+                        root,
+                        DeltaExpansion {
+                            authorization: (self.volume, &self.authorization),
+                            reference,
+                            generation,
+                            filter: &self.filter,
+                            headers: &record.headers,
+                            config: self.config,
+                            scope: &path,
+                        },
+                        compared.as_ref().and_then(|values| values.get(index)),
+                        limits,
+                        session,
+                    )
+                    .await?;
+                    match expanded {
+                        Ok(changes) => {
+                            for change in changes {
+                                push_change(&mut self.changes, change, limits, session)?;
+                            }
+                        }
+                        Err(error) => {
+                            self.rejection = Some(error);
+                            self.changes = Vec::new();
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
             for root in std::iter::once(&self.root).chain(&self.roots) {
                 if !root.is_skill_path(&path, "SKILL.md") {
                     continue;
@@ -499,27 +577,7 @@ impl SkillPublicationSource {
                 } else {
                     continue;
                 };
-                // This is the existing bounded selected metadata budget, not a
-                // limit on the followed source, agents, or retained history.
-                if self.changes.len() >= limits.entries as usize {
-                    return Err(Error::Invalid(
-                        "publication metadata exceeds admitted discovery work".into(),
-                    ));
-                }
-                let capacity = if self.changes.len() == self.changes.capacity() {
-                    self.changes
-                        .capacity()
-                        .checked_mul(2)
-                        .ok_or(StreamError::OutOfRange)?
-                        .max(1)
-                        .min(limits.entries as usize)
-                } else {
-                    self.changes.capacity()
-                };
-                crate::executor::with_history_io(Some(session), |work| {
-                    crate::context::compaction::reserve_vector(&mut self.changes, capacity, work)
-                })?;
-                self.changes.push(change);
+                push_change(&mut self.changes, change, limits, session)?;
             }
         }
         (self.revalidate)()?;
@@ -532,6 +590,156 @@ impl SkillPublicationSource {
         };
         Ok(())
     }
+}
+
+fn push_change(
+    changes: &mut Vec<SkillPublicationChange>,
+    change: SkillPublicationChange,
+    limits: ContextDiscoveryLimits,
+    session: &PreparationIo,
+) -> Result<()> {
+    // This is the existing bounded selected metadata budget, not a limit on
+    // the followed source, agents, or retained history.
+    if changes.len() >= limits.entries as usize {
+        return Err(Error::Invalid(
+            "publication metadata exceeds admitted discovery work".into(),
+        ));
+    }
+    let capacity = if changes.len() == changes.capacity() {
+        changes
+            .capacity()
+            .checked_mul(2)
+            .ok_or(StreamError::OutOfRange)?
+            .max(1)
+            .min(limits.entries as usize)
+    } else {
+        changes.capacity()
+    };
+    crate::executor::with_history_io(Some(session), |work| {
+        crate::context::compaction::reserve_vector(changes, capacity, work)
+    })?;
+    changes.push(change);
+    Ok(())
+}
+
+/// Whether content path `path` is `directory` or lies under it.
+fn within(path: &str, directory: &str) -> bool {
+    directory.is_empty()
+        || path
+            .strip_prefix(directory)
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with('/'))
+}
+
+/// Expand only changed skill files using the filesystem's immutable Merkle
+/// comparison. An unchanged rejected replacement is never parsed again, and
+/// an unchanged skill tree consumes no second discovery-directory allowance.
+struct DeltaExpansion<'a> {
+    authorization: (VolumeId, &'a acyclic_stream::session::ResourceAuthorization),
+    reference: acyclic_fs::PublicationDelta,
+    generation: &'a GenerationRef,
+    filter: &'a acyclic_stream::FollowFilter,
+    headers: &'a acyclic_stream::RecordHeaders,
+    config: VolumeConfig,
+    scope: &'a str,
+}
+
+async fn expand_delta(
+    terminal: &mut acyclic_stream::BoxProviderFuture<'static, StreamError>,
+    reader: &dyn ContentResidencyVerifier,
+    root: &ContextRoot,
+    selection: DeltaExpansion<'_>,
+    compared: Option<&crate::context::DiffPublication>,
+    limits: ContextDiscoveryLimits,
+    session: &PreparationIo,
+) -> Result<Result<Vec<SkillPublicationChange>>> {
+    const NAME: &str = "SKILL.md";
+    let generation = selection.generation;
+    selection.reference.origin_for(selection.filter)?;
+    let paths = if let Some(compared) = compared {
+        compared
+            .paths
+            .iter()
+            .filter(|change| root.is_skill_path(&change.path, NAME))
+            .map(|change| (change.path.clone(), change.current.is_some()))
+            .collect::<Vec<_>>()
+    } else {
+        let mut work = DiscoveryWork {
+            limits,
+            ..Default::default()
+        };
+        let mut source = VolumeDiscovery {
+            reader,
+            root,
+            io: Some(session),
+        };
+        gated(
+            terminal,
+            session,
+            super::source::skill_files(
+                &mut source,
+                &root.directory,
+                NAME,
+                &mut work,
+                Some(generation),
+                true,
+            ),
+        )
+        .await??
+        .map(|(_, files)| files)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, path)| (path, true))
+        .collect()
+    };
+    let mut changes = Vec::new();
+    for (path, present) in paths {
+        if !within(&path, selection.scope) {
+            continue;
+        }
+        // Context paths are volume-relative; namespace paths include the root.
+        let namespace = acyclic_fs::kernel::NamespacePath::from_text_in_profile(
+            &format!("/{path}"),
+            selection.config.profile,
+            selection.config.limits,
+        )
+        .map_err(|_| StreamError::InvalidArgument)?;
+        if !selection.reference.selects(
+            selection.authorization,
+            &namespace,
+            selection.config,
+            selection.filter,
+            selection.headers,
+        )? {
+            continue;
+        }
+        let change = if present {
+            let metadata = gated(
+                terminal,
+                session,
+                root.skill_metadata_parsed_at(
+                    reader,
+                    &path,
+                    generation,
+                    NAME,
+                    limits,
+                    Some(session),
+                ),
+            )
+            .await??
+            .ok_or(StreamError::InvalidArgument)?;
+            match metadata {
+                Ok(metadata) => SkillPublicationChange::Skill(metadata),
+                Err(error) => return Ok(Err(error)),
+            }
+        } else {
+            SkillPublicationChange::Removed(crate::executor::with_history_io(
+                Some(session),
+                |work| PinnedContextPath::capture(root, generation, &path, work),
+            )?)
+        };
+        push_change(&mut changes, change, limits, session)?;
+    }
+    Ok(Ok(changes))
 }
 
 // Every wait races the original subscription's terminal event and original
@@ -557,5 +765,7 @@ async fn gated<T>(
     }
 }
 
+#[cfg(test)]
+mod delta_tests;
 #[cfg(test)]
 mod tests;

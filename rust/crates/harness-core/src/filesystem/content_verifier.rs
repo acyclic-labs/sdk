@@ -373,6 +373,52 @@ where
         })
     }
 
+    fn diff_private_paths<'a>(
+        &'a self,
+        roots: &'a [&'a crate::context::ContextRoot],
+        generations: (&'a GenerationRef, &'a GenerationRef),
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<crate::context::DiffPublication>>>
+    {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.verify_exact_file(None, io)?;
+            let unmeasured;
+            let io = if let Some(io) = io {
+                io
+            } else {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &unmeasured
+            };
+            let first = roots
+                .first()
+                .ok_or_else(|| io.invalid("comparison has no roots"))?;
+            let mut grants = Vec::new();
+            let mut holds = Vec::new();
+            for root in roots {
+                if root.volume != first.volume {
+                    return Err(io.invalid("comparison roots belong to different volumes"));
+                }
+                let grant = ContentGrant::verify_directory_read(
+                    self.authority.verifier(),
+                    self.authority.scope(),
+                    &root.volume,
+                    &root.directory,
+                    &mut Some(&mut io.history_io()),
+                )?;
+                holds.push(io.guard_owned(grant.logical_owned_bytes()?)?);
+                grants.push(grant);
+            }
+            let selected: Vec<_> = roots.iter().copied().zip(&grants).collect();
+            let publication = self
+                .host
+                .diff_private_publications(&selected, generations, io)
+                .await?;
+            drop(grants);
+            drop(holds);
+            Ok(publication)
+        })
+    }
+
     fn select_private_generation<'a, 'io>(
         &'a self,
         volume: &'a VolumeRef,

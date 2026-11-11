@@ -270,6 +270,9 @@ message SessionFilterClause {
   repeated KeyRange keys = 1;
   repeated AttributeMatch attributes = 2;
   bool all_keys = 3;
+  // An indirect-record index candidate, separate from caller range capacity.
+  // Owning providers must authorize concrete facts after expansion.
+  optional bytes projection_key = 4;
 }
 message SessionFilter {
   repeated KeyRange keys = 1;
