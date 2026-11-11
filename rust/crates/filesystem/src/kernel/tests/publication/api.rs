@@ -30,7 +30,16 @@ async fn complete_generation_publishes_and_retries_exactly() -> TestResult {
             &cancellation,
         )
     };
-    let first = publish(request).await?;
+    let publication = publish(request);
+    // The caller keeps control metadata, not the authentication state machine.
+    // Two 4 KiB pages leave room for nested publication on a native stack.
+    let bytes = std::mem::size_of_val(&publication);
+    eprintln!("publication future: {bytes} bytes");
+    assert!(
+        bytes <= 8 * 1024,
+        "publication future retains {bytes} bytes"
+    );
+    let first = publication.await?;
     assert!(matches!(&first.outcome, AppendOutcome::Committed(_)));
     let retry = publish(request).await?;
     assert!(matches!(retry.outcome, AppendOutcome::AlreadyCommitted(_)));

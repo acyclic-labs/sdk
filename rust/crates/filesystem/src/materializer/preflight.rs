@@ -1,6 +1,46 @@
 use super::*;
 use crate::native_host::HostRoot;
 
+#[cfg(test)]
+#[tokio::test]
+async fn file_comparison_keeps_its_read_buffer_out_of_the_caller_frame()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    std::fs::write(temporary.path().join("file"), b"same-file")?;
+    let cancellation = crate::CancellationToken::new();
+    let workspace = crate::Fs::memory()
+        .create_workspace("comparison", crate::WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    workspace.write_text("/file", "same-file").await?;
+    let generation = workspace
+        .head(crate::WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    let work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let root = HostRoot::open(temporary.path(), &mut &work)?;
+    let baseline = work.live_allocation_bytes();
+    let comparison = host_holds_generation_file(&root, "file", &generation, &work);
+    let bytes = std::mem::size_of_val(&comparison);
+    eprintln!("file comparison future: {bytes} bytes");
+    // Only references and the original allocation guard belong in this frame;
+    // the 64 KiB read window must never be copied into an awaiting caller.
+    assert!(
+        bytes <= 1024,
+        "file comparison future retains {bytes} bytes"
+    );
+    assert!(comparison.await?);
+    std::fs::write(temporary.path().join("file"), b"diff-file")?;
+    assert!(!host_holds_generation_file(&root, "file", &generation, &work).await?);
+    // Decoded reads may remain in the filesystem's shared cache. Retire that
+    // owner before checking that both the comparison frame and reads are gone.
+    drop(generation);
+    drop(workspace);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
 // Main's promotion checks: preserve identical files and directories with unknown children.
 pub(super) async fn host_holds_generation_file<
     A: crate::AsyncAuthorityStore,
@@ -11,106 +51,109 @@ pub(super) async fn host_holds_generation_file<
     generation: &crate::Generation<A, O>,
     work: &NativeMaterializationWork,
 ) -> Result<bool, NativeWorkspacePublicationError> {
-    let relative = Path::new(path);
-    let Some(observed) = host_stat(root, relative, work)? else {
-        return Ok(false);
-    };
-    if observed.file_type() != crate::demand::SourceNodeKind::RegularFile {
-        return Ok(false);
-    }
-    let (absolute, _allocation) = work.display(&format_args!("/{path}"))?;
-    let source = generation
-        .stat(&absolute, work, work.cancellation())
-        .await?;
-    let authored = &source.metadata;
-    if source.kind != crate::kernel::FileKind::Regular
-        || source.logical_bytes != Some(observed.len())
-        || authored.has_named_attributes
-        || authored.has_acl
-        || authored.has_security_descriptor
-        || authored.posix_flags.is_some_and(|flags| flags != 0)
-    {
-        return Ok(false);
-    }
-    #[cfg(unix)]
-    if authored
-        .posix_mode
-        .is_some_and(|mode| mode & 0o7777 != (observed.raw.st_mode as u32) & 0o7777)
-        || authored
-            .posix_uid
-            .is_some_and(|uid| uid != observed.raw.st_uid as u32)
-        || authored
-            .posix_gid
-            .is_some_and(|gid| gid != observed.raw.st_gid as u32)
-    {
-        return Ok(false);
-    }
-    #[cfg(windows)]
-    if authored
-        .windows_attributes
-        .is_some_and(|attributes| attributes & 0x2127 != observed.raw.FileAttributes & 0x2127)
-    {
-        return Ok(false);
-    }
-    let parent = host_path(
-        relative.parent().unwrap_or_else(|| Path::new("")),
-        &mut &*work,
-        |path, work| root.open_dir_held(path, work),
-    )?;
-    let mut file = crate::native_host::open_leaf(
-        &parent,
-        Path::new(
-            relative
-                .file_name()
-                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        ),
-        &crate::native_host::NativeOpenOptions::Read,
-        &mut &*work,
-    )?;
-    if crate::native_host::stat_file(&file, &mut &*work)?.identity() != observed.identity() {
-        return Ok(false);
-    }
-    let mut buffer = [0; 64 * 1024];
-    let mut offset = 0;
-    use std::io::Read as _;
-    while offset < observed.len() {
-        let length = (observed.len() - offset)
-            .min(buffer.len() as u64)
-            .min(work.remaining()?.source_bytes_read / 2);
-        if length == 0 {
-            work.charge(NativeResourceCredit::ReadBytes.delta(2))?;
-        }
-        let expected = generation
-            .read_range(&absolute, offset, length, work, work.cancellation())
-            .await?;
-        if expected.bytes.len() as u64 != length {
+    crate::heap_future::native_future(work, || async move {
+        let relative = Path::new(path);
+        let Some(observed) = host_stat(root, relative, work)? else {
+            return Ok(false);
+        };
+        if observed.file_type() != crate::demand::SourceNodeKind::RegularFile {
             return Ok(false);
         }
-        let mut count = 0;
-        while count < length as usize {
-            work.charge(NativeResourceCredit::ReadOperations.delta(1))?;
-            let read = file.read(&mut buffer[count..length as usize])?;
-            work.spent(NativeResourceCredit::ReadBytes.delta(read as u64))?;
-            if read == 0 {
-                return Ok(false);
-            }
-            count += read;
-        }
-        if native_compare(
-            expected.bytes.iter().copied(),
-            buffer[..count].iter().copied(),
-            work,
-        )? != std::cmp::Ordering::Equal
+        let (absolute, _allocation) = work.display(&format_args!("/{path}"))?;
+        let source = generation
+            .stat(&absolute, work, work.cancellation())
+            .await?;
+        let authored = &source.metadata;
+        if source.kind != crate::kernel::FileKind::Regular
+            || source.logical_bytes != Some(observed.len())
+            || authored.has_named_attributes
+            || authored.has_acl
+            || authored.has_security_descriptor
+            || authored.posix_flags.is_some_and(|flags| flags != 0)
         {
             return Ok(false);
         }
-        offset += length;
-    }
-    let finished = crate::native_host::stat_file(&file, &mut &*work)?;
-    Ok(finished.identity() == observed.identity()
-        && same_file_version(&observed, &finished)?
-        && host_stat(root, relative, work)?
-            .is_some_and(|selected| selected.identity() == observed.identity()))
+        #[cfg(unix)]
+        if authored
+            .posix_mode
+            .is_some_and(|mode| mode & 0o7777 != (observed.raw.st_mode as u32) & 0o7777)
+            || authored
+                .posix_uid
+                .is_some_and(|uid| uid != observed.raw.st_uid as u32)
+            || authored
+                .posix_gid
+                .is_some_and(|gid| gid != observed.raw.st_gid as u32)
+        {
+            return Ok(false);
+        }
+        #[cfg(windows)]
+        if authored
+            .windows_attributes
+            .is_some_and(|attributes| attributes & 0x2127 != observed.raw.FileAttributes & 0x2127)
+        {
+            return Ok(false);
+        }
+        let parent = host_path(
+            relative.parent().unwrap_or_else(|| Path::new("")),
+            &mut &*work,
+            |path, work| root.open_dir_held(path, work),
+        )?;
+        let mut file = crate::native_host::open_leaf(
+            &parent,
+            Path::new(
+                relative
+                    .file_name()
+                    .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
+            ),
+            &crate::native_host::NativeOpenOptions::Read,
+            &mut &*work,
+        )?;
+        if crate::native_host::stat_file(&file, &mut &*work)?.identity() != observed.identity() {
+            return Ok(false);
+        }
+        let mut buffer = [0; 64 * 1024];
+        let mut offset = 0;
+        use std::io::Read as _;
+        while offset < observed.len() {
+            let length = (observed.len() - offset)
+                .min(buffer.len() as u64)
+                .min(work.remaining()?.source_bytes_read / 2);
+            if length == 0 {
+                work.charge(NativeResourceCredit::ReadBytes.delta(2))?;
+            }
+            let expected = generation
+                .read_range(&absolute, offset, length, work, work.cancellation())
+                .await?;
+            if expected.bytes.len() as u64 != length {
+                return Ok(false);
+            }
+            let mut count = 0;
+            while count < length as usize {
+                work.charge(NativeResourceCredit::ReadOperations.delta(1))?;
+                let read = file.read(&mut buffer[count..length as usize])?;
+                work.spent(NativeResourceCredit::ReadBytes.delta(read as u64))?;
+                if read == 0 {
+                    return Ok(false);
+                }
+                count += read;
+            }
+            if native_compare(
+                expected.bytes.iter().copied(),
+                buffer[..count].iter().copied(),
+                work,
+            )? != std::cmp::Ordering::Equal
+            {
+                return Ok(false);
+            }
+            offset += length;
+        }
+        let finished = crate::native_host::stat_file(&file, &mut &*work)?;
+        Ok(finished.identity() == observed.identity()
+            && same_file_version(&observed, &finished)?
+            && host_stat(root, relative, work)?
+                .is_some_and(|selected| selected.identity() == observed.identity()))
+    })?
+    .await
 }
 
 pub(super) async fn host_directory_holds_unknown_entries<

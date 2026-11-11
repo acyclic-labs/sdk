@@ -232,6 +232,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             // or require another admission after physical publication.
             actor.complete_if_available(revision, next_projection.seal(envelope.commit_id));
         }
+        let outcomes = scope
+            .finish_owned(outcomes)
+            .map_err(crate::async_storage::authority_error)?;
         let (receipts, allocation) = crate::async_storage::authority_parts(outcomes);
         Ok(AppendGroupOutcome::Published {
             receipts,
