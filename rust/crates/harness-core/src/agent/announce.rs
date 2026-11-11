@@ -115,12 +115,14 @@ impl WorkspaceAnnouncement {
                 }
             }
         }
-        if by_entry.len() != table.entries().len() {
-            return Err(Error::Record("workspace exposure does not match table"));
-        }
-        let workspaces = table
+        let visible = table
             .entries()
             .iter()
+            .filter(|entry| entry.role != super::WorkspaceRole::Internal);
+        if by_entry.len() != visible.clone().count() {
+            return Err(Error::Record("workspace exposure does not match table"));
+        }
+        let workspaces = visible
             .map(|entry: &WorkspaceEntry| {
                 let paths = by_entry
                     .get(&entry.id)
