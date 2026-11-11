@@ -7,6 +7,7 @@ use crate::{OwnedBytes, StreamError};
 use acyclic_collections::page::search::Search;
 use acyclic_collections::page::{self, Child, Page, PageRef};
 
+mod batch;
 mod build;
 mod checkpoint;
 mod codec;
@@ -14,7 +15,6 @@ mod cursor;
 mod key;
 mod sort;
 pub mod summary;
-mod update;
 pub use build::Builder;
 pub use cursor::Cursor;
 use key::Key;

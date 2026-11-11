@@ -1137,3 +1137,40 @@ ordered rows and complete dependency retention, duplicate/decreasing key refusal
 and interrupted writer/cursor behavior through the existing real-file gate.
 An ownership-edge mutation must fail the retained-graph control. This supplies
 bounded plan output, not yet the range planner, stage registry or final apply.
+
+### Batched COW successor construction (before implementation)
+
+Consume one immutable sorted update index with one forward cursor. The shared
+iterative collections/page/rewrite driver retains bounded original-node frames.
+Each child request carries its inherited exclusive upper bound. If the next
+update is beyond that bound, return its original child reference without reading
+or rewriting that subtree. An update equal to the bound belongs to the NEXT
+child. The first and last children inherit the parent's unbounded ends.
+
+A touched leaf merges its bounded original entries with all updates before its
+upper bound. Replacements preserve cardinality; insertions increment it once.
+The existing Level packing/codec writes bounded pages into the paged summary
+sequence, rather than returning a request-sized child vector. Refactor the
+bounded Level append operations for reuse by streaming page output and Builder.
+No second page packing or node codec is introduced.
+
+An original internal frame retains at most one result per original child;
+each result is either its untouched reference or a paged summary descriptor.
+Finish streams those results in order through the same bounded Level packer.
+Only touched paths are rewritten, and oversized output is promoted one level
+at a time until one complete root remains. The caller receives that unpublished
+index only after complete success; failure/cancellation returns no successor.
+There is no mutable namespace, condition decision or sequence assignment here.
+
+Controls compare a batch containing 100k insertions into one original leaf,
+replacements at inherited bounds, and insertions at both unbounded ends against
+an independent ordered model. Retain pinned original roots and untouched child
+dependencies; reopen the successor descriptor. A mutation dropping untouched
+children must fail that model. This is preparation coverage, not the required
+100k-effect atomic Stream conformance or final-publication proof.
+
+Single-key set must use this SAME rewrite driver. Its input adapter yields one
+normalized entry; batch input yields the immutable index cursor. Delete the old
+single-key Work implementation and adapt its sibling-loss mutation to this
+shared driver. Keep its pinned-root and spine-IO controls unchanged. This avoids
+two COW mechanisms and adds no one-entry temporary index/frame IO to set.

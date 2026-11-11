@@ -22,6 +22,24 @@ impl Level {
             Page::Internal(children) => children.len(),
         }
     }
+    fn entry(&mut self, entry: Entry) -> Result<(), StreamError> {
+        let Page::Leaf(entries) = &mut self.page else {
+            return Err(StreamError::InvalidArgument);
+        };
+        entries.try_reserve(1).map_err(|_| StreamError::Capacity)?;
+        self.bytes += codec::entry_length(&entry);
+        entries.push(entry);
+        Ok(())
+    }
+    fn child(&mut self, child: Child<Key, Root>) -> Result<(), StreamError> {
+        let Page::Internal(children) = &mut self.page else {
+            return Err(StreamError::InvalidArgument);
+        };
+        children.try_reserve(1).map_err(|_| StreamError::Capacity)?;
+        self.bytes += codec::child_length(&child);
+        children.push(child);
+        Ok(())
+    }
     fn chunk(&self, height: usize) -> Result<Option<(usize, bool)>, StreamError> {
         fn chunk<T>(
             items: &[T],
@@ -130,14 +148,7 @@ impl<'a, S: Storage> Builder<'a, S> {
         Ok(&mut self.levels[height])
     }
     fn child(&mut self, height: usize, child: Child<Key, Root>) -> Result<(), StreamError> {
-        let level = self.level(height)?;
-        let Page::Internal(children) = &mut level.page else {
-            return Err(StreamError::InvalidArgument);
-        };
-        children.try_reserve(1).map_err(|_| StreamError::Capacity)?;
-        level.bytes += codec::child_length(&child);
-        children.push(child);
-        Ok(())
+        self.level(height)?.child(child)
     }
     async fn flush(&mut self, start: usize, close: bool) -> Result<(), StreamError> {
         let mut pending = Vec::new();
@@ -195,13 +206,7 @@ impl<'a, S: Storage> Builder<'a, S> {
     pub(super) async fn append(&mut self, entry: Entry) -> Result<(), StreamError> {
         let count = self.count.checked_add(1).ok_or(StreamError::Capacity)?;
         let last = entry.key.clone();
-        let level = self.level(0)?;
-        let Page::Leaf(entries) = &mut level.page else {
-            return Err(StreamError::InvalidArgument);
-        };
-        entries.try_reserve(1).map_err(|_| StreamError::Capacity)?;
-        level.bytes += codec::entry_length(&entry);
-        entries.push(entry);
+        self.level(0)?.entry(entry)?;
         self.flush(0, false).await?;
         self.count = count;
         self.last = Some(last);
@@ -246,5 +251,50 @@ impl<'a, S: Storage> Builder<'a, S> {
             self.flush(height, true).await?;
         }
         Err(StreamError::Capacity)
+    }
+}
+
+/// One data-node level, with bounded packing and paged output descriptors.
+pub(super) struct Pages<'a, S> {
+    storage: &'a S,
+    level: Level,
+    height: u8,
+    output: summary::Writer<'a, S>,
+}
+
+impl<'a, S: Storage> Pages<'a, S> {
+    pub(super) async fn new(storage: &'a S, height: u8) -> Result<Self, StreamError> {
+        Ok(Self {
+            storage,
+            level: Level::new(usize::from(height)),
+            height,
+            output: summary::Writer::new(storage, height).await?,
+        })
+    }
+    pub(super) async fn entry(&mut self, entry: Entry) -> Result<(), StreamError> {
+        self.level.entry(entry)?;
+        self.flush(false).await
+    }
+    pub(super) async fn child(&mut self, child: Child<Key, Root>) -> Result<(), StreamError> {
+        self.level.child(child)?;
+        self.flush(false).await
+    }
+    async fn flush(&mut self, close: bool) -> Result<(), StreamError> {
+        while self.level.len() > 0 && (close || self.level.bytes >= tree::LEAF_BYTES / 2) {
+            let Some((count, closed)) = self.level.chunk(usize::from(self.height))? else {
+                return Err(StreamError::InvalidResponse);
+            };
+            if !closed && !close {
+                break;
+            }
+            let page = self.level.take(count)?;
+            let child = codec::write(self.storage, borrowed(&page), self.height).await?;
+            self.output.push(child.first.field, child.page).await?;
+        }
+        Ok(())
+    }
+    pub(super) async fn finish(mut self) -> Result<summary::Summaries, StreamError> {
+        self.flush(true).await?;
+        self.output.finish().await
     }
 }
