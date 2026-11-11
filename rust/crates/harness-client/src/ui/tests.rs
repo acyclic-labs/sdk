@@ -72,12 +72,16 @@ async fn wait(
     ready: impl Fn(&Reader) -> bool,
 ) {
     poll_fn(|cx| {
+        let generation = reader.generation();
         reader.begin_frame(0);
         reader.plan(wants.iter().cloned().map(|want| (want, Priority::Visible)));
         driver.step(reader, 0, cx);
         if ready(reader) {
             Poll::Ready(())
         } else {
+            if reader.generation() != generation {
+                cx.waker().wake_by_ref();
+            }
             Poll::Pending
         }
     })
