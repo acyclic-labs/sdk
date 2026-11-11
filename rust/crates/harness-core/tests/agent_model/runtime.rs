@@ -290,32 +290,30 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
             "ordinary input interrupted the turn"
         );
 
-        let delivered = if archive {
-            host.archive(&root, &user(), &intent("stop")).await?
-        } else {
-            host.send(
-                &root,
-                &user(),
-                &InboxRecord::Cancel(Control {
-                    by: user(),
-                    id: intent("stop"),
-                }),
-            )
-            .await?
+        // Archive resumes the actor under its delivery fence. Keep driving
+        // the held delivery while that control waits for its completion.
+        let control = async {
+            if archive {
+                host.archive(&root, &user(), &intent("stop")).await
+            } else {
+                host.send(
+                    &root,
+                    &user(),
+                    &InboxRecord::Cancel(Control {
+                        by: user(),
+                        id: intent("stop"),
+                    }),
+                )
+                .await
+            }
         };
+        let (delivered, failures) = tokio::join!(control, &mut drain);
+        let delivered = delivered?;
         assert!(matches!(delivered, Delivered::Committed { .. }));
-        // MemoryStream has the committed control ready. One delivery poll must
-        // signal the original token; an obsolete or overbroad prefix fails
-        // directly, without waiting for the handler's deadline.
-        let completed = futures::poll!(&mut drain);
         assert!(
             cancellation.is_cancelled(),
             "committed control missed the held turn"
         );
-        let failures = match completed {
-            std::task::Poll::Ready(failures) => failures,
-            std::task::Poll::Pending => drain.await,
-        };
         assert!(failures.is_empty(), "{failures:?}");
         let state = host.state(&root).await?;
         assert_eq!(state.closed, archive);
