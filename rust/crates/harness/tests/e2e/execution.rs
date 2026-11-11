@@ -74,12 +74,11 @@ pub(super) async fn run_with_filesystem<
     filesystem: Fs<A, O>,
     stream: Arc<P>,
 ) -> TestResult<Outcome<P, A, O>> {
-    let limits = case.execution_limits()?;
     let storage =
         MemoryHarnessStorage::from_providers(AgentId::new(), 1_048_576, filesystem, stream).await?;
     publish(&storage, &case.seed).await?;
     case.seed.clear();
-    let (executor, provider, source) = configure(&mut case, limits)?;
+    let (executor, provider, source) = configure(&mut case);
     let input = TurnInput {
         max_steps: case.max_steps,
         operation_id: OperationId::new(),
@@ -88,13 +87,12 @@ pub(super) async fn run_with_filesystem<
     };
     let journal = storage.journal();
     let operation = input.operation_id;
-    let executor = if let Some(discovery) = &case.discovery {
-        discovery
+    let executor = match (executor, &case.discovery) {
+        (Ok(executor), Some(discovery)) => discovery
             .stage(&storage)
             .await
-            .and_then(|stage| executor.with_context_stage(Arc::new(stage)))
-    } else {
-        Ok(executor)
+            .and_then(|stage| executor.with_context_stage(Arc::new(stage))),
+        (result, _) => result,
     };
     match executor {
         Err(error) => {
@@ -146,8 +144,11 @@ pub(super) async fn publish<
 
 fn configure(
     case: &mut Scenario,
-    limits: acyclic_harness::conversation::Limits,
-) -> acyclic_harness::Result<(StockExecutor, Arc<ScriptedModelProvider>, Option<Context>)> {
+) -> (
+    acyclic_harness::Result<StockExecutor>,
+    Arc<ScriptedModelProvider>,
+    Option<Context>,
+) {
     let mut provider = ScriptedModelProvider::new(std::mem::take(&mut case.turns))
         .with_reconciliations(std::mem::take(&mut case.recoveries));
     if let Some(capacity) = case.capacity {
@@ -183,18 +184,24 @@ fn configure(
             ContextPlacement::Prepend,
         )) as Arc<dyn ContextStage>])
     };
-    let mut executor = StockExecutor::new(
-        Model::new("scripted".into(), "scenario".into(), "1".into())?,
-        provider.clone(),
-        context,
-        ToolRegistry::default(),
-    )
-    .with_compaction_policy(case.compaction.take().unwrap_or(CompactionPolicy::Disabled))
-    .with_limits(limits);
-    if let Some(maximum) = case.max_output_tokens {
-        executor = executor.with_max_output_tokens(maximum)?;
-    }
-    Ok((executor, provider, summary_source))
+    let executor = (|| {
+        let limits = case.execution_limits().map_err(|error| {
+            acyclic_harness::Error::Invalid(format!("harness limits are invalid: {error}"))
+        })?;
+        let mut executor = StockExecutor::new(
+            Model::new("scripted".into(), "scenario".into(), "1".into())?,
+            provider.clone(),
+            context,
+            ToolRegistry::default(),
+        )
+        .with_compaction_policy(case.compaction.take().unwrap_or(CompactionPolicy::Disabled))
+        .with_limits(limits);
+        if let Some(maximum) = case.max_output_tokens {
+            executor = executor.with_max_output_tokens(maximum)?;
+        }
+        Ok(executor)
+    })();
+    (executor, provider, summary_source)
 }
 
 async fn run_summary(
