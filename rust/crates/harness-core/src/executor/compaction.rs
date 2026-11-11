@@ -212,9 +212,7 @@ impl StockExecution<'_> {
         let (through, maximum) = crate::context::plan_compaction_budget(
             policy,
             context,
-            // A compaction replaces existing messages; its output is already
-            // bounded by this original source extent, without a policy fallback.
-            message_limit.unwrap_or(context.messages.len()),
+            message_limit,
             context.messages.len().saturating_sub(1),
             self.io,
         )?;

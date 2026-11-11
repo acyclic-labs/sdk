@@ -4,7 +4,7 @@ use crate::{executor::stock_boundary, wire::ErrorCode};
 pub(crate) fn plan_compaction_budget(
     policy: &CapacityCompaction,
     context: &Context,
-    maximum_messages: usize,
+    maximum_messages: Option<usize>,
     requested_cut: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(usize, usize)> {

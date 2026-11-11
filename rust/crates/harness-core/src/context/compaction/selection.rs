@@ -7,7 +7,7 @@ impl CapacityCompaction {
     pub(crate) fn projection_budget(
         &self,
         context: &Context,
-        maximum_messages: usize,
+        maximum_messages: Option<usize>,
         requested_cut: usize,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(usize, usize)> {
@@ -20,18 +20,21 @@ impl CapacityCompaction {
     pub(crate) fn try_projection_budget(
         &self,
         context: &Context,
-        maximum_messages: usize,
+        maximum_messages: Option<usize>,
         requested_cut: usize,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<(usize, usize)>> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let recent_messages = maximum_messages.checked_sub(1).ok_or_else(|| {
-            compaction_error(
-                quota.work(),
-                "compaction requires a summary message allowance",
-            )
-        })?;
-        let mut through = requested_cut.max(context.messages.len().saturating_sub(recent_messages));
+        let mut through = requested_cut;
+        if let Some(maximum) = maximum_messages {
+            let recent_messages = maximum.checked_sub(1).ok_or_else(|| {
+                compaction_error(
+                    quota.work(),
+                    "compaction requires a summary message allowance",
+                )
+            })?;
+            through = through.max(context.messages.len().saturating_sub(recent_messages));
+        }
         if through == 0 || through >= context.messages.len() {
             return Ok(None);
         }
@@ -41,9 +44,6 @@ impl CapacityCompaction {
             if group.size > 0 && group.root < through && through <= group.end {
                 through = group.root;
             }
-        }
-        if through == 0 && maximum_messages == usize::MAX {
-            return Ok(None);
         }
         let selected = mandatory_selection(context, context.messages.len(), &groups, &mut quota)?;
         let mut mandatory = context.messages.len();
@@ -70,7 +70,10 @@ impl CapacityCompaction {
                     mandatory -= groups[source].size;
                 }
             }
-            if end <= position && position + 1 >= through && mandatory < maximum_messages {
+            if end <= position
+                && position + 1 >= through
+                && maximum_messages.is_none_or(|maximum| mandatory < maximum)
+            {
                 cut = Some(position + 1);
                 break;
             }
@@ -81,7 +84,8 @@ impl CapacityCompaction {
         })?;
         retire_vector(groups, &mut quota)?;
         retire_vector(selected, &mut quota)?;
-        if maximum > context.messages.len() || maximum > maximum_messages {
+        if maximum > context.messages.len() || maximum_messages.is_some_and(|limit| maximum > limit)
+        {
             return Ok(None);
         }
         Ok(Some((through, maximum)))
