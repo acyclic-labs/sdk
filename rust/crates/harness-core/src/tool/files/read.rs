@@ -96,23 +96,33 @@ impl FileTool {
         let start = input.range.map_or(0, |range| range.start);
         let count = input
             .range
-            .map(|range| range.end.checked_sub(range.start))
-            .unwrap_or(Some(u64::MAX))
-            .ok_or_else(|| invalid("read range is reversed; use start <= end"))?;
+            .map(|range| {
+                range
+                    .end
+                    .checked_sub(range.start)
+                    .ok_or_else(|| invalid("read range is reversed; use start <= end"))
+            })
+            .transpose()?;
         let window = context
             .effective_scope()
             .limits()
             .render_bytes
-            .min(crate::tool::output::VIEW_BYTES)
-            .saturating_add(3)
-            .min(context.effective_scope().limits().file_bytes);
+            .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
+                maximum.min(crate::tool::output::VIEW_BYTES)
+            })
+            .saturating_add(3);
+        let window = context
+            .effective_scope()
+            .limits()
+            .file_bytes
+            .map_or(window, |maximum| window.min(maximum));
         let window = super::window::Window::first(
             context,
             input,
             source,
             acyclic_fs::ByteRange {
                 offset: start,
-                length: count.min(window).max(1),
+                length: count.map_or(window, |count| count.min(window)).max(1),
             },
             work,
             io,
@@ -191,7 +201,7 @@ impl FileTool {
                 media: selection,
                 outputs: Vec::new(),
             },
-            u64::MAX,
+            None,
             work,
         )?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -203,7 +213,7 @@ fn text_result(
     source: &str,
     path: &str,
     interval: (u64, u64),
-    maximum: u64,
+    maximum: Option<u64>,
     work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(ToolResult, acyclic_fs::NativeCustody)> {
@@ -233,7 +243,9 @@ fn text_result(
                 history,
             )
         })? + schema::json_envelope_bytes()? as u64
-            <= maximum.min(crate::tool::output::VIEW_BYTES);
+            <= maximum.map_or(crate::tool::output::VIEW_BYTES, |maximum| {
+                maximum.min(crate::tool::output::VIEW_BYTES)
+            });
     let shown = if complete {
         source
     } else {
@@ -254,7 +266,7 @@ fn text_result(
             text: shown,
             page: Some(page(shown_end)),
         },
-        u64::MAX,
+        None,
         work,
     )?;
     Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -263,7 +275,7 @@ fn text_result(
 pub(super) fn encoded_text_budget(
     version: &str,
     path: &str,
-    maximum: u64,
+    maximum: Option<u64>,
     work: acyclic_fs::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
@@ -284,7 +296,9 @@ pub(super) fn encoded_text_budget(
         crate::executor::json::json_byte_length(&empty, None, history)
     })? + schema::json_envelope_bytes()? as u64;
     maximum
-        .min(crate::tool::output::VIEW_BYTES)
+        .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
+            maximum.min(crate::tool::output::VIEW_BYTES)
+        })
         .checked_sub(overhead)
         .filter(|budget| *budget >= 6)
         .ok_or_else(|| executor::rejection(work, "render credit cannot hold a source page"))
@@ -324,7 +338,7 @@ mod checks {
             let mut assembled = String::new();
             loop {
                 let (result, _hold) = text_result(FileReadSource::Content(file.clone()), &source[cursor..], file.path(),
-                    (cursor as u64, source.len() as u64), maximum, None, None).unwrap();
+                    (cursor as u64, source.len() as u64), Some(maximum), None, None).unwrap();
                 let invocation = ToolInvocation {
                     operation_id:crate::OperationId::new(),call_id:"page".into(),name:"read".into(),
                     arguments:serde_json::json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":cursor,"end":source.len()}}),
@@ -353,7 +367,7 @@ mod checks {
             let exact = serde_json::json!({"kind":"json","value":{"path":file.path(),"version":version,"text":tiny,
                 "page":{"start":0,"end":tiny.len(),"offset":0,"total":tiny.len(),"eof":true}}});
             let credit = serde_json::to_vec(&exact).unwrap().len() as u64;
-            let (result, _hold) = text_result(FileReadSource::Content(file.clone()), &tiny, file.path(), (0,tiny.len() as u64), credit, None, None).unwrap();
+            let (result, _hold) = text_result(FileReadSource::Content(file.clone()), &tiny, file.path(), (0,tiny.len() as u64), Some(credit), None, None).unwrap();
             prop_assert_eq!(result.value["text"].as_str().unwrap(), tiny.as_str());
             prop_assert_eq!(&result.value["page"], &exact["value"]["page"]);
         }

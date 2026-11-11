@@ -216,13 +216,13 @@ fn locate(
 fn append(
     output: &mut String,
     text: &str,
-    maximum: u64,
+    maximum: Option<u64>,
     meter: &mut acyclic_fs::NativeCustody,
 ) -> Result<()> {
     let length = output
         .len()
         .checked_add(text.len())
-        .filter(|length| *length as u64 <= maximum)
+        .filter(|length| maximum.is_none_or(|maximum| *length as u64 <= maximum))
         .ok_or_else(|| invalid(meter, "patch output exceeds byte bound"))?;
     reserve_string(meter, output, length)?;
     charge(meter, (text.len()) as u64, 0)?;
@@ -249,7 +249,7 @@ pub(crate) fn apply_update(
     apply_update_core(
         source,
         diff,
-        limits.maximum_bytes,
+        Some(limits.maximum_bytes),
         Some(limits.maximum_work),
         Some(limits.maximum_hunks),
         meter,
@@ -261,22 +261,24 @@ pub(crate) fn apply_update(
 pub(crate) fn apply_update_admitted(
     source: &str,
     diff: &str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     meter: &mut acyclic_fs::NativeCustody,
 ) -> Result<String> {
     apply_update_core(source, diff, maximum_bytes, None, None, meter)
 }
 
-fn apply_update_core(
+pub(crate) fn apply_update_core(
     source: &str,
     diff: &str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     maximum_work: Option<u64>,
     maximum_hunks: Option<u32>,
     meter: &mut acyclic_fs::NativeCustody,
 ) -> Result<String> {
     plan_output(meter, |meter| {
-        if source.len() as u64 > maximum_bytes || diff.len() as u64 > maximum_bytes {
+        if maximum_bytes
+            .is_some_and(|maximum| source.len() as u64 > maximum || diff.len() as u64 > maximum)
+        {
             return Err(invalid(meter, "patch input exceeds byte bound"));
         }
         retain(
@@ -375,7 +377,7 @@ mod tests {
                 let output = apply_update_admitted(
                     "one\nthree\n",
                     "@@\n-one\n+two\n three\n",
-                    4096,
+                    Some(4096),
                     &mut custody,
                 )?;
                 assert_eq!(output, "two\nthree\n");
@@ -390,7 +392,8 @@ mod tests {
                     "@@\n-one\n+two\n*** End of File\n+later\n",
                 ] {
                     assert!(
-                        apply_update_admitted("one\nthree\n", invalid, 4096, &mut custody).is_err()
+                        apply_update_admitted("one\nthree\n", invalid, Some(4096), &mut custody)
+                            .is_err()
                     );
                     // Both a later matching failure and a grammar failure
                     // release scratch without erasing earlier live outputs.

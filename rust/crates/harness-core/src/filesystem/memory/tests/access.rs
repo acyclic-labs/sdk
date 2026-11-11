@@ -23,7 +23,7 @@ proptest! {
                 let read = storage.read(&file).await;
                 assert_eq!(read.is_ok(), !denied, "{read:?}");
                 if let Ok(bytes) = read { assert_eq!(bytes.as_ref(), b"cached"); }
-                let publication = storage.content_verifier.verify_publication(&file, 4096, None)?.await;
+                let publication = storage.content_verifier.verify_publication(&file, Some(4096), None)?.await;
                 assert_eq!(publication.is_ok(), !denied, "local publication must recheck the current policy: {publication:?}");
             }
             // Restoring disclosure must recover the same pinned bytes, proving
@@ -180,13 +180,13 @@ async fn local_publication_evidence_rechecks_current_disclosure_policy() -> Resu
         .await?;
     storage
         .content_verifier
-        .verify_publication(&file, 4096, None)?
+        .verify_publication(&file, Some(4096), None)?
         .await?;
     policy(&fs, &storage, 2, Some(FsAction::Read), "secrets/**").await?;
     assert!(
         storage
             .content_verifier
-            .verify_publication(&file, 4096, None)?
+            .verify_publication(&file, Some(4096), None)?
             .await
             .is_err(),
         "local publication evidence must not bypass a later disclosure denial"
@@ -194,7 +194,7 @@ async fn local_publication_evidence_rechecks_current_disclosure_policy() -> Resu
     policy(&fs, &storage, 3, None, "secrets/**").await?;
     storage
         .content_verifier
-        .verify_publication(&file, 4096, None)?
+        .verify_publication(&file, Some(4096), None)?
         .await?;
     Ok(())
 }

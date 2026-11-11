@@ -318,7 +318,12 @@ impl HostDriver {
         let content = self.content(agent, MAXIMUM_BYTES, &[]).await?;
         if let Some(file) = content
             .writer
-            .observe_staged_once(operation, None, MAXIMUM_BYTES, ContentAccess::default())?
+            .observe_staged_once(
+                operation,
+                None,
+                Some(MAXIMUM_BYTES),
+                ContentAccess::default(),
+            )?
             .await?
             .0
         {

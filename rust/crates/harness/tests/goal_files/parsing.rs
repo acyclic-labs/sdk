@@ -28,7 +28,7 @@ fn goal(bytes: &[u8]) -> Result<GoalView> {
     GoalView::from_file(
         file("GOAL.md", VolumeClass::AgentPrivate, bytes, "v1")?,
         bytes,
-        4096,
+        Some(4096),
     )
 }
 
@@ -99,11 +99,13 @@ fn private_root_and_integrity_are_required() -> Result<()> {
         ("GOAL.md", VolumeClass::SessionShared),
         ("nested/GOAL.md", VolumeClass::AgentPrivate),
     ] {
-        assert!(GoalView::from_file(file(path, class, b"goal", "v1")?, b"goal", 4096).is_err());
+        assert!(
+            GoalView::from_file(file(path, class, b"goal", "v1")?, b"goal", Some(4096)).is_err()
+        );
     }
     let source = file("GOAL.md", VolumeClass::AgentPrivate, b"goal", "v1")?;
-    assert!(GoalView::from_file(source.clone(), b"changed", 4096).is_err());
-    assert!(GoalView::from_file(source, b"goal", 3).is_err());
+    assert!(GoalView::from_file(source.clone(), b"changed", Some(4096)).is_err());
+    assert!(GoalView::from_file(source, b"goal", Some(3)).is_err());
     Ok(())
 }
 
@@ -127,7 +129,7 @@ fn continuation_is_stable_per_settle_and_independent_of_goal_revision() -> Resul
     let same_bytes_new_generation = GoalView::from_file(
         file("GOAL.md", VolumeClass::AgentPrivate, b"Ship it", "v2")?,
         b"Ship it",
-        4096,
+        Some(4096),
     )?;
     assert_eq!(same_bytes_new_generation.revision(), view.revision());
     assert_eq!(
@@ -289,20 +291,20 @@ proptest! {
         // Exercise the exact admission boundary, one byte below, and varied limits.
         for limit in [required, required - 1, extra_limit] {
             let plain = file("GOAL.md", VolumeClass::AgentPrivate, body.as_bytes(), "v1")?;
-            let accepted = GoalView::from_file(plain, body.as_bytes(), limit as u64);
+            let accepted = GoalView::from_file(plain, body.as_bytes(), Some(limit as u64));
             prop_assert_eq!(accepted.is_ok(), limit >= required);
             let Ok(view) = accepted else { continue };
             for from in [GoalStatus::Active, GoalStatus::Blocked, GoalStatus::Done] {
                 let source = view.status_contents(from, Some(&reason))?;
                 prop_assert!(source.len() <= limit);
                 let source_ref = file("GOAL.md", VolumeClass::AgentPrivate, source.as_bytes(), "v2")?;
-                let source_view = GoalView::from_file(source_ref, source.as_bytes(), limit as u64)?;
+                let source_view = GoalView::from_file(source_ref, source.as_bytes(), Some(limit as u64))?;
                 for to in [GoalStatus::Active, GoalStatus::Blocked, GoalStatus::Done] {
                     for next_reason in [None, Some(reason.as_str())] {
                         let rewritten = source_view.status_contents(to, next_reason)?;
                         prop_assert!(rewritten.len() <= limit);
                         let reference = file("GOAL.md", VolumeClass::AgentPrivate, rewritten.as_bytes(), "v3")?;
-                        let transitioned = GoalView::from_file(reference, rewritten.as_bytes(), limit as u64)?;
+                        let transitioned = GoalView::from_file(reference, rewritten.as_bytes(), Some(limit as u64))?;
                         prop_assert_eq!(transitioned.status, to);
                         prop_assert_eq!(transitioned.markdown.as_str(), body.as_str());
                         prop_assert_eq!(transitioned.reason.as_deref(), next_reason);
@@ -317,7 +319,7 @@ proptest! {
             };
             prop_assert!(rewritten.len() <= limit);
             let reference = file("GOAL.md", VolumeClass::AgentPrivate, rewritten.as_bytes(), "v4")?;
-            let blocked = GoalView::from_file(reference, rewritten.as_bytes(), limit as u64)?;
+            let blocked = GoalView::from_file(reference, rewritten.as_bytes(), Some(limit as u64))?;
             prop_assert_eq!(blocked.status, GoalStatus::Blocked);
             prop_assert_eq!(blocked.markdown.as_str(), body.as_str());
         }
@@ -338,7 +340,7 @@ async fn boundary_cap_output_is_accepted_by_the_ordinary_writer() -> Result<()> 
             "GOAL.md",
         )
         .await?;
-    let view = GoalView::from_file(reference, body.as_bytes(), 4096)?;
+    let view = GoalView::from_file(reference, body.as_bytes(), Some(4096))?;
     let policy = GoalContinuationPolicy {
         max_continuations: Some(u32::MAX),
     };
@@ -357,7 +359,7 @@ async fn boundary_cap_output_is_accepted_by_the_ordinary_writer() -> Result<()> 
         )
         .await?;
     let bytes = storage.read(&blocked).await?;
-    let blocked = GoalView::from_file(blocked, &bytes, 4096)?;
+    let blocked = GoalView::from_file(blocked, &bytes, Some(4096))?;
     assert_eq!(blocked.status, GoalStatus::Blocked);
     assert_eq!(blocked.markdown, body);
     assert_eq!(

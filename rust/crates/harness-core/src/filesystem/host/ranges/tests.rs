@@ -400,7 +400,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
                 &read,
                 path,
                 None,
-                maximum,
+                Some(maximum),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&io),

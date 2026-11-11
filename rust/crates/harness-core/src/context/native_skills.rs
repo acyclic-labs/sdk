@@ -1225,7 +1225,7 @@ mod binding_tests {
                 &grant,
                 &parent_source.path,
                 Some(&parent_source.generation),
-                4096,
+                Some(4096),
                 ContentAccess::default(),
             )
             .await,
@@ -1237,7 +1237,7 @@ mod binding_tests {
                 &grant,
                 &parent_source.path,
                 Some(&parent_source.generation),
-                4096,
+                Some(4096),
                 access,
             )
             .await,
@@ -1249,7 +1249,7 @@ mod binding_tests {
                 &grant,
                 &child_source.path,
                 Some(&child_source.generation),
-                4096,
+                Some(4096),
                 access,
             )
             .await?;

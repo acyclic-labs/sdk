@@ -289,7 +289,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &mut None,
     )?;
     assert_eq!(
-        host.read_content(&builtin, &builtin_reader, 1024, None)
+        host.read_content(&builtin, &builtin_reader, Some(1024), None)
             .await?
             .as_ref(),
         b"builtin"

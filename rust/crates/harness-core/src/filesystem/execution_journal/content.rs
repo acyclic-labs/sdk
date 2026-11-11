@@ -525,7 +525,7 @@ where
                 )?
             };
             self.host
-                .read_content(reference, &grant, super::MAXIMUM_PAYLOAD_BYTES, None)
+                .read_content(reference, &grant, Some(super::MAXIMUM_PAYLOAD_BYTES), None)
                 .await?;
         }
         Ok(())

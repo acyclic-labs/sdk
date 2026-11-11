@@ -143,7 +143,7 @@ fn output_part(file: &FileRef) -> MediaPart<'_> {
 pub(super) fn notebook_text_budget(
     path: &str,
     version: &str,
-    maximum: u64,
+    maximum: Option<u64>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
     let page = ReadPage {
@@ -170,7 +170,9 @@ pub(super) fn notebook_text_budget(
         crate::executor::json::json_byte_length(&empty, None, history)
     })?;
     Ok(maximum
-        .min(crate::tool::output::VIEW_BYTES)
+        .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
+            maximum.min(crate::tool::output::VIEW_BYTES)
+        })
         .saturating_sub(overhead))
 }
 
@@ -426,7 +428,7 @@ impl ToolProjection for FileProjection {
                                     outputs: &[],
                                 },
                             },
-                            u64::MAX,
+                            None,
                             work,
                         );
                     }
@@ -450,7 +452,7 @@ impl ToolProjection for FileProjection {
                                     outputs: &result.0.outputs,
                                 },
                             },
-                            u64::MAX,
+                            None,
                             work,
                         );
                     }
@@ -463,7 +465,7 @@ impl ToolProjection for FileProjection {
                                 page: result.0.page.as_ref(),
                             },
                         },
-                        u64::MAX,
+                        None,
                         work,
                     );
                 }

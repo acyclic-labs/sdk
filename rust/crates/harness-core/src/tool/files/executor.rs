@@ -216,7 +216,7 @@ impl FileTool {
         };
         #[cfg(not(target_arch = "wasm32"))]
         let _file_custody = io.map(|io| io.take_native_custody(file.1)).transpose()?;
-        let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
+        let encoded = super::value(&FileResult { file: file.0 }, None, work)?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
     async fn search(
@@ -243,7 +243,15 @@ impl FileTool {
         };
         let encoded = super::value(
             &result,
-            maximum_result_bytes.min(context.effective_scope().limits().file_bytes),
+            Some(
+                context
+                    .effective_scope()
+                    .limits()
+                    .file_bytes
+                    .map_or(maximum_result_bytes, |maximum| {
+                        maximum_result_bytes.min(maximum)
+                    }),
+            ),
             work,
         )?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -260,24 +268,26 @@ impl FileTool {
         let invalid = |reason| rejection(work, reason);
 
         let input = decode::<PatchFileInput>(&invocation.arguments, work)?;
-        let limits = super::patch::PatchLimits {
-            maximum_bytes: context.effective_scope().limits().file_bytes,
-            maximum_work,
-            maximum_hunks,
-        };
-        if work.is_none() {
-            limits.validate()?;
-        }
-        if input.0.file.descriptor().byte_length() > limits.maximum_bytes
-            || input.0.diff.len() as u64 > limits.maximum_bytes
-        {
+        let maximum_bytes = context.effective_scope().limits().file_bytes;
+        // The factory has admitted comparison/hunk policy. Byte policy comes
+        // from this exact task and remains optional in the shared engine.
+        if maximum_bytes.is_some_and(|maximum| {
+            input.0.file.descriptor().byte_length() > maximum || input.0.diff.len() as u64 > maximum
+        }) {
             return Err(invalid("patch input exceeds original task file bound"));
         }
         let bytes = context.read_file(&input.0.file, io).await?;
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("patch editing requires UTF-8 content"))?;
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
-        let edited = super::patch::apply_update(source, &input.0.diff, limits, &mut allocation)?;
+        let edited = super::patch::apply_update_core(
+            source,
+            &input.0.diff,
+            maximum_bytes,
+            Some(maximum_work),
+            Some(maximum_hunks),
+            &mut allocation,
+        )?;
         context
             .stage_file_at(
                 invocation.operation_id,
@@ -314,7 +324,9 @@ impl FileTool {
             return Err(invalid("notebook and text edits are mutually exclusive"));
         }
         let maximum = context.effective_scope().limits().file_bytes;
-        if work.is_none() {
+        if work.is_none()
+            && let Some(maximum) = maximum
+        {
             super::edit::validate_edit_bound(maximum)?;
         }
         let selected = self
@@ -348,7 +360,7 @@ impl FileTool {
         };
         _notebook_hold = notebook_hold;
         _notebook_facts = notebook_facts;
-        if edited.len() as u64 > maximum {
+        if maximum.is_some_and(|maximum| edited.len() as u64 > maximum) {
             return Err(invalid("edited file exceeds admitted file credit"));
         }
         context
@@ -607,7 +619,7 @@ impl ToolExecutor for FileTool {
             };
             match receipt.0 {
                 Some(file) => {
-                    let encoded = super::value(&FileResult { file }, u64::MAX, Some(work))?;
+                    let encoded = super::value(&FileResult { file }, None, Some(work))?;
                     Ok((
                         Some(ToolResult { value: encoded.0 }),
                         encoded.1.ok_or(Error::NativeBoundary {
@@ -693,7 +705,7 @@ impl ToolExecutor for FileTool {
                 return receipt
                     .0
                     .map(|file| {
-                        let encoded = super::value(&FileResult { file }, u64::MAX, None)?;
+                        let encoded = super::value(&FileResult { file }, None, None)?;
                         Ok(ToolResult { value: encoded.0 })
                     })
                     .transpose();
@@ -766,10 +778,10 @@ impl FileTool {
                     "remove receipt differs from its original path or action",
                 ));
             }
-            super::value(&(), u64::MAX, work)?
+            super::value(&(), None, work)?
         } else {
             let file = created_file(receipt, path, work)?;
-            super::value(&FileResult { file }, u64::MAX, work)?
+            super::value(&FileResult { file }, None, work)?
         };
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }

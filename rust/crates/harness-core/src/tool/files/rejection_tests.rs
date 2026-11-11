@@ -67,7 +67,7 @@ proptest! {
         for kind in 0..3 {
             let execute = |custody: &mut acyclic_fs::NativeCustody| -> Result<()> {
                 match kind {
-                    0 => super::edit::replace(&source, &needle, "x", false, 256, custody).map(|_| ()),
+                    0 => super::edit::replace(&source, &needle, "x", false, Some(256), custody).map(|_| ()),
                     1 => super::patch::apply_update(&source, &diff, limits, custody).map(|_| ()),
                     _ => super::text::literal_search(&source, &needle, options, custody).map(|_| ()),
                 }
