@@ -1,0 +1,9 @@
+diff --git a/rust/crates/stream/src/staged/effects.rs b/rust/crates/stream/src/staged/effects.rs
+--- a/rust/crates/stream/src/staged/effects.rs
++++ b/rust/crates/stream/src/staged/effects.rs
+@@ -168,5 +168,2 @@ impl<'a, S: Storage> Effects<'a, S> {
+-        if length / BYTES as u64 != staged.effects {
+-            return Err(StreamError::InvalidResponse);
+-        }
+         let mut cursor = super::decode::Cursor::new(storage, root)?;
+         let header = cursor.exact::<{ MAGIC.len() }>().await?;

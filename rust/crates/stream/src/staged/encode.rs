@@ -201,6 +201,8 @@ impl<'a, S: Storage> Encoder<'a, S> {
             key: self.submission.idempotency_key,
             family: self.submission.family,
             accepted: self.submission.accepted,
+            effects: self.submission.effects,
+            deadline: self.submission.deadline_unix_millis,
         })
     }
     async fn effect(

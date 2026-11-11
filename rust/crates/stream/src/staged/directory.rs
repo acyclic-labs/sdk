@@ -1,7 +1,7 @@
 use super::*;
 use crate::content::index::{Index, Sorter};
 
-const MAGIC: &[u8] = b"acyclic-stream-directory-v1\0";
+const MAGIC: &[u8] = b"acyclic-stream-directory-v2\0";
 pub(super) const ROOT_BYTES: usize = 41;
 const MANIFEST_BYTES: usize = MAGIC.len() + 3 * ROOT_BYTES;
 const LOCATION_BYTES: usize = 16 + super::decode::BOOKMARK_BYTES;
@@ -12,7 +12,7 @@ const LOCATION_BYTES: usize = 16 + super::decode::BOOKMARK_BYTES;
 pub struct Directory {
     staged: StagedWrite,
     destinations: Index,
-    effects: Index,
+    effects: Root,
     root: Root,
 }
 
@@ -64,9 +64,15 @@ pub(super) fn row(effect: u64, mutation: u64, bookmark: &Bookmark) -> Field {
 }
 
 pub(super) fn encode_root(bytes: &mut Vec<u8>, root: Root) {
-    bytes.extend_from_slice(&root.part.digest);
-    bytes.extend_from_slice(&root.part.length.to_le_bytes());
-    bytes.push(root.height);
+    bytes.extend_from_slice(&root_bytes(root));
+}
+
+pub(super) fn root_bytes(root: Root) -> [u8; ROOT_BYTES] {
+    let mut bytes = [0; ROOT_BYTES];
+    bytes[..32].copy_from_slice(&root.part.digest);
+    bytes[32..40].copy_from_slice(&root.part.length.to_le_bytes());
+    bytes[40] = root.height;
+    bytes
 }
 
 pub(super) fn decode_root(bytes: &[u8]) -> Result<Root, StreamError> {
@@ -154,7 +160,8 @@ impl Directory {
     pub async fn build(storage: &impl Storage, staged: &StagedWrite) -> Result<Self, StreamError> {
         let mut reader = Reader::open(storage, staged).await?;
         let mut sorter = Sorter::new(storage);
-        let mut effect_index = crate::content::index::Builder::new(storage);
+        let mut effect_writer =
+            super::effects::Writer::new(storage, reader.deadline_unix_millis()).await?;
         let mut pending: Option<super::effects::Pending<'_, _>> = None;
         let mut effects = 0_u64;
         loop {
@@ -165,7 +172,7 @@ impl Directory {
             let destination = match token {
                 Token::Effect { soft, .. } => {
                     if let Some(previous) = pending.take() {
-                        previous.finish(storage, &mut effect_index).await?;
+                        effect_writer.append(previous).await?;
                     }
                     pending = Some(super::effects::Pending::new(
                         storage, effects, soft, bookmark,
@@ -195,10 +202,9 @@ impl Directory {
                 .ok_or(StreamError::Capacity)?;
         }
         if let Some(previous) = pending {
-            previous.finish(storage, &mut effect_index).await?;
+            effect_writer.append(previous).await?;
         }
-        let effects = effect_index.finish().await?;
-        let effect_checkpoint = effects.checkpoint(storage).await?;
+        let effects = effect_writer.finish().await?;
         let destinations = sorter.finish().await?;
         let checkpoint = destinations.checkpoint(storage).await?;
         let mut bytes = Vec::new();
@@ -206,13 +212,13 @@ impl Directory {
             .try_reserve_exact(MANIFEST_BYTES)
             .map_err(|_| StreamError::Capacity)?;
         bytes.extend_from_slice(MAGIC);
-        for root in [staged.body, checkpoint, effect_checkpoint] {
+        for root in [staged.body, checkpoint, effects] {
             encode_root(&mut bytes, root);
         }
         let mut writer = tree::Writer::new(storage)?;
         writer.reference(staged.body).await?;
         writer.reference(checkpoint).await?;
-        writer.reference(effect_checkpoint).await?;
+        writer.reference(effects).await?;
         writer.write(&bytes).await?;
         let root = writer.finish().await?;
         Ok(Self {
@@ -239,7 +245,7 @@ impl Directory {
         &self,
         storage: &'a S,
     ) -> Result<Effects<'a, S>, StreamError> {
-        Effects::open(storage, &self.staged, &self.effects).await
+        Effects::open(storage, &self.staged, self.effects).await
     }
 
     /// Opens an authenticated directory bound to the supplied original stage.
@@ -251,7 +257,7 @@ impl Directory {
     ) -> Result<Self, StreamError> {
         let bytes = body(storage, root, MANIFEST_BYTES).await?;
         let bytes =
-            crate::persistence::header(bytes.as_slice(), b"acyclic-stream-directory-v", b"1\0")?;
+            crate::persistence::header(bytes.as_slice(), b"acyclic-stream-directory-v", b"2\0")?;
         if bytes.len() != 3 * ROOT_BYTES {
             return Err(StreamError::InvalidResponse);
         }
@@ -262,7 +268,8 @@ impl Directory {
         Reader::open(storage, staged).await?;
         let destinations =
             Index::open(storage, decode_root(&bytes[ROOT_BYTES..2 * ROOT_BYTES])?).await?;
-        let effects = Index::open(storage, decode_root(&bytes[2 * ROOT_BYTES..])?).await?;
+        let effects = decode_root(&bytes[2 * ROOT_BYTES..])?;
+        Effects::open(storage, staged, effects).await?;
         Ok(Self {
             staged: staged.clone(),
             destinations,

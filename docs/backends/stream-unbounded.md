@@ -956,3 +956,41 @@ should also build/reopen this Directory and walk effects without request-sized
 allocation. It remains preparation coverage, not the required atomic-write
 conformance. The condition dependency mutation must follow the new stream writer
 and retain the same graph-control failure. This packing change is not coded yet.
+
+Packed-row refinement (before implementation): at an effect boundary all
+within-effect decoder counters are zero. Store only the verified body position
+in each row, and retain the original deadline once in the stream header. The
+remaining-effect count is derived from the fixed row geometry and current
+ordinal. Rebuild the opaque Bookmark through one private checked effect-boundary
+constructor using the same Shape::new; do not persist seven zero counters per
+effect. This reduces each row to soft flag, condition count, position and root.
+The existing full bookmark codec remains the one codec for arbitrary condition
+and mutation boundaries. Header/row parsing rejects invalid flags, geometry and
+positions. This is an encoding refinement inside the new unreleased effects-v1
+format; the enclosing directory remains v2 with no migration decoder.
+
+Binding refinement (before implementation): StagedWrite retains the validated
+original effect count and deadline alongside its immutable body descriptor.
+Reader::open verifies both against the body header; bookmark resume binds them
+along with id/key/family/body. The effect stream must match that original count
+and deadline, so a whole-row prefix cannot be accepted as a complete directory.
+This also avoids a redundant body read when opening an effect cursor. These are
+constant-width authenticated submission metadata, not a second authority state.
+
+Packed effects are implemented as 58-byte rows over the existing content-tree
+writer and staged decoder cursor. Count and deadline are bound to StagedWrite and
+rechecked against the original body/metadata headers. Per-effect objects and the
+effect Index are removed; the directory decoder accepts only v2. Empty condition
+checkpoints are uploaded/referenced once per build and read as an empty Index.
+The new 100k unconditional-effect control builds/reopens the Directory, walks all
+effects, checks original mutation bookmarks, bounds the retained metadata graph
+by physical page count and detects per-effect object reads. The original 100k
+conditional ingestion/order control is retained unchanged. Nonempty per-effect
+condition checkpoints still need packing/admission work before production-scale
+cutover; neither case is the requested atomic-write conformance.
+
+A separate real-file codec generator rejects every truncation, trailing bytes,
+wrong flags, unsupported version, invalid counts/positions/heights and rebound
+submission count/deadline. A count-guard mutation must accept a whole-row prefix
+and fail that control. The existing condition dependency mutation now targets the
+packed stream writer. These new controls and source need remote validation.

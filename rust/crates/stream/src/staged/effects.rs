@@ -1,9 +1,10 @@
-use super::directory::{ROOT_BYTES, body, decode_root, encode_root, location, row};
+use super::directory::{ROOT_BYTES, decode_root, location, root_bytes, row};
 use super::*;
-use crate::content::index::{Builder, Index, Sorter};
+use crate::content::index::{Index, Sorter};
 
-const MAGIC: &[u8] = b"acyclic-stream-effect-v1\0";
-const BYTES: usize = MAGIC.len() + 8 + 1 + super::decode::BOOKMARK_BYTES + ROOT_BYTES;
+pub(super) const MAGIC: &[u8] = b"acyclic-stream-effects-v1\0";
+pub(super) const HEADER: usize = MAGIC.len() + 9;
+pub(super) const BYTES: usize = 1 + 8 + 8 + ROOT_BYTES;
 
 pub(super) struct Pending<'a, S> {
     pub(super) ordinal: u64,
@@ -36,32 +37,57 @@ impl<'a, S: Storage> Pending<'a, S> {
         self.count = self.count.checked_add(1).ok_or(StreamError::Capacity)?;
         Ok(())
     }
-    pub(super) async fn finish(
-        self,
-        storage: &'a S,
-        effects: &mut Builder<'a, S>,
-    ) -> Result<(), StreamError> {
-        let conditions = self.conditions.finish().await?;
-        let checkpoint = conditions.checkpoint(storage).await?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(BYTES)
-            .map_err(|_| StreamError::Capacity)?;
-        bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(&self.ordinal.to_le_bytes());
-        bytes.push(u8::from(self.soft));
-        bytes.extend_from_slice(&self.bookmark.encode());
-        encode_root(&mut bytes, checkpoint);
-        let mut writer = tree::Writer::new(storage)?;
-        writer.reference(checkpoint).await?;
-        writer.write(&bytes).await?;
-        let root = writer.finish().await?;
-        effects
-            .push(
-                Field::Inline(OwnedBytes::copy_from_slice(&self.ordinal.to_be_bytes())),
-                Field::Content(root),
-            )
-            .await
+}
+
+pub(super) struct Writer<'a, S> {
+    storage: &'a S,
+    output: tree::Writer<'a, S>,
+    empty: Option<Root>,
+    count: u64,
+}
+
+impl<'a, S: Storage> Writer<'a, S> {
+    pub(super) async fn new(storage: &'a S, deadline: Option<u64>) -> Result<Self, StreamError> {
+        let mut output = tree::Writer::new(storage)?;
+        output.write(MAGIC).await?;
+        let mut bytes = [0; 9];
+        bytes[0] = u8::from(deadline.is_some());
+        bytes[1..].copy_from_slice(&deadline.unwrap_or(0).to_le_bytes());
+        output.write(&bytes).await?;
+        Ok(Self {
+            storage,
+            output,
+            empty: None,
+            count: 0,
+        })
+    }
+    pub(super) async fn append(&mut self, pending: Pending<'a, S>) -> Result<(), StreamError> {
+        if pending.ordinal != self.count {
+            return Err(StreamError::InvalidArgument);
+        }
+        let conditions = pending.conditions.finish().await?;
+        let checkpoint = match (conditions.is_empty(), self.empty) {
+            (true, Some(root)) => root,
+            (empty, _) => {
+                let checkpoint = conditions.checkpoint(self.storage).await?;
+                self.output.reference(checkpoint).await?;
+                if empty {
+                    self.empty = Some(checkpoint);
+                }
+                checkpoint
+            }
+        };
+        let mut bytes = [0; BYTES];
+        bytes[0] = u8::from(pending.soft);
+        bytes[1..9].copy_from_slice(&pending.count.to_le_bytes());
+        bytes[9..17].copy_from_slice(&pending.bookmark.effect_position()?.to_le_bytes());
+        bytes[17..].copy_from_slice(&root_bytes(checkpoint));
+        self.output.write(&bytes).await?;
+        self.count = self.count.checked_add(1).ok_or(StreamError::Capacity)?;
+        Ok(())
+    }
+    pub(super) async fn finish(self) -> Result<Root, StreamError> {
+        self.output.finish().await
     }
 }
 
@@ -117,7 +143,11 @@ impl Effect {
 pub struct Effects<'a, S> {
     storage: &'a S,
     staged: StagedWrite,
-    cursor: crate::content::index::Cursor<'a, S>,
+    root: Root,
+    cursor: super::decode::Cursor<'a, S>,
+    remaining: u64,
+    next: u64,
+    deadline: Option<u64>,
     interrupted: bool,
 }
 
@@ -125,14 +155,50 @@ impl<'a, S: Storage> Effects<'a, S> {
     pub(super) async fn open(
         storage: &'a S,
         staged: &StagedWrite,
-        index: &Index,
+        root: Root,
     ) -> Result<Self, StreamError> {
+        let length = root
+            .part
+            .length
+            .checked_sub(HEADER as u64)
+            .ok_or(StreamError::InvalidResponse)?;
+        if length % BYTES as u64 != 0 {
+            return Err(StreamError::InvalidResponse);
+        }
+        if length / BYTES as u64 != staged.effects {
+            return Err(StreamError::InvalidResponse);
+        }
+        let mut cursor = super::decode::Cursor::new(storage, root)?;
+        let header = cursor.exact::<{ MAGIC.len() }>().await?;
+        crate::persistence::header(&header, b"acyclic-stream-effects-v", b"1\0")?;
+        let bytes = cursor.exact::<9>().await?;
+        let deadline = u64::from_le_bytes(
+            bytes[1..]
+                .try_into()
+                .map_err(|_| StreamError::InvalidResponse)?,
+        );
+        if bytes[0] > 1 || (bytes[0] == 0 && deadline != 0) {
+            return Err(StreamError::InvalidResponse);
+        }
+        let deadline = (bytes[0] == 1).then_some(deadline);
+        if deadline != staged.deadline {
+            return Err(StreamError::InvalidResponse);
+        }
         Ok(Self {
             storage,
             staged: staged.clone(),
-            cursor: index.scan(storage, None).await?,
+            root,
+            cursor,
+            remaining: length / BYTES as u64,
+            next: 0,
+            deadline,
             interrupted: false,
         })
+    }
+
+    /// Immutable metadata root pinned by the enclosing directory owner.
+    pub const fn root(&self) -> Root {
+        self.root
     }
 
     /// Returns one original effect; cancellation cannot skip consumed metadata.
@@ -149,38 +215,40 @@ impl<'a, S: Storage> Effects<'a, S> {
     }
 
     async fn next_inner(&mut self) -> Result<Option<Effect>, StreamError> {
-        let Some(entry) = self.cursor.next().await? else {
+        if self.remaining == 0 {
+            self.cursor.end().await?;
             return Ok(None);
-        };
-        let (Field::Inline(key), Field::Content(root)) = entry else {
+        }
+        let bytes = self.cursor.exact::<BYTES>().await?;
+        if bytes[0] > 1 {
             return Err(StreamError::InvalidResponse);
-        };
-        let ordinal = u64::from_be_bytes(
-            key.as_slice()
+        }
+        let count = u64::from_le_bytes(
+            bytes[1..9]
                 .try_into()
                 .map_err(|_| StreamError::InvalidResponse)?,
         );
-        let bytes = body(self.storage, root, BYTES).await?;
-        let bytes =
-            crate::persistence::header(bytes.as_slice(), b"acyclic-stream-effect-v", b"1\0")?;
-        if bytes.len() != BYTES - MAGIC.len() || bytes[8] > 1 {
-            return Err(StreamError::InvalidResponse);
-        }
-        let stored = u64::from_le_bytes(
-            bytes[..8]
+        let position = u64::from_le_bytes(
+            bytes[9..17]
                 .try_into()
                 .map_err(|_| StreamError::InvalidResponse)?,
         );
-        if stored != ordinal {
+        let bookmark = Bookmark::at_effect(&self.staged, position, self.deadline, self.remaining)?;
+        let checkpoint = decode_root(&bytes[17..])?;
+        let conditions = if count == 0 {
+            Index::default()
+        } else {
+            Index::open(self.storage, checkpoint).await?
+        };
+        if conditions.len() != count {
             return Err(StreamError::InvalidResponse);
         }
-        let end = 9 + super::decode::BOOKMARK_BYTES;
-        let bookmark = Bookmark::decode(&self.staged, &bytes[9..end])?;
-        let checkpoint = decode_root(&bytes[end..])?;
-        let conditions = Index::open(self.storage, checkpoint).await?;
+        let ordinal = self.next;
+        self.next = self.next.checked_add(1).ok_or(StreamError::Capacity)?;
+        self.remaining -= 1;
         Ok(Some(Effect {
             ordinal,
-            soft: bytes[8] == 1,
+            soft: bytes[0] == 1,
             staged: self.staged.clone(),
             bookmark,
             conditions,

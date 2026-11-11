@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 // Real immutable files exercise the shared algorithm, including close/reopen.
 pub(crate) struct Disk {
     directory: PathBuf,
-    reads: AtomicUsize,
+    pub(crate) reads: AtomicUsize,
     pub(crate) largest: AtomicUsize,
 }
 

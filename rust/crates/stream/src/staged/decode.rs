@@ -1,6 +1,6 @@
 use super::*;
 
-struct Cursor<'a, S> {
+pub(super) struct Cursor<'a, S> {
     content: tree::Reader<'a, S>,
     page: OwnedBytes,
     offset: usize,
@@ -9,7 +9,7 @@ struct Cursor<'a, S> {
 }
 
 impl<'a, S: Storage> Cursor<'a, S> {
-    fn new(storage: &'a S, root: Root) -> Result<Self, StreamError> {
+    pub(super) fn new(storage: &'a S, root: Root) -> Result<Self, StreamError> {
         Self::at(storage, root, 0)
     }
     fn at(storage: &'a S, root: Root, position: u64) -> Result<Self, StreamError> {
@@ -54,7 +54,7 @@ impl<'a, S: Storage> Cursor<'a, S> {
         }
         Ok(())
     }
-    async fn exact<const N: usize>(&mut self) -> Result<[u8; N], StreamError> {
+    pub(super) async fn exact<const N: usize>(&mut self) -> Result<[u8; N], StreamError> {
         let mut bytes = [0; N];
         self.copy(&mut bytes).await?;
         Ok(bytes)
@@ -113,7 +113,7 @@ impl<'a, S: Storage> Cursor<'a, S> {
             _ => Err(StreamError::InvalidResponse),
         }
     }
-    async fn end(&mut self) -> Result<(), StreamError> {
+    pub(super) async fn end(&mut self) -> Result<(), StreamError> {
         if self.remaining != 0
             || self.offset != self.page.len()
             || self.content.next().await?.is_some()
@@ -299,6 +299,34 @@ pub struct Bookmark {
 pub(super) const BOOKMARK_BYTES: usize = 1 + 8 + 1 + 8 + 7 * 8;
 
 impl Bookmark {
+    pub(super) fn effect_position(&self) -> Result<u64, StreamError> {
+        if self.shape.next() != Phase::Effect {
+            return Err(StreamError::InvalidResponse);
+        }
+        Ok(self.position)
+    }
+
+    pub(super) fn at_effect(
+        binding: &StagedWrite,
+        position: u64,
+        deadline: Option<u64>,
+        effects: u64,
+    ) -> Result<Self, StreamError> {
+        if position >= binding.body.part.length
+            || effects == 0
+            || effects > binding.effects
+            || deadline != binding.deadline
+        {
+            return Err(StreamError::InvalidResponse);
+        }
+        Ok(Self {
+            binding: binding.clone(),
+            position,
+            deadline,
+            shape: Shape::new(binding.family, effects),
+        })
+    }
+
     pub(super) fn encode(&self) -> [u8; BOOKMARK_BYTES] {
         let mut bytes = [0; BOOKMARK_BYTES];
         bytes[0] = 1;
@@ -350,10 +378,14 @@ impl Bookmark {
         if position >= binding.body.part.length || (bytes[9] == 0 && deadline != 0) {
             return Err(StreamError::InvalidResponse);
         }
+        let deadline = (bytes[9] == 1).then_some(deadline);
+        if deadline != binding.deadline || effects > binding.effects {
+            return Err(StreamError::InvalidResponse);
+        }
         Ok(Self {
             binding: binding.clone(),
             position,
-            deadline: (bytes[9] == 1).then_some(deadline),
+            deadline,
             shape: Shape {
                 family: Some(binding.family),
                 effects,
@@ -392,6 +424,9 @@ impl<'a, S: Storage> Reader<'a, S> {
         }
         let deadline = cursor.optional().await?;
         let effects = cursor.number().await?;
+        if effects != staged.effects || deadline != staged.deadline {
+            return Err(StreamError::InvalidResponse);
+        }
         if family != Family::Commit && (effects != 1 || deadline.is_some()) {
             return Err(StreamError::InvalidResponse);
         }
@@ -429,6 +464,8 @@ impl<'a, S: Storage> Reader<'a, S> {
             || original.commit_id != staged.commit_id
             || original.key != staged.key
             || original.family != staged.family
+            || original.effects != staged.effects
+            || original.deadline != staged.deadline
         {
             return Err(StreamError::InvalidArgument);
         }

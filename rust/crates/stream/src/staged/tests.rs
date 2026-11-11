@@ -891,7 +891,7 @@ async fn staged_condition_directory_preserves_effect_scope_order_and_retention()
         commit_id: CommitId::from_bytes([69; 32]),
         idempotency_key: IdempotencyKey::new("condition-directory")?,
         family: Family::Commit,
-        deadline_unix_millis: None,
+        deadline_unix_millis: Some(69),
         effects: 3,
         accepted: false,
     };
@@ -937,6 +937,7 @@ async fn staged_condition_directory_preserves_effect_scope_order_and_retention()
             "effect metadata lost condition-checkpoint ownership"
         );
         let mut original = effect.reader(&storage, &staged)?;
+        assert_eq!(original.deadline_unix_millis(), Some(69));
         assert_eq!(
             original.next().await?,
             Some(Token::Effect {
@@ -1033,8 +1034,12 @@ async fn cancelled_effect_metadata_cursor_cannot_skip_the_consumed_effect()
             [
                 Ok(Token::Effect {
                     soft: false,
-                    conditions: 0,
+                    conditions: 1,
                     mutations: 1,
+                }),
+                Ok(Token::Presence {
+                    path: Field::Inline(OwnedBytes::from(format!("check/{effect}"))),
+                    present: true,
                 }),
                 Ok(Token::Append {
                     path: Field::Inline(OwnedBytes::from(format!("output/{effect}"))),
@@ -1083,3 +1088,5 @@ async fn cancelled_effect_metadata_cursor_cannot_skip_the_consumed_effect()
     assert!(fresh.next().await?.is_none());
     Ok(())
 }
+
+mod packed;

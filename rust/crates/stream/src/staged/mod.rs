@@ -145,6 +145,8 @@ pub struct StagedWrite {
     family: Family,
     body: Root,
     accepted: bool,
+    effects: u64,
+    deadline: Option<u64>,
 }
 
 impl StagedWrite {
@@ -167,6 +169,14 @@ impl StagedWrite {
     /// Whether the caller selected the accepted-envelope projection.
     pub const fn accepted(&self) -> bool {
         self.accepted
+    }
+    /// Original declared count, authenticated again when the body is opened.
+    pub const fn effect_count(&self) -> u64 {
+        self.effects
+    }
+    /// Original deadline; only final apply may settle its authority outcome.
+    pub const fn deadline_unix_millis(&self) -> Option<u64> {
+        self.deadline
     }
 }
 
