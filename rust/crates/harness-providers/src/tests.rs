@@ -355,7 +355,7 @@ pub(super) fn provider_with(
 ) -> ResolvedModel {
     ResolvedModel {
         resolver: None,
-        unbound_transport: transport.clone(),
+        unbound_transport: None,
         #[cfg(not(target_arch = "wasm32"))]
         account_pin: Arc::new(std::sync::OnceLock::new()),
         inputs: None,
