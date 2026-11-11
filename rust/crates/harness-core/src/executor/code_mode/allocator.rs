@@ -15,7 +15,7 @@ struct Header {
 #[derive(Clone)]
 pub(super) struct EngineAllocator {
     #[cfg(feature = "filesystem")]
-    failure: std::sync::Arc<std::sync::Mutex<Option<acyclic_fs::NativeTreeMaterializationError>>>,
+    failure: std::sync::Arc<std::sync::Mutex<Option<crate::Error>>>,
     #[cfg(feature = "filesystem")]
     work: Option<acyclic_fs::NativeMaterializationWork>,
 }
@@ -26,7 +26,56 @@ pub(super) struct BridgeText {
     _custody: crate::NativeCustody,
 }
 
+// The decoded tree retires before its original allocation credit.
+#[derive(Debug)]
+pub(super) struct EngineResult {
+    pub(super) value: serde_json::Value,
+    pub(super) custody: crate::NativeCustody,
+}
+
 impl EngineAllocator {
+    pub(super) fn decode_result(&self, bytes: &[u8]) -> rquickjs::Result<EngineResult> {
+        #[cfg(feature = "filesystem")]
+        if let Some(work) = &self.work {
+            let decode = || {
+                let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+                let decoded = io.decode(
+                    std::marker::PhantomData::<serde_json::Value>,
+                    bytes,
+                    crate::wire::ErrorCode::Invalid,
+                )?;
+                crate::filesystem::native_decoded(decoded)
+            };
+            return match decode() {
+                Ok((value, custody)) => Ok(EngineResult {
+                    value,
+                    custody: Some(custody),
+                }),
+                Err(error) => {
+                    self.rejected(error);
+                    Err(rquickjs::Error::Unknown)
+                }
+            };
+        }
+        crate::executor::json::json_from_slice_bounded(
+            std::marker::PhantomData::<serde_json::Value>,
+            bytes,
+            crate::executor::json::JsonBounds {
+                maximum_bytes: bytes.len() as u64,
+                maximum_items: u64::MAX,
+                maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            },
+            None,
+            Some(&crate::executor::json::JsonValueSchema::Root),
+            &mut |_| Ok(()),
+        )
+        .map(|value| EngineResult {
+            value,
+            custody: None,
+        })
+        .map_err(|_| rquickjs::Error::Unknown)
+    }
+
     pub(super) fn copy_text(&self, text: &rquickjs::String<'_>) -> rquickjs::Result<BridgeText> {
         // QuickJS funds the temporary UTF-8 view through this same allocator.
         let text = text.clone().to_cstring()?;
@@ -63,20 +112,18 @@ impl EngineAllocator {
     }
 
     #[cfg(feature = "filesystem")]
-    pub(super) fn failure(
-        &self,
-    ) -> std::sync::Arc<std::sync::Mutex<Option<acyclic_fs::NativeTreeMaterializationError>>> {
+    pub(super) fn failure(&self) -> std::sync::Arc<std::sync::Mutex<Option<crate::Error>>> {
         self.failure.clone()
     }
 
     #[cfg(feature = "filesystem")]
-    fn rejected(&self, error: acyclic_fs::NativeTreeMaterializationError) {
+    fn rejected(&self, error: impl Into<crate::Error>) {
         let mut failure = self
             .failure
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if failure.is_none() {
-            *failure = Some(error);
+            *failure = Some(error.into());
         }
     }
 
@@ -206,14 +253,42 @@ unsafe impl Allocator for EngineAllocator {
 mod tests {
     use super::*;
 
-    fn work(deny_allocation: bool) -> crate::Result<acyclic_fs::NativeMaterializationWork> {
-        let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
-        if deny_allocation {
-            // Fund the ledger itself, leaving no credit for engine or bridge bytes.
-            budget.peak_allocation_bytes =
-                acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
+    fn native_work(bytes: u64) -> crate::Result<acyclic_fs::NativeMaterializationWork> {
+        // The ledger owns its own Arc before the allocation under test starts.
+        let maximum = acyclic_fs::NativeMaterializationWork::accounting_state_bytes() + bytes;
+        acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, maximum),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })
+    }
+
+    #[tokio::test]
+    async fn bridge_text_keeps_original_credit_and_refuses_an_unfunded_copy() -> crate::Result<()> {
+        let runtime = rquickjs::AsyncRuntime::new().unwrap();
+        let context = rquickjs::AsyncContext::full(&runtime).await.unwrap();
+        for bytes in [1, 8192] {
+            let work = native_work(bytes)?;
+            let baseline = work.live_allocation_bytes();
+            let allocator = EngineAllocator::new(Some(&work));
+            context
+                .with(|ctx| {
+                    let text = rquickjs::String::from_str(ctx, &"x".repeat(4096)).unwrap();
+                    let copy = allocator.copy_text(&text);
+                    if bytes == 1 {
+                        assert!(copy.is_err());
+                        assert!(allocator.failure().lock().unwrap().is_some());
+                    } else {
+                        let copy = copy.unwrap();
+                        assert_eq!(copy.value.len(), 4096);
+                        assert_eq!(work.live_allocation_bytes(), baseline + 4096);
+                        drop(copy);
+                    }
+                    assert_eq!(work.live_allocation_bytes(), baseline);
+                })
+                .await;
         }
-        work_with_budget(budget)
+        Ok(())
     }
 
     fn work_with_budget(
@@ -226,7 +301,7 @@ mod tests {
     #[tokio::test]
     async fn real_engine_releases_native_memory_and_preserves_ledger_refusal() -> crate::Result<()>
     {
-        let original = work(false)?;
+        let original = native_work(64 * 1024 * 1024)?;
         let baseline = original.live_allocation_bytes();
         let ledger_operations = original.receipt().allocation_operations;
         let runtime = rquickjs::AsyncRuntime::new_with_alloc(EngineAllocator::new(Some(&original)))
@@ -256,23 +331,26 @@ mod tests {
             if refused {
                 assert!(matches!(
                     failure.lock().unwrap().as_ref(),
-                    Some(acyclic_fs::NativeTreeMaterializationError::Work(
-                        acyclic_fs::WorkError::BudgetExceeded {
-                            counter: "allocation_operations",
-                            ..
-                        }
-                    ))
+                    Some(crate::Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                            acyclic_fs::WorkError::BudgetExceeded {
+                                counter: "allocation_operations",
+                                ..
+                            }
+                        ),
+                        ..
+                    })
                 ));
             }
         }
-        for deny_allocation in [true, false] {
-            let work = work(deny_allocation)?;
+        for bytes in [1, 64 * 1024 * 1024] {
+            let work = native_work(bytes)?;
             let baseline = work.live_allocation_bytes();
             let allocator = EngineAllocator::new(Some(&work));
             let failure = allocator.failure();
             let (send, _receive) = tokio::sync::mpsc::channel(1);
             let result = super::super::interpreter::run(
-                "Array.from({length: 1000}, (_, i) => ({i})).length".into(),
+                "export default Array.from({length: 1000}, (_, i) => ({i})).length".into(),
                 acyclic_stream::OwnedBytes::from_static(b"[]"),
                 send,
                 tokio_util::sync::CancellationToken::new(),
@@ -281,15 +359,112 @@ mod tests {
                 super::super::interpreter::INTERRUPT_BUDGET,
             )
             .await;
-            if deny_allocation {
+            if bytes == 1 {
                 assert!(result.is_err());
-                assert!(failure.lock().unwrap().is_some());
+                assert!(matches!(
+                    failure.lock().unwrap().as_ref(),
+                    Some(crate::Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                            acyclic_fs::WorkError::BudgetExceeded {
+                                counter: "peak_allocation_bytes",
+                                maximum,
+                                ..
+                            }
+                        ), ..
+                    }) if *maximum == baseline + bytes
+                ));
             } else {
-                assert_eq!(result.unwrap(), serde_json::json!(1000));
+                assert_eq!(result.unwrap().value, serde_json::json!(1000));
                 assert!(failure.lock().unwrap().is_none());
             }
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn engine_results_retain_original_credit_and_refuse_unfunded_decoding()
+    -> crate::Result<()> {
+        let runtime = rquickjs::AsyncRuntime::new().unwrap();
+        let context = rquickjs::AsyncContext::full(&runtime).await.unwrap();
+        for (bytes, cancelled) in [(1, false), (1024 * 1024, false), (1024 * 1024, true)] {
+            let work = native_work(bytes)?;
+            let baseline = work.live_allocation_bytes();
+            let allocator = EngineAllocator::new(Some(&work));
+            if cancelled {
+                work.cancellation().cancel();
+            }
+            context.with(|ctx| {
+                // Capture the actual engine encoding, including escaped and
+                // multi-byte text, rather than supplying a second JSON encoder.
+                let json: rquickjs::String = ctx.eval(
+                    r#"JSON.stringify({text:'β\\n'.repeat(64), values:Array.from({length:4}, (_, i) => ({i}))})"#
+                ).unwrap();
+                let json = json.to_cstring().unwrap();
+                // The engine owns the source encoding. The original result
+                // ledger must admit its preparation and decoded storage.
+                let result = allocator.decode_result(json.as_str().as_bytes());
+                if cancelled {
+                    assert!(result.is_err());
+                    let failure = allocator.failure();
+                    let failure = failure.lock().unwrap();
+                    assert!(matches!(failure.as_ref(),
+                        Some(crate::Error::NativeWork {
+                            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
+                        })
+                    ), "{failure:?}");
+                } else if bytes == 1 {
+                    assert!(result.is_err());
+                    let failure = allocator.failure();
+                    let failure = failure.lock().unwrap();
+                    assert!(matches!(failure.as_ref(),
+                        Some(crate::Error::NativeWork {
+                            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                                acyclic_fs::WorkError::BudgetExceeded {
+                                    counter: "peak_allocation_bytes", observed, maximum,
+                                }
+                            ), ..
+                        }) if *maximum == baseline + bytes && *observed > *maximum
+                    ), "{failure:?}");
+                } else {
+                    let result = result.unwrap();
+                    assert_eq!(result.value["text"].as_str().unwrap(), "β\\n".repeat(64));
+                    assert_eq!(result.value["values"][3]["i"], 3);
+                    let retained = result.custody.as_ref().unwrap().bytes();
+                    assert!(retained > 0);
+                    assert_eq!(work.live_allocation_bytes(), baseline + retained);
+                    assert!(allocator.failure().lock().unwrap().is_none());
+                    drop(result);
+                }
+                assert_eq!(work.live_allocation_bytes(), baseline);
+            }).await;
+        }
+        // The production interpreter must transfer that same custody out of
+        // the runtime; every engine allocation is already retired on return.
+        let work = native_work(8 * 1024 * 1024)?;
+        let baseline = work.live_allocation_bytes();
+        let allocator = EngineAllocator::new(Some(&work));
+        let failure = allocator.failure();
+        let (send, _receive) = tokio::sync::mpsc::channel(1);
+        let result = super::super::interpreter::run(
+            "export default {text:'x'.repeat(4096)}".into(),
+            acyclic_stream::OwnedBytes::from_static(b"[]"),
+            send,
+            tokio_util::sync::CancellationToken::new(),
+            8192,
+            allocator,
+            super::super::interpreter::INTERRUPT_BUDGET,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.value["text"].as_str().unwrap().len(), 4096);
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline + result.custody.as_ref().unwrap().bytes()
+        );
+        assert!(failure.lock().unwrap().is_none());
+        drop(result);
+        assert_eq!(work.live_allocation_bytes(), baseline);
         Ok(())
     }
 }

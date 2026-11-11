@@ -143,7 +143,7 @@ pub(crate) fn json_value_retained_owned_bytes(value: &Value) -> Result<u64> {
 
 /// The bytes an object of `entries` entries holds in its own slots,
 /// excluding what its keys and values own.
-fn object_slot_bytes(entries: usize, retained: bool) -> Option<u64> {
+pub(crate) fn object_slot_bytes(entries: usize, retained: bool) -> Option<u64> {
     if retained && entries != 0 {
         let node = 11 * std::mem::size_of::<(String, Value)>() + 14 * std::mem::size_of::<usize>();
         (1 + (entries - 1) / 5).checked_mul(node)

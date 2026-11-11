@@ -23,9 +23,21 @@ impl FileProjection {
                     .into_generator();
                 let content = generator.subschema_for::<schema::ReferenceProjection<'_>>();
                 let authored = generator.subschema_for::<schema::JsonProjection<FileView<'_>>>();
-                Ok(json!({"oneOf":[content,authored],"$defs":generator.take_definitions(true)}))
+                let directory =
+                    generator.subschema_for::<schema::JsonProjection<DirectoryReadResult>>();
+                Ok(
+                    json!({"oneOf":[content,authored,directory],"$defs":generator.take_definitions(true)}),
+                )
             }
-            Self::Read(ProjectionMode::Full) => schema::output::<ReadProjection<'_>>(),
+            Self::Read(ProjectionMode::Full) => {
+                let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+                    .for_serialize()
+                    .into_generator();
+                let file = generator.subschema_for::<ReadProjection<'_>>();
+                let directory =
+                    generator.subschema_for::<schema::JsonProjection<DirectoryReadResult>>();
+                Ok(json!({"oneOf":[file,directory],"$defs":generator.take_definitions(true)}))
+            }
             Self::Publication(mode) => Self::model_schema(mode),
             Self::Search(mode) => mode.schema::<SearchResult>(),
         }
@@ -219,10 +231,19 @@ impl ToolProjection for FileProjection {
     ) -> Result<(Value, crate::NativeCustody)> {
         match *self {
             Self::Read(mode) => {
+                let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                if let Some(ReadSelection::Directory { after, limit }) = &input.0.selection {
+                    return super::directory::project(
+                        &input.0,
+                        after.as_deref(),
+                        *limit,
+                        result,
+                        work,
+                    );
+                }
                 let result = decode::<ReadFileResult>(&result.value, work)?;
                 let file = &result.0.file;
                 let text = &result.0.text;
-                let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 let owned_io = work
                     .map(crate::executor::PreparationIo::from_native_work)
@@ -264,11 +285,15 @@ impl ToolProjection for FileProjection {
                                 ReadSelection::Lines { offset, .. }
                                 | ReadSelection::Cells { offset, .. },
                             ) => page.offset != offset,
-                            Some(ReadSelection::Image { .. } | ReadSelection::Pdf) => true,
+                            Some(
+                                ReadSelection::Image { .. }
+                                | ReadSelection::Pdf
+                                | ReadSelection::Directory { .. },
+                            ) => true,
                             None if input.0.path.ends_with(".ipynb") && input.0.range.is_none() => {
                                 page.offset != 0
                             }
-                            None => {
+                            None | Some(ReadSelection::Text) => {
                                 page.offset != 0 || (input.0.range.is_none() && page.start != 0)
                             }
                         }
@@ -365,7 +390,7 @@ impl ToolProjection for FileProjection {
                 // cannot compare that view path to a volume-relative path.
                 if let Some(version) = input.0.version.as_deref() {
                     let original = super::version::decode_version(file.path(), version, work)?;
-                    if !original.0.same_source(file) {
+                    if !original.0.matches_source(file) {
                         return Err(super::executor::rejection(
                             work,
                             "read result belongs to another version",

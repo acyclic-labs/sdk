@@ -61,7 +61,7 @@ Use it for multi-step reads, filters and loops, for example:
 
 ```javascript
 const files = await tools.read({ path: "README.md" });
-files
+export default files
 ```
 
 Each currently granted model tool is an async function in the frozen `tools`
@@ -73,8 +73,13 @@ resumption reruns deterministic JavaScript against the same inner call receipts.
 Programs should derive call order and arguments only from their code and tool
 results. Ambient time and randomness are absent.
 
-The model receives only the final expression, or `{ error }` for an uncaught
-exception. `Promise.all` submits independent calls in one program; bounded host
+Programs are ES modules with top-level `await`. The model receives the awaited
+default export, or `{ error }` for an uncaught
+exception. The built-in `acyclic` module provides `read`, `write`, `remove`
+and lazy directory `list` through the same granted tools. Each returned file
+retains one immutable selection; `text`, `json` and `lines` read its retained
+text. Authoring declarations live at `sys/types/index.d.ts`; their configuration
+records come from the kernel’s declaration producer. `Promise.all` submits independent calls in one program; bounded host
 credit feeds them to ordinary settlement. Each settled call publishes a
 `code.call` JSON log under the turn's existing `tools/.results/` directory before
 its promise resolves. Follow that directory to stream tool name, success/failure
@@ -85,17 +90,18 @@ publication before continuing. Unawaited logs, including logs created while
 encoding the result or formatting an exception, retire before the program returns.
 Replay reuses each immutable log's identity; logging does not change inner tool
 call identities. Log values follow JSON encoding, including its errors for cycles
-and BigInt. No formatting or retained console buffer is added.
-Logs stay in files without accumulating in the result or being omitted by a
-count limit. Each result uses the caller's admitted per-part render budget;
+and BigInt. Console lines also accompany the model-visible result as
+`{ value, logs }` while they fit its render budget; `logs_omitted` reports
+lines whose presentation does not fit. Their complete records remain in files.
+Each result uses the caller's admitted per-part render budget;
 oversized final values return `{ error: "JavaScript result exceeds admitted output" }`.
 Input, history and other results retain their own per-part allowances. The whole request passes
 ordinary verified token admission, without an additional aggregate JSON limit.
 Intermediate tool results remain inside the interpreter and ordinary journal
 artifacts; they are not added to model history.
 
-The interpreter installs no filesystem, network, environment, module loader or
-host API. Credentials and tool contexts stay in the stock dispatcher. QuickJS
+The interpreter resolves the built-in `acyclic` module. It exposes filesystem,
+network and environment access through granted tools alone. Credentials and tool contexts stay in the stock dispatcher. QuickJS
 allocations use the original native memory ledger. A 1 GiB engine memory ceiling
 and a billion interrupt checks protect against runaway scripts; neither bounds
 product counts. Cancellation follows the parent's event and interrupts executing
