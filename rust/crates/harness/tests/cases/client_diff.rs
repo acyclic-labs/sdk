@@ -410,7 +410,9 @@ impl Fixture {
         rows: u32,
         bytes: u32,
     ) -> DiffReader {
-        let agent = acyclic_harness::agent::AgentPath::root(&AgentId::from_bytes([1; 16]));
+        let agent = acyclic_harness::agent::AgentPath::root(
+            &acyclic_harness::agent::AgentId::from_bytes([1; 16]),
+        );
         let page =
             acyclic_harness::client::AgentPageRequest::new(rows, bytes, None).expect("page credit");
         let source = acyclic_harness::hosting::DiffSource::new(

@@ -131,7 +131,7 @@ impl Platform for Owner {
             let provider = provider().map_err(|error| crate::Error::Storage(error.to_string()))?;
             let host =
                 crate::filesystem::FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
-            let owner = AgentId::from_bytes([41; 16]);
+            let owner = crate::AgentId::from_bytes([41; 16]);
             let volume = VolumeRef::new(
                 provider.clone(),
                 "diff-control".into(),

@@ -3880,7 +3880,7 @@ async fn historical_input_preview_case(later_hook: bool) -> Result<()> {
         .agents
         .get()
         .ok_or_else(|| Error::Invalid("missing hosted agents".into()))?
-        .server
+        .server()
         .bound();
     let by = Sender::Host {
         host: "preview-cut".into(),
