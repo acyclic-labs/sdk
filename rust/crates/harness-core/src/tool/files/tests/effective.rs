@@ -114,7 +114,7 @@ async fn read_only_directory_pages_keep_the_run_generation() -> Result<()> {
         assert!(
             select(
                 task,
-                json!({"path":path, "selection":{"kind":"directory","limit":1,"after":foreign.0}})
+                json!({"path":path, "selection":{"kind":"directory","limit":1,"after":foreign}})
             )
             .await
             .is_err(),
