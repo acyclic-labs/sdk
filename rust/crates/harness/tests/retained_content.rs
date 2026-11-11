@@ -123,13 +123,13 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         &admitted,
     )?;
     assert_eq!(
-        host.read_content(&admitted, &attached_read, 64, None)
+        host.read_content(&admitted, &attached_read, Some(64), None)
             .await?
             .as_ref(),
         b"first"
     );
     assert!(
-        host.read_content(&orphan, &attached_read, 64, None)
+        host.read_content(&orphan, &attached_read, Some(64), None)
             .await
             .is_err()
     );
@@ -291,35 +291,35 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     assert_eq!(retried, unread);
     assert_eq!(
         reopened
-            .read_content(&unread, &read, 64, None)
+            .read_content(&unread, &read, Some(64), None)
             .await?
             .as_ref(),
         b"unread original"
     );
     assert_eq!(
         reopened
-            .read_content(&admitted, &read, 64, None)
+            .read_content(&admitted, &read, Some(64), None)
             .await?
             .as_ref(),
         b"first"
     );
     assert_eq!(
         reopened
-            .read_content(&orphan, &read, 64, None)
+            .read_content(&orphan, &read, Some(64), None)
             .await?
             .as_ref(),
         b"second"
     );
     assert_eq!(
         reopened
-            .read_content(&admitted, &attached_read, 64, None)
+            .read_content(&admitted, &attached_read, Some(64), None)
             .await?
             .as_ref(),
         b"first"
     );
     assert!(
         reopened
-            .read_content(&orphan, &attached_read, 64, None)
+            .read_content(&orphan, &attached_read, Some(64), None)
             .await
             .is_err()
     );

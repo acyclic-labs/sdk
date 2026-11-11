@@ -196,7 +196,7 @@ pub(crate) fn replace(
     old_text: &str,
     new_text: &str,
     replace_all: bool,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: &mut NativeCustody,
 ) -> Result<String> {
     replace_sequence(
@@ -248,7 +248,7 @@ pub(super) fn plan_output(
 pub(crate) fn replace_sequence<'a>(
     source: &str,
     replacements: impl IntoIterator<Item = Replacement<'a>>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: &mut NativeCustody,
 ) -> Result<String> {
     plan_output(work, |work| {
@@ -274,17 +274,21 @@ fn replace_into(
         new_text,
         replace_all,
     }: Replacement<'_>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: &mut NativeCustody,
     output: &mut String,
 ) -> Result<()> {
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-        return Err(invalid(work, "edit byte bound must be positive and finite"));
+    if maximum_bytes == Some(0) {
+        return Err(invalid(
+            work,
+            "edit byte policy must be positive when supplied",
+        ));
     }
-    if source.len() as u64 > maximum_bytes
-        || old_text.len() as u64 > maximum_bytes
-        || new_text.len() as u64 > maximum_bytes
-        || old_text.is_empty()
+    if maximum_bytes.is_some_and(|maximum| {
+        source.len() as u64 > maximum
+            || old_text.len() as u64 > maximum
+            || new_text.len() as u64 > maximum
+    }) || old_text.is_empty()
     {
         return Err(invalid(work, "exact edit has invalid text or byte bounds"));
     }
@@ -336,7 +340,7 @@ fn replace_into(
                 .checked_mul(count)
                 .and_then(|added| length.checked_add(added))
         })
-        .filter(|length| *length as u64 <= maximum_bytes)
+        .filter(|length| maximum_bytes.is_none_or(|maximum| *length as u64 <= maximum))
         .ok_or_else(|| invalid(work, "exact edit output exceeds byte bound"))?;
     reserve_string(work, output, output_bytes)?;
     output.clear();
@@ -365,7 +369,10 @@ mod tests {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn edit_sequences_retain_only_their_output_and_refuse_invalid_later_edits() -> Result<()> {
-        for length in [1, 2, 33] {
+        for (length, maximum) in [1, 2, 33]
+            .into_iter()
+            .flat_map(|length| [Some(64), None].map(|maximum| (length, maximum)))
+        {
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::performance::work_budget(64 * 1024, 64 * 1024);
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
@@ -377,7 +384,7 @@ mod tests {
                 new_text: if index % 2 == 0 { "two" } else { "one" },
                 replace_all: false,
             });
-            let output = replace_sequence("one", edits, 64, &mut custody)?;
+            let output = replace_sequence("one", edits, maximum, &mut custody)?;
             assert_eq!(output, if length % 2 == 0 { "one" } else { "two" });
             // An allocation retained for every prior intermediate result would
             // fail this same bound as the sequence grows.
@@ -402,7 +409,7 @@ mod tests {
                 },
             ];
             let mut custody = allocation(Some(&work), 0)?;
-            let result = replace_sequence("one", invalid, 64, &mut custody);
+            let result = replace_sequence("one", invalid, maximum, &mut custody);
             assert!(result.is_err());
             // Failure retires its buffers while the original caller keeps
             // the same custody alive for later planning.

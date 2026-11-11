@@ -170,7 +170,7 @@ async fn concurrent_publication() -> Result<()> {
                 )
                 .await?;
             assert_eq!(
-                host.read_content(&own, &child_grants.whole, 64, None)
+                host.read_content(&own, &child_grants.whole, Some(64), None)
                     .await?
                     .as_ref(),
                 b"child replacement"
@@ -226,7 +226,7 @@ async fn concurrent_publication() -> Result<()> {
                 b"child replacement"
             );
             assert_eq!(
-                host.read_content(&original, &parent_grants.whole, 64, None)
+                host.read_content(&original, &parent_grants.whole, Some(64), None)
                     .await?
                     .as_ref(),
                 b"original"

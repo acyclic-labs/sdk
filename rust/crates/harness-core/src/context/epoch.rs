@@ -100,9 +100,11 @@ impl ContextEpoch {
             .observe_staged_once(
                 operation,
                 None,
-                // A harness record bounded by what it renders, not admitted
-                // content under the file bound.
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                Some(
+                    // A harness record bounded by what it renders, not admitted
+                    // content under the file bound.
+                    crate::conversation::MAX_EXACT_JS_INTEGER,
+                ),
                 ContentAccess::default(),
             )?
             .await?;

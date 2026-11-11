@@ -733,7 +733,7 @@ impl ToolContext {
             })?;
             content
                 .reader
-                .verify_publication(file, file.descriptor().byte_length(), io)?
+                .verify_publication(file, Some(file.descriptor().byte_length()), io)?
                 .await?;
         }
         #[cfg(feature = "filesystem")]
@@ -764,10 +764,9 @@ impl ToolContext {
         #[cfg(feature = "filesystem")]
         let maximum = io
             .map(|io| io.remaining().map(|work| work.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
+            .transpose()?;
         #[cfg(not(feature = "filesystem"))]
-        let maximum = u64::MAX;
+        let maximum = None;
         let (files, hold) = writer
             .observe_changes(
                 volume,
@@ -791,7 +790,7 @@ impl ToolContext {
                 }
                 content
                     .reader
-                    .verify_publication(file, file.descriptor().byte_length(), io)?
+                    .verify_publication(file, Some(file.descriptor().byte_length()), io)?
                     .await?;
             }
         }

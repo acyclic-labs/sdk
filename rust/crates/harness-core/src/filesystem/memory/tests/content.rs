@@ -99,7 +99,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
             .observe_staged_once(
                 refused,
                 None,
-                4,
+                Some(4),
                 crate::conversation::ContentAccess::default()
             )?
             .await?
@@ -164,7 +164,7 @@ async fn streaming_producer_retirement_and_cancellation_leave_no_publication() -
                 .observe_staged_once(
                     operation,
                     None,
-                    4096,
+                    Some(4096),
                     crate::conversation::ContentAccess::default()
                 )?
                 .await?
@@ -335,7 +335,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .observe_staged_once(
                 operation,
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&committed_io),
@@ -433,7 +433,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         .observe_staged_once(
             operation,
             None,
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&observed_io),
@@ -553,7 +553,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .observe_staged_once(
                 denied_operation,
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&observed_io)

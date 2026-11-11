@@ -200,7 +200,7 @@ fn content_read_pins_an_initially_unretained_generation_without_reopening() -> T
                 runtime.block_on(fixture.host.read_content(
                     &fixture.file,
                     &fixture.grant,
-                    4096,
+                    Some(4096),
                     None,
                 ))
             },
@@ -321,7 +321,7 @@ async fn a_failed_descriptor_check_does_not_retain_unmetered_content() -> TestRe
     assert!(
         fixture
             .host
-            .read_content(&invalid, &fixture.grant, 4096, None)
+            .read_content(&invalid, &fixture.grant, Some(4096), None)
             .await
             .is_err()
     );
@@ -343,7 +343,7 @@ async fn published_reads_reuse_authenticated_history_without_a_pin() -> TestResu
         assert_eq!(
             fixture
                 .host
-                .read_content(&fixture.file, &fixture.grant, 4096, None)
+                .read_content(&fixture.file, &fixture.grant, Some(4096), None)
                 .await?
                 .as_ref(),
             bytes

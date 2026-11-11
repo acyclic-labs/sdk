@@ -139,11 +139,15 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
     );
     assert_eq!(host.resolve(&workspace, None).await?.generation, head);
     assert_eq!(
-        host.read_content(&edited, &read, 64, None).await?.as_ref(),
+        host.read_content(&edited, &read, Some(64), None)
+            .await?
+            .as_ref(),
         b"after\n"
     );
     assert_eq!(
-        host.read_content(&user, &read, 64, None).await?.as_ref(),
+        host.read_content(&user, &read, Some(64), None)
+            .await?
+            .as_ref(),
         b"user\n"
     );
     assert!(matches!(

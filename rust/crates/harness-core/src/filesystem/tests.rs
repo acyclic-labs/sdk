@@ -274,7 +274,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 b"one",
                 media_type,
                 display_name,
-                16,
+                Some(16),
                 &IdempotencyKey::new("stage-first")?,
                 None,
                 crate::conversation::ContentAccess::default()
@@ -344,11 +344,11 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         );
     }
     assert_eq!(
-        host.read_content(&first, &read, 16, None).await?,
+        host.read_content(&first, &read, Some(16), None).await?,
         acyclic_stream::OwnedBytes::from_static(b"one")
     );
     assert_eq!(
-        host.read_content(&second, &read, 16, None).await?,
+        host.read_content(&second, &read, Some(16), None).await?,
         acyclic_stream::OwnedBytes::from_static(b"two")
     );
     let delegated_scope = issuer.delegate_private_directory_read(
@@ -563,7 +563,11 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             .is_none(),
         "a later file must be absent from the pinned generation"
     );
-    assert!(host.read_content(&empty, &read, 16, None).await?.is_empty());
+    assert!(
+        host.read_content(&empty, &read, Some(16), None)
+            .await?
+            .is_empty()
+    );
     let wrong_digest = FileRef::new(
         volume.clone(),
         first.path().into(),
@@ -573,7 +577,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         &mut None,
     )?;
     assert!(
-        host.read_content(&wrong_digest, &read, 16, None)
+        host.read_content(&wrong_digest, &read, Some(16), None)
             .await
             .is_err()
     );
@@ -593,7 +597,11 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         .await
         .is_err()
     );
-    assert!(host.read_content(&first, &write, 16, None).await.is_err());
+    assert!(
+        host.read_content(&first, &write, Some(16), None)
+            .await
+            .is_err()
+    );
     let other = VolumeRef::new(
         volume.provider().clone(),
         "agent-private-b".into(),

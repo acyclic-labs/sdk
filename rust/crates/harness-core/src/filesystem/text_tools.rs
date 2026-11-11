@@ -37,7 +37,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             ));
         }
         write.require(source.volume(), VolumeOperation::Write, None)?;
-        let bytes = self.read_content(source, read, maximum_bytes, None).await?;
+        let bytes = self
+            .read_content(source, read, Some(maximum_bytes), None)
+            .await?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| Error::Invalid("exact text edit requires UTF-8 content".into()))?;
         let result = replace(
@@ -45,7 +47,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             &replacement.old_text,
             &replacement.new_text,
             false,
-            maximum_bytes,
+            Some(maximum_bytes),
             &mut allocation(None, 0)?,
         )?;
         let generation = self.file_generation(source, None)?;
@@ -56,7 +58,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             result.as_bytes(),
             source.descriptor().media_type(),
             source.display_name(),
-            maximum_bytes,
+            Some(maximum_bytes),
             idempotency_key,
             Some(&generation),
             crate::conversation::ContentAccess::default(),

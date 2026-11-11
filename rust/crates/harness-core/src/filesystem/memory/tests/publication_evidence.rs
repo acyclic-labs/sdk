@@ -54,14 +54,17 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
         ),
         ("different_host", &file, other_reader.as_ref(), 1),
     ] {
-        let (result, trace) = acyclic_test_support::differential::observe::<
-            _,
-            _,
-            (&'static str, u64),
-        >(
-            || (),
-            |_| runtime.block_on(async { reader.verify_publication(reference, 4096, None)?.await }),
-        );
+        let (result, trace) =
+            acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
+                || (),
+                |_| {
+                    runtime.block_on(async {
+                        reader
+                            .verify_publication(reference, Some(4096), None)?
+                            .await
+                    })
+                },
+            );
         result?;
         let reads = trace
             .iter()
@@ -82,7 +85,7 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
             .block_on(async {
                 storage
                     .content_verifier
-                    .verify_publication(&wrong_version, 4096, None)?
+                    .verify_publication(&wrong_version, Some(4096), None)?
                     .await
             })
             .is_err()
@@ -92,7 +95,7 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
             .block_on(async {
                 storage
                     .content_verifier
-                    .verify_publication(&file, 3, None)?
+                    .verify_publication(&file, Some(3), None)?
                     .await
             })
             .is_err()
@@ -108,7 +111,7 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
     runtime.block_on(async {
         storage
             .content_verifier
-            .verify_publication(&measured, 4096, Some(&io))?
+            .verify_publication(&measured, Some(4096), Some(&io))?
             .await
     })?;
     cancellation.cancel();
@@ -117,7 +120,7 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
             .block_on(async {
                 storage
                     .content_verifier
-                    .verify_publication(&file, 4096, Some(&io))?
+                    .verify_publication(&file, Some(4096), Some(&io))?
                     .await
             })
             .is_err()
@@ -132,7 +135,7 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
     )?;
     assert!(
         runtime
-            .block_on(async { reader.verify_publication(&file, 4096, None)?.await })
+            .block_on(async { reader.verify_publication(&file, Some(4096), None)?.await })
             .is_err()
     );
     Ok(())

@@ -133,13 +133,13 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
             )
             .await?;
         assert_eq!(
-            host.read_content(&original, &read, 64, io.as_ref())
+            host.read_content(&original, &read, Some(64), io.as_ref())
                 .await?
                 .as_ref(),
             b"long original"
         );
         assert_eq!(
-            host.read_content(&replacement, &read, 64, io.as_ref())
+            host.read_content(&replacement, &read, Some(64), io.as_ref())
                 .await?
                 .as_ref(),
             b"x"
@@ -278,13 +278,13 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
         let key = IdempotencyKey::new("edit")?;
         let edited = replace_source(&host, &write, &original, b"after", &key, io.as_ref()).await?;
         assert_eq!(
-            host.read_content(&edited, &read, 64, io.as_ref())
+            host.read_content(&edited, &read, Some(64), io.as_ref())
                 .await?
                 .as_ref(),
             b"after"
         );
         assert_eq!(
-            host.read_content(&original, &read, 64, io.as_ref())
+            host.read_content(&original, &read, Some(64), io.as_ref())
                 .await?
                 .as_ref(),
             b"before"
@@ -420,7 +420,7 @@ async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()>
         }
         assert!(!race.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(
-            host.read_content(&staged[1], &read, 64, io.as_ref())
+            host.read_content(&staged[1], &read, Some(64), io.as_ref())
                 .await?
                 .as_ref(),
             b"input"
@@ -576,7 +576,7 @@ impl InternalPublicationCase<'_> {
         );
         assert_eq!(
             self.host
-                .read_content(&original, self.read, 64, self.io)
+                .read_content(&original, self.read, Some(64), self.io)
                 .await?
                 .as_ref(),
             b"original"
@@ -702,7 +702,9 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             .await?;
         let first = original.files().next().unwrap();
         assert_eq!(
-            host.read_content(first, &read, 64, None).await?.as_ref(),
+            host.read_content(first, &read, Some(64), None)
+                .await?
+                .as_ref(),
             b"first"
         );
         let replay = host
@@ -872,7 +874,9 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         }
         // The original immutable source remains readable after deletion.
         assert_eq!(
-            host.read_content(first, &read, 64, None).await?.as_ref(),
+            host.read_content(first, &read, Some(64), None)
+                .await?
+                .as_ref(),
             b"first"
         );
     }

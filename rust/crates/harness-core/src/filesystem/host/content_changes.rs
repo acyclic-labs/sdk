@@ -57,7 +57,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         volume: &'a VolumeRef,
         grant: &'a ContentGrant,
         key: &'a IdempotencyKey,
-        maximum_receipt_bytes: u64,
+        maximum_receipt_bytes: Option<u64>,
         access: ContentAccess<'a, 'a>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<ContentChanges>>> {
         grant.require(volume, VolumeOperation::Write, access.io)?;
@@ -87,6 +87,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 return Ok(None);
             };
             let path = content_receipt_path_io(volume, key.as_str(), false, true, Some(io))?;
+            let maximum_receipt_bytes = match maximum_receipt_bytes {
+                Some(maximum) => maximum,
+                None => io
+                    .sdk(generation.stat(&path, io, io.cancellation()).await)?
+                    .logical_bytes
+                    .ok_or_else(|| io.invalid("conditional receipt has no file extent"))?,
+            };
             let bytes =
                 read_generation(&generation, &path, maximum_receipt_bytes, Some(io)).await?;
             let receipt: ChangeReceipt = io.decode_json(&bytes)?;

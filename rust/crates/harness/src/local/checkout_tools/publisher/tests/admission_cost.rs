@@ -63,7 +63,7 @@ fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Resu
                 |()| {
                     runtime.block_on(async {
                         reader
-                            .verify_publication(reference, bytes.len() as u64, None)?
+                            .verify_publication(reference, Some(bytes.len() as u64), None)?
                             .await
                     })
                 },
@@ -137,7 +137,7 @@ fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Resu
         |()| {
             runtime.block_on(async {
                 reader
-                    .verify_publication(&rebound, 1024 * 1024, None)?
+                    .verify_publication(&rebound, Some(1024 * 1024), None)?
                     .await
             })
         },

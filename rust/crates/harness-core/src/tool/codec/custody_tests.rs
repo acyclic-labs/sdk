@@ -10,7 +10,7 @@ fn tool_json_handoffs_keep_sparse_map_custody_until_value_destruction() -> Resul
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
         let (copied, custody) = if encode {
-            let (copied, custody) = value(&source, 4096, Some(&work))?;
+            let (copied, custody) = value(&source, Some(4096), Some(&work))?;
             (
                 copied,
                 custody.ok_or_else(|| Error::Invalid("missing JSON custody".into()))?,

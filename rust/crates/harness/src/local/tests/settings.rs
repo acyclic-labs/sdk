@@ -72,7 +72,7 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
                 harness.root
             ),
             None,
-            u64::MAX,
+            None,
             ContentAccess::default(),
         )
         .await?
@@ -480,7 +480,7 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
             &system_grant,
             &selected.path,
             None,
-            u64::MAX,
+            None,
             ContentAccess::default(),
         )
         .await?;

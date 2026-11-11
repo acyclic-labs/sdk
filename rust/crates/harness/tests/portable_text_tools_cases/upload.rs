@@ -146,7 +146,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         &cancellation,
     )?;
     assert_eq!(
-        host.read_content(&original, &read, 64, Some(&io))
+        host.read_content(&original, &read, Some(64), Some(&io))
             .await?
             .as_ref(),
         b"original"
@@ -212,7 +212,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
                 bytes,
                 media,
                 display,
-                64,
+                Some(64),
                 &key,
                 None,
                 acyclic_harness::conversation::ContentAccess {
@@ -262,7 +262,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         &cancellation,
     )?;
     assert!(
-        host.read_content(&original, &read, 1, Some(&io))
+        host.read_content(&original, &read, Some(1), Some(&io))
             .await
             .is_err()
     );

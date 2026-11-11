@@ -550,7 +550,7 @@ impl LocalHarness {
             .observe_staged_once(
                 operation,
                 None,
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                Some(crate::conversation::MAX_EXACT_JS_INTEGER),
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;

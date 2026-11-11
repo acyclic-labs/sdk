@@ -348,7 +348,7 @@ fn render(
         omitted_bytes: (text.len() - shown.len()) as u64,
     };
     if let Some(parts) = media {
-        with_media(&view, parts, io, |view| super::value(view, u64::MAX, work))
+        with_media(&view, parts, io, |view| super::value(view, None, work))
     } else {
         super::schema::project_json(&view, work)
     }

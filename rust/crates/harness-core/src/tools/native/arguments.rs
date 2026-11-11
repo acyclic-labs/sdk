@@ -55,7 +55,7 @@ impl Arguments {
         let empty = Value::Object(Map::new());
         let resolved = resolve(&self.template, &(fields, invocation, work))?
             .unwrap_or(Resolved::Value(&empty));
-        crate::tool::value(&resolved, u64::MAX, work)
+        crate::tool::value(&resolved, None, work)
     }
 }
 
