@@ -753,7 +753,10 @@ impl Error {
                 ErrorCode::InteractionExpired
             }
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
-            Self::Storage(_) | Self::StreamFollow { .. } | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
+            Self::Storage(_)
+            | Self::StreamFollow { .. }
+            | Self::Allocation(_)
+            | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process(crate::ProcessError::NotFound { .. }) => ErrorCode::NotFound,
             Self::Process(
                 crate::ProcessError::Io { .. } | crate::ProcessError::PermissionDenied { .. },
