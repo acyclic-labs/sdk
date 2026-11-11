@@ -144,7 +144,7 @@ fn transport_failure(
 async fn recovery_failure(
     response: HttpResponse,
     maximum: impl Into<Option<usize>>,
-    work: acyclic_harness_core::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> Error {
     if let Some(error) = unavailable(response.status, &[]) {
         return error;

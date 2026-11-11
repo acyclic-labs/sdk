@@ -127,7 +127,7 @@ pub(crate) async fn wait(
     transport: &dyn crate::HttpTransport,
     error: Error,
     duration: Duration,
-    work: acyclic_harness_core::NativeWork<'_>,
+    work: acyclic_fs::NativeWork<'_>,
 ) -> acyclic_harness_core::Result<()> {
     let primitive = match &error {
         Error::ModelUnavailable {
