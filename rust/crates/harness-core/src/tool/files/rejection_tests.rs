@@ -118,17 +118,19 @@ fn native_file_selection_bounds_use_the_recoverable_preflight_class() -> Result<
         crate::Capabilities::new([file.read_capability(&mut None)?]),
         crate::conversation::Limits::default(),
     )?;
-    for (start, end) in [(2, 1), (0, 3)] {
+    for (start, end, rejected) in [(2, 1, true), (0, 3, false)] {
         let invocation = ToolInvocation {
             operation_id: crate::OperationId::new(),
             call_id: "selection".into(),
             name: "read".into(),
             arguments: json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":start,"end":end}}),
         };
-        let error = FileTool::Read
-            .preflight(&scope, None, &invocation, Some(&original))
-            .unwrap_err();
-        assert_recoverable(error, &original);
+        let result = FileTool::Read.preflight(&scope, None, &invocation, Some(&original));
+        if rejected {
+            assert_recoverable(result.unwrap_err(), &original);
+        } else {
+            result?;
+        }
     }
     let ungranted = RuntimeScope::new(
         crate::Capabilities::new(["tool:call:read"]),

@@ -436,35 +436,19 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         "actual byte-credit loss must remain terminal: {error:?}"
     );
     assert!(!error.is_tool_failure());
-    let (bytes, _, _) = host
-        .read_private_range(
-            volume,
-            &read,
-            "ordinary",
-            Some(&selected),
-            acyclic_fs::ByteRange {
-                offset: body.len() as u64,
-                length: 64,
-            },
-            crate::conversation::ContentAccess::default(),
-        )
-        .await?;
-    assert!(bytes.is_empty());
-    assert!(
-        host.read_private_range(
-            volume,
-            &read,
-            "ordinary",
-            Some(&selected),
-            acyclic_fs::ByteRange {
-                offset: body.len() as u64 + 1,
-                length: 64
-            },
-            crate::conversation::ContentAccess::default()
-        )
-        .await
-        .is_err()
-    );
+    for offset in [body.len() as u64, body.len() as u64 + 1] {
+        let (bytes, _, _) = host
+            .read_private_range(
+                volume,
+                &read,
+                "ordinary",
+                Some(&selected),
+                acyclic_fs::ByteRange { offset, length: 64 },
+                crate::conversation::ContentAccess::default(),
+            )
+            .await?;
+        assert!(bytes.is_empty());
+    }
     Ok(())
 }
 

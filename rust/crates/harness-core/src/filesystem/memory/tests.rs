@@ -673,6 +673,7 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         let (clipped_invocation, clipped) = call(&task, &read,
             json!({"path":"notes/one.txt", "range":{"start":0,"end":4}})).await?;
         assert_eq!(clipped.value["text"], "one");
+        assert_eq!(clipped.value["page"]["end"], 3);
         assert_eq!(clipped.value["page"]["total"], 3);
         assert_eq!(clipped.value["page"]["eof"], true);
         assert!(clipped.value["page"].get("next").is_none());

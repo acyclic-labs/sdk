@@ -189,6 +189,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         name: read_tool.definition.name.clone(),
         arguments: json!({"path":source.path(),"version":serde_json::to_string(&source).unwrap()}),
     };
+    let expected_read = json!({"file":files::FileReadSource::Content(source.clone()),"text":"one two","page":{"offset":0,"start":0,"end":7,"total":7,"eof":true}});
     assert_eq!(
         read_tool
             .executor
@@ -198,7 +199,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             )
             .await?
             .value,
-        json!({"file":files::FileReadSource::Content(source.clone()),"text":"one two"})
+        expected_read
     );
     for wrong_context in [
         ToolContext::new(task.clone(), OperationId::new(), "read")?,
@@ -394,7 +395,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             .await?
             .ok_or_else(|| Error::Invalid("pinned read was not reconciled".into()))?
             .value,
-        json!({"file":files::FileReadSource::Content(source),"text":"one two"})
+        expected_read
     );
     let fresh = OperationId::new();
     let stale = ToolInvocation {
