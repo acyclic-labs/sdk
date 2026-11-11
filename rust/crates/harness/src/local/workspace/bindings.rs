@@ -165,16 +165,10 @@ pub(super) fn volume_key(volume: &VolumeRef) -> Result<[u8; 32]> {
 }
 
 /// The complete auxiliary selection, independent of the caller's binding order.
-pub(super) fn auxiliary_key(bindings: &[crate::agent::VolumeBinding]) -> Result<[u8; 32]> {
+pub(super) fn auxiliary_key(bindings: &[crate::agent::WorkspaceEntry]) -> Result<[u8; 32]> {
     let mut ordered: Vec<_> = bindings.iter().collect();
     ordered.sort_unstable_by(|left, right| left.name.cmp(&right.name));
-    let mut hash = blake3::Hasher::new();
-    for binding in ordered {
-        hash.update(&(binding.name.len() as u64).to_be_bytes());
-        hash.update(binding.name.as_bytes());
-        hash.update(&volume_key(&binding.volume)?);
-    }
-    Ok(*hash.finalize().as_bytes())
+    crate::executor::json::canonical_json_digest(&ordered, None, &mut None)
 }
 
 impl Selection {

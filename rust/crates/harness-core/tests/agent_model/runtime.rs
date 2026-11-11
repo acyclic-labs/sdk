@@ -81,7 +81,6 @@ async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Resul
     )?;
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     assert!(host.runtime().drain().await.is_empty());
-    let mut first_statuses = None;
     for n in 0..3 {
         let record = InboxRecord::ApprovalRequested(ApprovalRequested {
             child: root.child(&id(2))?,
