@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/content/index/update.rs b/rust/crates/stream/src/content/index/update.rs
+--- a/rust/crates/stream/src/content/index/update.rs
++++ b/rust/crates/stream/src/content/index/update.rs
+@@ -102,7 +102,4 @@ impl<S: Storage> rewrite::Work<Entry> for Work<'_, S> {
+-        drop(
+-            frame
+-                .children
+-                .splice(frame.position..frame.position + 1, output),
+-        );
++        frame.children.clear();
++        frame.children.extend(output);
+         Ok(())
+     }

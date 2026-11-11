@@ -42,6 +42,21 @@ pub(super) async fn write(
     page: PageRef<'_, Format>,
     height: u8,
 ) -> Result<Child<Key, Root>, StreamError> {
+    let first = match &page {
+        PageRef::Leaf(entries) => entries.first().map(|entry| &entry.key),
+        PageRef::Internal(children) => children.first().map(|child| &child.first),
+    }
+    .ok_or(StreamError::InvalidArgument)?
+    .clone();
+    let page = write_root(storage, page, height).await?;
+    Ok(Child { first, page })
+}
+
+pub(super) async fn write_root(
+    storage: &impl Storage,
+    page: PageRef<'_, Format>,
+    height: u8,
+) -> Result<Root, StreamError> {
     let (count, size, first) = match &page {
         PageRef::Leaf(entries) => (
             entries.len(),
@@ -54,7 +69,7 @@ pub(super) async fn write(
             children.first().map(|child| &child.first),
         ),
     };
-    let first = first.ok_or(StreamError::InvalidArgument)?.clone();
+    first.ok_or(StreamError::InvalidArgument)?;
     let size = size
         .checked_add(HEADER)
         .filter(|size| *size <= tree::LEAF_BYTES)
@@ -91,7 +106,7 @@ pub(super) async fn write(
     writer.write(&bytes).await?;
     let page = writer.finish().await?;
     crate::runtime::yield_now().await?;
-    Ok(Child { first, page })
+    Ok(page)
 }
 
 pub(super) struct Decode<'a> {

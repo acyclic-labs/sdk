@@ -1014,3 +1014,49 @@ simulation/loom proofs, provider/transport cutover, all-backend atomic conforman
 caller workaround removal, SDK main landing and Cloud adoption. Nonempty small
 condition sets currently still have one index/checkpoint per effect; their
 packing/representation must be addressed before claiming production performance.
+
+### Immutable index COW contract (before implementation)
+
+Add Index::set(storage,key,value), returning a new complete immutable index.
+It inserts a missing byte key or replaces that key's value, leaving the original
+Index and all pinned readers unchanged. Normalize fields through the existing
+Key/store path once. Use collections::page::rewrite::run/Io for the iterative
+spine and collections::page::publish::write for closed page partitions, with the
+existing node codec, Search continuations and content-defined packing. Do not
+add another traversal or publication mechanism. The empty case uses Builder.
+
+One physical node is read per selected level. Its selected child is rewritten;
+all other child references remain original. Finish each parent by replacing
+exactly that child summary with its completed partition summaries. Root splitting
+adds only enough levels to hold those summaries. A physically identical value
+can retain the original root. Counts change only for insertion. No authority,
+condition, revision, sequence, retry or follower root is installed by this API.
+All successful puts belong to the enclosing stage until publication/retirement.
+Failure/cancellation returns no new Index and cannot mutate an original page.
+The bounded spine is guarded by the existing u64-derived maximum index height;
+all retained pages/output partitions have physical frame bounds. Native original
+work/admission integration is still required before provider cutover.
+
+Correctness argument to exercise: Search preserves leaf byte-key order; the
+shared publisher partitions every rewritten entry contiguously exactly once.
+Inductively, replacing only the selected child range preserves every untouched
+subtree and the exact lower bounds of rewritten children. Storage immutability
+preserves every original root. Real-file controls compare generated replacements
+and insertions with an independent ordered map, reopen checkpoints, retain old
+root reads, and gate cancellation after actual page IO. A negative control drops
+untouched siblings and must fail the ordered-map control. These are index/COW
+properties, not the six final-publication proofs. Batch/range planning and final
+atomic publication remain additional integration work.
+
+Index::set is now implemented through the existing async rewrite driver and
+shared page publisher, with one codec write_root used by both bulk construction
+and COW. Search and field promotion are shared. The model control builds a
+multi-level 4097-key real-file index, replaces boundary/interior values, inserts
+65 permuted keys, reopens a checkpoint and checks a pinned original reader and
+map. It bounds path reads for normalized inline keys and checks an identical
+update retains the root. A separate file gate cancels after a physical write and
+checks the original index and a later distinct update exclude the cancelled key.
+The sibling-drop mutation follows the exact replaced-child range. Source is not
+remotely compiled yet. Original-work accounting, streaming batch/range rewrite
+summaries, namespace planning and authority publication remain integration work.
+COW physical root shape is not the canonical logical retry digest.

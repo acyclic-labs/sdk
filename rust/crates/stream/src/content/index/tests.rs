@@ -438,3 +438,140 @@ async fn cancelled_ordered_index_cursor_cannot_skip_a_consumed_child()
     assert!(fresh.next().await?.is_none());
     Ok(())
 }
+
+#[tokio::test]
+async fn cow_index_updates_match_the_model_and_preserve_pinned_roots()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Disk::open(directory.path());
+    let mut builder = Builder::new(&storage);
+    let mut model = std::collections::BTreeMap::new();
+    for ordinal in 0..4097_u64 {
+        let key = format!("entry/{ordinal:06}").into_bytes();
+        let value = vec![(ordinal % 251) as u8; 3500];
+        builder.push(bytes(&key), bytes(&value)).await?;
+        model.insert(key, value);
+    }
+    let original = builder.finish().await?;
+    assert!(
+        original.height >= 2,
+        "COW control needs a multi-level spine"
+    );
+    let original_model = model.clone();
+    let mut pinned = original.scan(&storage, None).await?;
+    let mut current = original.clone();
+    for ordinal in [2048_u64, 0, 4096, 73, 3671] {
+        let key = format!("entry/{ordinal:06}").into_bytes();
+        let value = format!("replacement-{ordinal}").into_bytes();
+        let before = storage.reads.load(Ordering::Relaxed);
+        current = current.set(&storage, bytes(&key), bytes(&value)).await?;
+        let reads = storage.reads.load(Ordering::Relaxed) - before;
+        assert!(
+            reads <= (usize::from(current.height) + 1) * 6,
+            "COW read unrelated pages: reads={reads}"
+        );
+        model.insert(key, value);
+    }
+    for ordinal in 0..65_u64 {
+        let number = ordinal * 37 % 65;
+        let key = format!("new/{number:06}").into_bytes();
+        let value = number.to_le_bytes().to_vec();
+        current = current.set(&storage, bytes(&key), bytes(&value)).await?;
+        model.insert(key, value);
+    }
+    let unchanged = current
+        .set(&storage, bytes(b"entry/000073"), bytes(b"replacement-73"))
+        .await?;
+    assert_eq!(
+        unchanged, current,
+        "ordered-index COW lost untouched siblings or original order"
+    );
+    let checkpoint = current.checkpoint(&storage).await?;
+    for (key, value) in &original_model {
+        let (found, contents) = pinned
+            .next()
+            .await?
+            .ok_or("COW changed a pinned original root")?;
+        assert!(
+            found == bytes(key) && contents == bytes(value),
+            "COW changed a pinned original root"
+        );
+    }
+    assert!(pinned.next().await?.is_none());
+    assert_eq!(original.len(), original_model.len() as u64);
+    drop(pinned);
+    drop(current);
+    drop(storage);
+    let storage = Disk::open(directory.path());
+    let current = Index::open(&storage, checkpoint).await?;
+    assert_eq!(
+        current.len(),
+        model.len() as u64,
+        "ordered-index COW lost untouched siblings or original order"
+    );
+    let mut cursor = current.scan(&storage, None).await?;
+    for (key, value) in model {
+        let entry = cursor.next().await?;
+        assert!(
+            entry == Some((bytes(&key), bytes(&value))),
+            "ordered-index COW lost untouched siblings or original order"
+        );
+    }
+    assert!(cursor.next().await?.is_none());
+    // Reopening the original root after the successor still selects its old value.
+    assert_eq!(
+        original.get(&storage, bytes(b"entry/002048")).await?,
+        Some(bytes(vec![(2048 % 251) as u8; 3500]))
+    );
+    let empty = Index::default();
+    let single = empty
+        .set(&storage, bytes(b"first"), bytes(b"value"))
+        .await?;
+    assert!(empty.is_empty());
+    assert_eq!(
+        single.get(&storage, bytes(b"first")).await?,
+        Some(bytes(b"value"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_cow_update_cannot_change_a_pinned_index_or_later_update()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let disk = Disk::open(directory.path());
+    let original = Index::default()
+        .set(&disk, bytes(b"a"), bytes(b"old"))
+        .await?;
+    let storage = Delayed {
+        disk,
+        put: Default::default(),
+        get: Default::default(),
+    };
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (_resume, resumed) = tokio::sync::oneshot::channel();
+    *storage.put.lock().map_err(|_| "gate poisoned")? = Some((entered, resumed));
+    {
+        let update = original.set(&storage, bytes(b"b"), bytes(b"cancelled"));
+        tokio::pin!(update);
+        tokio::select! {
+            _ = waiting => {},
+            result = &mut update => { result?; return Err("COW write did not suspend".into()); },
+        }
+    }
+    assert_eq!(
+        original.get(&storage, bytes(b"a")).await?,
+        Some(bytes(b"old"))
+    );
+    assert_eq!(original.get(&storage, bytes(b"b")).await?, None);
+    let next = original
+        .set(&storage, bytes(b"c"), bytes(b"complete"))
+        .await?;
+    assert_eq!(next.len(), 2);
+    assert_eq!(next.get(&storage, bytes(b"b")).await?, None);
+    assert_eq!(
+        next.get(&storage, bytes(b"c")).await?,
+        Some(bytes(b"complete"))
+    );
+    Ok(())
+}
