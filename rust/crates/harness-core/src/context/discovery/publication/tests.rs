@@ -183,7 +183,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
             b"---\nname: check\ndescription: Original header\n---\noriginal body\n",
             "text/markdown",
             "SKILL.md",
-            32_768,
+            Some(32_768),
             &crate::IdempotencyKey::new("original")?,
             None,
             Default::default(),

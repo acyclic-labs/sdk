@@ -28,7 +28,7 @@ async fn published(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
             body,
             "text/plain",
             "file.txt",
-            u64::MAX,
+            None,
             &IdempotencyKey::new("publish")?,
             None,
             crate::conversation::ContentAccess::default(),
@@ -95,7 +95,7 @@ async fn ordinary(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
             &read,
             "ordinary",
             Some(&generation),
-            body.len() as u64,
+            Some(body.len() as u64),
             crate::conversation::ContentAccess::default(),
         )
         .await?;
@@ -423,7 +423,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
             &read,
             "ordinary",
             Some(&selected),
-            u64::MAX,
+            None,
             crate::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&io),

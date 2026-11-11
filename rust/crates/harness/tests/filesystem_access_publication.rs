@@ -53,7 +53,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         .await?;
     assert_eq!(
         writer
-            .observe_staged_path(operation, path, 4096, None)
+            .observe_staged_path(operation, path, Some(4096), None)
             .await?,
         Some(first.clone())
     );
@@ -63,7 +63,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         .await?;
     assert_eq!(
         writer
-            .observe_staged_at(replacement, &first, 4096, None)
+            .observe_staged_at(replacement, &first, Some(4096), None)
             .await?,
         Some(next)
     );
@@ -127,7 +127,7 @@ proptest! {
             let grant = ContentGrant::verify(&fixture.issuer.verifier(&mut None)?, &scope,
                 &fixture.volume, VolumeOperation::Write, 4096, &mut None)?;
             let result = fixture.host.content_for_operation(&fixture.volume, &grant,
-                &IdempotencyKey::new("file")?, "secrets/key", 4096, acyclic_harness::conversation::ContentAccess::default()).await;
+                &IdempotencyKey::new("file")?, "secrets/key", Some(4096), acyclic_harness::conversation::ContentAccess::default()).await;
             let allowed = list && path && !expired && !denied;
             assert_eq!(result.is_ok(), allowed, "{result:?}");
             if allowed {
@@ -174,7 +174,7 @@ async fn legacy_write_grant_does_not_disclose_cached_metadata() -> Result<(), Bo
                 &grant,
                 &IdempotencyKey::new("file")?,
                 "secrets/key",
-                4096,
+                Some(4096),
                 acyclic_harness::conversation::ContentAccess::default(),
             )
             .await;

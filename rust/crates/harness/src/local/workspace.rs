@@ -257,7 +257,7 @@ impl LocalWorkspace {
     /// roots and working directory before creating a child.
     pub async fn executor(
         self: &Arc<Self>,
-        (project, files, maximum): (&VolumeRef, &Arc<super::LocalFilesystem>, u64),
+        (project, files, maximum): (&VolumeRef, &Arc<super::LocalFilesystem>, Option<u64>),
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         signed: &Scope,
         verifier: &crate::core::AuthorityVerifier,

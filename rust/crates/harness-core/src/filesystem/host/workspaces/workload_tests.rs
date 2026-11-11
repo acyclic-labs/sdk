@@ -61,7 +61,7 @@ async fn revocation_during_staging_prevents_content_publication() -> Result<()> 
             b"secret",
             "text/plain",
             "private",
-            64,
+            Some(64),
             &IdempotencyKey::new("revoked-publication")?,
             None,
             crate::conversation::ContentAccess {

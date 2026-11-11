@@ -96,7 +96,7 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                 .map_err(Error::process_io)?;
             let (executor, _writer) = workspace
                 .executor(
-                    (&fixture.project, &fixture.files, maximum),
+                    (&fixture.project, &fixture.files, Some(maximum)),
                     Arc::new(acyclic_stream::SystemUnixMillisClock),
                     signed,
                     &fixture.verifier,

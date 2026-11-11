@@ -1293,7 +1293,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                                 "",
                                 &path,
                                 None,
-                                2,
+                                Some(2),
                                 acyclic_harness_core::conversation::ContentAccess::default(),
                             )?
                             .await?

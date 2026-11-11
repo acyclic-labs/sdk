@@ -73,7 +73,7 @@ async fn direct_writer_rejects_empty_and_unrelated_callers() -> Result<(), Box<d
                     b"new",
                     "text/plain",
                     "new",
-                    4096,
+                    Some(4096),
                     &IdempotencyKey::new("direct")?,
                     None,
                     acyclic_harness::conversation::ContentAccess {
@@ -202,7 +202,7 @@ async fn structured_service_grant_is_governed_by_policy_and_its_resource()
                 b"new",
                 "text/plain",
                 "new",
-                4096,
+                Some(4096),
                 &IdempotencyKey::new("service")?,
                 None,
                 acyclic_harness::conversation::ContentAccess::default(),
