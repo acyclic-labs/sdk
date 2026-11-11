@@ -363,8 +363,18 @@ pub(crate) async fn load_manifest(
     let bytes = journal.load(reference, io)?.await?;
     #[cfg(feature = "filesystem")]
     let _hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
-    admit_manifest(reference, &bytes, io)?;
-    retain_preparation(super::payload::decode_json::<RequestManifest>(&bytes, io)?)
+    decode_manifest(reference, &bytes, io)
+}
+
+/// Admit the immutable format before either ordinary loading or cached proof
+/// verification can decode its payload. A valid proof does not admit a version.
+pub(crate) fn decode_manifest(
+    reference: &FileRef,
+    bytes: &[u8],
+    io: Option<&PreparationIo>,
+) -> Result<RequestManifest> {
+    admit_manifest(reference, bytes, io)?;
+    retain_preparation(super::payload::decode_json::<RequestManifest>(bytes, io)?)
 }
 
 fn admit_manifest(reference: &FileRef, bytes: &[u8], io: Option<&PreparationIo>) -> Result<()> {

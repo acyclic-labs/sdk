@@ -328,11 +328,11 @@ where
                         == crate::executor::transcript::REQUEST_MEDIA
                     {
                         let scope = crate::filesystem::PreparationScope::new(io)?;
-                        let manifest = crate::executor::retain_preparation(decode_json::<
-                            crate::executor::transcript::RequestManifest,
-                        >(
-                            bytes, scope.io()
-                        )?)?;
+                        let manifest = crate::executor::transcript::decode_manifest(
+                            reference,
+                            bytes,
+                            scope.io(),
+                        )?;
                         if manifest.authenticates(
                             &self.verifier,
                             limits,
