@@ -60,8 +60,8 @@ pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 pub struct Limits {
     /// Maximum bytes in one referenced file admitted to a conversation.
     pub file_bytes: u64,
-    /// Maximum normalized UTF-8 path bytes.
-    pub path_bytes: usize,
+    /// Optional maximum normalized UTF-8 path bytes.
+    pub path_bytes: Option<std::num::NonZeroUsize>,
     /// Optional maximum attachments in one message, inline or manifest-backed.
     pub attachments: Option<std::num::NonZeroUsize>,
     /// Maximum bytes rendered directly into one model context part.
@@ -78,7 +78,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             file_bytes: MAX_EXACT_JS_INTEGER,
-            path_bytes: u32::MAX as usize,
+            path_bytes: None,
             attachments: None,
             render_bytes: MAX_EXACT_JS_INTEGER,
             model_events_per_step: None,
@@ -100,7 +100,9 @@ impl Limits {
         if [self.file_bytes, self.render_bytes]
             .into_iter()
             .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
-            || [self.path_bytes]
+            || self
+                .path_bytes
+                .map(std::num::NonZeroUsize::get)
                 .into_iter()
                 .chain(self.attachments.map(std::num::NonZeroUsize::get))
                 .chain(self.context_messages.map(std::num::NonZeroUsize::get))
@@ -143,7 +145,10 @@ impl Limits {
     ) -> Result<()> {
         self.validate(work)?;
         file.validate(work)?;
-        if file.path().len() > self.path_bytes {
+        if self
+            .path_bytes
+            .is_some_and(|maximum| file.path().len() > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
@@ -187,7 +192,10 @@ impl Limits {
     ) -> Result<()> {
         self.validate(work)?;
         file.validate(work)?;
-        if file.path().len() > self.path_bytes {
+        if self
+            .path_bytes
+            .is_some_and(|maximum| file.path().len() > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
@@ -442,7 +450,7 @@ fn advance_history_digest(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     let digest =
-        crate::executor::json::canonical_json_digest(message, maximum_encoded_bytes, work)?;
+        crate::executor::json::canonical_json_digest(message, Some(maximum_encoded_bytes), work)?;
     if let Some(work) = work.as_deref_mut() {
         work.hashed_bytes(b"harness:conversation-prefix:v3\0".len() as u64 + 64)?;
     }

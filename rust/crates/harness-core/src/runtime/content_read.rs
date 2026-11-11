@@ -486,14 +486,8 @@ impl TaskContext {
             .ok_or_else(|| {
                 content_error(io, ErrorCode::Unsupported, "content reader is not bound")
             })?;
-        let (bytes, hold) = verified_content_bytes(
-            reader,
-            file,
-            file.descriptor().byte_length(),
-            Some(grants.grants),
-            io,
-        )
-        .await?;
+        let (bytes, hold) =
+            verified_content_bytes(reader, file, None, Some(grants.grants), io).await?;
         if let Some(hold) = hold {
             hold.into_retained()?;
         }

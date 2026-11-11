@@ -48,9 +48,7 @@ impl ModelPrefix {
         hasher.update(b"harness:model-prefix:ordered:v1");
         for message in &request.request().messages {
             hasher.update(&crate::executor::json::canonical_json_digest(
-                message,
-                u64::MAX,
-                &mut None,
+                message, None, &mut None,
             )?);
         }
         Ok(Self {
@@ -168,14 +166,9 @@ impl PreparedModelRequest {
                 ));
             }
 
-            let (bytes, hold) = crate::conversation::verified_content_bytes(
-                verifier,
-                &reference,
-                reference.descriptor().byte_length(),
-                None,
-                io,
-            )
-            .await?;
+            let (bytes, hold) =
+                crate::conversation::verified_content_bytes(verifier, &reference, None, None, io)
+                    .await?;
             let _bytes_hold = hold;
             let segment: ModelPrefix = match io {
                 Some(io) => crate::filesystem::retain_decoded(io.decode(

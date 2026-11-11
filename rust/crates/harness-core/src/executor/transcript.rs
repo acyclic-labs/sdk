@@ -71,7 +71,9 @@ pub(crate) struct RequestManifest {
 /// `ModelRequest` validation and therefore are not part of this comparison.
 pub(crate) fn limits_admit(admitted: Limits, current: Limits) -> bool {
     admitted.file_bytes <= current.file_bytes
-        && admitted.path_bytes <= current.path_bytes
+        && current
+            .path_bytes
+            .is_none_or(|maximum| admitted.path_bytes.is_some_and(|limit| limit <= maximum))
         && current
             .attachments
             .is_none_or(|maximum| admitted.attachments.is_some_and(|limit| limit <= maximum))
@@ -373,7 +375,7 @@ fn admit_manifest(reference: &FileRef, bytes: &[u8], io: Option<&PreparationIo>)
     acyclic_auth::format::header(
         bytes,
         b"{\"$version\":",
-        b"2,",
+        b"3,",
         || unsupported_manifest(io),
         || unsupported_manifest(io),
     )
@@ -496,7 +498,7 @@ async fn stage_request_inner(
     )
     .await?;
     let manifest = RequestManifest {
-        version: 2,
+        version: 3,
         header,
         header_digest,
         messages,

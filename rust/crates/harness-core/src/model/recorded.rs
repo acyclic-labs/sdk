@@ -63,8 +63,8 @@ impl RecordedToolOutcome {
                 let value = json_value_copy_bounded(
                     &result.value,
                     JsonBounds {
-                        maximum_bytes: u64::MAX,
-                        maximum_items: io.remaining()?.items_examined,
+                        maximum_bytes: Some(u64::MAX),
+                        maximum_items: Some(io.remaining()?.items_examined),
                         maximum_depth: RECORD_MAXIMUM_DEPTH,
                     },
                     Some(crate::wire::ErrorCode::Storage),
@@ -283,7 +283,7 @@ fn tool_key(
     let digest = crate::executor::with_history_io(io, |work| {
         crate::executor::json::borrowed_json_digest(
             &("recorded-tool-v1", call_id),
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             work,
         )
     })?;

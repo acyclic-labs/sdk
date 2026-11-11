@@ -11,10 +11,12 @@ proptest! {
         call_max in proptest::option::of(1usize..8),
         message_max in proptest::option::of(1usize..12),
         attachment_max in proptest::option::of(1usize..8),
+        path_max in proptest::option::of(1usize..12),
         child_event_max in proptest::option::of(1usize..12),
         child_call_max in proptest::option::of(1usize..8),
         child_message_max in proptest::option::of(1usize..12),
         child_attachment_max in proptest::option::of(1usize..8),
+        child_path_max in proptest::option::of(1usize..12),
         input in proptest::collection::vec(0u8..5, 0..24),
     ) {
         let limits = Limits {
@@ -22,6 +24,7 @@ proptest! {
             tool_calls_per_step: call_max.and_then(std::num::NonZeroUsize::new),
             context_messages: message_max.and_then(std::num::NonZeroUsize::new),
             attachments: attachment_max.and_then(std::num::NonZeroUsize::new),
+            path_bytes: path_max.and_then(std::num::NonZeroUsize::new),
             ..Limits::default()
         };
         let child = Limits {
@@ -29,6 +32,7 @@ proptest! {
             tool_calls_per_step: child_call_max.and_then(std::num::NonZeroUsize::new),
             context_messages: child_message_max.and_then(std::num::NonZeroUsize::new),
             attachments: child_attachment_max.and_then(std::num::NonZeroUsize::new),
+            path_bytes: child_path_max.and_then(std::num::NonZeroUsize::new),
             ..Limits::default()
         };
         let scope = crate::runtime::RuntimeScope::new(Default::default(), limits).unwrap();
@@ -36,12 +40,13 @@ proptest! {
             event_max.is_none_or(|max| child_event_max.is_some_and(|value| value <= max))
             && call_max.is_none_or(|max| child_call_max.is_some_and(|value| value <= max))
             && message_max.is_none_or(|max| child_message_max.is_some_and(|value| value <= max))
-            && attachment_max.is_none_or(|max| child_attachment_max.is_some_and(|value| value <= max)));
-
-        {
+            && attachment_max.is_none_or(|max| child_attachment_max.is_some_and(|value| value <= max))
+            && path_max.is_none_or(|max| child_path_max.is_some_and(|value| value <= max)));
+            {
             prop_assert_eq!(super::transcript::limits_admit(limits, child),
                 child_message_max.is_none_or(|max| message_max.is_some_and(|value| value <= max))
-                && child_attachment_max.is_none_or(|max| attachment_max.is_some_and(|value| value <= max)));
+                && child_attachment_max.is_none_or(|max| attachment_max.is_some_and(|value| value <= max))
+                && child_path_max.is_none_or(|max| path_max.is_some_and(|value| value <= max)));
         }
         let restricted = crate::context::restrict_context_limits(limits, child, None).unwrap();
         for (actual, ancestor, descendant) in [
@@ -49,6 +54,7 @@ proptest! {
             (restricted.tool_calls_per_step, call_max, child_call_max),
             (restricted.context_messages, message_max, child_message_max),
             (restricted.attachments, attachment_max, child_attachment_max),
+            (restricted.path_bytes, path_max, child_path_max),
         ] {
             prop_assert_eq!(actual.map(std::num::NonZeroUsize::get),
                 ancestor.into_iter().chain(descendant).min());

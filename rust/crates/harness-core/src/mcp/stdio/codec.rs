@@ -45,8 +45,8 @@ pub(super) fn reserve_write(
 
 fn bounds(maximum: usize) -> crate::JsonBounds {
     crate::JsonBounds {
-        maximum_bytes: maximum as u64,
-        maximum_items: maximum as u64,
+        maximum_bytes: Some(maximum as u64),
+        maximum_items: Some(maximum as u64),
         maximum_depth: 256,
     }
 }

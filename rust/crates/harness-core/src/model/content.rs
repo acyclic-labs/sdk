@@ -226,7 +226,7 @@ impl ModelContent {
                 ModelContentPart::Notices { notices } => {
                     crate::executor::json::json_byte_length_at_depth(
                         part,
-                        limits.render_bytes,
+                        Some(limits.render_bytes),
                         256,
                         work,
                     )?;

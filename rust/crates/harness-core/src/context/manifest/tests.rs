@@ -143,7 +143,7 @@ proptest! {
         let limits = Limits { render_bytes: 32_768, ..Default::default() };
         let bytes = manifest.encode(limits)?;
         prop_assert_eq!(ContextManifest::decode(&bytes, limits)?, manifest.clone());
-        let limits = Limits { path_bytes: bound, ..limits };
+        let limits = Limits { path_bytes: std::num::NonZeroUsize::new(bound), ..limits };
         prop_assert_eq!(manifest.validate(limits).is_ok(), reference.path().len() <= bound);
         prop_assert_eq!(ContextManifest::decode(&bytes, limits).is_ok(), reference.path().len() <= bound);
     }
@@ -170,9 +170,9 @@ proptest! {
         };
         let limits = Limits { render_bytes: 32_768, ..Default::default() };
         let bytes = manifest.encode(limits)?;
-        for path_bytes in [bound, length - 1, length, length + 1] {
+        for path_bytes in [Some(bound), Some(length - 1), Some(length), Some(length + 1), None].map(|bound| bound.and_then(std::num::NonZeroUsize::new)) {
             let limits = Limits { path_bytes, ..limits };
-            let admitted = length <= path_bytes;
+            let admitted = path_bytes.is_none_or(|maximum| length <= maximum.get());
             prop_assert_eq!(manifest.validate(limits).is_ok(), admitted);
             prop_assert_eq!(manifest.encode(limits).is_ok(), admitted);
             prop_assert_eq!(ContextManifest::decode(&bytes, limits).is_ok(), admitted);

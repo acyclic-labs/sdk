@@ -117,13 +117,13 @@ fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Er
     Error::Invalid(kind.to_string())
 }
 
-/// Finite byte, node and nesting admission for one document.
+/// Optional byte and node policies with nesting admission for one document.
 #[derive(Clone, Copy, Debug)]
 pub struct JsonBounds {
-    /// UTF-8 input/output bytes.
-    pub maximum_bytes: u64,
-    /// Values and keys, including replaced duplicate entries.
-    pub maximum_items: u64,
+    /// Optional UTF-8 input/output byte policy; `None` adds no byte ceiling.
+    pub maximum_bytes: Option<u64>,
+    /// Optional values and keys ceiling, including replaced duplicate entries.
+    pub maximum_items: Option<u64>,
     /// Zero-based nesting depth.
     pub maximum_depth: u32,
 }

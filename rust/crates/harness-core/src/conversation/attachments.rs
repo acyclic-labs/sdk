@@ -249,15 +249,17 @@ pub fn decode_attachment_manifest(
     Ok(items)
 }
 
-/// Reads and verifies exact bytes with their retained ownership.
+/// Reads and verifies exact bytes with optional policy credit and retained ownership.
+/// The immutable source extent bounds the operation even without a policy ceiling.
 pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
     verifier: &'a V,
     reference: &'a FileRef,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     ceiling: Option<&'a crate::Capabilities>,
     io: Option<&'a ContentIo>,
 ) -> Result<(acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)> {
-    if reference.descriptor().byte_length() > maximum_bytes {
+    let source_bytes = reference.descriptor().byte_length();
+    if maximum_bytes.is_some_and(|maximum| source_bytes > maximum) {
         return Err(content_error(
             io,
             crate::wire::ErrorCode::Invalid,
@@ -265,9 +267,7 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
         ));
     }
     let hold;
-    let bytes = verifier
-        .read(reference, maximum_bytes, ceiling, io)?
-        .await?;
+    let bytes = verifier.read(reference, source_bytes, ceiling, io)?.await?;
     {
         hold = match io {
             Some(io) => {
@@ -355,7 +355,7 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
             }
             limits.validate_file(&item.file, work)
         })?;
-        verified_content_bytes(verifier, &item.file, limits.file_bytes, None, io).await?;
+        verified_content_bytes(verifier, &item.file, Some(limits.file_bytes), None, io).await?;
     }
     Ok(output)
 }

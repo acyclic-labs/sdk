@@ -34,14 +34,14 @@ impl FileTool {
         } else {
             crate::executor::json::json_byte_length(
                 &invocation.arguments,
-                scope.limits().file_bytes,
+                Some(scope.limits().file_bytes),
                 &mut None,
             )?;
         }
         #[cfg(target_arch = "wasm32")]
         crate::executor::json::json_byte_length(
             &invocation.arguments,
-            scope.limits().file_bytes,
+            Some(scope.limits().file_bytes),
             &mut None,
         )?;
         let (file, custody) = self.decode_source(scope, context, invocation, work, io)?;
@@ -169,7 +169,11 @@ impl FileTool {
                     );
                 }
                 self.public_path(&input.0.path, io)?;
-                if input.0.path.len() > scope.limits().path_bytes {
+                if scope
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|maximum| input.0.path.len() > maximum.get())
+                {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file path exceeds original task bound",
@@ -195,7 +199,11 @@ impl FileTool {
                     );
                 }
                 self.public_path(&input.0.path, io)?;
-                if input.0.path.len() > scope.limits().path_bytes {
+                if scope
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|maximum| input.0.path.len() > maximum.get())
+                {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file path exceeds original task bound",
@@ -247,7 +255,11 @@ impl FileTool {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, acyclic_fs::NativeCustody)> {
         self.public_path(path, io)?;
-        if path.len() > scope.limits().path_bytes {
+        if scope
+            .limits()
+            .path_bytes
+            .is_some_and(|maximum| path.len() > maximum.get())
+        {
             return Err(super::executor::rejection(
                 work,
                 "file path exceeds original task bound",

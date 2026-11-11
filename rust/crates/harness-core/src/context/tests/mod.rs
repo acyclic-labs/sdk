@@ -94,7 +94,7 @@ fn payload_limits() -> Limits {
         render_bytes: 1_048_576,
         context_messages: std::num::NonZeroUsize::new(4_096),
         attachments: std::num::NonZeroUsize::new(1_024),
-        path_bytes: 4_096,
+        path_bytes: std::num::NonZeroUsize::new(4_096),
         ..Limits::default()
     }
 }
@@ -266,7 +266,7 @@ fn summary(source: &Context, through: usize) -> Result<ContextSummary> {
         step: 0,
         source_messages: u32::try_from(through)
             .map_err(|error| crate::Error::Invalid(error.to_string()))?,
-        source_digest: crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
+        source_digest: crate::executor::json::canonical_json_digest(&prefix, None, &mut None)?,
         output: message(ModelRole::System, "summary")?
             .content
             .file_refs()

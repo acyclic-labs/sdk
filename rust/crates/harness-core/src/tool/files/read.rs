@@ -229,7 +229,7 @@ fn text_result(
                     text: Some(source),
                     page: Some(&page(end)),
                 },
-                u64::MAX,
+                None,
                 history,
             )
         })? + schema::json_envelope_bytes()? as u64
@@ -281,7 +281,7 @@ pub(super) fn encoded_text_budget(
         }),
     };
     let overhead = crate::executor::with_history_io(io, |history| {
-        crate::executor::json::json_byte_length(&empty, u64::MAX, history)
+        crate::executor::json::json_byte_length(&empty, None, history)
     })? + schema::json_envelope_bytes()? as u64;
     maximum
         .min(crate::tool::output::VIEW_BYTES)

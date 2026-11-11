@@ -5,8 +5,8 @@ fn scan(bytes: &[u8], chunk: usize, depth: u32) -> Result<Vec<SpanEvent>> {
     let mut cursor = JsonSpans::default();
     let mut events = Vec::new();
     let bounds = JsonBounds {
-        maximum_bytes: bytes.len() as u64,
-        maximum_items: u64::MAX,
+        maximum_bytes: Some(bytes.len() as u64),
+        maximum_items: None,
         maximum_depth: depth,
     };
     for bytes in bytes.chunks(chunk) {
@@ -60,7 +60,7 @@ fn spans_accept_the_producer_depth_boundary_and_refuse_the_next_container() {
         }
         let bytes = serde_json::to_vec(&value).unwrap();
         let length =
-            json_byte_length_at_depth(&value, u64::MAX, RECORD_MAXIMUM_DEPTH, &mut None).unwrap();
+            json_byte_length_at_depth(&value, None, RECORD_MAXIMUM_DEPTH, &mut None).unwrap();
         assert_eq!(length, bytes.len() as u64);
         for chunk in [1, 127, bytes.len()] {
             let events = scan(&bytes, chunk, RECORD_MAXIMUM_DEPTH).unwrap();
@@ -74,8 +74,7 @@ fn spans_accept_the_producer_depth_boundary_and_refuse_the_next_container() {
         }
         let excessive = Value::Array(vec![value]);
         assert!(
-            json_byte_length_at_depth(&excessive, u64::MAX, RECORD_MAXIMUM_DEPTH, &mut None,)
-                .is_err()
+            json_byte_length_at_depth(&excessive, None, RECORD_MAXIMUM_DEPTH, &mut None,).is_err()
         );
         assert!(
             scan(
@@ -163,8 +162,8 @@ fn malformed_tokens_nesting_and_credit_refuse_without_a_continuation_wait() {
     }
     let mut cursor = JsonSpans::default();
     let bounds = JsonBounds {
-        maximum_bytes: 1,
-        maximum_items: 1,
+        maximum_bytes: Some(1),
+        maximum_items: Some(1),
         maximum_depth: 128,
     };
     assert!(
@@ -174,8 +173,8 @@ fn malformed_tokens_nesting_and_credit_refuse_without_a_continuation_wait() {
     );
     let mut cursor = JsonSpans::default();
     let bounds = JsonBounds {
-        maximum_bytes: 4,
-        maximum_items: 1,
+        maximum_bytes: Some(4),
+        maximum_items: Some(1),
         maximum_depth: 128,
     };
     assert!(

@@ -16,8 +16,8 @@ pub(super) fn messages(
         messages,
         prefix,
         crate::executor::json::JsonBounds {
-            maximum_bytes: u64::MAX,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(u64::MAX),
+            maximum_items: None,
             maximum_depth: 256,
         },
         None,

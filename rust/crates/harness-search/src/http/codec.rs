@@ -32,8 +32,8 @@ fn decode<T: Record + crate::HeapLayout>(
         std::marker::PhantomData::<T>,
         bytes,
         crate::executor::json::JsonBounds {
-            maximum_bytes: super::MAXIMUM_RESPONSE_BYTES as u64,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(super::MAXIMUM_RESPONSE_BYTES as u64),
+            maximum_items: None,
             maximum_depth: 256,
         },
         None,

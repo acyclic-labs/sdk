@@ -40,8 +40,8 @@ proptest! {
         assert_layout_covers_decode(&Observation::Item { item: original.clone() });
         let encoded = serde_json::to_vec(&original).unwrap();
         let bounds = JsonBounds {
-            maximum_bytes: encoded.len() as u64,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(encoded.len() as u64),
+            maximum_items: None,
             maximum_depth: 128,
         };
         let mut admissions = 0;

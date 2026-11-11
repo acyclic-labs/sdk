@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn reserve_output(
     output: &mut Vec<u8>,
     written: u64,
-    maximum: u64,
+    maximum: Option<u64>,
     scope: &mut Scope<'_>,
 ) -> Result<()> {
     let required = usize::try_from(written)
@@ -11,9 +11,13 @@ pub(super) fn reserve_output(
     if required <= output.capacity() {
         return Ok(());
     }
-    let capacity = required
-        .max(output.capacity().saturating_mul(2).max(64))
-        .min(usize::try_from(maximum).unwrap_or(usize::MAX));
+    let mut capacity = required.max(output.capacity().saturating_mul(2).max(64));
+    if let Some(maximum) = maximum
+        && capacity as u64 > maximum
+    {
+        capacity = usize::try_from(maximum)
+            .map_err(|_| boundary("JSON output exceeds address space", scope.code))?;
+    }
     // Admit both the old-buffer copy and the incoming fragment before
     // allocating their replacement. The fragment itself is charged below.
     scope.event(JsonCodecCharge::CopyAdmission { bytes: written })?;
@@ -77,7 +81,16 @@ pub(super) fn output<T: Serialize + ?Sized>(
         bytes: prefix as u64,
     })?;
     bytes.resize(prefix, 0);
-    if write(value, scope, Some(&mut bytes), None, None, size, canonical)? != size {
+    if write(
+        value,
+        scope,
+        Some(&mut bytes),
+        None,
+        None,
+        Some(size),
+        canonical,
+    )? != size
+    {
         return Err(boundary(
             "JSON serialization changed between admission and encoding",
             scope.code,
@@ -91,9 +104,9 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn relocation(chunks: &[usize], headroom: usize) -> (Vec<u8>, u64) {
+    fn relocation(chunks: &[usize], headroom: Option<usize>) -> (Vec<u8>, u64) {
         let length = chunks.iter().sum::<usize>();
-        let maximum = (length + headroom) as u64;
+        let maximum = headroom.map(|headroom| (length + headroom) as u64);
         let mut copied = 0;
         let mut charge = |event| {
             if let JsonCodecCharge::Copy { bytes } = event {
@@ -104,7 +117,7 @@ mod tests {
         let mut scope = super::super::scope(
             JsonBounds {
                 maximum_bytes: maximum,
-                maximum_items: u64::MAX,
+                maximum_items: None,
                 maximum_depth: 256,
             },
             None,
@@ -126,8 +139,8 @@ mod tests {
         threes.push(1);
         let mut fours = vec![4; 32];
         fours.push(2);
-        let (first, first_copies) = relocation(&threes, 0);
-        let (second, second_copies) = relocation(&fours, 0);
+        let (first, first_copies) = relocation(&threes, Some(0));
+        let (second, second_copies) = relocation(&fours, Some(0));
         assert_eq!(first, second);
         assert_ne!(first_copies, second_copies);
     }
@@ -136,7 +149,7 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(64))]
         #[test]
         fn relocation_is_linear_for_every_fragmentation(
-            chunks in prop::collection::vec(1_usize..=64, 0..128), headroom in 0_usize..8192,
+            chunks in prop::collection::vec(1_usize..=64, 0..128), headroom in proptest::option::of(0_usize..8192),
         ) {
             let (output, copied) = relocation(&chunks, headroom);
             // Earlier capacities form a geometric series. The final growth
@@ -147,7 +160,9 @@ mod tests {
 
     #[test]
     fn one_byte_fragments_cannot_recopy_every_prefix() {
-        let (output, copied) = relocation(&[1; 130], 0);
-        assert!(copied <= 2 * output.len() as u64);
+        for headroom in [None, Some(0)] {
+            let (output, copied) = relocation(&[1; 130], headroom);
+            assert!(copied <= 2 * output.len() as u64);
+        }
     }
 }

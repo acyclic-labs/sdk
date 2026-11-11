@@ -109,8 +109,8 @@ fn inspect_value(value: &Value, maximum: u64, work: &mut Option<&mut dyn History
         crate::executor::json::json_owned_value_shape_bounded(
             value,
             crate::executor::json::JsonBounds {
-                maximum_bytes: maximum,
-                maximum_items,
+                maximum_bytes: Some(maximum),
+                maximum_items: Some(maximum_items),
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             crate::executor::json::JsonValueSchema::None,
@@ -125,7 +125,7 @@ pub(super) fn value_bound(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     inspect_value(value, maximum, work)?;
-    crate::executor::json::json_byte_length(value, maximum, work).map(|_| ())
+    crate::executor::json::json_byte_length(value, Some(maximum), work).map(|_| ())
 }
 pub(super) fn result_bound(
     content: &ToolResultContent,
@@ -161,7 +161,7 @@ pub(super) fn result_bound(
             }
         }
     }
-    crate::executor::json::json_byte_length(content, maximum, work).map(|_| ())
+    crate::executor::json::json_byte_length(content, Some(maximum), work).map(|_| ())
 }
 
 pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<[u8; 32]> {

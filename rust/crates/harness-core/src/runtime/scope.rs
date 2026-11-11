@@ -149,7 +149,10 @@ impl RuntimeScope {
     pub(super) fn allows_authority(&self, grants: &Capabilities, limits: &Limits) -> bool {
         grants.is_subset_of(&self.grants)
             && limits.file_bytes <= self.limits.file_bytes
-            && limits.path_bytes <= self.limits.path_bytes
+            && self
+                .limits
+                .path_bytes
+                .is_none_or(|maximum| limits.path_bytes.is_some_and(|limit| limit <= maximum))
             && self
                 .limits
                 .attachments

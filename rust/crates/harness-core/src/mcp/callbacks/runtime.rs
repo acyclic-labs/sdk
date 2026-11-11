@@ -69,7 +69,7 @@ impl McpRuntimeCallbacks {
     ) -> Result<(OperationId, Value)> {
         crate::executor::json::json_byte_length(
             request,
-            context.scope().limits().file_bytes,
+            Some(context.scope().limits().file_bytes),
             &mut None,
         )
         .map(|_| ())?;

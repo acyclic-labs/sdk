@@ -72,14 +72,12 @@ impl McpCatalog {
                 "harness/mcp-catalog-install/v1",
                 self,
                 previous
-                    .map(|old| {
-                        crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None)
-                    })
+                    .map(|old| crate::executor::json::canonical_json_digest(old, None, &mut None))
                     .transpose()?,
                 maximum_tools,
                 maximum_bytes,
             ),
-            u64::MAX,
+            None,
             &mut None,
         )
     }
@@ -150,7 +148,11 @@ impl McpCatalog {
             {
                 return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
             }
-            crate::executor::json::json_byte_length(self, u64::from(maximum_bytes), &mut None)?;
+            crate::executor::json::json_byte_length(
+                self,
+                Some(u64::from(maximum_bytes)),
+                &mut None,
+            )?;
         }
         crate::executor::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
         check()?;
@@ -314,9 +316,9 @@ impl McpCatalog {
         next.pin_catalog_revision(
             &prefix,
             previous
-                .map(|old| crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None))
+                .map(|old| crate::executor::json::canonical_json_digest(old, None, &mut None))
                 .transpose()?,
-            crate::executor::json::canonical_json_digest(self, u64::MAX, &mut None)?,
+            crate::executor::json::canonical_json_digest(self, None, &mut None)?,
         )?;
         if let Some(old) = previous {
             for remote in &old.tools {

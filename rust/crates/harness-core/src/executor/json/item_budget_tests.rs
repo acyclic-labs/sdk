@@ -40,7 +40,7 @@ mod native {
         let mut history = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(&native).unwrap(),
         );
-        let result = canonical_json_digest(&value, LIMIT, &mut Some(&mut history));
+        let result = canonical_json_digest(&value, Some(LIMIT), &mut Some(&mut history));
         if prior + ITEMS <= LIMIT {
             let digest = result
                 .map_err(|error| format!("admitted total {} rejected: {error:?}", prior + ITEMS))?;

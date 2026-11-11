@@ -3,8 +3,8 @@ use proptest::prelude::*;
 
 fn bounds() -> JsonBounds {
     JsonBounds {
-        maximum_bytes: u64::MAX,
-        maximum_items: u64::MAX,
+        maximum_bytes: None,
+        maximum_items: None,
         maximum_depth: 256,
     }
 }
@@ -20,9 +20,9 @@ proptest! {
             .collect();
         for count in 0..=messages.len()+1 {
             let (full, prefix) = canonical_sequence_digests(&messages, Some(count), bounds(), None, &mut None).unwrap();
-            prop_assert_eq!(full, identity::canonical_json_digest(&messages, u64::MAX, &mut None).unwrap());
+            prop_assert_eq!(full, identity::canonical_json_digest(&messages, None, &mut None).unwrap());
             let expected = messages.get(..count).map(|prefix|
-                identity::canonical_json_digest(prefix, u64::MAX, &mut None).unwrap());
+                identity::canonical_json_digest(prefix, None, &mut None).unwrap());
             prop_assert_eq!(prefix, expected);
         }
     }
@@ -46,7 +46,7 @@ fn hashing_scratch_stays_flat_from_one_to_a_thousand_messages() -> Result<()> {
         let mut old = Ok([0; 32]);
         let start = std::time::Instant::now();
         let growing = acyclic_test_support::measure(|| {
-            old = identity::canonical_json_digest(&values, u64::MAX, &mut None);
+            old = identity::canonical_json_digest(&values, None, &mut None);
         });
         let old_elapsed = start.elapsed();
         assert_eq!(full, old?);
@@ -54,7 +54,7 @@ fn hashing_scratch_stays_flat_from_one_to_a_thousand_messages() -> Result<()> {
             prefix,
             Some(identity::canonical_json_digest(
                 &values[..count / 2],
-                u64::MAX,
+                None,
                 &mut None
             )?)
         );
@@ -138,8 +138,8 @@ fn shared_prefix_is_serialized_once_per_digest_pair() -> Result<()> {
     canonical_sequence_digests(&values, Some(999), bounds(), None, &mut None)?;
     assert_eq!(count.get(), 1000);
     count.set(0);
-    identity::canonical_json_digest(&values[..999], u64::MAX, &mut None)?;
-    identity::canonical_json_digest(&values, u64::MAX, &mut None)?;
+    identity::canonical_json_digest(&values[..999], None, &mut None)?;
+    identity::canonical_json_digest(&values, None, &mut None)?;
     assert_eq!(
         count.get(),
         1999,
@@ -169,13 +169,13 @@ fn original_ledger_peak_is_independent_of_message_count() -> Result<()> {
             let (full, prefix) = io.canonical_sequence_digests(&values, Some(count / 2))?;
             assert_eq!(
                 full,
-                identity::canonical_json_digest(&values, u64::MAX, &mut None)?
+                identity::canonical_json_digest(&values, None, &mut None)?
             );
             assert_eq!(
                 prefix,
                 Some(identity::canonical_json_digest(
                     &values[..count / 2],
-                    u64::MAX,
+                    None,
                     &mut None
                 )?)
             );
@@ -201,14 +201,14 @@ fn large_unicode_messages_cross_every_hash_buffer_boundary() -> Result<()> {
                 canonical_sequence_digests(&values, Some(prefix), bounds(), None, &mut None)?;
             assert_eq!(
                 full,
-                identity::canonical_json_digest(&values, u64::MAX, &mut None)?,
+                identity::canonical_json_digest(&values, None, &mut None)?,
                 "bytes={bytes}"
             );
             assert_eq!(
                 cut,
                 Some(identity::canonical_json_digest(
                     &values[..prefix],
-                    u64::MAX,
+                    None,
                     &mut None
                 )?),
                 "bytes={bytes} prefix={prefix}"
