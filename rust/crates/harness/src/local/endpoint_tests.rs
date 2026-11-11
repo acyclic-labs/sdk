@@ -17,7 +17,8 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     let harness = Arc::new(
         LocalHarness::open(
             volume_config(directory.path(), project, text())?
-                .compaction(crate::context::CompactionPolicy::Disabled),
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical),
         )
         .await?,
     );
@@ -63,6 +64,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         }
         futures::future::poll_fn(|cx| tree.poll_changed(0, cx)).await;
     }
+    eprintln!("tree reader: original empty page observed");
     let child = match connection
         .execute(&acyclic_harness_client::AgentCommand::Spawn {
             parent: connection.root.clone(),
@@ -76,6 +78,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         AgentReply::Spawned { agent, .. } => agent.clone(),
         _ => return Err(Error::Conflict("spawn returned no child".into())),
     };
+    eprintln!("tree reader: child spawn committed");
     let populated = reader
         .children_page(acyclic_stream::ChildrenPageRequest {
             parent: Some(connection.root.children().map_err(exchange)?),
@@ -88,6 +91,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         .map_err(exchange)?;
     assert_eq!(populated.children.len(), 1, "{populated:?}");
     assert_eq!(populated.children[0].path.as_str(), child.as_str());
+    eprintln!("tree reader: populated scoped page observed");
     loop {
         tree.view.frame(0);
         if tree.view.rows().iter().any(|(_, row)| {
@@ -101,6 +105,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         }
         futures::future::poll_fn(|cx| tree.poll_changed(0, cx)).await;
     }
+    eprintln!("tree reader: first child discovered through the live source");
     let outside = AgentPath::root(&crate::agent::AgentId::from_bytes([0; 16]));
     assert_eq!(
         reader.head(outside.status().map_err(exchange)?).await,
