@@ -65,10 +65,7 @@ pub(super) fn source_control<W: SourceDemandReadWork>(
             kind,
             Some(meter),
         )
-    })
-    .map_err(|error| {
-        work.with_original_leaf(|original| original.take_native_io_failure())
-            .unwrap_or_else(|| crate::demand::native_demand_error(error))
+        .map_err(crate::demand::native_demand_error)
     })
 }
 
