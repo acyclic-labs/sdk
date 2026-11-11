@@ -226,9 +226,8 @@ async fn cancelled_content_read_cannot_skip_the_consumed_page()
             result = event => result?,
         }
     }
-    assert_eq!(
-        reader.next().await,
-        Err(StreamError::Unavailable),
+    assert!(
+        matches!(reader.next().await, Err(StreamError::Unavailable)),
         "cancelled content reader skipped the consumed page"
     );
     Ok(())
