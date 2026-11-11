@@ -58,7 +58,7 @@ impl ObjectContentStore {
     pub(super) async fn read_exact(
         &self,
         file: &FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
         self.read_content(file, maximum_bytes).await
@@ -67,14 +67,19 @@ impl ObjectContentStore {
     pub(super) async fn read_content(
         &self,
         file: &FileRef,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        if maximum_bytes.is_some_and(|maximum| file.descriptor().byte_length() > maximum) {
+            return Err(Error::Invalid(
+                "content exceeds selected byte allowance".into(),
+            ));
+        }
         let read = self
             .bound_content(file, |digest| {
                 self.objects.get(
                     digest,
                     ByteRange::FULL,
-                    maximum_bytes.min(self.maximum_bytes),
+                    file.descriptor().byte_length().min(self.maximum_bytes),
                 )
             })
             .await?;
@@ -157,7 +162,7 @@ impl ContentResidencyVerifier for ObjectContentStore {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         self.supports_read(reference.volume(), io)?;
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            if reference.descriptor().byte_length() > maximum_bytes {
+            if maximum_bytes.is_some_and(|maximum| reference.descriptor().byte_length() > maximum) {
                 return Err(Error::Invalid(
                     "content exceeds selected byte allowance".into(),
                 ));

@@ -153,12 +153,16 @@ pub(in crate::executor) async fn stock_project_tool(
         return Ok(Err(violation));
     }
     let maximum = context.map_or(limits.render_bytes, |_| {
-        limits.render_bytes.min(crate::tool::output::VIEW_BYTES)
+        limits
+            .render_bytes
+            .into_iter()
+            .chain(Some(crate::tool::output::VIEW_BYTES))
+            .min()
     });
     let length = with_history_io(io, |history| {
         crate::executor::json::json_byte_length(&value, None, history)
     })?;
-    let value = if length > maximum {
+    let value = if maximum.is_some_and(|maximum| length > maximum) {
         let context = context.ok_or_else(|| {
             stock_boundary(
                 io,

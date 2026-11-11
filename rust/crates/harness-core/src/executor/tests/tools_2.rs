@@ -37,7 +37,8 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     )
     .with_tool_authority(wide, allowed()?)?
     .with_limits(narrow);
-    assert!(executor.tool_scope.limits().file_bytes > executor.limits.file_bytes);
+    assert_eq!(executor.tool_scope.limits().file_bytes, None);
+    assert_eq!(executor.limits.file_bytes, Some(128));
     let journal = Journal::default();
     let mut messages = vec![call_message(&invocation)];
     let before = messages.clone();

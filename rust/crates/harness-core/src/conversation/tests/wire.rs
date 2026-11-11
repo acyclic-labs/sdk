@@ -106,7 +106,7 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
                 if reference != &self.file {
                     return Err(Error::NotFound("file".into()));
                 }
-                if self.bytes.len() as u64 > maximum_bytes {
+                if maximum_bytes.is_some_and(|maximum| self.bytes.len() as u64 > maximum) {
                     return Err(Error::Invalid(
                         "content exceeds selected byte allowance".into(),
                     ));
@@ -178,7 +178,11 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
     let mut narrow = Limits::default();
     narrow.file_bytes = Some(manifest.descriptor().byte_length().saturating_add(1));
     narrow.render_bytes = narrow.file_bytes;
-    assert!(narrow.file_bytes < member.descriptor().byte_length());
+    assert!(
+        narrow
+            .file_bytes
+            .is_some_and(|maximum| maximum < member.descriptor().byte_length())
+    );
     assert!(matches!(
         composite
             .verify_manifest(&manifest, 1, &narrow, None)?
