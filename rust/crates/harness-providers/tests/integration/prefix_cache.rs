@@ -413,10 +413,15 @@ fn uncached(value: &mut Value) {
 /// Cached tokens the same requests read from a fresh cache after `change`.
 fn replayed<'a>(
     path: &str,
+    implicit_chat: bool,
     sent: impl IntoIterator<Item = &'a Sent>,
     change: impl Fn(usize, &mut Value),
 ) -> TestResult<u64> {
-    let mut cache = harness_mock_model::PromptCache::default();
+    let mut cache = if implicit_chat {
+        harness_mock_model::PromptCache::default().with_implicit_chat()
+    } else {
+        harness_mock_model::PromptCache::default()
+    };
     let mut read = 0;
     for (index, request) in sent.into_iter().enumerate() {
         let mut body: Value = serde_json::from_slice(&request.body)?;
@@ -434,7 +439,13 @@ async fn run(
     messages: &[u8],
 ) -> TestResult {
     let transport = Arc::new(Scripted {
-        cache: Mutex::default(),
+        cache: Mutex::new(
+            if adapter == Adapter::Chat && prompt_cache == PromptCache::Native {
+                harness_mock_model::PromptCache::default().with_implicit_chat()
+            } else {
+                harness_mock_model::PromptCache::default()
+            },
+        ),
         path,
         state: Mutex::new((
             "parent",
@@ -673,27 +684,65 @@ async fn run(
             .unwrap_or_else(|p| p.into_inner())
             .1
             .extend([program(name, "3 + 3"), text("filled")]);
-        agents
+        let acyclic_harness::agent::Delivered::Committed { inbox } = agents
             .send(&root, &user(), &message(&root, name, &pressure).await?)
-            .await?;
+            .await?
+        else {
+            return Err("pressure input was not committed".into());
+        };
         agents.drain(&root).await?;
+        // R45: compare the durable, authenticated usage view to the provider's
+        // reported cache reads, including the request following compaction.
+        let mut after = 0;
+        let mut observed = Vec::new();
+        loop {
+            let (selected, page, settled, _) =
+                bound.usage_page(&root, inbox, after, false, None).await?;
+            assert_eq!(selected, inbox);
+            assert!(settled);
+            let page = page.ok_or("settled pressure turn has no usage page")?;
+            observed.extend(page.items.into_iter().filter(|record| record.completed));
+            match page.next {
+                Some(next) => after = next,
+                None => break,
+            }
+        }
+        let state = transport.state.lock().unwrap_or_else(|p| p.into_inner());
+        let reported = &state.2[state.2.len() - 2..];
+        assert_eq!(
+            observed.len(),
+            reported.len(),
+            "{family}: committed usage lost a call"
+        );
+        for (record, sent) in observed.iter().zip(reported) {
+            assert_eq!(
+                record.tokens.cached,
+                Some(sent.cached.read.min(sent.body.len() as u64)),
+                "{family}: cache-hit usage was lost or changed"
+            );
+        }
     }
     let tight = std::mem::take(&mut transport.state.lock().unwrap_or_else(|p| p.into_inner()).2);
     // The provider cache serves every request after the first: extensions,
     // forks, the page cut and the backstop eviction alike.
     hits(family, sent.iter().chain(&tight))?;
     let all = || sent.iter().chain(&tight);
+    let implicit_chat = adapter == Adapter::Chat && prompt_cache == PromptCache::Native;
     assert!(
-        replayed(path, all(), |_, _| ())? > 0,
+        replayed(path, implicit_chat, all(), |_, _| ())? > 0,
         "{family}: replay never hit"
     );
-    let control = if adapter == Adapter::Gemini {
+    let control = if implicit_chat {
+        replayed(path, implicit_chat, all(), |index, body| {
+            body["model"] = json!(format!("changed-prefix-{index}"));
+        })?
+    } else if adapter == Adapter::Gemini {
         // Implicit caching relies on a stable prefix alone.
-        replayed(path, all(), |index, body| {
+        replayed(path, implicit_chat, all(), |index, body| {
             body["systemInstruction"]["parts"][0]["text"] = json!(index.to_string());
         })?
     } else {
-        replayed(path, all(), |_, body| uncached(body))?
+        replayed(path, implicit_chat, all(), |_, body| uncached(body))?
     };
     assert_eq!(
         control, 0,
@@ -743,10 +792,47 @@ async fn run(
     // The grandchild forks the child's settled first turn, whose last request
     // was the child's second, and keeps the child's directive where it was.
     extends(family, "grandchild request 0", child[1], grandchild[0])?;
-    // The oracle rejects one changed byte inside the shared prefix.
-    let mut rewritten = parent[1].to_vec();
-    rewritten[parent[0].len() / 2] ^= 1;
-    assert!(departure(parent[0], &rewritten).is_some());
+    // R44 negative controls mutate valid semantic prefix fields in the actual
+    // second request. The same byte-extension guard must reject every change.
+    let later: Value = serde_json::from_slice(parent[1])?;
+    let paths: &[&str] = match adapter {
+        Adapter::Anthropic => &["/model", "/system/0/text", "/tools/0/description"],
+        Adapter::Responses => &["/model", "/input/0/content/0/text", "/tools/0/description"],
+        Adapter::Chat => &[
+            "/model",
+            "/messages/0/content",
+            "/tools/0/function/description",
+        ],
+        Adapter::Gemini => &[
+            "/systemInstruction/parts/0/text",
+            "/tools/0/functionDeclarations/0/description",
+        ],
+    };
+    for path in paths {
+        let original = later
+            .pointer(path)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{family}: required prefix control is absent at {path}"))?;
+        let old = serde_json::to_vec(original)?;
+        let replacement = serde_json::to_vec(&format!("mid-run-change:{original}"))?;
+        let name = path.rsplit('/').next().ok_or("missing field name")?;
+        let mut field = serde_json::to_vec(name)?;
+        field.push(b':');
+        let value_offset = field.len();
+        field.extend_from_slice(&old);
+        let at = parent[1]
+            .windows(field.len())
+            .position(|bytes| bytes == field)
+            .ok_or("prefix field is absent from serialized request")?
+            + value_offset;
+        let mut rewritten = parent[1].to_vec();
+        rewritten.splice(at..at + old.len(), replacement);
+        let _: Value = serde_json::from_slice(&rewritten)?;
+        assert!(
+            extends(family, path, parent[0], &rewritten).is_err(),
+            "{family}: R44 guard accepted a changed {path}"
+        );
+    }
     // Call controls follow the conversation, so a changed control never
     // rewrites the prefix, while a body without that trailer departs.
     let mut controls = parent[0].to_vec();
@@ -839,3 +925,16 @@ async fn chat_prefixes_extend_byte_for_byte() -> TestResult {
 mod mixed_catalog;
 #[path = "prefix_cache/role_models.rs"]
 mod role_models;
+
+/// Fireworks-compatible Chat requests use provider-managed implicit caching.
+#[tokio::test]
+async fn implicit_chat_prefixes_extend_byte_for_byte() -> TestResult {
+    run(
+        Adapter::Chat,
+        PromptCache::Native,
+        "chat/completions",
+        "implicit-chat",
+        b"\"messages\":[",
+    )
+    .await
+}
