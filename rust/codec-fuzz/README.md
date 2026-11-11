@@ -127,6 +127,8 @@ from the repository root to restore the original production guard. The same
 control must fail at `persisted fuzz oracle`; this checks the actual oracle
 used by the fuzz target. Reverse the patch before running the intact source.
 
+The thirty-one `harness_codecs/agent-v14-*` files retain the original version-14 production-writer bytes and their original source hashes and goldens. They remain historical inputs alongside the earlier writer captures. Current record version 22 and the current checkpoint codec retain typed foreign-version refusal; historical input names do not select an older decoder. The agent codec control also runs the current production-writer generator.
+
 Refresh only the current agent record and checkpoint writers with:
 
 ```sh
